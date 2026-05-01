@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import logo from './public/logo/logowhite.png';
+import logoBlack from './public/logo/LOGOBLACK.png';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
@@ -1328,7 +1329,7 @@ export default function App() {
       <div className="w-72 bg-gray-50 border-r border-gray-200 flex flex-col h-full shadow-lg z-10 print:hidden shrink-0">
         <div className="p-4 bg-white border-b border-gray-200 shadow-sm flex flex-col gap-3">
           <div className="flex items-center justify-center py-2">
-            <img src={logo} alt="Logo" className="h-16 w-auto brightness-0" />
+            <img src={logoBlack} alt="Logo" className="h-16 w-auto" />
           </div>
           <div className="flex flex-col bg-gray-200 rounded-lg p-1 mt-1 gap-1">
             <button onClick={() => setCurrentView('schedule')} className={`flex items-center justify-between px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'schedule' ? 'bg-white shadow-sm text-green-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><span className="flex items-center gap-2"><CalendarDays className="w-4 h-4" /> Schedule</span></button>
