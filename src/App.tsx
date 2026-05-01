@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import logo from './public/logo/logowhite.png';
-import logoBlack from './public/logo/LOGOBLACK.png';
+import logo from '@/public/logo/logowhite.png';
+import logoBlack from '@/public/logo/LOGOBLACK.png';
 import { LoginDemo } from './components/blocks/LoginDemo';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 
 // --- CUSTOM ICONS ---
-const ClassAIcon = ({ className, title }) => (
+const ClassAIcon = ({ className, title }: { className?: string; title?: string }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     {title && <title>{title}</title>}
     <rect x="2" y="5" width="20" height="14" rx="2"></rect>
@@ -25,7 +25,7 @@ const ClassAIcon = ({ className, title }) => (
   </svg>
 );
 
-const SkidSteerIcon = ({ className, title }) => (
+const SkidSteerIcon = ({ className, title }: { className?: string; title?: string }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     {title && <title>{title}</title>}
     <circle cx="7" cy="17" r="2.5" />
@@ -50,6 +50,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+const __app_id = 'crewmaster';
 const rawAppId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const appId = String(rawAppId).replace(/\//g, '-');
 
