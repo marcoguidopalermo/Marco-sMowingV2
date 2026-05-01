@@ -8,7 +8,7 @@ import {
   Snowflake, X, CreditCard as IdCard, Copy, ClipboardPaste, Filter, AlignLeft, CloudSun, Activity,
   PenTool, AlertCircle, CheckCircle, Clock, List, LayoutDashboard, Save, TrendingUp, BarChart,
   Target, Award, CalendarDays, FileSignature, Map, CheckSquare, Info, Sparkles, Loader2,
-  MessageSquareText, HardHat, Download, LogOut, ShieldCheck, UserPlus, Megaphone, Lock,
+  MessageSquareText, Leaf, Download, LogOut, ShieldCheck, UserPlus, Megaphone, Lock,
   Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown
 } from 'lucide-react';
 
@@ -102,7 +102,7 @@ const DAYS_OF_WEEK = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'S
 
 const getCrewColors = (div, num) => {
   const palettes = {
-    'Large Projects': ['bg-blue-800 text-white border-blue-900', 'bg-blue-600 text-white border-blue-700', 'bg-blue-500 text-white border-blue-600', 'bg-blue-400 text-blue-900 border-blue-500', 'bg-blue-300 text-blue-900 border-blue-400', 'bg-blue-200 text-blue-900 border-blue-300'],
+    'Large Projects': ['bg-green-800 text-white border-green-900', 'bg-green-600 text-white border-green-700', 'bg-green-500 text-white border-green-600', 'bg-green-400 text-green-900 border-green-500', 'bg-green-300 text-green-900 border-green-400', 'bg-green-200 text-green-900 border-green-300'],
     'Lawn Division': ['bg-green-800 text-white border-green-900', 'bg-green-600 text-white border-green-700', 'bg-green-500 text-white border-green-600', 'bg-green-400 text-green-900 border-green-500', 'bg-green-300 text-green-900 border-green-400', 'bg-green-200 text-green-900 border-green-300'],
     'Small Projects': ['bg-purple-800 text-white border-purple-900', 'bg-purple-600 text-white border-purple-700', 'bg-purple-500 text-white border-purple-600', 'bg-purple-400 text-purple-900 border-purple-500', 'bg-purple-300 text-purple-900 border-purple-400', 'bg-purple-200 text-purple-900 border-purple-300']
   };
@@ -160,8 +160,8 @@ const LoginScreen = ({ auth }) => {
     <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white p-4">
       <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md text-slate-900">
         <div className="flex items-center gap-3 mb-8 justify-center">
-          <div className="bg-amber-500 p-3 rounded-xl text-slate-900 shadow-sm"><HardHat className="w-8 h-8" /></div>
-          <h1 className="text-3xl font-black tracking-wider text-slate-900">MARCO'S <span className="text-amber-500">MOWING</span></h1>
+          <div className="bg-lime-500 p-3 rounded-xl text-slate-900 shadow-sm"><Leaf className="w-8 h-8" /></div>
+          <h1 className="text-3xl font-black tracking-wider text-slate-900">MARCO'S <span className="text-lime-500">MOWING</span></h1>
         </div>
         <h2 className="text-xl font-bold text-center mb-6 text-slate-700">{isRegistering ? 'Create Account' : 'Sign In to ERP'}</h2>
         
@@ -170,11 +170,11 @@ const LoginScreen = ({ auth }) => {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">Email</label>
-            <input type="email" required value={email} onChange={e => setEmail(e.target.value)} className="w-full p-3 border border-slate-300 rounded-lg outline-none focus:border-amber-500 focus:ring-1 ring-amber-500 font-bold" placeholder="user@company.com" />
+            <input type="email" required value={email} onChange={e => setEmail(e.target.value)} className="w-full p-3 border border-slate-300 rounded-lg outline-none focus:border-lime-500 focus:ring-1 ring-lime-500 font-bold" placeholder="user@company.com" />
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">Password</label>
-            <input type="password" required minLength="6" value={password} onChange={e => setPassword(e.target.value)} className="w-full p-3 border border-slate-300 rounded-lg outline-none focus:border-amber-500 focus:ring-1 ring-amber-500 font-bold" placeholder="••••••••" />
+            <input type="password" required minLength="6" value={password} onChange={e => setPassword(e.target.value)} className="w-full p-3 border border-slate-300 rounded-lg outline-none focus:border-lime-500 focus:ring-1 ring-lime-500 font-bold" placeholder="••••••••" />
           </div>
           <button type="submit" disabled={loading} className="w-full bg-slate-800 text-white font-bold py-3 rounded-lg hover:bg-slate-700 transition-colors shadow flex justify-center items-center gap-2 disabled:opacity-50">
             {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : (isRegistering ? <UserPlus className="w-5 h-5"/> : <LogOut className="w-5 h-5" style={{transform: 'rotate(180deg)'}}/>)}
@@ -184,7 +184,7 @@ const LoginScreen = ({ auth }) => {
         
         <div className="mt-6 text-center text-sm font-medium text-slate-500">
           {isRegistering ? 'Already have an account?' : 'Need an account?'}
-          <button onClick={() => { setIsRegistering(!isRegistering); setError(null); }} className="ml-2 text-amber-600 hover:text-amber-700 font-bold underline">
+          <button onClick={() => { setIsRegistering(!isRegistering); setError(null); }} className="ml-2 text-lime-600 hover:text-lime-700 font-bold underline">
             {isRegistering ? 'Sign In' : 'Register Here'}
           </button>
         </div>
@@ -369,8 +369,8 @@ export default function App() {
     if (code === undefined) return null;
     if (code === 0) return <Sun className="w-5 h-5 text-yellow-500" />;
     if (code >= 1 && code <= 3) return <Cloud className="w-5 h-5 text-gray-400" />;
-    if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return <CloudRain className="w-5 h-5 text-blue-500" />;
-    if ((code >= 71 && code <= 77) || (code >= 85 && code <= 86)) return <Snowflake className="w-5 h-5 text-blue-300" />;
+    if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return <CloudRain className="w-5 h-5 text-green-500" />;
+    if ((code >= 71 && code <= 77) || (code >= 85 && code <= 86)) return <Snowflake className="w-5 h-5 text-green-300" />;
     if (code >= 95 && code <= 99) return <CloudLightning className="w-5 h-5 text-purple-500" />;
     return <Cloud className="w-5 h-5 text-gray-400" />;
   };
@@ -572,7 +572,7 @@ export default function App() {
   // --- RENDERERS ---
   const renderSidebarItem = (item, type, contextDate = null) => {
     const isEmp = type === 'employee';
-    let isDraggable = true, visClass = 'bg-white border-gray-200 hover:border-blue-400', subText = null;
+    let isDraggable = true, visClass = 'bg-white border-gray-200 hover:border-green-400', subText = null;
     const isAbsentToday = isEmp && contextDate && appData.dailyAbsences[contextDate]?.includes(item.id);
 
     if (!isEmp) {
@@ -646,11 +646,11 @@ export default function App() {
 
         <div className="p-3 space-y-3 flex-1 flex flex-col">
           <div className="print:hidden flex items-center justify-between">
-            <button onClick={() => handleGenerateMorningBriefing(dateString, crew, dayWeather)} className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded hover:bg-indigo-100 flex items-center gap-1 transition-colors">
+            <button onClick={() => handleGenerateMorningBriefing(dateString, crew, dayWeather)} className="text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded hover:bg-teal-100 flex items-center gap-1 transition-colors">
               <Sparkles className="w-3 h-3" /> AI Briefing
             </button>
           </div>
-          <textarea className="w-full text-xs p-2 bg-gray-50 border border-gray-200 rounded-lg resize-none outline-none focus:bg-white focus:border-blue-400 focus:ring-1 ring-blue-400" placeholder="Manager notes / targets..." rows="2" defaultValue={crew.notes || ''} onBlur={(e) => { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, notes: e.target.value } : c); syncToCloud({ ...appData, schedules: newSchedules }); }} />
+          <textarea className="w-full text-xs p-2 bg-gray-50 border border-gray-200 rounded-lg resize-none outline-none focus:bg-white focus:border-green-400 focus:ring-1 ring-green-400" placeholder="Manager notes / targets..." rows="2" defaultValue={crew.notes || ''} onBlur={(e) => { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, notes: e.target.value } : c); syncToCloud({ ...appData, schedules: newSchedules }); }} />
 
           {/* Personnel Section */}
           <div className="bg-slate-50 rounded-lg border border-slate-200 p-2 flex flex-col gap-1.5 min-h-[50px]">
@@ -748,11 +748,11 @@ export default function App() {
     return (
       <div className="flex-1 flex flex-col h-full overflow-hidden bg-gray-100 p-6 print:bg-white overflow-y-auto">
         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><PenTool className="w-6 h-6 text-blue-600" /> MechanicMaster Pro</h2>
+          <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><PenTool className="w-6 h-6 text-green-600" /> MechanicMaster Pro</h2>
           <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
-            <button onClick={() => setMechanicView('tracker')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'tracker' ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:text-gray-700'}`}><List className="w-4 h-4" /> Fleet List</button>
-            <button onClick={() => setMechanicView('kanban')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'kanban' ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:text-gray-700'}`}><LayoutDashboard className="w-4 h-4" /> Repair Board</button>
-            <button onClick={() => setMechanicView('log')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'log' ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:text-gray-700'}`}><ClipboardList className="w-4 h-4" /> Repair Log</button>
+            <button onClick={() => setMechanicView('tracker')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'tracker' ? 'bg-green-50 text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><List className="w-4 h-4" /> Fleet List</button>
+            <button onClick={() => setMechanicView('kanban')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'kanban' ? 'bg-green-50 text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><LayoutDashboard className="w-4 h-4" /> Repair Board</button>
+            <button onClick={() => setMechanicView('log')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'log' ? 'bg-green-50 text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><ClipboardList className="w-4 h-4" /> Repair Log</button>
           </div>
         </div>
 
@@ -851,9 +851,9 @@ export default function App() {
                           {f.type === 'trailer' ? <span className="text-gray-400 text-sm italic">N/A</span> : (
                             <div className="flex flex-col gap-1">
                               {editingOdoId === f.id ? (
-                                <div className="flex items-center gap-2"><input type="number" autoFocus className="w-24 border border-blue-400 rounded px-2 py-1 text-sm outline-none" value={tempOdo} onChange={e => setTempOdo(e.target.value)} /><button onClick={() => { syncToCloud({ ...appData, fleet: appData.fleet.map(v => v.id === f.id ? { ...v, odometer: Number(tempOdo), lastOdometerUpdate: formatDate(new Date()) } : v) }); setEditingOdoId(null); showToastMsg("Updated"); }} className="bg-blue-600 text-white p-1 rounded hover:bg-blue-700"><Save className="w-4 h-4" /></button><button onClick={() => setEditingOdoId(null)} className="text-gray-400"><X className="w-4 h-4" /></button></div>
+                                <div className="flex items-center gap-2"><input type="number" autoFocus className="w-24 border border-green-400 rounded px-2 py-1 text-sm outline-none" value={tempOdo} onChange={e => setTempOdo(e.target.value)} /><button onClick={() => { syncToCloud({ ...appData, fleet: appData.fleet.map(v => v.id === f.id ? { ...v, odometer: Number(tempOdo), lastOdometerUpdate: formatDate(new Date()) } : v) }); setEditingOdoId(null); showToastMsg("Updated"); }} className="bg-green-600 text-white p-1 rounded hover:bg-green-700"><Save className="w-4 h-4" /></button><button onClick={() => setEditingOdoId(null)} className="text-gray-400"><X className="w-4 h-4" /></button></div>
                               ) : (
-                                <div className="flex items-center gap-2 cursor-pointer group" onClick={() => { setEditingOdoId(f.id); setTempOdo(f.odometer || ''); }}><span className="font-semibold text-gray-800 text-sm">{f.odometer ? f.odometer.toLocaleString() : '0'} {f.type === 'equipment' ? 'hrs' : 'km'}</span><PenTool className="w-3 h-3 text-gray-300 group-hover:text-blue-500" /></div>
+                                <div className="flex items-center gap-2 cursor-pointer group" onClick={() => { setEditingOdoId(f.id); setTempOdo(f.odometer || ''); }}><span className="font-semibold text-gray-800 text-sm">{f.odometer ? f.odometer.toLocaleString() : '0'} {f.type === 'equipment' ? 'hrs' : 'km'}</span><PenTool className="w-3 h-3 text-gray-300 group-hover:text-green-500" /></div>
                               )}
                               <div className={`text-[10px] font-medium flex items-center gap-1 ${isOdoOutdated ? 'text-red-600' : 'text-gray-400'}`}><Clock className="w-3 h-3" /> Last: {f.lastOdometerUpdate || 'Never'} {isOdoOutdated && "(Stale)"}</div>
                             </div>
@@ -1013,7 +1013,7 @@ export default function App() {
                           </select>
                         </div>
                         <div className="flex items-center gap-3">
-                          <button onClick={() => handleGeneratePerformanceInsight(log, cId)} disabled={sumAH === 0} className="text-indigo-600 bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-100 transition-colors flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                          <button onClick={() => handleGeneratePerformanceInsight(log, cId)} disabled={sumAH === 0} className="text-teal-600 bg-teal-50 border border-teal-200 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-teal-100 transition-colors flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
                             <Sparkles className="w-3.5 h-3.5" /> AI Insight
                           </button>
                           <div className={`px-4 py-2 rounded-lg border shadow-sm font-bold flex flex-col items-center ${effColor}`}>
@@ -1036,21 +1036,21 @@ export default function App() {
                               </div>
                             ))}
                             <div className="flex gap-2 mt-2">
-                              <button onClick={() => { setRouteFilters({ division: log.division, targetDay: 'Monday', frequency: 'Weekly' }); setRouteModalCrewId(cId); }} className="flex-1 text-xs font-bold text-blue-600 border border-dashed border-blue-300 bg-blue-50/50 rounded p-2 hover:bg-blue-100 flex items-center justify-center gap-1"><Map className="w-3.5 h-3.5" /> + Route Database</button>
+                              <button onClick={() => { setRouteFilters({ division: log.division, targetDay: 'Monday', frequency: 'Weekly' }); setRouteModalCrewId(cId); }} className="flex-1 text-xs font-bold text-green-600 border border-dashed border-green-300 bg-green-50/50 rounded p-2 hover:bg-green-100 flex items-center justify-center gap-1"><Map className="w-3.5 h-3.5" /> + Route Database</button>
                               <button onClick={() => setDailyLogs(p => { const n = { ...p }; n[cId].jobs.push({ desc: '', bh: '' }); return n; })} className="w-10 flex items-center justify-center text-xs font-bold text-emerald-600 border border-dashed border-emerald-300 rounded p-2 hover:bg-emerald-50"><Plus className="w-4 h-4" /></button>
                             </div>
                           </div>
                         </div>
 
                         <div>
-                          <h4 className="font-semibold text-gray-700 mb-3 flex justify-between border-b pb-2"><span className="flex items-center gap-1.5"><Clock className="w-4 h-4 text-blue-600" /> Clocked Hours (AH)</span><span className="text-sm bg-blue-50 text-blue-800 px-2 py-0.5 rounded font-bold">Total: {sumAH.toFixed(1)} AH</span></h4>
+                          <h4 className="font-semibold text-gray-700 mb-3 flex justify-between border-b pb-2"><span className="flex items-center gap-1.5"><Clock className="w-4 h-4 text-green-600" /> Clocked Hours (AH)</span><span className="text-sm bg-green-50 text-green-800 px-2 py-0.5 rounded font-bold">Total: {sumAH.toFixed(1)} AH</span></h4>
                           <div className="space-y-2">
                             {Object.entries(log.employeeAH).map(([empId, hrs]) => (
                               <div key={empId} className="flex flex-col bg-gray-50 border border-gray-200 rounded p-1.5 pl-3">
                                 <div className="flex items-center justify-between">
                                   <span className="text-sm font-medium text-gray-700 truncate mr-2">{getEmpName(empId)}</span>
                                   <div className="flex items-center gap-2">
-                                    <input type="number" placeholder="Hrs" value={hrs} onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId].employeeAH[empId] = e.target.value; return n; })} className="w-16 border border-gray-300 rounded p-1.5 text-sm text-center bg-white outline-none font-mono font-bold text-blue-700" />
+                                    <input type="number" placeholder="Hrs" value={hrs} onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId].employeeAH[empId] = e.target.value; return n; })} className="w-16 border border-gray-300 rounded p-1.5 text-sm text-center bg-white outline-none font-mono font-bold text-green-700" />
                                     {log.isAdHoc ?
                                       <button onClick={() => setDailyLogs(p => { const n = { ...p }; delete n[cId].employeeAH[empId]; delete n[cId].deductions[empId]; return n; })} className="text-red-400 hover:text-red-600"><X className="w-4 h-4" /></button> :
                                       <div className="w-4" />
@@ -1067,7 +1067,7 @@ export default function App() {
                                 </div>
                               </div>
                             ))}
-                            <select onChange={e => { const v = e.target.value; setDailyLogs(p => { const n = { ...p }; n[cId].employeeAH[v] = ''; return n; }); e.target.value = ""; }} defaultValue="" className="w-full text-xs font-bold text-blue-600 border border-dashed border-blue-300 rounded p-2 hover:bg-blue-50 outline-none cursor-pointer text-center appearance-none">
+                            <select onChange={e => { const v = e.target.value; setDailyLogs(p => { const n = { ...p }; n[cId].employeeAH[v] = ''; return n; }); e.target.value = ""; }} defaultValue="" className="w-full text-xs font-bold text-green-600 border border-dashed border-green-300 rounded p-2 hover:bg-green-50 outline-none cursor-pointer text-center appearance-none">
                               <option value="" disabled>+ Add Unscheduled Employee</option>
                               {appData.employees.filter(e => !log.employeeAH.hasOwnProperty(e.id)).map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                             </select>
@@ -1084,8 +1084,8 @@ export default function App() {
             {routeModalCrewId && (
               <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
                 <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[85vh]">
-                  <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-blue-50">
-                    <h2 className="text-xl font-bold flex items-center gap-2 text-blue-900"><Map className="w-5 h-5" /> Select Completed Routes</h2>
+                  <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-green-50">
+                    <h2 className="text-xl font-bold flex items-center gap-2 text-green-900"><Map className="w-5 h-5" /> Select Completed Routes</h2>
                     <button onClick={() => { setRouteModalCrewId(null); setSelectedRouteIds(new Set()); }} className="text-gray-500 hover:text-gray-800"><X className="w-6 h-6" /></button>
                   </div>
 
@@ -1101,7 +1101,7 @@ export default function App() {
                     </select>
                     <div className="flex bg-gray-100 rounded border border-gray-300 overflow-hidden">
                       {ROUTE_FREQUENCIES.map(tab => (
-                        <button key={tab} onClick={() => setRouteFilters({ ...routeFilters, frequency: tab })} className={`px-3 py-1.5 text-xs font-bold ${routeFilters.frequency === tab ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-200'}`}>{tab}</button>
+                        <button key={tab} onClick={() => setRouteFilters({ ...routeFilters, frequency: tab })} className={`px-3 py-1.5 text-xs font-bold ${routeFilters.frequency === tab ? 'bg-green-600 text-white' : 'text-gray-600 hover:bg-gray-200'}`}>{tab}</button>
                       ))}
                     </div>
                   </div>
@@ -1130,18 +1130,18 @@ export default function App() {
                                 const allSelected = availableRoutes.every(r => newSelection.has(r.id));
                                 availableRoutes.forEach(r => allSelected ? newSelection.delete(r.id) : newSelection.add(r.id));
                                 setSelectedRouteIds(newSelection);
-                              }} className="text-xs text-blue-600 hover:underline flex items-center gap-1 font-semibold">
+                              }} className="text-xs text-green-600 hover:underline flex items-center gap-1 font-semibold">
                                 <CheckSquare className="w-3.5 h-3.5" /> Select All
                               </button>
                             </div>
                             <div className="divide-y divide-gray-100">
                               {availableRoutes.map(route => (
-                                <label key={route.id} className="flex items-center gap-3 p-3 hover:bg-blue-50 cursor-pointer transition-colors">
+                                <label key={route.id} className="flex items-center gap-3 p-3 hover:bg-green-50 cursor-pointer transition-colors">
                                   <input type="checkbox" checked={selectedRouteIds.has(route.id)} onChange={(e) => {
                                     const newSelection = new Set(selectedRouteIds);
                                     if (e.target.checked) newSelection.add(route.id); else newSelection.delete(route.id);
                                     setSelectedRouteIds(newSelection);
-                                  }} className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500" />
+                                  }} className="w-4 h-4 text-green-600 rounded border-gray-300 focus:ring-green-500" />
                                   <div className="flex-1 min-w-0">
                                     <div className="font-semibold text-gray-800 text-sm truncate">{route.name}</div>
                                     <div className="text-xs text-gray-500 font-medium">{route.division} • Crew {route.crewNumber} • {route.targetDay}</div>
@@ -1160,7 +1160,7 @@ export default function App() {
 
                   <div className="p-4 border-t border-gray-200 bg-white flex justify-end gap-3">
                     <button onClick={() => { setRouteModalCrewId(null); setSelectedRouteIds(new Set()); }} className="px-4 py-2 font-medium text-gray-600 hover:bg-gray-100 rounded">Cancel</button>
-                    <button onClick={addSelectedRoutes} disabled={selectedRouteIds.size === 0} className="px-6 py-2 font-bold text-white bg-blue-600 hover:bg-blue-700 rounded shadow disabled:opacity-50 disabled:cursor-not-allowed">
+                    <button onClick={addSelectedRoutes} disabled={selectedRouteIds.size === 0} className="px-6 py-2 font-bold text-white bg-green-600 hover:bg-green-700 rounded shadow disabled:opacity-50 disabled:cursor-not-allowed">
                       Add {selectedRouteIds.size} Routes
                     </button>
                   </div>
@@ -1185,8 +1185,8 @@ export default function App() {
 
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex flex-col items-center"><div className="text-gray-500 font-bold uppercase tracking-wider text-[10px] mb-1">Total Budgeted Hrs</div><div className="text-3xl font-black text-emerald-600">{r.totals.bh.toFixed(1)}</div></div>
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex flex-col items-center"><div className="text-gray-500 font-bold uppercase tracking-wider text-[10px] mb-1">Total Actual Hrs</div><div className="text-3xl font-black text-blue-600">{r.totals.ah.toFixed(1)}</div></div>
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex flex-col items-center"><div className="text-gray-500 font-bold uppercase tracking-wider text-[10px] mb-1">Total Jobs Done</div><div className="text-3xl font-black text-indigo-600">{r.totals.jobs}</div></div>
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex flex-col items-center"><div className="text-gray-500 font-bold uppercase tracking-wider text-[10px] mb-1">Total Actual Hrs</div><div className="text-3xl font-black text-green-600">{r.totals.ah.toFixed(1)}</div></div>
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex flex-col items-center"><div className="text-gray-500 font-bold uppercase tracking-wider text-[10px] mb-1">Total Jobs Done</div><div className="text-3xl font-black text-teal-600">{r.totals.jobs}</div></div>
               <div className="bg-gray-800 rounded-xl shadow-sm p-4 flex flex-col items-center relative overflow-hidden">
                 <Target className="absolute -right-4 -bottom-4 w-20 h-20 text-gray-700 opacity-50" /><div className="text-gray-300 font-bold uppercase text-[10px] mb-1 z-10">Overall Efficiency</div>
                 <div className={`text-4xl font-black z-10 ${overallEff >= 90 ? 'text-purple-400' : (overallEff >= 80 ? 'text-emerald-400' : (overallEff >= 70 ? 'text-yellow-400' : 'text-red-400'))}`}>{overallEff}%</div>
@@ -1202,7 +1202,7 @@ export default function App() {
                   <tbody className="divide-y divide-gray-100">
                     {DIVISIONS.map(d => {
                       const s = r.divStats[d]; const score = s.ah > 0 ? ((s.bh / s.ah) * 100).toFixed(1) : 0;
-                      return <tr key={d}><td className="p-3 font-bold text-gray-800 text-sm">{d}</td><td className="p-3 text-center font-bold text-indigo-600 text-sm">{s.jobs}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-blue-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className="p-3 text-right font-bold text-sm">{s.ah > 0 ? `${score}%` : '--'}</td></tr>
+                      return <tr key={d}><td className="p-3 font-bold text-gray-800 text-sm">{d}</td><td className="p-3 text-center font-bold text-teal-600 text-sm">{s.jobs}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className="p-3 text-right font-bold text-sm">{s.ah > 0 ? `${score}%` : '--'}</td></tr>
                     })}
                   </tbody>
                 </table>
@@ -1217,7 +1217,7 @@ export default function App() {
                     <tbody className="divide-y divide-gray-100">
                       {Object.entries(r.crewStats).sort((a, b) => b[1].bh - a[1].bh).map(([name, s]) => {
                         const score = s.ah > 0 ? ((s.bh / s.ah) * 100).toFixed(1) : 0;
-                        return <tr key={name}><td className="p-3 font-bold text-gray-800 text-sm">{name} <div className="text-[10px] text-gray-400 font-normal">{s.div}</div></td><td className="p-3 text-center font-bold text-indigo-600 text-sm">{s.jobs}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-blue-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className="p-3 text-right font-bold text-sm">{s.ah > 0 ? `${score}%` : '--'}</td></tr>
+                        return <tr key={name}><td className="p-3 font-bold text-gray-800 text-sm">{name} <div className="text-[10px] text-gray-400 font-normal">{s.div}</div></td><td className="p-3 text-center font-bold text-teal-600 text-sm">{s.jobs}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className="p-3 text-right font-bold text-sm">{s.ah > 0 ? `${score}%` : '--'}</td></tr>
                       })}
                       {Object.keys(r.crewStats).length === 0 ? <tr><td colSpan="5" className="p-4 text-center text-gray-400 text-sm">No crew data in this range.</td></tr> : null}
                     </tbody>
@@ -1236,7 +1236,7 @@ export default function App() {
                         const score = s.ah > 0 ? ((s.bh / s.ah) * 100).toFixed(1) : 0;
                         let color = 'text-gray-500';
                         if (s.ah > 0) { if (score >= 90) color = 'text-purple-600'; else if (score >= 80) color = 'text-emerald-600'; else if (score >= 70) color = 'text-yellow-600'; else color = 'text-red-600'; }
-                        return <tr key={eId} className="hover:bg-gray-50"><td className="p-3 font-bold text-gray-800 text-sm">{s.name}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-blue-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className={`p-3 text-right font-black text-sm ${color}`}>{s.ah > 0 ? `${score}%` : '--'}</td></tr>
+                        return <tr key={eId} className="hover:bg-gray-50"><td className="p-3 font-bold text-gray-800 text-sm">{s.name}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className={`p-3 text-right font-black text-sm ${color}`}>{s.ah > 0 ? `${score}%` : '--'}</td></tr>
                       })}
                       {Object.keys(r.empStats).length === 0 ? <tr><td colSpan="4" className="p-4 text-center text-gray-400 text-sm">No employee data in this range.</td></tr> : null}
                     </tbody>
@@ -1266,7 +1266,7 @@ export default function App() {
         <div className="max-w-4xl mx-auto w-full space-y-6">
           <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
             <div>
-              <h2 className="text-3xl font-black text-slate-800 flex items-center gap-3"><Megaphone className="w-8 h-8 text-amber-500" /> Company Bulletin Board</h2>
+              <h2 className="text-3xl font-black text-slate-800 flex items-center gap-3"><Megaphone className="w-8 h-8 text-lime-500" /> Company Bulletin Board</h2>
               <p className="text-slate-500 font-medium mt-1">Announcements, policy updates, and team messages.</p>
             </div>
           </div>
@@ -1274,14 +1274,14 @@ export default function App() {
           {isAdmin && (
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-3">
               <h3 className="font-bold text-slate-800 flex items-center gap-2 border-b pb-2"><PenTool className="w-4 h-4" /> Post New Bulletin</h3>
-              <input type="text" placeholder="Bulletin Title" value={newTitle} onChange={e => setNewTitle(e.target.value)} className="font-bold text-lg border-none bg-slate-50 p-3 rounded-xl outline-none focus:ring-2 focus:ring-amber-400" />
-              <textarea placeholder="Write your message here..." rows="3" value={newContent} onChange={e => setNewContent(e.target.value)} className="border-none bg-slate-50 p-3 rounded-xl outline-none resize-none focus:ring-2 focus:ring-amber-400 text-sm" />
+              <input type="text" placeholder="Bulletin Title" value={newTitle} onChange={e => setNewTitle(e.target.value)} className="font-bold text-lg border-none bg-slate-50 p-3 rounded-xl outline-none focus:ring-2 focus:ring-lime-400" />
+              <textarea placeholder="Write your message here..." rows="3" value={newContent} onChange={e => setNewContent(e.target.value)} className="border-none bg-slate-50 p-3 rounded-xl outline-none resize-none focus:ring-2 focus:ring-lime-400 text-sm" />
               <div className="flex justify-between items-center mt-2">
                 <label className="flex items-center gap-2 text-sm font-bold text-slate-600 cursor-pointer">
-                  <input type="checkbox" checked={isAdminOnly} onChange={e => setIsAdminOnly(e.target.checked)} className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500" />
+                  <input type="checkbox" checked={isAdminOnly} onChange={e => setIsAdminOnly(e.target.checked)} className="w-4 h-4 text-lime-500 rounded focus:ring-lime-500" />
                   <Lock className="w-4 h-4 text-slate-400" /> Admin Only (Hidden from Employees)
                 </label>
-                <button onClick={handlePost} disabled={!newTitle || !newContent} className="bg-amber-500 hover:bg-amber-600 text-slate-900 px-6 py-2 rounded-xl font-bold transition-colors shadow-sm disabled:opacity-50">Post Bulletin</button>
+                <button onClick={handlePost} disabled={!newTitle || !newContent} className="bg-lime-500 hover:bg-lime-600 text-slate-900 px-6 py-2 rounded-xl font-bold transition-colors shadow-sm disabled:opacity-50">Post Bulletin</button>
               </div>
             </div>
           )}
@@ -1313,30 +1313,30 @@ export default function App() {
   };
 
   // --- MAIN APP (UNLOCKED PREVIEW MODE) ---
-  if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white"><Loader2 className="w-8 h-8 animate-spin text-amber-500" /></div>;
+  if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white"><Loader2 className="w-8 h-8 animate-spin text-lime-500" /></div>;
   if (!user) return <LoginScreen auth={auth} />;
 
   const isAdmin = appData.authorizedEmails.includes(displayEmail.toLowerCase()) || displayEmail.toLowerCase() === 'admin@crewmaster.com';
 
   return (
     <div className="flex h-screen bg-gray-100 font-sans overflow-hidden print:h-auto print:bg-white relative">
-      {toast && <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-6 py-3 rounded-xl shadow-2xl z-50 flex items-center gap-3 animate-in fade-in"><AlertTriangle className="w-5 h-5 text-amber-400" /><span className="font-medium text-sm">{toast}</span></div>}
+      {toast && <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-6 py-3 rounded-xl shadow-2xl z-50 flex items-center gap-3 animate-in fade-in"><AlertTriangle className="w-5 h-5 text-lime-400" /><span className="font-medium text-sm">{toast}</span></div>}
 
       {/* LEFT SIDEBAR: RESOURCES */}
       <div className="w-72 bg-gray-50 border-r border-gray-200 flex flex-col h-full shadow-lg z-10 print:hidden shrink-0">
         <div className="p-4 bg-white border-b border-gray-200 shadow-sm flex flex-col gap-3">
           <div className="flex items-center gap-2">
-            <div className="bg-amber-500 p-2 rounded-lg text-slate-900"><HardHat className="w-5 h-5" /></div>
-            <h1 className="text-xl font-bold tracking-wider text-slate-900">MARCO'S <span className="text-amber-500">MOWING</span></h1>
+            <div className="bg-lime-500 p-2 rounded-lg text-slate-900"><Leaf className="w-5 h-5" /></div>
+            <h1 className="text-xl font-bold tracking-wider text-slate-900">MARCO'S <span className="text-lime-500">MOWING</span></h1>
           </div>
           <div className="flex flex-col bg-gray-200 rounded-lg p-1 mt-1 gap-1">
-            <button onClick={() => setCurrentView('schedule')} className={`flex items-center justify-between px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'schedule' ? 'bg-white shadow-sm text-blue-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><span className="flex items-center gap-2"><CalendarDays className="w-4 h-4" /> Schedule</span></button>
-            <button onClick={() => setCurrentView('mechanic')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'mechanic' ? 'bg-white shadow-sm text-blue-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><Wrench className="w-4 h-4" /> MechanicMaster</button>
+            <button onClick={() => setCurrentView('schedule')} className={`flex items-center justify-between px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'schedule' ? 'bg-white shadow-sm text-green-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><span className="flex items-center gap-2"><CalendarDays className="w-4 h-4" /> Schedule</span></button>
+            <button onClick={() => setCurrentView('mechanic')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'mechanic' ? 'bg-white shadow-sm text-green-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><Wrench className="w-4 h-4" /> MechanicMaster</button>
             <button onClick={() => setCurrentView('performance')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'performance' ? 'bg-white shadow-sm text-emerald-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><TrendingUp className="w-4 h-4" /> PerformanceMaster</button>
-            <button onClick={() => setCurrentView('bulletins')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'bulletins' ? 'bg-white shadow-sm text-amber-600' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><Megaphone className="w-4 h-4" /> Bulletin Board</button>
+            <button onClick={() => setCurrentView('bulletins')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'bulletins' ? 'bg-white shadow-sm text-lime-600' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><Megaphone className="w-4 h-4" /> Bulletin Board</button>
           </div>
           {isAdmin && (
-            <button onClick={() => { setLocalEmployees(JSON.parse(JSON.stringify(appData.employees))); setLocalFleet(JSON.parse(JSON.stringify(appData.fleet))); setLocalRoutes(JSON.parse(JSON.stringify(appData.routes || []))); setLocalAdmins(appData.authorizedEmails || []); setLocalInventory(JSON.parse(JSON.stringify(appData.inventory || []))); setIsManageModalOpen(true); }} className="flex justify-center items-center gap-2 w-full bg-white border border-gray-300 hover:border-blue-500 hover:text-blue-600 text-gray-700 px-3 py-2 rounded-lg font-medium shadow-sm transition-all text-sm mt-2"><Settings className="w-4 h-4" /> Manage Resources</button>
+            <button onClick={() => { setLocalEmployees(JSON.parse(JSON.stringify(appData.employees))); setLocalFleet(JSON.parse(JSON.stringify(appData.fleet))); setLocalRoutes(JSON.parse(JSON.stringify(appData.routes || []))); setLocalAdmins(appData.authorizedEmails || []); setLocalInventory(JSON.parse(JSON.stringify(appData.inventory || []))); setIsManageModalOpen(true); }} className="flex justify-center items-center gap-2 w-full bg-white border border-gray-300 hover:border-green-500 hover:text-green-600 text-gray-700 px-3 py-2 rounded-lg font-medium shadow-sm transition-all text-sm mt-2"><Settings className="w-4 h-4" /> Manage Resources</button>
           )}
         </div>
 
@@ -1353,10 +1353,10 @@ export default function App() {
         <div className="p-4 border-t border-gray-200 bg-white space-y-3">
           <div className="flex items-center justify-between bg-slate-50 p-2 rounded-lg border border-slate-200">
             <div className="flex items-center gap-2 overflow-hidden">
-              <div className="bg-amber-100 p-1.5 rounded-full"><UserCircle className="w-5 h-5 text-amber-700"/></div>
+              <div className="bg-lime-100 p-1.5 rounded-full"><UserCircle className="w-5 h-5 text-lime-700"/></div>
               <div className="min-w-0">
                 <div className="text-xs font-bold text-slate-800 truncate">{displayEmail}</div>
-                <div className={`text-[10px] font-black uppercase tracking-wider ${isAdmin ? 'text-amber-600' : 'text-slate-500'}`}>{isAdmin ? 'Admin' : 'Employee'}</div>
+                <div className={`text-[10px] font-black uppercase tracking-wider ${isAdmin ? 'text-lime-600' : 'text-slate-500'}`}>{isAdmin ? 'Admin' : 'Employee'}</div>
               </div>
             </div>
           </div>
@@ -1373,8 +1373,8 @@ export default function App() {
           <div className="bg-white border-b border-gray-200 p-4 flex flex-wrap items-center justify-between shadow-sm print:shadow-none print:border-b-2 print:border-gray-800 print:mb-4 gap-4">
             <div className="flex items-center gap-4">
               <div className="flex items-center bg-gray-100 rounded-lg p-1 print:hidden">
-                <button onClick={() => setScheduleMode('weekly')} className={`px-3 py-1.5 text-sm font-bold rounded ${scheduleMode === 'weekly' ? 'bg-white shadow-sm text-blue-700' : 'text-gray-500 hover:text-gray-700'}`}><CalendarDays className="w-4 h-4 inline mr-1" /> 7-Day</button>
-                <button onClick={() => setScheduleMode('daily')} className={`px-3 py-1.5 text-sm font-bold rounded ${scheduleMode === 'daily' ? 'bg-white shadow-sm text-blue-700' : 'text-gray-500 hover:text-gray-700'}`}><CalendarIcon className="w-4 h-4 inline mr-1" /> Daily</button>
+                <button onClick={() => setScheduleMode('weekly')} className={`px-3 py-1.5 text-sm font-bold rounded ${scheduleMode === 'weekly' ? 'bg-white shadow-sm text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><CalendarDays className="w-4 h-4 inline mr-1" /> 7-Day</button>
+                <button onClick={() => setScheduleMode('daily')} className={`px-3 py-1.5 text-sm font-bold rounded ${scheduleMode === 'daily' ? 'bg-white shadow-sm text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><CalendarIcon className="w-4 h-4 inline mr-1" /> Daily</button>
               </div>
 
               <div className="flex items-center bg-gray-100 rounded-lg p-1 print:hidden">
@@ -1397,7 +1397,7 @@ export default function App() {
                 </select>
               </div>
 
-              <button onClick={() => setIsWeatherModalOpen(true)} className="flex items-center gap-2 bg-blue-50 text-blue-700 border border-blue-200 px-3 py-2 rounded-lg text-sm font-bold hover:bg-blue-100 transition-colors print:hidden shadow-sm"><CloudSun className="w-4 h-4" /> Weather</button>
+              <button onClick={() => setIsWeatherModalOpen(true)} className="flex items-center gap-2 bg-green-50 text-green-700 border border-green-200 px-3 py-2 rounded-lg text-sm font-bold hover:bg-green-100 transition-colors print:hidden shadow-sm"><CloudSun className="w-4 h-4" /> Weather</button>
               <button onClick={handlePrint} className="flex items-center gap-2 bg-slate-800 text-white px-3 py-2 rounded-lg text-sm font-bold hover:bg-slate-700 transition-colors print:hidden shadow-sm"><Printer className="w-4 h-4" /> Print</button>
             </div>
           </div>
@@ -1414,21 +1414,21 @@ export default function App() {
 
                   return (
                     <div key={dateString} className="flex flex-col w-[350px] bg-gray-50/50 rounded-2xl border border-gray-200 overflow-hidden shadow-sm h-full print:w-[32%] print:h-auto print:mb-4 print:rounded-none print:border print:shadow-none print:break-inside-avoid">
-                      <div className={`p-3 border-b border-gray-200 flex justify-between items-start ${isToday ? 'bg-blue-50 border-blue-100' : 'bg-white'}`}>
+                      <div className={`p-3 border-b border-gray-200 flex justify-between items-start ${isToday ? 'bg-green-50 border-green-100' : 'bg-white'}`}>
                         <div>
-                          <div className={`text-sm font-bold uppercase ${isToday ? 'text-blue-600' : 'text-gray-500 print:text-gray-800'}`}>{date.toLocaleDateString('en-US', { weekday: 'long' })}</div>
-                          <div className={`text-lg font-light ${isToday ? 'text-blue-800' : 'text-gray-800'}`}>{date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
+                          <div className={`text-sm font-bold uppercase ${isToday ? 'text-green-600' : 'text-gray-500 print:text-gray-800'}`}>{date.toLocaleDateString('en-US', { weekday: 'long' })}</div>
+                          <div className={`text-lg font-light ${isToday ? 'text-green-800' : 'text-gray-800'}`}>{date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
                         </div>
                         <div className="flex flex-col items-end gap-1">
                           <div className="flex items-center gap-1 print:hidden">
                             {copiedDay && copiedDay.date !== dateString && <button onClick={() => handlePasteDay(dateString)} className="p-1.5 bg-green-50 border border-green-200 rounded-lg shadow-sm text-green-700 hover:bg-green-100"><ClipboardPaste className="w-4 h-4" /></button>}
-                            <button onClick={() => handleCopyDay(dateString)} className="p-1.5 bg-white border border-gray-200 rounded-lg shadow-sm text-gray-600 hover:text-blue-600"><Copy className="w-4 h-4" /></button>
-                            {isAdmin && <button onClick={() => addCrewToDay(dateString)} className="p-1.5 bg-blue-600 text-white rounded-lg shadow-sm hover:bg-blue-700 transition-colors"><Plus className="w-4 h-4" /></button>}
+                            <button onClick={() => handleCopyDay(dateString)} className="p-1.5 bg-white border border-gray-200 rounded-lg shadow-sm text-gray-600 hover:text-green-600"><Copy className="w-4 h-4" /></button>
+                            {isAdmin && <button onClick={() => addCrewToDay(dateString)} className="p-1.5 bg-green-600 text-white rounded-lg shadow-sm hover:bg-green-700 transition-colors"><Plus className="w-4 h-4" /></button>}
                           </div>
                           {dayWeather && (
                             <button onClick={() => setIsWeatherModalOpen(true)} className="flex items-center gap-1 mt-1 bg-white px-1.5 py-0.5 rounded border border-gray-200 hover:bg-gray-50 print:hidden shadow-sm">
                               {getWeatherIcon(dayWeather.code)}
-                              <div className="text-[10px] font-bold text-gray-600"><span className="text-red-500">{dayWeather.max}°</span> / <span className="text-blue-500">{dayWeather.min}°</span></div>
+                              <div className="text-[10px] font-bold text-gray-600"><span className="text-red-500">{dayWeather.max}°</span> / <span className="text-green-500">{dayWeather.min}°</span></div>
                             </button>
                           )}
                         </div>
@@ -1458,14 +1458,14 @@ export default function App() {
                             {dayWeather ? getWeatherIcon(dayWeather.code) : <Cloud className="w-8 h-8 text-gray-300" />}
                             <div>
                               <div className="text-sm font-bold text-gray-500 uppercase tracking-widest">Weather Forecast</div>
-                              <div className="font-medium text-gray-800">{dayWeather ? getWeatherDescription(dayWeather.code) : 'Data unavailable'} {dayWeather && <span className="ml-2 font-bold"><span className="text-red-500">{dayWeather.max}°</span> / <span className="text-blue-500">{dayWeather.min}°</span></span>}</div>
+                              <div className="font-medium text-gray-800">{dayWeather ? getWeatherDescription(dayWeather.code) : 'Data unavailable'} {dayWeather && <span className="ml-2 font-bold"><span className="text-red-500">{dayWeather.max}°</span> / <span className="text-green-500">{dayWeather.min}°</span></span>}</div>
                             </div>
                           </div>
                         </div>
                         <div className="flex gap-2">
                           {copiedDay && copiedDay.date !== selectedDailyDate && <button onClick={() => handlePasteDay(selectedDailyDate)} className="px-4 py-2 font-bold bg-green-50 border border-green-200 rounded-lg shadow-sm text-green-700 hover:bg-green-100 flex items-center gap-2"><ClipboardPaste className="w-4 h-4" /> Paste Copied Day</button>}
-                          <button onClick={() => handleCopyDay(selectedDailyDate)} className="px-4 py-2 font-bold bg-white border border-gray-200 rounded-lg shadow-sm text-gray-600 hover:text-blue-600 flex items-center gap-2"><Copy className="w-4 h-4" /> Copy Day</button>
-                          {isAdmin && <button onClick={() => addCrewToDay(selectedDailyDate)} className="px-4 py-2 font-bold bg-blue-600 text-white rounded-lg shadow hover:bg-blue-700 transition-colors flex items-center gap-2"><Plus className="w-4 h-4" /> Add Crew</button>}
+                          <button onClick={() => handleCopyDay(selectedDailyDate)} className="px-4 py-2 font-bold bg-white border border-gray-200 rounded-lg shadow-sm text-gray-600 hover:text-green-600 flex items-center gap-2"><Copy className="w-4 h-4" /> Copy Day</button>
+                          {isAdmin && <button onClick={() => addCrewToDay(selectedDailyDate)} className="px-4 py-2 font-bold bg-green-600 text-white rounded-lg shadow hover:bg-green-700 transition-colors flex items-center gap-2"><Plus className="w-4 h-4" /> Add Crew</button>}
                         </div>
                       </div>
 
@@ -1474,7 +1474,7 @@ export default function App() {
                         <div className="bg-white border-2 border-dashed border-gray-300 rounded-2xl p-20 flex flex-col items-center justify-center text-gray-400">
                           <CalendarIcon className="w-16 h-16 mb-4 opacity-20" />
                           <p className="text-xl font-medium text-gray-500">No crews scheduled for this day.</p>
-                          {isAdmin && <button onClick={() => addCrewToDay(selectedDailyDate)} className="mt-6 px-6 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg font-bold hover:bg-blue-100">Click here to add one</button>}
+                          {isAdmin && <button onClick={() => addCrewToDay(selectedDailyDate)} className="mt-6 px-6 py-2 bg-green-50 text-green-700 border border-green-200 rounded-lg font-bold hover:bg-green-100">Click here to add one</button>}
                         </div>
                       ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 items-start">
@@ -1494,13 +1494,13 @@ export default function App() {
       {isManageModalOpen && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 print:hidden">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl flex flex-col overflow-hidden" style={{ maxHeight: '90vh' }}>
-            <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 shrink-0"><h2 className="text-xl font-black flex items-center gap-2 text-slate-800"><Settings className="w-5 h-5 text-amber-500" /> Manage Resources</h2><button onClick={() => setIsManageModalOpen(false)} className="text-gray-500 hover:text-gray-800"><X className="w-6 h-6" /></button></div>
+            <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 shrink-0"><h2 className="text-xl font-black flex items-center gap-2 text-slate-800"><Settings className="w-5 h-5 text-lime-500" /> Manage Resources</h2><button onClick={() => setIsManageModalOpen(false)} className="text-gray-500 hover:text-gray-800"><X className="w-6 h-6" /></button></div>
             <div className="flex border-b border-gray-200 overflow-x-auto bg-white shrink-0">
-              <button onClick={() => setManageTab('employees')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'employees' ? 'text-blue-600 border-blue-600 bg-blue-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Users className="w-4 h-4" /> Personnel</button>
-              <button onClick={() => setManageTab('fleet')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'fleet' ? 'text-blue-600 border-blue-600 bg-blue-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Truck className="w-4 h-4" /> Fleet & Equip</button>
+              <button onClick={() => setManageTab('employees')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'employees' ? 'text-green-600 border-green-600 bg-green-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Users className="w-4 h-4" /> Personnel</button>
+              <button onClick={() => setManageTab('fleet')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'fleet' ? 'text-green-600 border-green-600 bg-green-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Truck className="w-4 h-4" /> Fleet & Equip</button>
               <button onClick={() => setManageTab('inventory')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'inventory' ? 'text-emerald-600 border-emerald-600 bg-emerald-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Package className="w-4 h-4" /> InventoryMaster</button>
               <button onClick={() => setManageTab('routes')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'routes' ? 'text-emerald-600 border-emerald-600 bg-emerald-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Map className="w-4 h-4" /> Routes Database</button>
-              <button onClick={() => setManageTab('permissions')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'permissions' ? 'text-amber-600 border-amber-600 bg-amber-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><ShieldCheck className="w-4 h-4" /> Permissions</button>
+              <button onClick={() => setManageTab('permissions')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'permissions' ? 'text-lime-600 border-lime-600 bg-lime-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><ShieldCheck className="w-4 h-4" /> Permissions</button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 bg-slate-50 relative">
@@ -1509,7 +1509,7 @@ export default function App() {
                   {localEmployees.map((emp, idx) => (
                     <div key={emp.id} className="flex flex-col gap-3 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
                       <div className="flex flex-wrap gap-3 items-center">
-                        <input className="flex-1 min-w-[150px] border border-gray-300 rounded-lg p-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-blue-400" value={emp.name} onChange={e => { const ne = [...localEmployees]; ne[idx].name = e.target.value; setLocalEmployees(ne); }} />
+                        <input className="flex-1 min-w-[150px] border border-gray-300 rounded-lg p-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-green-400" value={emp.name} onChange={e => { const ne = [...localEmployees]; ne[idx].name = e.target.value; setLocalEmployees(ne); }} />
                         <select className="border border-gray-300 rounded-lg p-2 text-sm font-semibold bg-gray-50" value={emp.role} onChange={e => { const ne = [...localEmployees]; ne[idx].role = e.target.value; setLocalEmployees(ne); }}><option value="Foreman">Foreman</option><option value="Operator">Operator</option><option value="Driver">Driver</option><option value="Laborer">Laborer</option></select>
                         <select className="border border-gray-300 rounded-lg p-2 text-sm font-bold bg-gray-50" value={emp.status} onChange={e => { const ne = [...localEmployees]; ne[idx].status = e.target.value; setLocalEmployees(ne); }}><option value="Active">Active</option><option value="Away">Away (Indefinite)</option></select>
                         <label className="flex items-center gap-1.5 text-sm text-gray-700 bg-gray-50 px-3 py-2 rounded-lg border border-gray-200 cursor-pointer hover:bg-gray-100 font-semibold"><input type="checkbox" checked={emp.hasLicense || false} onChange={e => { const ne = [...localEmployees]; ne[idx].hasLicense = e.target.checked; setLocalEmployees(ne); }} className="rounded text-green-600 focus:ring-green-500 w-4 h-4" /><IdCard className="w-4 h-4 text-green-600" /> License</label>
@@ -1518,12 +1518,12 @@ export default function App() {
                         <button onClick={() => setLocalEmployees(localEmployees.filter(e => e.id !== emp.id))} className="text-red-400 hover:bg-red-50 p-2 rounded-lg transition-colors ml-auto"><Trash2 className="w-5 h-5" /></button>
                       </div>
                       <div className="flex flex-col gap-2 bg-orange-50/50 p-3 rounded-lg border border-orange-100">
-                        <div className="flex items-center justify-between"><span className="text-xs font-bold text-orange-800 uppercase flex items-center gap-1.5"><CalendarIcon className="w-3.5 h-3.5" /> Scheduled Away Dates</span><button onClick={() => { const ne = [...localEmployees]; if (!ne[idx].awayDates) ne[idx].awayDates = []; ne[idx].awayDates.push({ start: '', end: '' }); setLocalEmployees(ne); }} className="text-xs font-bold text-blue-600 hover:underline bg-blue-50 px-2 py-1 rounded">+ Add Dates</button></div>
+                        <div className="flex items-center justify-between"><span className="text-xs font-bold text-orange-800 uppercase flex items-center gap-1.5"><CalendarIcon className="w-3.5 h-3.5" /> Scheduled Away Dates</span><button onClick={() => { const ne = [...localEmployees]; if (!ne[idx].awayDates) ne[idx].awayDates = []; ne[idx].awayDates.push({ start: '', end: '' }); setLocalEmployees(ne); }} className="text-xs font-bold text-green-600 hover:underline bg-green-50 px-2 py-1 rounded">+ Add Dates</button></div>
                         {(!emp.awayDates || emp.awayDates.length === 0) ? <div className="text-xs text-orange-600/60 italic font-medium pl-1">No away dates scheduled.</div> : <div className="space-y-2">{emp.awayDates.map((dateRange, dIdx) => <div key={dIdx} className="flex items-center gap-3 bg-white p-1.5 rounded-lg border border-orange-200 shadow-sm w-fit"><input type="date" className="border-none bg-transparent outline-none p-1 text-sm font-bold text-gray-700" value={dateRange.start || ''} onChange={e => { const ne = [...localEmployees]; ne[idx].awayDates[dIdx].start = e.target.value; setLocalEmployees(ne); }} /><span className="text-sm font-bold text-orange-400">to</span><input type="date" className="border-none bg-transparent outline-none p-1 text-sm font-bold text-gray-700" value={dateRange.end || ''} onChange={e => { const ne = [...localEmployees]; ne[idx].awayDates[dIdx].end = e.target.value; setLocalEmployees(ne); }} /><button onClick={() => { const ne = [...localEmployees]; ne[idx].awayDates.splice(dIdx, 1); setLocalEmployees(ne); }} className="text-red-400 hover:bg-red-50 p-1.5 rounded ml-2"><X className="w-3.5 h-3.5" /></button></div>)}</div>}
                       </div>
                     </div>
                   ))}
-                  <button onClick={() => setLocalEmployees([...localEmployees, { id: `e-${Date.now()}`, name: 'New Employee', role: 'Laborer', status: 'Active', hasLicense: false, hasClassA: false, hasHeavyMachinery: false, awayDates: [] }])} className="w-full py-4 border-2 border-dashed border-blue-300 text-blue-600 rounded-xl font-bold hover:bg-blue-50 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add Employee</button>
+                  <button onClick={() => setLocalEmployees([...localEmployees, { id: `e-${Date.now()}`, name: 'New Employee', role: 'Laborer', status: 'Active', hasLicense: false, hasClassA: false, hasHeavyMachinery: false, awayDates: [] }])} className="w-full py-4 border-2 border-dashed border-green-300 text-green-600 rounded-xl font-bold hover:bg-green-50 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add Employee</button>
                 </div>
               )}
 
@@ -1541,7 +1541,7 @@ export default function App() {
                     return (
                       <div key={f.id} className="flex flex-col gap-3 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
                         <div className="flex flex-wrap gap-3 items-center">
-                          <input className="flex-1 min-w-[150px] border border-gray-300 rounded-lg p-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-blue-400" value={f.name} onChange={e => { const nf = [...localFleet]; nf[realIdx].name = e.target.value; setLocalFleet(nf); }} />
+                          <input className="flex-1 min-w-[150px] border border-gray-300 rounded-lg p-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-green-400" value={f.name} onChange={e => { const nf = [...localFleet]; nf[realIdx].name = e.target.value; setLocalFleet(nf); }} />
                           <select className="border border-gray-300 rounded-lg p-2 text-sm font-semibold bg-gray-50 capitalize" value={f.type} onChange={e => { const nf = [...localFleet]; nf[realIdx].type = e.target.value; setLocalFleet(nf); }}><option value="truck">Truck</option><option value="trailer">Trailer</option><option value="equipment">Equipment</option></select>
                           <select className="border border-gray-300 rounded-lg p-2 text-sm font-bold bg-gray-50" value={f.status} onChange={e => { const nf = [...localFleet]; nf[realIdx].status = e.target.value; setLocalFleet(nf); }}><option value="Active">Active</option><option value="Out of Service">Out of Service</option><option value="In Repair">In Repair</option></select>
                           <button onClick={() => setLocalFleet(localFleet.filter(item => item.id !== f.id))} className="text-red-400 hover:bg-red-50 p-2 rounded-lg transition-colors ml-auto"><Trash2 className="w-5 h-5" /></button>
@@ -1553,16 +1553,16 @@ export default function App() {
                             <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700 w-20">Reg Exp:</span><input type="date" className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-semibold bg-white" value={f.regExpiry || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].regExpiry = e.target.value; setLocalFleet(nf); }} /></div>
                             <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700 w-20">Safety Exp:</span><input type="date" className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-semibold bg-white" value={f.safetyExpiry || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].safetyExpiry = e.target.value; setLocalFleet(nf); }} /></div>
                           </div>
-                          <div className="flex flex-col gap-2 bg-blue-50/50 p-3 rounded-lg border border-blue-100">
-                            <h5 className="text-[10px] font-black text-blue-800 uppercase tracking-widest">Maintenance Targets</h5>
-                            <div className="flex items-center gap-2"><span className="text-xs font-bold text-blue-900 w-24">Next Oil:</span><input type="number" className="flex-1 border border-blue-200 rounded p-1.5 text-xs font-mono font-bold bg-white" value={f.nextOilChange || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].nextOilChange = Number(e.target.value); setLocalFleet(nf); }} /></div>
-                            <div className="flex items-center gap-2"><span className="text-xs font-bold text-blue-900 w-24">Next Insp:</span><input type="number" className="flex-1 border border-blue-200 rounded p-1.5 text-xs font-mono font-bold bg-white" value={f.nextInspection || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].nextInspection = Number(e.target.value); setLocalFleet(nf); }} /></div>
+                          <div className="flex flex-col gap-2 bg-green-50/50 p-3 rounded-lg border border-green-100">
+                            <h5 className="text-[10px] font-black text-green-800 uppercase tracking-widest">Maintenance Targets</h5>
+                            <div className="flex items-center gap-2"><span className="text-xs font-bold text-green-900 w-24">Next Oil:</span><input type="number" className="flex-1 border border-green-200 rounded p-1.5 text-xs font-mono font-bold bg-white" value={f.nextOilChange || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].nextOilChange = Number(e.target.value); setLocalFleet(nf); }} /></div>
+                            <div className="flex items-center gap-2"><span className="text-xs font-bold text-green-900 w-24">Next Insp:</span><input type="number" className="flex-1 border border-green-200 rounded p-1.5 text-xs font-mono font-bold bg-white" value={f.nextInspection || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].nextInspection = Number(e.target.value); setLocalFleet(nf); }} /></div>
                           </div>
                         </div>
                       </div>
                     )
                   })}
-                  <button onClick={() => setLocalFleet([...localFleet, { id: `f-${Date.now()}`, name: 'New Item', type: 'equipment', status: 'Active', weightClass: 'N/A', regExpiry: '', safetyExpiry: '', odometer: '', nextOilChange: '', nextInspection: '', lastOdometerUpdate: '', isRental: false, rentalEnd: '', repairTags: [] }])} className="w-full py-4 border-2 border-dashed border-blue-300 text-blue-600 rounded-xl font-bold hover:bg-blue-50 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add Fleet/Equipment</button>
+                  <button onClick={() => setLocalFleet([...localFleet, { id: `f-${Date.now()}`, name: 'New Item', type: 'equipment', status: 'Active', weightClass: 'N/A', regExpiry: '', safetyExpiry: '', odometer: '', nextOilChange: '', nextInspection: '', lastOdometerUpdate: '', isRental: false, rentalEnd: '', repairTags: [] }])} className="w-full py-4 border-2 border-dashed border-green-300 text-green-600 rounded-xl font-bold hover:bg-green-50 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add Fleet/Equipment</button>
                 </div>
               )}
 
@@ -1627,7 +1627,7 @@ export default function App() {
                     <div key={route.id} className="flex flex-col lg:flex-row gap-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm items-center">
                       <div className="w-full lg:w-1/3 flex flex-col gap-1.5">
                         <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Property Name</span>
-                        <input className="w-full border border-slate-300 rounded-lg p-2 text-sm font-bold text-slate-800 outline-none focus:border-blue-500" placeholder="e.g. 123 Main St" value={route.name} onChange={e => { const nr = [...localRoutes]; nr[idx].name = e.target.value; setLocalRoutes(nr); }} />
+                        <input className="w-full border border-slate-300 rounded-lg p-2 text-sm font-bold text-slate-800 outline-none focus:border-green-500" placeholder="e.g. 123 Main St" value={route.name} onChange={e => { const nr = [...localRoutes]; nr[idx].name = e.target.value; setLocalRoutes(nr); }} />
                       </div>
                       <div className="w-full lg:w-24 flex flex-col gap-1.5">
                         <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">BH (Hours)</span>
@@ -1645,8 +1645,8 @@ export default function App() {
                         </div>
                       </div>
                       <div className="w-full lg:w-36 flex flex-col gap-1.5">
-                        <span className="text-[10px] font-black text-blue-600 uppercase tracking-widest">Frequency</span>
-                        <select className="w-full border border-blue-200 bg-blue-50 text-blue-800 rounded-lg p-2 text-sm font-bold outline-none" value={route.frequency} onChange={e => { const nr = [...localRoutes]; nr[idx].frequency = e.target.value; setLocalRoutes(nr); }}>
+                        <span className="text-[10px] font-black text-green-600 uppercase tracking-widest">Frequency</span>
+                        <select className="w-full border border-green-200 bg-green-50 text-green-800 rounded-lg p-2 text-sm font-bold outline-none" value={route.frequency} onChange={e => { const nr = [...localRoutes]; nr[idx].frequency = e.target.value; setLocalRoutes(nr); }}>
                           {ROUTE_FREQUENCIES.map(f => <option key={f} value={f}>{f}</option>)}
                         </select>
                       </div>
@@ -1665,18 +1665,18 @@ export default function App() {
 
               {manageTab === 'permissions' && (
                 <div className="space-y-6 max-w-3xl">
-                  <div className="bg-amber-50 border border-amber-200 p-5 rounded-xl flex items-start gap-4 shadow-sm">
-                    <ShieldCheck className="w-8 h-8 text-amber-600 shrink-0" />
+                  <div className="bg-lime-50 border border-lime-200 p-5 rounded-xl flex items-start gap-4 shadow-sm">
+                    <ShieldCheck className="w-8 h-8 text-lime-600 shrink-0" />
                     <div>
-                      <h4 className="font-bold text-amber-900 text-lg">Access Management</h4>
-                      <p className="text-amber-800 text-sm mt-1 leading-relaxed">Add email addresses here to give your managers Admin access. Admins can schedule crews, log repairs, and post to the Bulletin Board. Only the Super Admin ({displayEmail}) can delete other admins.</p>
+                      <h4 className="font-bold text-lime-900 text-lg">Access Management</h4>
+                      <p className="text-lime-800 text-sm mt-1 leading-relaxed">Add email addresses here to give your managers Admin access. Admins can schedule crews, log repairs, and post to the Bulletin Board. Only the Super Admin ({displayEmail}) can delete other admins.</p>
                     </div>
                   </div>
 
                   <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
                     <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 block">Grant Admin Access</label>
                     <div className="flex gap-3">
-                      <input type="email" placeholder="manager@company.com" value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} className="flex-1 p-3 border border-slate-300 rounded-lg outline-none focus:border-amber-500 focus:ring-1 ring-amber-500 font-bold text-slate-800" />
+                      <input type="email" placeholder="manager@company.com" value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} className="flex-1 p-3 border border-slate-300 rounded-lg outline-none focus:border-lime-500 focus:ring-1 ring-lime-500 font-bold text-slate-800" />
                       <button onClick={() => { if (newAdminEmail.includes('@') && !localAdmins.includes(newAdminEmail.toLowerCase())) { setLocalAdmins([...localAdmins, newAdminEmail.toLowerCase()]); setNewAdminEmail(''); } }} className="bg-slate-800 text-white px-6 py-3 rounded-lg font-bold flex items-center gap-2 hover:bg-slate-700 transition-colors shadow-sm"><UserPlus size={18} /> Add Admin</button>
                     </div>
                   </div>
@@ -1687,7 +1687,7 @@ export default function App() {
                         <div className="flex items-center gap-4">
                           <div className="bg-slate-100 p-2 rounded-full text-slate-400"><UserCircle size={24} /></div>
                           <span className="text-base font-bold text-slate-800">{email}</span>
-                          {email === displayEmail && <span className="text-[10px] bg-amber-100 text-amber-700 px-2.5 py-1 rounded-full font-black uppercase tracking-widest border border-amber-200">Super Admin</span>}
+                          {email === displayEmail && <span className="text-[10px] bg-lime-100 text-lime-700 px-2.5 py-1 rounded-full font-black uppercase tracking-widest border border-lime-200">Super Admin</span>}
                         </div>
                         {email !== displayEmail && (
                           <button onClick={() => setLocalAdmins(localAdmins.filter(x => x !== email))} className="text-rose-400 hover:text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition-colors"><Trash2 size={18} /></button>
@@ -1701,7 +1701,7 @@ export default function App() {
 
             <div className="p-4 border-t border-gray-200 bg-white flex justify-end gap-4 shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
               <button onClick={() => setIsManageModalOpen(false)} className="px-6 py-2.5 font-bold text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">Cancel</button>
-              <button onClick={() => { syncToCloud({ ...appData, employees: localEmployees, fleet: localFleet, routes: localRoutes, authorizedEmails: localAdmins, inventory: localInventory }); setIsManageModalOpen(false); showToastMsg("System Resources updated successfully!"); }} className="px-8 py-2.5 font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow transition-colors">Save All Changes</button>
+              <button onClick={() => { syncToCloud({ ...appData, employees: localEmployees, fleet: localFleet, routes: localRoutes, authorizedEmails: localAdmins, inventory: localInventory }); setIsManageModalOpen(false); showToastMsg("System Resources updated successfully!"); }} className="px-8 py-2.5 font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow transition-colors">Save All Changes</button>
             </div>
           </div>
         </div>
@@ -1734,15 +1734,15 @@ export default function App() {
       )}
 
       {/* WEATHER MODAL */}
-      {isWeatherModalOpen && <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"><div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col"><div className="p-4 border-b border-gray-200 flex justify-between items-center bg-blue-50"><h2 className="text-xl font-bold flex items-center gap-2 text-blue-900"><CloudSun className="w-6 h-6 text-blue-600" /> 7-Day Weather Forecast</h2><button onClick={() => setIsWeatherModalOpen(false)}><X className="w-6 h-6" /></button></div><div className="p-6 overflow-y-auto max-h-[70vh]"><div className="space-y-3">{weekDays.map(date => { const dStr = formatDate(date); const w = weather[dStr]; if (!w) return null; return (<div key={dStr} className="flex items-center gap-4 p-3 bg-gray-50 border border-gray-200 rounded-lg"><div className="w-24 font-bold text-gray-700">{date.toLocaleDateString('en-US', { weekday: 'long' })}</div><div className="flex items-center gap-3 w-32">{getWeatherIcon(w.code)}<div className="text-sm font-medium"><span className="text-red-600">{w.max}°</span> / <span className="text-blue-600">{w.min}°</span></div></div><div className="flex-1 text-sm text-gray-600 font-medium">{getWeatherDescription(w.code)}</div></div>); })}</div></div></div></div>}
+      {isWeatherModalOpen && <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"><div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col"><div className="p-4 border-b border-gray-200 flex justify-between items-center bg-green-50"><h2 className="text-xl font-bold flex items-center gap-2 text-green-900"><CloudSun className="w-6 h-6 text-green-600" /> 7-Day Weather Forecast</h2><button onClick={() => setIsWeatherModalOpen(false)}><X className="w-6 h-6" /></button></div><div className="p-6 overflow-y-auto max-h-[70vh]"><div className="space-y-3">{weekDays.map(date => { const dStr = formatDate(date); const w = weather[dStr]; if (!w) return null; return (<div key={dStr} className="flex items-center gap-4 p-3 bg-gray-50 border border-gray-200 rounded-lg"><div className="w-24 font-bold text-gray-700">{date.toLocaleDateString('en-US', { weekday: 'long' })}</div><div className="flex items-center gap-3 w-32">{getWeatherIcon(w.code)}<div className="text-sm font-medium"><span className="text-red-600">{w.max}°</span> / <span className="text-green-600">{w.min}°</span></div></div><div className="flex-1 text-sm text-gray-600 font-medium">{getWeatherDescription(w.code)}</div></div>); })}</div></div></div></div>}
 
       {/* GENERAL AI MODAL */}
       {aiModal.isOpen && (
         <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col animate-in zoom-in-95">
-            <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-indigo-50 to-purple-50">
-              <h2 className="text-lg font-bold flex items-center gap-2 text-indigo-900">
-                <Sparkles className="w-5 h-5 text-indigo-600" /> {aiModal.title}
+            <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-teal-50 to-purple-50">
+              <h2 className="text-lg font-bold flex items-center gap-2 text-teal-900">
+                <Sparkles className="w-5 h-5 text-teal-600" /> {aiModal.title}
               </h2>
               <button onClick={() => setAiModal({ ...aiModal, isOpen: false })} className="text-gray-500 hover:text-gray-800">
                 <X className="w-6 h-6" />
@@ -1750,7 +1750,7 @@ export default function App() {
             </div>
             <div className="p-6 overflow-y-auto max-h-[60vh] text-gray-800 text-sm leading-relaxed">
               {aiModal.isLoading ? (
-                <div className="flex flex-col items-center justify-center py-12 text-indigo-500 gap-4">
+                <div className="flex flex-col items-center justify-center py-12 text-teal-500 gap-4">
                   <Loader2 className="w-10 h-10 animate-spin" />
                   <p className="font-bold tracking-wide animate-pulse">Gemini AI is analyzing...</p>
                 </div>
@@ -1765,7 +1765,7 @@ export default function App() {
               )}
             </div>
             <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-end">
-              <button onClick={() => setAiModal({ ...aiModal, isOpen: false })} className="px-6 py-2.5 font-bold text-indigo-700 bg-indigo-100 hover:bg-indigo-200 rounded-lg transition-colors">
+              <button onClick={() => setAiModal({ ...aiModal, isOpen: false })} className="px-6 py-2.5 font-bold text-teal-700 bg-teal-100 hover:bg-teal-200 rounded-lg transition-colors">
                 Close Insight
               </button>
             </div>
