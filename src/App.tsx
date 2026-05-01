@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import logo from './public/logo/logowhite.png';
 import logoBlack from './public/logo/LOGOBLACK.png';
+import { LoginDemo } from './components/blocks/LoginDemo';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
@@ -133,68 +134,6 @@ const isExpired = (dateStr) => {
 };
 const isOdoStale = (dateStr) => !dateStr || Math.ceil((new Date().setHours(0, 0, 0, 0) - new Date(dateStr)) / (1000 * 60 * 60 * 24)) >= 30;
 const needsAudit = (dateStr) => !dateStr || Math.ceil((new Date().setHours(0, 0, 0, 0) - new Date(dateStr)) / (1000 * 60 * 60 * 24)) > 14;
-
-const LoginScreen = ({ auth }) => {
-  const [isRegistering, setIsRegistering] = useState(false);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
-    try {
-      if (isRegistering) {
-        await createUserWithEmailAndPassword(auth, email, password);
-      } else {
-        await signInWithEmailAndPassword(auth, email, password);
-      }
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white p-4 relative">
-      {/* Top Left Logo */}
-      <div className="absolute top-8 left-8">
-        <img src={logo} alt="Marco's Mowing" className="h-20 w-auto" />
-      </div>
-
-      <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md text-slate-900">
-        <h2 className="text-xl font-bold text-center mb-6 text-slate-700">{isRegistering ? 'Create Account' : 'Sign In to ERP'}</h2>
-        
-        {error && <div className="bg-rose-50 text-rose-600 p-3 rounded-lg text-sm font-bold mb-4 flex items-center gap-2 border border-rose-200"><AlertTriangle className="w-4 h-4 shrink-0"/>{error.replace('Firebase: ', '')}</div>}
-        
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">Email</label>
-            <input type="email" required value={email} onChange={e => setEmail(e.target.value)} className="w-full p-3 border border-slate-300 rounded-lg outline-none focus:border-lime-500 focus:ring-1 ring-lime-500 font-bold" placeholder="user@company.com" />
-          </div>
-          <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">Password</label>
-            <input type="password" required minLength="6" value={password} onChange={e => setPassword(e.target.value)} className="w-full p-3 border border-slate-300 rounded-lg outline-none focus:border-lime-500 focus:ring-1 ring-lime-500 font-bold" placeholder="••••••••" />
-          </div>
-          <button type="submit" disabled={loading} className="w-full bg-slate-800 text-white font-bold py-3 rounded-lg hover:bg-slate-700 transition-colors shadow flex justify-center items-center gap-2 disabled:opacity-50">
-            {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : (isRegistering ? <UserPlus className="w-5 h-5"/> : <LogOut className="w-5 h-5" style={{transform: 'rotate(180deg)'}}/>)}
-            {isRegistering ? 'Create Account' : 'Sign In'}
-          </button>
-        </form>
-        
-        <div className="mt-6 text-center text-sm font-medium text-slate-500">
-          {isRegistering ? 'Already have an account?' : 'Need an account?'}
-          <button onClick={() => { setIsRegistering(!isRegistering); setError(null); }} className="ml-2 text-lime-600 hover:text-lime-700 font-bold underline">
-            {isRegistering ? 'Sign In' : 'Register Here'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
 
 export default function App() {
   // --- STATE ---
@@ -1317,7 +1256,7 @@ export default function App() {
 
   // --- MAIN APP (UNLOCKED PREVIEW MODE) ---
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white"><Loader2 className="w-8 h-8 animate-spin text-lime-500" /></div>;
-  if (!user) return <LoginScreen auth={auth} />;
+  if (!user) return <LoginDemo onSubmit={(email, pass) => signInWithEmailAndPassword(auth, email, pass).catch(err => alert(err.message))} />;
 
   const isAdmin = appData.authorizedEmails.includes(displayEmail.toLowerCase()) || displayEmail.toLowerCase() === 'admin@crewmaster.com';
 
