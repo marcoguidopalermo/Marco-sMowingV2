@@ -15,6 +15,88 @@ import {
   Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown
 } from 'lucide-react';
 
+// --- TYPES & INTERFACES ---
+interface Employee {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+  hasLicense: boolean;
+  hasClassA: boolean;
+  hasHeavyMachinery: boolean;
+  awayDates: { start: string; end: string }[];
+}
+
+interface FleetItem {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+  weightClass: string;
+  odometer?: number;
+  repairTags: string[];
+  lastOdometerUpdate?: string;
+  nextOilChange?: number;
+  nextInspection?: number;
+  regExpiry?: string;
+  safetyExpiry?: string;
+  isRental?: boolean;
+  rentalEnd?: string;
+  mechanicNotes?: string;
+}
+
+interface InventoryItem {
+  id: string;
+  name: string;
+  unit: string;
+  stock: number;
+  lastAudit: string;
+}
+
+interface Crew {
+  id: string;
+  division: string;
+  crewNumber: number;
+  employees: string[];
+  fleet: string[];
+  inventory: { id: string; qty: number }[];
+  isAdHoc?: boolean;
+  notes?: string;
+}
+
+interface Job {
+  id: string;
+  name: string;
+  bh: number;
+  division?: string;
+  crewNumber?: number;
+  frequency?: string;
+  targetDay?: string;
+}
+
+interface PerformanceLog {
+  division: string;
+  crewNumber: number;
+  isAdHoc: boolean;
+  jobs: { desc: string; bh: number | string; routeId?: string }[];
+  employeeAH: Record<string, any>;
+  deductions: Record<string, any>;
+}
+
+interface AppData {
+  schedules: Record<string, Crew[]>;
+  employees: Employee[];
+  fleet: FleetItem[];
+  routes: Job[];
+  inventory: InventoryItem[];
+  repairLog: any[];
+  bulletins: any[];
+  dailyAbsences: Record<string, any>;
+  performance: Record<string, Record<string, PerformanceLog>>;
+  authorizedEmails: string[];
+  cvorExpiry?: string;
+}
+
 // --- CUSTOM ICONS ---
 const ClassAIcon = ({ className, title }: { className?: string; title?: string }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -55,7 +137,7 @@ const rawAppId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const appId = String(rawAppId).replace(/\//g, '-');
 
 // --- GEMINI API HELPERS ---
-const callGeminiWithRetry = async (prompt, retries = 5, delay = 1000) => {
+const callGeminiWithRetry = async (prompt: string, retries: number = 5, delay: number = 1000): Promise<string> => {
   const apiKey = "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
   const payload = { contents: [{ parts: [{ text: prompt }] }] };
@@ -72,10 +154,11 @@ const callGeminiWithRetry = async (prompt, retries = 5, delay = 1000) => {
       delay *= 2;
     }
   }
+  return "No response generated.";
 };
 
 // --- DEFAULT DATA & CONSTANTS ---
-const INITIAL_EMPLOYEES = [
+const INITIAL_EMPLOYEES: Employee[] = [
   { id: 'e1', name: 'John Doe', role: 'Foreman', status: 'Active', hasLicense: true, hasClassA: true, hasHeavyMachinery: true, awayDates: [] },
   { id: 'e2', name: 'Sarah Smith', role: 'Operator', status: 'Active', hasLicense: true, hasClassA: false, hasHeavyMachinery: true, awayDates: [] },
   { id: 'e3', name: 'Mike Johnson', role: 'Laborer', status: 'Active', hasLicense: false, hasClassA: false, hasHeavyMachinery: false, awayDates: [] },
@@ -84,7 +167,7 @@ const INITIAL_EMPLOYEES = [
   { id: 'e6', name: 'Lisa Brown', role: 'Foreman', status: 'Active', hasLicense: true, hasClassA: false, hasHeavyMachinery: false, awayDates: [] },
 ];
 
-const INITIAL_FLEET = [
+const INITIAL_FLEET: FleetItem[] = [
   { id: 'f1', name: 'Truck 1 (F-150)', type: 'truck', status: 'Active', weightClass: 'Under 4500kg', odometer: 120500, repairTags: [] },
   { id: 'f2', name: 'Heavy Dump Truck', type: 'truck', status: 'Active', weightClass: '10999kg+ (Class A)', odometer: 245000, repairTags: [] },
   { id: 'f3', name: 'Skid Steer 01', type: 'equipment', status: 'Active', weightClass: 'N/A', odometer: 1450, repairTags: [] },
@@ -92,7 +175,7 @@ const INITIAL_FLEET = [
   { id: 'f5', name: 'Flatbed Trailer A', type: 'trailer', status: 'Out of Service', weightClass: 'Up to 10999kg (Yellow)', repairTags: ['priority'] },
 ];
 
-const INITIAL_INVENTORY = [
+const INITIAL_INVENTORY: InventoryItem[] = [
   { id: 'inv1', name: 'Premium Fertilizer (50lb)', unit: 'Bags', stock: 120, lastAudit: '2026-03-01' },
   { id: 'inv2', name: 'Kentucky Bluegrass Seed', unit: 'Bags', stock: 45, lastAudit: '2026-02-15' },
   { id: 'inv3', name: '2-Cycle Mix Oil', unit: 'Bottles', stock: 24, lastAudit: '2026-03-10' },
@@ -104,8 +187,8 @@ const WEIGHT_CLASSES = ['Under 4500kg', 'Up to 10999kg (Yellow)', '10999kg+ (Cla
 const ROUTE_FREQUENCIES = ['Weekly', 'Bi-Weekly 1', 'Bi-Weekly 2'];
 const DAYS_OF_WEEK = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
-const getCrewColors = (div, num) => {
-  const palettes = {
+const getCrewColors = (div: string, num: number) => {
+  const palettes: Record<string, string[]> = {
     'Large Projects': ['bg-green-800 text-white border-green-900', 'bg-green-600 text-white border-green-700', 'bg-green-500 text-white border-green-600', 'bg-green-400 text-green-900 border-green-500', 'bg-green-300 text-green-900 border-green-400', 'bg-green-200 text-green-900 border-green-300'],
     'Lawn Division': ['bg-green-800 text-white border-green-900', 'bg-green-600 text-white border-green-700', 'bg-green-500 text-white border-green-600', 'bg-green-400 text-green-900 border-green-500', 'bg-green-300 text-green-900 border-green-400', 'bg-green-200 text-green-900 border-green-300'],
     'Small Projects': ['bg-purple-800 text-white border-purple-900', 'bg-purple-600 text-white border-purple-700', 'bg-purple-500 text-white border-purple-600', 'bg-purple-400 text-purple-900 border-purple-500', 'bg-purple-300 text-purple-900 border-purple-400', 'bg-purple-200 text-purple-900 border-purple-300']
@@ -114,35 +197,35 @@ const getCrewColors = (div, num) => {
   return shades[Math.min(num - 1, 5)];
 };
 
-const getStartOfWeek = (date) => {
+const getStartOfWeek = (date: Date | string) => {
   const d = new Date(date);
   const day = d.getDay();
   const diff = d.getDate() - day + (day === 0 ? -6 : 1);
   return new Date(d.setDate(diff));
 };
 
-const formatDate = (date) => date.toISOString().split('T')[0];
-const addDays = (date, days) => { const result = new Date(date); result.setDate(result.getDate() + days); return result; };
-const isExpiringSoon = (dateStr) => {
+const formatDate = (date: Date) => date.toISOString().split('T')[0];
+const addDays = (date: Date, days: number) => { const result = new Date(date); result.setDate(result.getDate() + days); return result; };
+const isExpiringSoon = (dateStr: string | undefined) => {
   if (!dateStr) return false;
-  const diffDays = Math.ceil((new Date(dateStr) - new Date().setHours(0, 0, 0, 0)) / (1000 * 60 * 60 * 24));
+  const diffDays = Math.ceil((new Date(dateStr).getTime() - new Date().setHours(0, 0, 0, 0)) / (1000 * 60 * 60 * 24));
   return diffDays <= 30 && diffDays >= 0;
 };
-const isExpired = (dateStr) => {
+const isExpired = (dateStr: string | undefined) => {
   if (!dateStr) return false;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   return new Date(dateStr) < today;
 };
-const isOdoStale = (dateStr) => !dateStr || Math.ceil((new Date().setHours(0, 0, 0, 0) - new Date(dateStr)) / (1000 * 60 * 60 * 24)) >= 30;
-const needsAudit = (dateStr) => !dateStr || Math.ceil((new Date().setHours(0, 0, 0, 0) - new Date(dateStr)) / (1000 * 60 * 60 * 24)) > 14;
+const isOdoStale = (dateStr: string | undefined) => !dateStr || Math.ceil((new Date().setHours(0, 0, 0, 0) - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24)) >= 30;
+const needsAudit = (dateStr: string | undefined) => !dateStr || Math.ceil((new Date().setHours(0, 0, 0, 0) - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24)) > 14;
 
 export default function App() {
   // --- STATE ---
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState(null);
-  const [weather, setWeather] = useState({});
-  const [toast, setToast] = useState(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [weather, setWeather] = useState<Record<string, any>>({});
+  const [toast, setToast] = useState<string | null>(null);
 
   const displayEmail = user?.email || "marcoguidopalermo@gmail.com";
 
@@ -161,11 +244,11 @@ export default function App() {
   const [manageTab, setManageTab] = useState('employees');
   const [fleetFilter, setFleetFilter] = useState('All');
 
-  const [localEmployees, setLocalEmployees] = useState([]);
-  const [localFleet, setLocalFleet] = useState([]);
-  const [localRoutes, setLocalRoutes] = useState([]);
-  const [localAdmins, setLocalAdmins] = useState([]);
-  const [localInventory, setLocalInventory] = useState([]);
+  const [localEmployees, setLocalEmployees] = useState<Employee[]>([]);
+  const [localFleet, setLocalFleet] = useState<FleetItem[]>([]);
+  const [localRoutes, setLocalRoutes] = useState<Job[]>([]);
+  const [localAdmins, setLocalAdmins] = useState<string[]>([]);
+  const [localInventory, setLocalInventory] = useState<InventoryItem[]>([]);
   const [newAdminEmail, setNewAdminEmail] = useState('');
 
   // MechanicMaster State
@@ -179,10 +262,10 @@ export default function App() {
   const [perfTab, setPerfTab] = useState('entry');
   const [reportStartDate, setReportStartDate] = useState(formatDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)));
   const [reportEndDate, setReportEndDate] = useState(formatDate(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0)));
-  const [dailyLogs, setDailyLogs] = useState({});
-  const [routeModalCrewId, setRouteModalCrewId] = useState(null);
+  const [dailyLogs, setDailyLogs] = useState<Record<string, PerformanceLog>>({});
+  const [routeModalCrewId, setRouteModalCrewId] = useState<string | null>(null);
   const [routeFilters, setRouteFilters] = useState({ division: 'Lawn Division', targetDay: 'Monday', frequency: 'Weekly' });
-  const [selectedRouteIds, setSelectedRouteIds] = useState(new Set());
+  const [selectedRouteIds, setSelectedRouteIds] = useState<Set<string>>(new Set());
 
   // Bulletin Board State
   const [newTitle, setNewTitle] = useState('');
@@ -190,7 +273,7 @@ export default function App() {
   const [isAdminOnly, setIsAdminOnly] = useState(false);
 
   // Core App Data Structure
-  const [appData, setAppData] = useState({
+  const [appData, setAppData] = useState<AppData>({
     schedules: {},
     employees: INITIAL_EMPLOYEES,
     fleet: INITIAL_FLEET,
@@ -203,13 +286,15 @@ export default function App() {
     authorizedEmails: [displayEmail]
   });
 
+  const isAdmin = !!user && !!user.email && appData.authorizedEmails.includes(user.email.toLowerCase());
+
   // --- INIT EFFECTS ---
   useEffect(() => {
     fetch('https://api.open-meteo.com/v1/forecast?latitude=48.3809&longitude=-89.2477&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=auto')
       .then(res => res.json())
       .then(data => {
-        const weatherMap = {};
-        data.daily.time.forEach((dateStr, i) => { weatherMap[dateStr] = { max: Math.round(data.daily.temperature_2m_max[i]), min: Math.round(data.daily.temperature_2m_min[i]), code: data.daily.weathercode[i] }; });
+        const weatherMap: Record<string, any> = {};
+        data.daily.time.forEach((dateStr: string, i: number) => { weatherMap[dateStr] = { max: Math.round(data.daily.temperature_2m_max[i]), min: Math.round(data.daily.temperature_2m_min[i]), code: data.daily.weathercode[i] }; });
         setWeather(weatherMap);
       }).catch(() => console.error("Weather fetch failed"));
   }, []);
@@ -234,14 +319,14 @@ export default function App() {
           bulletins: data.bulletins || [], dailyAbsences: data.dailyAbsences || {},
           performance: data.performance || {}, authorizedEmails: data.authorizedEmails || [displayEmail]
         });
-      } else { setDoc(dataRef, appData).catch(err => console.error("Init err:", err)); }
+      } else { setDoc(dataRef, appData).catch((err: any) => console.error("Init err:", err)); }
       setLoading(false); setErrorMsg(null);
     }, () => { setErrorMsg("Cloud disconnected."); setLoading(false); });
   }, [user]);
 
   useEffect(() => {
     const savedLogs = appData.performance?.[perfDate] || {};
-    const initialLogs = {};
+    const initialLogs: Record<string, PerformanceLog> = {};
     const schedules = appData.schedules[perfDate] || [];
 
     Object.keys(savedLogs).forEach(cId => {
@@ -266,9 +351,9 @@ export default function App() {
   const startOfWeek = getStartOfWeek(currentDate);
   const weekDays = Array.from({ length: 7 }).map((_, i) => addDays(startOfWeek, i));
 
-  const showToastMsg = (msg) => { setToast(msg); setTimeout(() => setToast(null), 4500); };
-  const getEmpName = (id) => appData.employees.find(e => e.id === id)?.name || 'Unknown';
-  const getInvName = (id) => appData.inventory.find(i => i.id === id)?.name || 'Unknown Item';
+  const showToastMsg = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 4500); };
+  const getEmpName = (id: string) => appData.employees.find(e => e.id === id)?.name || 'Unknown';
+  const getInvName = (id: string) => appData.inventory.find(i => i.id === id)?.name || 'Unknown Item';
 
   const handlePrevWeek = () => setCurrentDate(addDays(currentDate, -7));
   const handleNextWeek = () => setCurrentDate(addDays(currentDate, 7));
@@ -285,17 +370,18 @@ export default function App() {
   };
 
 
-  const syncToCloud = async (newData) => {
+  const syncToCloud = async (newData: AppData) => {
     setAppData(newData);
     if (!user) return;
     try { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'), newData); }
-    catch (err) { console.error("Error saving:", err); }
+    catch (err: any) { console.error("Error saving:", err); }
   };
 
-  const handleCopyDay = (dateString) => { setCopiedDay({ date: dateString, crews: appData.schedules[dateString] || [] }); showToastMsg(`Copied ${dateString}`); };
-  const handlePasteDay = (targetDateString) => {
+  const handleCopyDay = (dateString: string) => { setCopiedDay({ date: dateString, crews: appData.schedules[dateString] || [] } as any); showToastMsg(`Copied ${dateString}`); };
+  const handlePasteDay = (targetDateString: string) => {
     if (!copiedDay) return;
-    const newCrews = copiedDay.crews.map(c => ({ ...c, id: `crew-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` }));
+    const copiedData = copiedDay as { date: string; crews: Crew[] };
+    const newCrews = copiedData.crews.map(c => ({ ...c, id: `crew-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` }));
     const pastedEmpIds = new Set(newCrews.flatMap(c => c.employees));
     const pastedFleetIds = new Set(newCrews.flatMap(c => c.fleet));
 
@@ -308,7 +394,7 @@ export default function App() {
     showToastMsg(`Pasted to ${targetDateString}`);
   };
 
-  const getWeatherIcon = (code) => {
+  const getWeatherIcon = (code: number | undefined) => {
     if (code === undefined) return null;
     if (code === 0) return <Sun className="w-5 h-5 text-yellow-500" />;
     if (code >= 1 && code <= 3) return <Cloud className="w-5 h-5 text-gray-400" />;
@@ -318,7 +404,7 @@ export default function App() {
     return <Cloud className="w-5 h-5 text-gray-400" />;
   };
 
-  const getWeatherDescription = (code) => {
+  const getWeatherDescription = (code: number | undefined) => {
     if (code === undefined) return 'Unknown';
     if (code === 0) return 'Clear skies';
     if (code >= 1 && code <= 3) return 'Partly cloudy to overcast';
@@ -328,7 +414,7 @@ export default function App() {
     return 'Cloudy';
   };
 
-  const handleGenerateMorningBriefing = async (dateString, crew, dayWeather) => {
+  const handleGenerateMorningBriefing = async (dateString: string, crew: Crew, dayWeather: any) => {
     const crewEmps = crew.employees.map(id => appData.employees.find(e => e.id === id)).filter(Boolean);
     const crewFleet = crew.fleet.map(id => appData.fleet.find(f => f.id === id)).filter(Boolean);
 
@@ -361,7 +447,7 @@ export default function App() {
     }
   };
 
-  const handleGeneratePerformanceInsight = async (log, cId) => {
+  const handleGeneratePerformanceInsight = async (log: PerformanceLog, cId: string) => {
     const sumBH = log.jobs.reduce((s, j) => s + Number(j.bh || 0), 0);
     const sumAH = Object.values(log.employeeAH).reduce((s, v) => s + Number(v || 0), 0);
     const eff = sumAH > 0 ? ((sumBH / sumAH) * 100).toFixed(1) : 0;
@@ -394,11 +480,11 @@ export default function App() {
 
 
   // --- ACTIONS ---
-  const toggleSickDay = (empId, dateStr) => {
-    const newAbsences = { ...appData.dailyAbsences };
+  const toggleSickDay = (empId: string, dateStr: string) => {
+    const newAbsences: Record<string, string[]> = { ...appData.dailyAbsences };
     if (!newAbsences[dateStr]) newAbsences[dateStr] = [];
 
-    let newSchedules = { ...appData.schedules };
+    let newSchedules: Record<string, Crew[]> = { ...appData.schedules };
 
     if (newAbsences[dateStr].includes(empId)) {
       newAbsences[dateStr] = newAbsences[dateStr].filter(id => id !== empId);
@@ -416,10 +502,11 @@ export default function App() {
 
   const handleRepairComplete = () => {
     const { fleetId, fixNotes, cost } = repairModal;
+    if (!fleetId) return;
     const fItem = appData.fleet.find(f => f.id === fleetId);
 
     const newLogEntry = {
-      id: `rep-${Date.now()}`, equipmentId: fleetId, equipmentName: fItem.name,
+      id: `rep-${Date.now()}`, equipmentId: fleetId, equipmentName: fItem?.name || 'Unknown',
       date: formatDate(new Date()), fixNotes, cost: Number(cost) || 0
     };
 
@@ -429,16 +516,16 @@ export default function App() {
     showToastMsg("Repair logged successfully.");
   };
 
-  const toggleRepairTag = (fleetId, tag) => {
+  const toggleRepairTag = (fleetId: string, tag: string) => {
     const newFleet = appData.fleet.map(f => {
       if (f.id !== fleetId) return f;
       const tags = f.repairTags || [];
-      return { ...f, repairTags: tags.includes(tag) ? tags.filter(t => t !== tag) : [...tags, tag] };
+      return { ...f, repairTags: tags.includes(tag) ? tags.filter((t: string) => t !== tag) : [...tags, tag] } as FleetItem;
     });
     syncToCloud({ ...appData, fleet: newFleet });
   };
 
-  const addCrewToDay = (dateString) => {
+  const addCrewToDay = (dateString: string) => {
     const daySchedules = appData.schedules[dateString] || [];
     const lpCrews = daySchedules.filter(c => c.division === 'Large Projects');
     let nextNum = 1;
@@ -451,7 +538,7 @@ export default function App() {
     syncToCloud({ ...appData, schedules: newSchedules });
   };
 
-  const updateCrewItem = (dateString, crewId, type, action, itemData) => {
+  const updateCrewItem = (dateString: string, crewId: string, type: string, action: string, itemData: any) => {
     const daySchedules = appData.schedules[dateString] || [];
     const newSchedules = { ...appData.schedules };
 
@@ -460,11 +547,13 @@ export default function App() {
       const updated = { ...crew };
 
       if (type === 'employee' || type === 'fleet') {
-        const list = updated[type === 'employee' ? 'employees' : 'fleet'];
+        const key = type === 'employee' ? 'employees' : 'fleet';
+        const list = [...updated[key]];
         if (action === 'add' && !list.includes(itemData)) list.push(itemData);
-        if (action === 'remove') updated[type === 'employee' ? 'employees' : 'fleet'] = list.filter(id => id !== itemData);
+        if (action === 'remove') updated[key] = list.filter(id => id !== itemData);
+        else updated[key] = list;
       } else if (type === 'inventory') {
-        let invList = updated.inventory || [];
+        let invList = [...(updated.inventory || [])];
         if (action === 'add') {
           const existing = invList.find(i => i.id === itemData.id);
           if (existing) existing.qty += itemData.qty; else invList.push(itemData);
@@ -478,16 +567,17 @@ export default function App() {
             // Return to global stock
             const newInv = appData.inventory.map(inv => inv.id === itemData ? { ...inv, stock: inv.stock + item.qty } : inv);
             setAppData(prev => ({ ...prev, inventory: newInv }));
-            updated.inventory = invList.filter(i => i.id !== itemData);
+            invList = invList.filter(i => i.id !== itemData);
           }
         }
+        updated.inventory = invList;
       }
       return updated;
     });
     syncToCloud({ ...appData, schedules: newSchedules });
   };
 
-  const onDragStart = (e, type, item) => {
+  const onDragStart = (e: React.DragEvent, type: string, item: any) => {
     if (type === 'fleet' && item.status !== 'Active') { e.preventDefault(); showToastMsg(`Cannot assign: ${item.status}`); return; }
     if (type === 'employee') {
       const dateStr = scheduleMode === 'daily' ? selectedDailyDate : formatDate(currentDate);
@@ -497,14 +587,14 @@ export default function App() {
     e.dataTransfer.effectAllowed = 'move';
   };
 
-  const onDrop = (e, dateString, crewId) => {
+  const onDrop = (e: React.DragEvent, dateString: string, crewId: string) => {
     e.preventDefault();
     try {
       const { type, id } = JSON.parse(e.dataTransfer.getData('text/plain'));
 
       // Auto-remove from existing crew on the same day if re-assigned
       const daySchedules = appData.schedules[dateString] || [];
-      const existingCrew = daySchedules.find(c => c[type === 'employee' ? 'employees' : 'fleet'].includes(id));
+      const existingCrew = daySchedules.find(c => (c[type === 'employee' ? 'employees' : 'fleet'] as string[]).includes(id));
       if (existingCrew && existingCrew.id !== crewId) {
         updateCrewItem(dateString, existingCrew.id, type, 'remove', id);
       }
@@ -513,9 +603,9 @@ export default function App() {
   };
 
   // --- RENDERERS ---
-  const renderSidebarItem = (item, type, contextDate = null) => {
+  const renderSidebarItem = (item: any, type: string, contextDate: string | null = null) => {
     const isEmp = type === 'employee';
-    let isDraggable = true, visClass = 'bg-white border-gray-200 hover:border-green-400', subText = null;
+    let isDraggable = true, visClass = 'bg-white border-gray-200 hover:border-green-400', subText: React.ReactNode = null;
     const isAbsentToday = isEmp && contextDate && appData.dailyAbsences[contextDate]?.includes(item.id);
 
     if (!isEmp) {
@@ -533,8 +623,8 @@ export default function App() {
           <div className="font-medium text-sm text-gray-900 flex items-center gap-1.5 truncate">
             {item.name}
             {isEmp && item.hasLicense && <IdCard className="w-3.5 h-3.5 text-green-600 flex-shrink-0" />}
-            {isEmp && item.hasClassA && <ClassAIcon className="w-3.5 h-3.5 text-purple-600 flex-shrink-0" />}
-            {isEmp && item.hasHeavyMachinery && <SkidSteerIcon className="w-3.5 h-3.5 text-orange-600 flex-shrink-0" />}
+            {isEmp && item.hasClassA && <ClassAIcon className="w-3.5 h-3.5 text-purple-600 flex-shrink-0" title="Class A" />}
+            {isEmp && item.hasHeavyMachinery && <SkidSteerIcon className="w-3.5 h-3.5 text-orange-600 flex-shrink-0" title="Heavy Machinery" />}
           </div>
           <div className="flex flex-wrap items-center gap-1.5 mt-1">
             {isEmp ? <span className="text-[10px] bg-gray-100 text-gray-600 border border-gray-200 px-1.5 rounded uppercase font-bold">{item.role}</span> : <span className="text-[10px] bg-gray-100 text-gray-600 border border-gray-200 px-1.5 rounded uppercase font-bold">{item.type}</span>}
@@ -546,17 +636,17 @@ export default function App() {
             <Thermometer className="w-4 h-4" />
           </button>
         )}
-        {!isEmp && <Icon className={`w-5 h-5 flex-shrink-0 ${isDraggable ? 'text-gray-500' : 'text-red-400'}`} />}
+        {!isEmp && <Icon className={`w-5 h-5 flex-shrink-0 ${isDraggable ? 'text-gray-500' : 'text-red-400'}`} title={item.name} />}
       </div>
     );
   };
 
-  const renderCrewCard = (dateString, crew, dayWeather) => {
-    const crewEmps = crew.employees.map(id => appData.employees.find(e => e.id === id)).filter(Boolean);
-    const crewFleet = crew.fleet.map(id => appData.fleet.find(f => f.id === id)).filter(Boolean);
+  const renderCrewCard = (dateString: string, crew: Crew, dayWeather: any) => {
+    const crewEmps = crew.employees.map(id => appData.employees.find(e => e.id === id)).filter((e): e is Employee => !!e);
+    const crewFleet = crew.fleet.map(id => appData.fleet.find(f => f.id === id)).filter((f): f is FleetItem => !!f);
     const crewInv = crew.inventory || [];
 
-    const warnings = [];
+    const warnings: string[] = [];
     if (crewFleet.some(f => f.type === 'truck') && crewEmps.length > 0 && !crewEmps.some(e => e.hasLicense || e.hasClassA)) warnings.push("Needs licensed driver");
     if (crewFleet.some(f => f.weightClass === '10999kg+ (Class A)') && crewEmps.length > 0 && !crewEmps.some(e => e.hasClassA)) warnings.push("Needs Class A Driver");
 
@@ -593,7 +683,7 @@ export default function App() {
               <Sparkles className="w-3 h-3" /> AI Briefing
             </button>
           </div>
-          <textarea className="w-full text-xs p-2 bg-gray-50 border border-gray-200 rounded-lg resize-none outline-none focus:bg-white focus:border-green-400 focus:ring-1 ring-green-400" placeholder="Manager notes / targets..." rows="2" defaultValue={crew.notes || ''} onBlur={(e) => { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, notes: e.target.value } : c); syncToCloud({ ...appData, schedules: newSchedules }); }} />
+          <textarea className="w-full text-xs p-2 bg-gray-50 border border-gray-200 rounded-lg resize-none outline-none focus:bg-white focus:border-green-400 focus:ring-1 ring-green-400" placeholder="Manager notes / targets..." rows={2} defaultValue={crew.notes || ''} onBlur={(e) => { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, notes: e.target.value } : c); syncToCloud({ ...appData, schedules: newSchedules }); }} />
 
           {/* Personnel Section */}
           <div className="bg-slate-50 rounded-lg border border-slate-200 p-2 flex flex-col gap-1.5 min-h-[50px]">
@@ -628,8 +718,8 @@ export default function App() {
               <div key={veh.id} className="flex items-center justify-between bg-white px-2 py-1.5 rounded border border-gray-200 text-sm shadow-sm">
                 <span className="truncate text-gray-800 font-medium flex items-center gap-1.5">
                   {veh.name}
-                  {veh.repairTags?.includes('priority') && <Flame className="w-3 h-3 text-red-500" title="Priority Repair" />}
-                  {veh.repairTags?.includes('waiting') && <Hourglass className="w-3 h-3 text-orange-500" title="Waiting on Parts" />}
+                  {veh.repairTags?.includes('priority') && <span title="Priority Repair"><Flame className="w-3 h-3 text-red-500" /></span>}
+                  {veh.repairTags?.includes('waiting') && <span title="Waiting on Parts"><Hourglass className="w-3 h-3 text-orange-500" /></span>}
                 </span>
                 <button onClick={() => updateCrewItem(dateString, crew.id, 'fleet', 'remove', veh.id)} className="text-gray-300 hover:text-red-500"><X className="w-4 h-4" /></button>
               </div>
@@ -667,9 +757,9 @@ export default function App() {
                 </div>
                 <input type="number" id={`inv-qty-${crew.id}`} placeholder="Qty" className="w-12 text-xs border border-dashed border-emerald-300 rounded p-1.5 outline-none text-center bg-white text-emerald-900 font-bold" defaultValue="1" min="1" />
                 <button onClick={() => {
-                  const sel = document.getElementById(`inv-sel-${crew.id}`);
-                  const qty = document.getElementById(`inv-qty-${crew.id}`);
-                  if (sel.value && qty.value > 0) {
+                  const sel = document.getElementById(`inv-sel-${crew.id}`) as HTMLSelectElement;
+                  const qty = document.getElementById(`inv-qty-${crew.id}`) as HTMLInputElement;
+                  if (sel && qty && sel.value && Number(qty.value) > 0) {
                     updateCrewItem(dateString, crew.id, 'inventory', 'add', { id: sel.value, qty: Number(qty.value) });
                     sel.value = ''; qty.value = '1';
                   }
@@ -741,7 +831,7 @@ export default function App() {
                   <div key={f.id} draggable onDragStart={e => e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'fleet', id: f.id }))} className="bg-white p-3 rounded-lg border border-orange-200 shadow-sm cursor-grab group">
                     <div className="font-bold text-gray-800">{f.name}</div>
                     <div className="text-xs text-gray-500 capitalize mb-2">{f.type} • {f.weightClass}</div>
-                    <textarea className="w-full text-xs p-1.5 bg-orange-50/50 border border-orange-100 rounded resize-none outline-none focus:border-orange-300" placeholder="Mechanic notes..." defaultValue={f.mechanicNotes || ''} onBlur={(e) => syncToCloud({ ...appData, fleet: appData.fleet.map(v => v.id === f.id ? { ...v, mechanicNotes: e.target.value } : v) })} rows="2" />
+                    <textarea className="w-full text-xs p-1.5 bg-orange-50/50 border border-orange-100 rounded resize-none outline-none focus:border-orange-300" placeholder="Mechanic notes..." defaultValue={f.mechanicNotes || ''} onBlur={(e) => syncToCloud({ ...appData, fleet: appData.fleet.map(v => v.id === f.id ? { ...v, mechanicNotes: e.target.value } : v) })} rows={2} />
                     <div className="flex gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button onClick={() => toggleRepairTag(f.id, 'priority')} className={`p-1 rounded text-xs font-bold border ${f.repairTags?.includes('priority') ? 'bg-red-100 text-red-700 border-red-200' : 'bg-gray-50 text-gray-400 border-gray-200'}`}><Flame className="w-3.5 h-3.5 inline mr-1" /> Priority</button>
                       <button onClick={() => toggleRepairTag(f.id, 'waiting')} className={`p-1 rounded text-xs font-bold border ${f.repairTags?.includes('waiting') ? 'bg-orange-100 text-orange-700 border-orange-200' : 'bg-gray-50 text-gray-400 border-gray-200'}`}><Hourglass className="w-3.5 h-3.5 inline mr-1" /> Parts</button>
@@ -766,7 +856,7 @@ export default function App() {
             <table className="w-full text-left border-collapse">
               <thead><tr className="bg-white border-b border-gray-200 text-xs text-gray-500 uppercase"><th className="p-4">Date</th><th className="p-4">Equipment</th><th className="p-4">Details</th><th className="p-4 text-right">Cost</th></tr></thead>
               <tbody className="divide-y divide-gray-100">
-                {appData.repairLog.length === 0 ? <tr><td colSpan="4" className="p-8 text-center text-gray-400 italic border-none">No repairs logged yet.</td></tr> : appData.repairLog.map(log => (
+                {appData.repairLog.length === 0 ? <tr><td colSpan={4} className="p-8 text-center text-gray-400 italic border-none">No repairs logged yet.</td></tr> : appData.repairLog.map(log => (
                   <tr key={log.id} className="hover:bg-gray-50 transition-colors">
                     <td className="p-4 font-medium text-sm text-gray-700">{log.date}</td>
                     <td className="p-4 font-bold text-gray-900 text-sm">{log.equipmentName}</td>
@@ -796,7 +886,7 @@ export default function App() {
                               {editingOdoId === f.id ? (
                                 <div className="flex items-center gap-2"><input type="number" autoFocus className="w-24 border border-green-400 rounded px-2 py-1 text-sm outline-none" value={tempOdo} onChange={e => setTempOdo(e.target.value)} /><button onClick={() => { syncToCloud({ ...appData, fleet: appData.fleet.map(v => v.id === f.id ? { ...v, odometer: Number(tempOdo), lastOdometerUpdate: formatDate(new Date()) } : v) }); setEditingOdoId(null); showToastMsg("Updated"); }} className="bg-green-600 text-white p-1 rounded hover:bg-green-700"><Save className="w-4 h-4" /></button><button onClick={() => setEditingOdoId(null)} className="text-gray-400"><X className="w-4 h-4" /></button></div>
                               ) : (
-                                <div className="flex items-center gap-2 cursor-pointer group" onClick={() => { setEditingOdoId(f.id); setTempOdo(f.odometer || ''); }}><span className="font-semibold text-gray-800 text-sm">{f.odometer ? f.odometer.toLocaleString() : '0'} {f.type === 'equipment' ? 'hrs' : 'km'}</span><PenTool className="w-3 h-3 text-gray-300 group-hover:text-green-500" /></div>
+                                <div className="flex items-center gap-2 cursor-pointer group" onClick={() => { setEditingOdoId(f.id); setTempOdo((f.odometer || '').toString()); }}><span className="font-semibold text-gray-800 text-sm">{f.odometer ? f.odometer.toLocaleString() : '0'} {f.type === 'equipment' ? 'hrs' : 'km'}</span><PenTool className="w-3 h-3 text-gray-300 group-hover:text-green-500" /></div>
                               )}
                               <div className={`text-[10px] font-medium flex items-center gap-1 ${isOdoOutdated ? 'text-red-600' : 'text-gray-400'}`}><Clock className="w-3 h-3" /> Last: {f.lastOdometerUpdate || 'Never'} {isOdoOutdated && "(Stale)"}</div>
                             </div>
@@ -831,8 +921,8 @@ export default function App() {
   const renderPerformanceBoard = () => {
     const calcReports = () => {
       let totals = { bh: 0, ah: 0, jobs: 0 };
-      let divStats = {}; DIVISIONS.forEach(d => divStats[d] = { bh: 0, ah: 0, jobs: 0 });
-      let crewStats = {}; let empStats = {};
+      let divStats: Record<string, any> = {}; DIVISIONS.forEach(d => divStats[d] = { bh: 0, ah: 0, jobs: 0 });
+      let crewStats: Record<string, any> = {}; let empStats: Record<string, any> = {};
 
       Object.entries(appData.performance || {}).forEach(([date, dayLogs]) => {
         if (date >= reportStartDate && date <= reportEndDate) {
@@ -840,9 +930,9 @@ export default function App() {
             const div = log.division || 'Large Projects';
             const cName = `${div} ${log.crewNumber || 1}`;
 
-            let cBH = log.jobs.reduce((s, j) => s + Number(j.bh || 0), 0);
-            let rawAH = Object.values(log.employeeAH).reduce((s, v) => s + Number(v || 0), 0);
-            let deducAH = Object.values(log.deductions || {}).reduce((s, v) => s + Number(v || 0), 0);
+            let cBH = log.jobs.reduce((s: number, j: any) => s + Number(j.bh || 0), 0);
+            let rawAH = Object.values(log.employeeAH).reduce((s: number, v: any) => s + Number(v || 0), 0);
+            let deducAH = Object.values(log.deductions || {}).reduce((s: number, v: any) => s + Number(v || 0), 0);
             let cAH = Math.max(0, rawAH - deducAH); // Net AH
             let jCount = log.jobs.length;
 
@@ -870,17 +960,17 @@ export default function App() {
     };
 
     const r = calcReports();
-    const overallEff = r.totals.ah > 0 ? ((r.totals.bh / r.totals.ah) * 100).toFixed(1) : 0;
+    const overallEff = r.totals.ah > 0 ? Number(((r.totals.bh / r.totals.ah) * 100).toFixed(1)) : 0;
 
     const getCompletedRouteIdsForWeek = () => {
       const perfWeekStart = getStartOfWeek(perfDate);
-      const completedIds = new Set();
+      const completedIds = new Set<string>();
       for (let i = 0; i < 7; i++) {
         const d = formatDate(addDays(perfWeekStart, i));
         const dayLogs = appData.performance[d] || {};
-        Object.values(dayLogs).forEach(log => { log.jobs.forEach(job => { if (job.routeId) completedIds.add(job.routeId); }); });
+        Object.values(dayLogs).forEach((log: PerformanceLog) => { log.jobs.forEach((job: any) => { if (job.routeId) completedIds.add(job.routeId); }); });
         if (d === perfDate && Object.keys(dailyLogs).length > 0) {
-          Object.values(dailyLogs).forEach(log => { log.jobs.forEach(job => { if (job.routeId) completedIds.add(job.routeId); }); });
+          Object.values(dailyLogs).forEach((log: PerformanceLog) => { log.jobs.forEach((job: any) => { if (job.routeId) completedIds.add(job.routeId); }); });
         }
       }
       return completedIds;
@@ -928,11 +1018,11 @@ export default function App() {
             ) : (
               <div className="space-y-6">
                 {Object.entries(dailyLogs).map(([cId, log]) => {
-                  const sumBH = log.jobs.reduce((s, j) => s + Number(j.bh || 0), 0);
-                  const rawAH = Object.values(log.employeeAH).reduce((s, v) => s + Number(v || 0), 0);
-                  const deducAH = Object.values(log.deductions || {}).reduce((s, v) => s + Number(v || 0), 0);
+                  const sumBH = log.jobs.reduce((s: number, j: any) => s + Number(j.bh || 0), 0);
+                  const rawAH = Object.values(log.employeeAH).reduce((s: number, v: any) => s + Number(v || 0), 0);
+                  const deducAH = Object.values(log.deductions || {}).reduce((s: number, v: any) => s + Number(v || 0), 0);
                   const sumAH = Math.max(0, rawAH - deducAH);
-                  const eff = sumAH > 0 ? ((sumBH / sumAH) * 100).toFixed(1) : 0;
+                  const eff = sumAH > 0 ? Number(((sumBH / sumAH) * 100).toFixed(1)) : 0;
 
                   let effColor = 'text-gray-500 bg-gray-100 border-gray-200';
                   if (sumAH > 0) {
@@ -973,14 +1063,14 @@ export default function App() {
                             {log.jobs.map((job, jIdx) => (
                               <div key={jIdx} className="flex items-center gap-2 bg-gray-50 p-1.5 rounded border border-gray-200">
                                 <FileSignature className="w-4 h-4 text-gray-400 ml-1 flex-shrink-0" />
-                                <input type="text" placeholder="Job Desc" value={job.desc} onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId].jobs[jIdx].desc = e.target.value; return n; })} className="flex-1 min-w-0 border border-gray-300 rounded p-1.5 text-sm outline-none bg-white font-medium" />
-                                <input type="number" placeholder="BH" value={job.bh} onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId].jobs[jIdx].bh = e.target.value; return n; })} className="w-16 border border-gray-300 rounded p-1.5 text-sm outline-none bg-white font-mono font-bold text-emerald-700" />
-                                <button onClick={() => setDailyLogs(p => { const n = { ...p }; n[cId].jobs.splice(jIdx, 1); return n; })} className="text-red-400 hover:text-red-600 p-1"><X className="w-4 h-4" /></button>
+                                <input type="text" placeholder="Job Desc" value={job.desc} onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: n[cId].jobs.map((j, i) => i === jIdx ? { ...j, desc: e.target.value } : j) }; return n; })} className="flex-1 min-w-0 border border-gray-300 rounded p-1.5 text-sm outline-none bg-white font-medium" />
+                                <input type="number" placeholder="BH" value={job.bh} onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: n[cId].jobs.map((j, i) => i === jIdx ? { ...j, bh: e.target.value } : j) }; return n; })} className="w-16 border border-gray-300 rounded p-1.5 text-sm outline-none bg-white font-mono font-bold text-emerald-700" />
+                                <button onClick={() => setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: n[cId].jobs.filter((_, i) => i !== jIdx) }; return n; })} className="text-red-400 hover:text-red-600 p-1"><X className="w-4 h-4" /></button>
                               </div>
                             ))}
                             <div className="flex gap-2 mt-2">
                               <button onClick={() => { setRouteFilters({ division: log.division, targetDay: 'Monday', frequency: 'Weekly' }); setRouteModalCrewId(cId); }} className="flex-1 text-xs font-bold text-green-600 border border-dashed border-green-300 bg-green-50/50 rounded p-2 hover:bg-green-100 flex items-center justify-center gap-1"><Map className="w-3.5 h-3.5" /> + Route Database</button>
-                              <button onClick={() => setDailyLogs(p => { const n = { ...p }; n[cId].jobs.push({ desc: '', bh: '' }); return n; })} className="w-10 flex items-center justify-center text-xs font-bold text-emerald-600 border border-dashed border-emerald-300 rounded p-2 hover:bg-emerald-50"><Plus className="w-4 h-4" /></button>
+                              <button onClick={() => setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: [...n[cId].jobs, { desc: '', bh: '' }] }; return n; })} className="w-10 flex items-center justify-center text-xs font-bold text-emerald-600 border border-dashed border-emerald-300 rounded p-2 hover:bg-emerald-50"><Plus className="w-4 h-4" /></button>
                             </div>
                           </div>
                         </div>
@@ -993,9 +1083,9 @@ export default function App() {
                                 <div className="flex items-center justify-between">
                                   <span className="text-sm font-medium text-gray-700 truncate mr-2">{getEmpName(empId)}</span>
                                   <div className="flex items-center gap-2">
-                                    <input type="number" placeholder="Hrs" value={hrs} onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId].employeeAH[empId] = e.target.value; return n; })} className="w-16 border border-gray-300 rounded p-1.5 text-sm text-center bg-white outline-none font-mono font-bold text-green-700" />
+                                    <input type="number" placeholder="Hrs" value={hrs} onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], employeeAH: { ...n[cId].employeeAH, [empId]: e.target.value } }; return n; })} className="w-16 border border-gray-300 rounded p-1.5 text-sm text-center bg-white outline-none font-mono font-bold text-green-700" />
                                     {log.isAdHoc ?
-                                      <button onClick={() => setDailyLogs(p => { const n = { ...p }; delete n[cId].employeeAH[empId]; delete n[cId].deductions[empId]; return n; })} className="text-red-400 hover:text-red-600"><X className="w-4 h-4" /></button> :
+                                      <button onClick={() => setDailyLogs(p => { const n = { ...p }; const newAH = { ...n[cId].employeeAH }; const newDeduc = { ...n[cId].deductions }; delete newAH[empId]; delete newDeduc[empId]; n[cId] = { ...n[cId], employeeAH: newAH, deductions: newDeduc }; return n; })} className="text-red-400 hover:text-red-600"><X className="w-4 h-4" /></button> :
                                       <div className="w-4" />
                                     }
                                   </div>
@@ -1005,12 +1095,12 @@ export default function App() {
                                   <span className="text-[10px] uppercase font-bold text-gray-400">Deductions:</span>
                                   <div className="flex items-center">
                                     <span className="text-xs font-bold text-rose-500 mr-1">-</span>
-                                    <input type="number" placeholder="0" value={log.deductions?.[empId] || ''} onChange={e => setDailyLogs(p => { const n = { ...p }; if (!n[cId].deductions) n[cId].deductions = {}; n[cId].deductions[empId] = e.target.value; return n; })} className="w-12 border border-rose-200 rounded p-1 text-xs text-center bg-rose-50 outline-none text-rose-700 font-mono" title="Subtract hours for breakdowns, meetings, etc." />
+                                    <input type="number" placeholder="0" value={log.deductions?.[empId] || ''} onChange={e => setDailyLogs(p => { const n = { ...p }; const newDeduc = { ...n[cId].deductions, [empId]: e.target.value }; n[cId] = { ...n[cId], deductions: newDeduc }; return n; })} className="w-12 border border-rose-200 rounded p-1 text-xs text-center bg-rose-50 outline-none text-rose-700 font-mono" title="Subtract hours for breakdowns, meetings, etc." />
                                   </div>
                                 </div>
                               </div>
                             ))}
-                            <select onChange={e => { const v = e.target.value; setDailyLogs(p => { const n = { ...p }; n[cId].employeeAH[v] = ''; return n; }); e.target.value = ""; }} defaultValue="" className="w-full text-xs font-bold text-green-600 border border-dashed border-green-300 rounded p-2 hover:bg-green-50 outline-none cursor-pointer text-center appearance-none">
+                            <select onChange={e => { const v = e.target.value; setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], employeeAH: { ...n[cId].employeeAH, [v]: '' } }; return n; }); e.target.value = ""; }} defaultValue="" className="w-full text-xs font-bold text-green-600 border border-dashed border-green-300 rounded p-2 hover:bg-green-50 outline-none cursor-pointer text-center appearance-none">
                               <option value="" disabled>+ Add Unscheduled Employee</option>
                               {appData.employees.filter(e => !log.employeeAH.hasOwnProperty(e.id)).map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                             </select>
@@ -1144,7 +1234,7 @@ export default function App() {
                   <thead><tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase"><th className="p-3">Name</th><th className="p-3 text-center">Jobs</th><th className="p-3 text-right">BH</th><th className="p-3 text-right">AH</th><th className="p-3 text-right">Eff %</th></tr></thead>
                   <tbody className="divide-y divide-gray-100">
                     {DIVISIONS.map(d => {
-                      const s = r.divStats[d]; const score = s.ah > 0 ? ((s.bh / s.ah) * 100).toFixed(1) : 0;
+                      const s = r.divStats[d]; const score = s.ah > 0 ? Number(((s.bh / s.ah) * 100).toFixed(1)) : 0;
                       return <tr key={d}><td className="p-3 font-bold text-gray-800 text-sm">{d}</td><td className="p-3 text-center font-bold text-teal-600 text-sm">{s.jobs}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className="p-3 text-right font-bold text-sm">{s.ah > 0 ? `${score}%` : '--'}</td></tr>
                     })}
                   </tbody>
@@ -1158,11 +1248,11 @@ export default function App() {
                   <table className="w-full text-left">
                     <thead className="sticky top-0 bg-white"><tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase"><th className="p-3">Crew</th><th className="p-3 text-center">Jobs</th><th className="p-3 text-right">BH</th><th className="p-3 text-right">AH</th><th className="p-3 text-right">Eff %</th></tr></thead>
                     <tbody className="divide-y divide-gray-100">
-                      {Object.entries(r.crewStats).sort((a, b) => b[1].bh - a[1].bh).map(([name, s]) => {
-                        const score = s.ah > 0 ? ((s.bh / s.ah) * 100).toFixed(1) : 0;
+                      {Object.entries(r.crewStats).sort((a, b) => (b[1] as any).bh - (a[1] as any).bh).map(([name, s]) => {
+                        const score = s.ah > 0 ? Number(((s.bh / s.ah) * 100).toFixed(1)) : 0;
                         return <tr key={name}><td className="p-3 font-bold text-gray-800 text-sm">{name} <div className="text-[10px] text-gray-400 font-normal">{s.div}</div></td><td className="p-3 text-center font-bold text-teal-600 text-sm">{s.jobs}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className="p-3 text-right font-bold text-sm">{s.ah > 0 ? `${score}%` : '--'}</td></tr>
                       })}
-                      {Object.keys(r.crewStats).length === 0 ? <tr><td colSpan="5" className="p-4 text-center text-gray-400 text-sm">No crew data in this range.</td></tr> : null}
+                      {Object.keys(r.crewStats).length === 0 ? <tr><td colSpan={5} className="p-4 text-center text-gray-400 text-sm">No crew data in this range.</td></tr> : null}
                     </tbody>
                   </table>
                 </div>
@@ -1175,13 +1265,13 @@ export default function App() {
                   <table className="w-full text-left">
                     <thead className="sticky top-0 bg-white"><tr className="border-b border-gray-200 text-xs text-gray-500 uppercase"><th className="p-3">Employee</th><th className="p-3 text-right">Earned BH</th><th className="p-3 text-right">Net Clocked AH</th><th className="p-3 text-right">Indiv Eff %</th></tr></thead>
                     <tbody className="divide-y divide-gray-100">
-                      {Object.entries(r.empStats).sort((a, b) => b[1].bh - a[1].bh).map(([eId, s]) => {
-                        const score = s.ah > 0 ? ((s.bh / s.ah) * 100).toFixed(1) : 0;
+                      {Object.entries(r.empStats).sort((a, b) => (b[1] as any).bh - (a[1] as any).bh).map(([eId, s]) => {
+                        const score = s.ah > 0 ? Number(((s.bh / s.ah) * 100).toFixed(1)) : 0;
                         let color = 'text-gray-500';
                         if (s.ah > 0) { if (score >= 90) color = 'text-purple-600'; else if (score >= 80) color = 'text-emerald-600'; else if (score >= 70) color = 'text-yellow-600'; else color = 'text-red-600'; }
                         return <tr key={eId} className="hover:bg-gray-50"><td className="p-3 font-bold text-gray-800 text-sm">{s.name}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className={`p-3 text-right font-black text-sm ${color}`}>{s.ah > 0 ? `${score}%` : '--'}</td></tr>
                       })}
-                      {Object.keys(r.empStats).length === 0 ? <tr><td colSpan="4" className="p-4 text-center text-gray-400 text-sm">No employee data in this range.</td></tr> : null}
+                      {Object.keys(r.empStats).length === 0 ? <tr><td colSpan={4} className="p-4 text-center text-gray-400 text-sm">No employee data in this range.</td></tr> : null}
                     </tbody>
                   </table>
                 </div>
@@ -1218,7 +1308,7 @@ export default function App() {
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-3">
               <h3 className="font-bold text-slate-800 flex items-center gap-2 border-b pb-2"><PenTool className="w-4 h-4" /> Post New Bulletin</h3>
               <input type="text" placeholder="Bulletin Title" value={newTitle} onChange={e => setNewTitle(e.target.value)} className="font-bold text-lg border-none bg-slate-50 p-3 rounded-xl outline-none focus:ring-2 focus:ring-lime-400" />
-              <textarea placeholder="Write your message here..." rows="3" value={newContent} onChange={e => setNewContent(e.target.value)} className="border-none bg-slate-50 p-3 rounded-xl outline-none resize-none focus:ring-2 focus:ring-lime-400 text-sm" />
+              <textarea placeholder="Write your message here..." rows={3} value={newContent} onChange={e => setNewContent(e.target.value)} className="border-none bg-slate-50 p-3 rounded-xl outline-none resize-none focus:ring-2 focus:ring-lime-400 text-sm" />
               <div className="flex justify-between items-center mt-2">
                 <label className="flex items-center gap-2 text-sm font-bold text-slate-600 cursor-pointer">
                   <input type="checkbox" checked={isAdminOnly} onChange={e => setIsAdminOnly(e.target.checked)} className="w-4 h-4 text-lime-500 rounded focus:ring-lime-500" />
@@ -1274,7 +1364,6 @@ export default function App() {
     />
   );
 
-  const isAdmin = appData.authorizedEmails.includes(displayEmail.toLowerCase()) || displayEmail.toLowerCase() === 'admin@crewmaster.com';
 
   return (
     <div className="flex h-screen bg-gray-100 font-sans overflow-hidden print:h-auto print:bg-white relative">
@@ -1335,9 +1424,9 @@ export default function App() {
               </div>
 
               <div className="flex items-center bg-gray-100 rounded-lg p-1 print:hidden">
-                <button onClick={() => scheduleMode === 'weekly' ? handlePrevWeek() : setSelectedDailyDate(formatDate(addDays(selectedDailyDate, -1)))} className="p-1.5 hover:bg-white rounded shadow-sm text-gray-600"><ChevronLeft className="w-4 h-4" /></button>
+                <button onClick={() => scheduleMode === 'weekly' ? handlePrevWeek() : setSelectedDailyDate(formatDate(addDays(new Date(selectedDailyDate), -1)))} className="p-1.5 hover:bg-white rounded shadow-sm text-gray-600"><ChevronLeft className="w-4 h-4" /></button>
                 <button onClick={() => scheduleMode === 'weekly' ? handleToday() : setSelectedDailyDate(formatDate(new Date()))} className="px-3 py-1.5 text-xs font-bold uppercase hover:bg-white rounded shadow-sm text-gray-700 mx-1">Today</button>
-                <button onClick={() => scheduleMode === 'weekly' ? handleNextWeek() : setSelectedDailyDate(formatDate(addDays(selectedDailyDate, 1)))} className="p-1.5 hover:bg-white rounded shadow-sm text-gray-600"><ChevronRight className="w-4 h-4" /></button>
+                <button onClick={() => scheduleMode === 'weekly' ? handleNextWeek() : setSelectedDailyDate(formatDate(addDays(new Date(selectedDailyDate), 1)))} className="p-1.5 hover:bg-white rounded shadow-sm text-gray-600"><ChevronRight className="w-4 h-4" /></button>
               </div>
             </div>
 
@@ -1519,7 +1608,7 @@ export default function App() {
                       </div>
                     )
                   })}
-                  <button onClick={() => setLocalFleet([...localFleet, { id: `f-${Date.now()}`, name: 'New Item', type: 'equipment', status: 'Active', weightClass: 'N/A', regExpiry: '', safetyExpiry: '', odometer: '', nextOilChange: '', nextInspection: '', lastOdometerUpdate: '', isRental: false, rentalEnd: '', repairTags: [] }])} className="w-full py-4 border-2 border-dashed border-green-300 text-green-600 rounded-xl font-bold hover:bg-green-50 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add Fleet/Equipment</button>
+                  <button onClick={() => setLocalFleet([...localFleet, { id: `f-${Date.now()}`, name: 'New Item', type: 'equipment', status: 'Active', weightClass: 'N/A', regExpiry: '', safetyExpiry: '', odometer: undefined, nextOilChange: undefined, nextInspection: undefined, lastOdometerUpdate: '', isRental: false, rentalEnd: '', repairTags: [] }])} className="w-full py-4 border-2 border-dashed border-green-300 text-green-600 rounded-xl font-bold hover:bg-green-50 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add Fleet/Equipment</button>
                 </div>
               )}
 
@@ -1675,7 +1764,7 @@ export default function App() {
             <div className="p-6 space-y-5 bg-white">
               <div>
                 <label className="text-xs font-black text-gray-500 uppercase tracking-widest block mb-2">What was fixed?</label>
-                <textarea rows="3" placeholder="Replaced spark plugs, oil change, greased tracks..." value={repairModal.fixNotes} onChange={e => setRepairModal({ ...repairModal, fixNotes: e.target.value })} className="w-full border border-gray-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-green-500 resize-none font-medium"></textarea>
+                <textarea rows={3} placeholder="Replaced spark plugs, oil change, greased tracks..." value={repairModal.fixNotes} onChange={e => setRepairModal({ ...repairModal, fixNotes: e.target.value })} className="w-full border border-gray-300 rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-green-500 resize-none font-medium"></textarea>
               </div>
               <div>
                 <label className="text-xs font-black text-gray-500 uppercase tracking-widest block mb-2">Cost of Parts / Outsourced Labor ($)</label>

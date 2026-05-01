@@ -150,7 +150,7 @@ export function LoginDemo({ onSubmit, onGoogleSubmit }: { onSubmit: (email: stri
         onChange: (event: ChangeEvent<HTMLInputElement>) =>
           handleInputChange(event, 'password'),
       },
-    ],
+    ] as const,
     submitButton: 'Launch Dashboard',
     textVariantButton: 'Forgot access credentials?',
   };
