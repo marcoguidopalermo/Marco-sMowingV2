@@ -6,7 +6,7 @@ import {
   TechOrbitDisplay,
 } from '@/components/ui/modern-animated-sign-in';
 import { Leaf, Truck, Scissors, Flower2, Sprout, Wind, MapPin, Calendar, CheckCircle } from 'lucide-react';
-import logo from '../public/logo/logowhite.png';
+import logo from '@/public/logo/logowhite.png';
 
 type FormData = {
   email: string;
