@@ -3,7 +3,7 @@ import logo from './public/logo/logowhite.png';
 import logoBlack from './public/logo/LOGOBLACK.png';
 import { LoginDemo } from './components/blocks/LoginDemo';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 import {
   Calendar as CalendarIcon, ChevronLeft, ChevronRight, Users, Truck, Plus, Trash2, GripVertical,
@@ -1256,7 +1256,22 @@ export default function App() {
 
   // --- MAIN APP (UNLOCKED PREVIEW MODE) ---
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white"><Loader2 className="w-8 h-8 animate-spin text-lime-500" /></div>;
-  if (!user) return <LoginDemo onSubmit={(email, pass) => signInWithEmailAndPassword(auth, email, pass).catch(err => alert(err.message))} />;
+  
+  const handleGoogleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  if (!user) return (
+    <LoginDemo 
+      onSubmit={(email, pass) => signInWithEmailAndPassword(auth, email, pass).catch(err => alert(err.message))} 
+      onGoogleSubmit={handleGoogleLogin}
+    />
+  );
 
   const isAdmin = appData.authorizedEmails.includes(displayEmail.toLowerCase()) || displayEmail.toLowerCase() === 'admin@crewmaster.com';
 

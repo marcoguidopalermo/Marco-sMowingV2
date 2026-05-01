@@ -100,7 +100,7 @@ const iconsArray: OrbitIcon[] = [
   },
 ];
 
-export function LoginDemo({ onSubmit }: { onSubmit: (email: string, pass: string) => void }) {
+export function LoginDemo({ onSubmit, onGoogleSubmit }: { onSubmit: (email: string, pass: string) => void; onGoogleSubmit: () => void }) {
   const [formData, setFormData] = useState<FormData>({
     email: '',
     password: '',
@@ -175,6 +175,7 @@ export function LoginDemo({ onSubmit }: { onSubmit: (email: string, pass: string
             formFields={formFields}
             goTo={goToForgotPassword}
             handleSubmit={handleSubmit}
+            onGoogleClick={onGoogleSubmit}
           />
         </div>
       </div>
