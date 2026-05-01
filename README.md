@@ -1,6 +1,6 @@
-# CrewMaster ERP
+# Marco's Mowing ERP
 
-CrewMaster is a comprehensive, real-time Enterprise Resource Planning (ERP) web application designed specifically for managing landscaping crews, fleet maintenance, and operational performance.
+Marco's Mowing is a comprehensive, real-time Enterprise Resource Planning (ERP) web application designed specifically for managing landscaping crews, fleet maintenance, and operational performance.
 
 ## Features
 

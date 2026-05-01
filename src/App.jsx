@@ -161,7 +161,7 @@ const LoginScreen = ({ auth }) => {
       <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md text-slate-900">
         <div className="flex items-center gap-3 mb-8 justify-center">
           <div className="bg-amber-500 p-3 rounded-xl text-slate-900 shadow-sm"><HardHat className="w-8 h-8" /></div>
-          <h1 className="text-3xl font-black tracking-wider text-slate-900">CREW<span className="text-amber-500">MASTER</span></h1>
+          <h1 className="text-3xl font-black tracking-wider text-slate-900">MARCO'S <span className="text-amber-500">MOWING</span></h1>
         </div>
         <h2 className="text-xl font-bold text-center mb-6 text-slate-700">{isRegistering ? 'Create Account' : 'Sign In to ERP'}</h2>
         
@@ -254,7 +254,7 @@ export default function App() {
     routes: [],
     inventory: INITIAL_INVENTORY,
     repairLog: [],
-    bulletins: [{ id: 'b1', title: 'Welcome to CrewMaster ERP', content: 'The new system is live. Check out the Daily View and the new Inventory tracking!', date: formatDate(new Date()), isAdminOnly: false, author: 'System' }],
+    bulletins: [{ id: 'b1', title: "Welcome to Marco's Mowing ERP", content: 'The new system is live. Check out the Daily View and the new Inventory tracking!', date: formatDate(new Date()), isAdminOnly: false, author: 'System' }],
     dailyAbsences: {},
     performance: {},
     authorizedEmails: [displayEmail]
