@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import logo from './public/logo/logowhite.png';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
@@ -159,8 +160,8 @@ const LoginScreen = ({ auth }) => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white p-4">
       <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md text-slate-900">
-        <div className="flex items-center gap-3 mb-8 justify-center">
-          <div className="bg-lime-500 p-3 rounded-xl text-slate-900 shadow-sm"><Leaf className="w-8 h-8" /></div>
+        <div className="flex flex-col items-center mb-8">
+          <img src={logo} alt="Marco's Mowing" className="h-32 w-auto mb-2" />
           <h1 className="text-3xl font-black tracking-wider text-slate-900">MARCO'S <span className="text-lime-500">MOWING</span></h1>
         </div>
         <h2 className="text-xl font-bold text-center mb-6 text-slate-700">{isRegistering ? 'Create Account' : 'Sign In to ERP'}</h2>
@@ -1325,8 +1326,8 @@ export default function App() {
       {/* LEFT SIDEBAR: RESOURCES */}
       <div className="w-72 bg-gray-50 border-r border-gray-200 flex flex-col h-full shadow-lg z-10 print:hidden shrink-0">
         <div className="p-4 bg-white border-b border-gray-200 shadow-sm flex flex-col gap-3">
-          <div className="flex items-center gap-2">
-            <div className="bg-lime-500 p-2 rounded-lg text-slate-900"><Leaf className="w-5 h-5" /></div>
+          <div className="flex items-center gap-3">
+            <img src={logo} alt="Logo" className="h-10 w-auto" />
             <h1 className="text-xl font-bold tracking-wider text-slate-900">MARCO'S <span className="text-lime-500">MOWING</span></h1>
           </div>
           <div className="flex flex-col bg-gray-200 rounded-lg p-1 mt-1 gap-1">
