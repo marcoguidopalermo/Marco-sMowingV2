@@ -1327,7 +1327,7 @@ export default function App() {
         <div className="p-4 bg-white border-b border-gray-200 shadow-sm flex flex-col gap-3">
           <div className="flex items-center gap-2">
             <div className="bg-amber-500 p-2 rounded-lg text-slate-900"><HardHat className="w-5 h-5" /></div>
-            <h1 className="text-xl font-bold tracking-wider text-slate-900">CREW<span className="text-amber-500">MASTER</span></h1>
+            <h1 className="text-xl font-bold tracking-wider text-slate-900">MARCO'S <span className="text-amber-500">MOWING</span></h1>
           </div>
           <div className="flex flex-col bg-gray-200 rounded-lg p-1 mt-1 gap-1">
             <button onClick={() => setCurrentView('schedule')} className={`flex items-center justify-between px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'schedule' ? 'bg-white shadow-sm text-blue-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><span className="flex items-center gap-2"><CalendarDays className="w-4 h-4" /> Schedule</span></button>
