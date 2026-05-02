@@ -1,17 +1,12 @@
 'use client';
-import { useState, ChangeEvent, FormEvent, ReactNode } from 'react';
+import { ReactNode } from 'react';
 import {
   Ripple,
-  AuthTabs,
   TechOrbitDisplay,
 } from '@/components/ui/modern-animated-sign-in';
+import { Auth } from '@/components/ui/auth-form-1';
 import { Leaf, Truck, Scissors, Flower2, Sprout, Wind, MapPin, Calendar, CheckCircle } from 'lucide-react';
 import logo from '@/public/logo/logowhite.png';
-
-type FormData = {
-  email: string;
-  password: string;
-};
 
 interface OrbitIcon {
   component: () => ReactNode;
@@ -100,60 +95,15 @@ const iconsArray: OrbitIcon[] = [
   },
 ];
 
-export function LoginDemo({ onSubmit, onGoogleSubmit }: { onSubmit: (email: string, pass: string) => void; onGoogleSubmit: () => void }) {
-  const [formData, setFormData] = useState<FormData>({
-    email: '',
-    password: '',
-  });
-
-  const goToForgotPassword = (
-    event: React.MouseEvent<HTMLButtonElement | HTMLAnchorElement>
-  ) => {
-    event.preventDefault();
-    console.log('forgot password');
-  };
-
-  const handleInputChange = (
-    event: ChangeEvent<HTMLInputElement>,
-    name: keyof FormData
-  ) => {
-    const value = event.target.value;
-
-    setFormData((prevState) => ({
-      ...prevState,
-      [name]: value,
-    }));
-  };
-
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    onSubmit(formData.email, formData.password);
-  };
-
-  const formFields = {
-    header: "Marco's Mowing ERP",
-    subHeader: 'Secure Access to Operations & Crew Management',
-    fields: [
-      {
-        label: 'Email',
-        required: true,
-        type: 'email' as const,
-        placeholder: 'Enter your crew email',
-        onChange: (event: ChangeEvent<HTMLInputElement>) =>
-          handleInputChange(event, 'email'),
-      },
-      {
-        label: 'Password',
-        required: true,
-        type: 'password' as const,
-        placeholder: 'Enter your secure password',
-        onChange: (event: ChangeEvent<HTMLInputElement>) =>
-          handleInputChange(event, 'password'),
-      },
-    ] as const,
-    submitButton: 'Launch Dashboard',
-    textVariantButton: 'Forgot access credentials?',
-  };
+export function LoginDemo({ 
+  onSubmit, 
+  onGoogleSubmit,
+  onSignUp
+}: { 
+  onSubmit: (email: string, pass: string) => void; 
+  onGoogleSubmit: () => void;
+  onSignUp?: (name: string, email: string, pass: string) => void;
+}) {
 
   return (
     <section className='flex max-lg:justify-center bg-slate-900 min-h-screen relative overflow-hidden'>
@@ -168,16 +118,14 @@ export function LoginDemo({ onSubmit, onGoogleSubmit }: { onSubmit: (email: stri
         <TechOrbitDisplay iconsArray={iconsArray} text="MARCO'S MOWING" />
       </div>
 
-      {/* Right Side: Animated Login Form */}
+      {/* Right Side: New Auth Form */}
       <div className='w-1/2 h-[100dvh] flex flex-col justify-center items-center max-lg:w-full max-lg:px-[10%] relative z-10'>
-        <div className="bg-white/95 backdrop-blur-md p-10 rounded-3xl shadow-2xl border border-white/20 w-full max-w-lg">
-          <AuthTabs
-            formFields={formFields}
-            goTo={goToForgotPassword}
-            handleSubmit={handleSubmit}
-            onGoogleClick={onGoogleSubmit}
-          />
-        </div>
+        <Auth 
+          onSignInSuccess={onSubmit}
+          onSignUpSuccess={onSignUp}
+          onGoogleLogin={onGoogleSubmit}
+          className="shadow-none border-none bg-transparent"
+        />
       </div>
     </section>
   );

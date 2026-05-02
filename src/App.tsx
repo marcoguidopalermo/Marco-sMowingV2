@@ -1361,6 +1361,7 @@ export default function App() {
     <LoginDemo 
       onSubmit={(email, pass) => signInWithEmailAndPassword(auth, email, pass).catch(err => alert(err.message))} 
       onGoogleSubmit={handleGoogleLogin}
+      onSignUp={(name, email, pass) => createUserWithEmailAndPassword(auth, email, pass).catch(err => alert(err.message))}
     />
   );
 
