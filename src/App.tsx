@@ -319,9 +319,16 @@ export default function App() {
           bulletins: data.bulletins || [], dailyAbsences: data.dailyAbsences || {},
           performance: data.performance || {}, authorizedEmails: data.authorizedEmails || [displayEmail]
         });
-      } else { setDoc(dataRef, appData).catch((err: any) => console.error("Init err:", err)); }
+      } else { 
+        console.warn("No remote data found, initializing with defaults.");
+        setDoc(dataRef, appData).catch((err: any) => console.error("Init err:", err)); 
+      }
       setLoading(false); setErrorMsg(null);
-    }, () => { setErrorMsg("Cloud disconnected."); setLoading(false); });
+    }, (error) => { 
+      console.error("Firestore Listen Error:", error);
+      setErrorMsg(`Cloud connection lost: ${error.message}`); 
+      setLoading(false); 
+    });
   }, [user]);
 
   useEffect(() => {
@@ -371,10 +378,17 @@ export default function App() {
 
 
   const syncToCloud = async (newData: AppData) => {
+    // Optimistic update
     setAppData(newData);
     if (!user) return;
-    try { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'), newData); }
-    catch (err: any) { console.error("Error saving:", err); }
+    try { 
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'), newData); 
+    }
+    catch (err: any) { 
+      console.error("Database Save Error:", err); 
+      showToastMsg(`Failed to save: ${err.code === 'permission-denied' ? 'Permission Denied (Rules Expired?)' : err.message}`);
+      // Note: We don't revert setAppData here because the onSnapshot will naturally revert it if the server rejects it.
+    }
   };
 
   const handleCopyDay = (dateString: string) => { setCopiedDay({ date: dateString, crews: appData.schedules[dateString] || [] } as any); showToastMsg(`Copied ${dateString}`); };

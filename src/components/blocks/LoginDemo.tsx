@@ -1,99 +1,6 @@
 'use client';
-import { ReactNode } from 'react';
-import {
-  Ripple,
-  TechOrbitDisplay,
-} from '@/components/ui/modern-animated-sign-in';
 import { Auth } from '@/components/ui/auth-form-1';
-import { Leaf, Truck, Scissors, Flower2, Sprout, Wind, MapPin, Calendar, CheckCircle } from 'lucide-react';
-import logo from '@/public/logo/logowhite.png';
-
-interface OrbitIcon {
-  component: () => ReactNode;
-  className: string;
-  duration?: number;
-  delay?: number;
-  radius?: number;
-  path?: boolean;
-  reverse?: boolean;
-}
-
-// LANDSCAPING THEMED ICONS
-const iconsArray: OrbitIcon[] = [
-  {
-    component: () => <Leaf className="w-6 h-6 text-lime-400" />,
-    className: 'size-[40px] border-none bg-slate-800/50 rounded-full flex items-center justify-center',
-    duration: 25,
-    delay: 5,
-    radius: 120,
-    path: true,
-  },
-  {
-    component: () => <Truck className="w-6 h-6 text-green-400" />,
-    className: 'size-[45px] border-none bg-slate-800/50 rounded-full flex items-center justify-center',
-    duration: 20,
-    delay: 15,
-    radius: 120,
-    path: false,
-  },
-  {
-    component: () => <Scissors className="w-8 h-8 text-lime-300" />,
-    className: 'size-[50px] border-none bg-slate-800/50 rounded-full flex items-center justify-center',
-    radius: 220,
-    duration: 30,
-    path: true,
-  },
-  {
-    component: () => <Flower2 className="w-8 h-8 text-emerald-400" />,
-    className: 'size-[50px] border-none bg-slate-800/50 rounded-full flex items-center justify-center',
-    radius: 220,
-    duration: 30,
-    delay: 10,
-    path: false,
-    reverse: true
-  },
-  {
-    component: () => <Sprout className="w-6 h-6 text-lime-500" />,
-    className: 'size-[40px] border-none bg-slate-800/50 rounded-full flex items-center justify-center',
-    duration: 18,
-    delay: 20,
-    radius: 160,
-    path: true,
-    reverse: true,
-  },
-  {
-    component: () => <Wind className="w-6 h-6 text-slate-300" />,
-    className: 'size-[40px] border-none bg-slate-800/50 rounded-full flex items-center justify-center',
-    duration: 18,
-    delay: 10,
-    radius: 160,
-    path: false,
-  },
-  {
-    component: () => <MapPin className="w-10 h-10 text-rose-400" />,
-    className: 'size-[60px] border-none bg-slate-800/50 rounded-full flex items-center justify-center',
-    radius: 290,
-    duration: 35,
-    path: true,
-  },
-  {
-    component: () => <Calendar className="w-10 h-10 text-sky-400" />,
-    className: 'size-[60px] border-none bg-slate-800/50 rounded-full flex items-center justify-center',
-    radius: 290,
-    duration: 35,
-    delay: 15,
-    path: false,
-    reverse: true,
-  },
-  {
-    component: () => <CheckCircle className="w-12 h-12 text-lime-500" />,
-    className: 'size-[70px] border-none bg-slate-800/50 rounded-full flex items-center justify-center',
-    radius: 360,
-    duration: 40,
-    delay: 25,
-    path: true,
-  },
-];
+import heroImg from '@/public/images/hero.png';
 
 export function LoginDemo({ 
   onSubmit, 
@@ -106,26 +13,48 @@ export function LoginDemo({
 }) {
 
   return (
-    <section className='flex max-lg:justify-center bg-slate-900 min-h-screen relative overflow-hidden'>
-      {/* Branding Logo - Floating */}
-      <div className="absolute top-8 left-8 z-50">
-        <img src={logo} alt="Marco's Mowing" className="h-16 w-auto" />
+    <section className='relative min-h-screen w-full flex items-center justify-center overflow-hidden font-["Outfit"]'>
+      {/* BACKGROUND IMAGE WITH ZOOM ANIMATION */}
+      <div className="absolute inset-0 z-0">
+        <img 
+          src={heroImg} 
+          alt="Marco's Mowing Hero" 
+          className="w-full h-full object-cover animate-hero-zoom scale-105" 
+        />
+        {/* PREMIUM GRADIENT OVERLAY */}
+        <div className="absolute inset-0 bg-gradient-to-b from-slate-900/80 via-slate-900/60 to-slate-900/90" />
       </div>
 
-      {/* Left Side: Animated Brand Display */}
-      <div className='flex flex-col justify-center w-1/2 max-lg:hidden relative'>
-        <Ripple mainCircleSize={120} mainCircleOpacity={0.1} className="opacity-50" />
-        <TechOrbitDisplay iconsArray={iconsArray} text="MARCO'S MOWING" />
+      {/* FLOATING NAVBAR STYLE LOGO */}
+      <div className="absolute top-0 left-0 right-0 p-8 flex justify-between items-center z-20 max-md:justify-center">
+         <div className="flex items-center gap-2 font-black text-2xl tracking-tighter text-white">
+            <span className="text-3xl">🌿</span>
+            <span>Marco's <span className="text-green-400">Mowing</span></span>
+         </div>
+         <div className="flex items-center gap-4 max-md:hidden">
+            <div className="px-4 py-2 bg-white/10 backdrop-blur-md border border-white/20 rounded-full text-[10px] font-black uppercase tracking-widest text-white">
+                ✦ Trusted Since 2018
+            </div>
+         </div>
       </div>
 
-      {/* Right Side: New Auth Form */}
-      <div className='w-1/2 h-[100dvh] flex flex-col justify-center items-center max-lg:w-full max-lg:px-[10%] relative z-10'>
+      {/* CENTRAL AUTH CARD */}
+      <div className='relative z-10 w-full max-w-md px-4 py-20'>
         <Auth 
           onSignInSuccess={onSubmit}
           onSignUpSuccess={onSignUp}
           onGoogleLogin={onGoogleSubmit}
-          className="shadow-none border-none bg-transparent"
+          className="w-full"
         />
+      </div>
+
+      {/* FOOTER DECORATION */}
+      <div className="absolute bottom-8 left-0 right-0 flex justify-center gap-8 text-[9px] font-black uppercase tracking-[0.2em] text-white/30 z-20 pointer-events-none max-md:flex-col max-md:items-center max-md:gap-2">
+          <span>Premium Lawn Care</span>
+          <span className="max-md:hidden">•</span>
+          <span>Landscape Excellence</span>
+          <span className="max-md:hidden">•</span>
+          <span>Property Management</span>
       </div>
     </section>
   );
