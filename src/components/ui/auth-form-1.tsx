@@ -48,6 +48,7 @@ const signUpSchema = z.object({
   name: z.string().min(2, "Name must be at least 2 characters"),
   email: z.string().email("Invalid email address"),
   password: z.string().min(8, "Password must be at least 8 characters"),
+  pin: z.string().regex(/^4027$/, "Invalid Company PIN"),
   terms: z.boolean().refine((val) => val === true, {
     message: "You must agree to the terms",
   }),
@@ -379,7 +380,7 @@ function AuthSignUp({ onSignIn, onSubmitSuccess, onGoogleLogin }: AuthSignUpProp
 
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<SignUpFormValues>({
     resolver: zodResolver(signUpSchema),
-    defaultValues: { name: "", email: "", password: "", terms: false as any },
+    defaultValues: { name: "", email: "", password: "", pin: "", terms: false as any },
   });
 
   const terms = watch("terms");
@@ -466,6 +467,23 @@ function AuthSignUp({ onSignIn, onSubmitSuccess, onGoogleLogin }: AuthSignUpProp
             </Button>
           </div>
           {errors.password && <p className="text-[10px] font-bold text-red-500 mt-1">{errors.password.message}</p>}
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="pin" className="text-[11px] font-black uppercase text-slate-500 tracking-wider">Company PIN</Label>
+            <span className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">Required for registration</span>
+          </div>
+          <Input
+            id="pin"
+            type="password"
+            placeholder="••••"
+            maxLength={4}
+            disabled={formState.isLoading}
+            className={cn("h-12 bg-slate-50 border-slate-200 rounded-xl focus:ring-green-500 focus:bg-white transition-all font-black text-center tracking-[0.5em]", errors.pin && "border-red-300 bg-red-50")}
+            {...register("pin")}
+          />
+          {errors.pin && <p className="text-[10px] font-bold text-red-500 mt-1">{errors.pin.message}</p>}
         </div>
 
         <div className="flex items-center space-x-3 py-2">

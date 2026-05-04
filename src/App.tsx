@@ -12,7 +12,8 @@ import {
   PenTool, AlertCircle, CheckCircle, Clock, List, LayoutDashboard, Save, TrendingUp, BarChart,
   Target, Award, CalendarDays, FileSignature, Map, CheckSquare, Info, Sparkles, Loader2,
   MessageSquareText, Leaf, Download, LogOut, ShieldCheck, UserPlus, Megaphone, Lock,
-  Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown
+  Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown, Hammer,
+  ChevronUp
 } from 'lucide-react';
 
 // --- TYPES & INTERFACES ---
@@ -33,16 +34,66 @@ interface FleetItem {
   type: string;
   status: string;
   weightClass: string;
+  color?: string;
   odometer?: number;
   repairTags: string[];
   lastOdometerUpdate?: string;
   nextOilChange?: number;
   nextInspection?: number;
+  cvorRequired?: boolean;
+  lastInspectionId?: string;
+  inspectionStatus?: 'green' | 'yellow' | 'red' | 'missing';
   regExpiry?: string;
   safetyExpiry?: string;
+  commercialSafetyExpire?: string;
+  isYellowSticker?: boolean;
+  serialNumber?: string;
+  modelNumber?: string;
   isRental?: boolean;
   rentalEnd?: string;
   mechanicNotes?: string;
+}
+
+interface RolePermissions {
+  canEditSchedule: boolean;
+  canManageResources: boolean;
+  canViewMechanic: boolean;
+  canManagePermissions: boolean;
+}
+
+interface DefectDetail {
+  category: string;
+  severity: 'minor' | 'major';
+  notes: string;
+  photoUrl?: string;
+}
+
+interface MechanicTask {
+  id: string;
+  unitId?: string;
+  unitName: string;
+  category: string;
+  notes: string;
+  severity: 'minor' | 'major';
+  status: 'todo' | 'doing' | 'done';
+  dateReported: string;
+  isMaintenance?: boolean;
+}
+
+interface Inspection {
+  id: string;
+  unitId: string;
+  driverId: string;
+  driverName: string;
+  type: 'DVIR' | 'CircleCheck';
+  date: string;
+  timestamp: string;
+  odometer: number;
+  location: string;
+  defects: DefectDetail[];
+  isMajor: boolean;
+  signature: string;
+  status: 'clean' | 'minor' | 'major';
 }
 
 interface InventoryItem {
@@ -62,6 +113,8 @@ interface Crew {
   inventory: { id: string; qty: number }[];
   isAdHoc?: boolean;
   notes?: string;
+  supplies?: string[];
+  dispatched?: boolean;
 }
 
 interface Job {
@@ -94,7 +147,15 @@ interface AppData {
   dailyAbsences: Record<string, any>;
   performance: Record<string, Record<string, PerformanceLog>>;
   authorizedEmails: string[];
+  userRoles: Record<string, 'admin' | 'manager' | 'foreman'>;
+  supplies: string[];
+  inspections: Inspection[];
   cvorExpiry?: string;
+  mechanicTasks: MechanicTask[];
+  rolePermissions: {
+    foreman: RolePermissions;
+    manager: RolePermissions;
+  };
 }
 
 // --- CUSTOM ICONS ---
@@ -168,11 +229,11 @@ const INITIAL_EMPLOYEES: Employee[] = [
 ];
 
 const INITIAL_FLEET: FleetItem[] = [
-  { id: 'f1', name: 'Truck 1 (F-150)', type: 'truck', status: 'Active', weightClass: 'Under 4500kg', odometer: 120500, repairTags: [] },
-  { id: 'f2', name: 'Heavy Dump Truck', type: 'truck', status: 'Active', weightClass: '10999kg+ (Class A)', odometer: 245000, repairTags: [] },
-  { id: 'f3', name: 'Skid Steer 01', type: 'equipment', status: 'Active', weightClass: 'N/A', odometer: 1450, repairTags: [] },
-  { id: 'f4', name: 'Zero Turn Mower', type: 'equipment', status: 'Active', weightClass: 'N/A', odometer: 320, repairTags: [] },
-  { id: 'f5', name: 'Flatbed Trailer A', type: 'trailer', status: 'Out of Service', weightClass: 'Up to 10999kg (Yellow)', repairTags: ['priority'] },
+  { id: 'f1', name: 'Truck 1 (F-150)', type: 'truck', status: 'Active', weightClass: 'Under 4500kg', odometer: 120500, repairTags: [], color: 'bg-green-500', serialNumber: 'SN-TRK1-998' },
+  { id: 'f2', name: 'Heavy Dump Truck', type: 'truck', status: 'Active', weightClass: '10999kg+ (Class A)', odometer: 245000, repairTags: [], color: 'bg-blue-600', serialNumber: 'SN-HDUMP-044' },
+  { id: 'f3', name: 'Skid Steer 01', type: 'equipment', status: 'Active', weightClass: 'N/A', odometer: 1450, repairTags: [], color: 'bg-orange-500', modelNumber: 'CAT-242D', serialNumber: 'S-SS01-X' },
+  { id: 'f4', name: 'Zero Turn Mower', type: 'equipment', status: 'Active', weightClass: 'N/A', odometer: 320, repairTags: [], color: 'bg-yellow-400', modelNumber: 'SCAG-Z72', serialNumber: 'S-ZT04-Y' },
+  { id: 'f5', name: 'Flatbed Trailer A', type: 'trailer', status: 'Out of Service', weightClass: 'Up to 10999kg (Yellow)', repairTags: ['priority'], color: 'bg-gray-500', isYellowSticker: true, serialNumber: 'SN-FLAT-002' },
 ];
 
 const INITIAL_INVENTORY: InventoryItem[] = [
@@ -184,7 +245,7 @@ const INITIAL_INVENTORY: InventoryItem[] = [
 const DIVISIONS = ['Large Projects', 'Small Projects', 'Lawn Division'];
 const CREW_NUMBERS = [1, 2, 3, 4, 5, 6];
 const WEIGHT_CLASSES = ['Under 4500kg', 'Up to 10999kg (Yellow)', '10999kg+ (Class A)', 'N/A'];
-const ROUTE_FREQUENCIES = ['Weekly', 'Bi-Weekly 1', 'Bi-Weekly 2'];
+const ROUTE_FREQUENCIES = ['Weekly', 'Bi-Weekly 1', 'Bi-Weekly 2', 'Monthly'];
 const DAYS_OF_WEEK = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
 const getCrewColors = (div: string, num: number) => {
@@ -204,7 +265,12 @@ const getStartOfWeek = (date: Date | string) => {
   return new Date(d.setDate(diff));
 };
 
-const formatDate = (date: Date) => date.toISOString().split('T')[0];
+const formatDate = (date: Date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
 const addDays = (date: Date, days: number) => { const result = new Date(date); result.setDate(result.getDate() + days); return result; };
 const isExpiringSoon = (dateStr: string | undefined) => {
   if (!dateStr) return false;
@@ -219,6 +285,28 @@ const isExpired = (dateStr: string | undefined) => {
 const isOdoStale = (dateStr: string | undefined) => !dateStr || Math.ceil((new Date().setHours(0, 0, 0, 0) - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24)) >= 30;
 const needsAudit = (dateStr: string | undefined) => !dateStr || Math.ceil((new Date().setHours(0, 0, 0, 0) - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24)) > 14;
 
+const getRequiredInspectionType = (unit: FleetItem): 'DVIR' | 'CircleCheck' => {
+  const isHeavy = unit.weightClass === '10999kg+ (Class A)' || unit.weightClass === 'Up to 10999kg (Yellow)';
+  return (isHeavy || unit.cvorRequired) ? 'DVIR' : 'CircleCheck';
+};
+
+const DVIR_DEFECTS = ["Brakes", "Steering", "Lights/Reflectors", "Tires/Wheels", "Suspension", "Coupling Devices", "Exhaust System", "Wipers/Washers", "Mirrors/Glass", "Horn", "Emergency Equipment"];
+const CIRCLE_CHECK_DEFECTS = ["Fluid Leaks", "Body Damage", "Tire Pressure", "Lights Functional", "Cleanliness", "Loose Equipment/Tools"];
+
+const getUnitReadiness = (unitId: string, appData: AppData, contextDate?: string) => {
+  const unit = appData.fleet.find(f => f.id === unitId);
+  if (!unit) return 'missing';
+  if (unit.status === 'Out of Service') return 'red';
+  
+  const targetDate = contextDate || formatDate(new Date());
+  const todayInsp = appData.inspections.find(i => i.unitId === unitId && i.date === targetDate);
+  
+  if (!todayInsp) return 'missing';
+  if (todayInsp.status === 'major') return 'red';
+  if (todayInsp.status === 'minor') return 'yellow';
+  return 'green';
+};
+
 export default function App() {
   // --- STATE ---
   const [user, setUser] = useState<any>(null);
@@ -231,7 +319,7 @@ export default function App() {
 
   // Navigation & Views
   const [currentView, setCurrentView] = useState('schedule');
-  const [scheduleMode, setScheduleMode] = useState('weekly');
+  const [scheduleMode, setScheduleMode] = useState<'daily' | 'weekly'>('weekly');
   const [selectedDailyDate, setSelectedDailyDate] = useState(formatDate(new Date()));
   const [crewFilter, setCrewFilter] = useState('All');
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -248,12 +336,34 @@ export default function App() {
   const [localFleet, setLocalFleet] = useState<FleetItem[]>([]);
   const [localRoutes, setLocalRoutes] = useState<Job[]>([]);
   const [localAdmins, setLocalAdmins] = useState<string[]>([]);
+  const [localRoles, setLocalRoles] = useState<Record<string, 'admin' | 'manager' | 'foreman'>>({});
   const [localInventory, setLocalInventory] = useState<InventoryItem[]>([]);
+  const [localSupplies, setLocalSupplies] = useState<string[]>([]);
+  const [localPermissions, setLocalPermissions] = useState<AppData['rolePermissions']>({
+    foreman: { canEditSchedule: false, canManageResources: false, canViewMechanic: false, canManagePermissions: false },
+    manager: { canEditSchedule: true, canManageResources: false, canViewMechanic: true, canManagePermissions: false }
+  });
+  const [isSystemPrinting, setIsSystemPrinting] = useState(false);
+  const [completionModal, setCompletionModal] = useState<{ isOpen: boolean; taskId: string; unitId?: string; unitName?: string; partCost: string; laborHours: string; fixNotes: string }>({ 
+    isOpen: false, taskId: '', partCost: '', laborHours: '', fixNotes: '' 
+  });
+
+  // Print State
+  const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [printSelection, setPrintSelection] = useState<string[]>([]);
+  const [printType, setPrintType] = useState<'daily' | 'weekly' | 'range'>('daily');
+  const [printDateRange, setPrintDateRange] = useState({ start: formatDate(new Date()), end: formatDate(new Date()) });
+  const [manualTaskModal, setManualTaskModal] = useState({ isOpen: false, unitId: '', unitName: '', category: '', notes: '', severity: 'minor' });
+
+  // View Permissions
+  const [viewRole, setViewRole] = useState('admin');
   const [newAdminEmail, setNewAdminEmail] = useState('');
 
   // MechanicMaster State
   const [mechanicView, setMechanicView] = useState('tracker');
   const [repairModal, setRepairModal] = useState({ isOpen: false, fleetId: null, fixNotes: '', cost: '' });
+  const [activeInspection, setActiveInspection] = useState<{ unitId: string | null, targetDate: string, defects: DefectDetail[], expandedCategory: string | null, draftSeverity: 'minor' | 'major', draftNotes: string }>({ unitId: null, targetDate: '', defects: [], expandedCategory: null, draftSeverity: 'minor', draftNotes: '' });
+  const [viewingInspectionId, setViewingInspectionId] = useState<string | null>(null);
   const [editingOdoId, setEditingOdoId] = useState(null);
   const [tempOdo, setTempOdo] = useState('');
 
@@ -283,10 +393,39 @@ export default function App() {
     bulletins: [{ id: 'b1', title: "Welcome to Marco's Mowing ERP", content: 'The new system is live. Check out the Daily View and the new Inventory tracking!', date: formatDate(new Date()), isAdminOnly: false, author: 'System' }],
     dailyAbsences: {},
     performance: {},
-    authorizedEmails: [displayEmail]
+    authorizedEmails: ["marcoguidopalermo@gmail.com"],
+    userRoles: { "marcoguidopalermo@gmail.com": "admin" },
+    supplies: ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
+    inspections: [],
+    mechanicTasks: [],
+    rolePermissions: {
+      foreman: { canEditSchedule: false, canManageResources: false, canViewMechanic: false, canManagePermissions: false },
+      manager: { canEditSchedule: true, canManageResources: true, canViewMechanic: true, canManagePermissions: false }
+    }
   });
 
-  const isAdmin = !!user && !!user.email && appData.authorizedEmails.includes(user.email.toLowerCase());
+  // REAL PERMISSIONS (based on database)
+  const actualRole = (user && user.email) ? (appData.userRoles?.[user.email.toLowerCase()] || 'foreman') : 'foreman';
+  const isActualAdmin = actualRole === 'admin' || user?.email?.toLowerCase() === 'marcoguidopalermo@gmail.com';
+  const isActualManager = isActualAdmin || actualRole === 'manager';
+
+  // VIEW PERMISSIONS (based on the role switcher)
+  const isAdmin = viewRole === 'admin' && isActualAdmin;
+  const isManager = (viewRole === 'admin' || viewRole === 'manager') && isActualManager;
+  const isForeman = viewRole === 'foreman' || !isActualManager;
+
+  // DYNAMIC FEATURE PERMISSIONS
+  const currentPerms = viewRole === 'admin' 
+    ? { canEditSchedule: true, canManageResources: true, canViewMechanic: true, canManagePermissions: true }
+    : (appData.rolePermissions[viewRole as 'foreman'|'manager'] || { canEditSchedule: false, canManageResources: false, canViewMechanic: false, canManagePermissions: false });
+
+  const canEditSchedule = currentPerms.canEditSchedule || isActualAdmin;
+  const canManageResources = currentPerms.canManageResources || isActualAdmin;
+  const canViewMechanic = currentPerms.canViewMechanic || isActualAdmin;
+  const canManagePermissions = currentPerms.canManagePermissions || isActualAdmin;
+
+  // Security check for the role switcher itself
+  const isRealAdmin = isActualAdmin;
 
   // --- INIT EFFECTS ---
   useEffect(() => {
@@ -312,13 +451,42 @@ export default function App() {
     return onSnapshot(dataRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
-        setAppData({
-          schedules: data.schedules || {}, employees: data.employees || INITIAL_EMPLOYEES,
-          fleet: data.fleet || INITIAL_FLEET, routes: data.routes || [],
-          inventory: data.inventory || INITIAL_INVENTORY, repairLog: data.repairLog || [],
-          bulletins: data.bulletins || [], dailyAbsences: data.dailyAbsences || {},
-          performance: data.performance || {}, authorizedEmails: data.authorizedEmails || [displayEmail]
-        });
+        const email = user?.email?.toLowerCase();
+        
+        // Auto-register new users as foreman
+        let updatedRoles = data.userRoles || {};
+        let needsUpdate = false;
+        if (email && !updatedRoles[email]) {
+          updatedRoles[email] = 'foreman';
+          needsUpdate = true;
+        }
+
+        const newAppData = {
+          schedules: data.schedules || {}, 
+          employees: data.employees || INITIAL_EMPLOYEES,
+          fleet: data.fleet || INITIAL_FLEET, 
+          routes: data.routes || [],
+          inventory: data.inventory || INITIAL_INVENTORY, 
+          repairLog: data.repairLog || [],
+          bulletins: data.bulletins || [], 
+          dailyAbsences: data.dailyAbsences || {},
+          performance: data.performance || {}, 
+          authorizedEmails: data.authorizedEmails || ["marcoguidopalermo@gmail.com"],
+          userRoles: updatedRoles,
+          supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
+          inspections: data.inspections || [],
+          cvorExpiry: data.cvorExpiry,
+          mechanicTasks: data.mechanicTasks || [],
+          rolePermissions: data.rolePermissions || {
+            foreman: { canEditSchedule: false, canManageResources: false, canViewMechanic: false, canManagePermissions: false },
+            manager: { canEditSchedule: true, canManageResources: false, canViewMechanic: true, canManagePermissions: false }
+          }
+        };
+
+        setAppData(newAppData);
+        if (needsUpdate) {
+          setDoc(dataRef, newAppData).catch(e => console.error("Auto-reg err:", e));
+        }
       } else { 
         console.warn("No remote data found, initializing with defaults.");
         setDoc(dataRef, appData).catch((err: any) => console.error("Init err:", err)); 
@@ -367,13 +535,20 @@ export default function App() {
   const handleToday = () => setCurrentDate(new Date());
 
   const handlePrint = () => {
-    try {
-      window.focus();
-      window.print();
-      setTimeout(() => { showToastMsg("If the print dialog didn't open, please press Ctrl+P (Windows) or Cmd+P (Mac)."); }, 500);
-    } catch (err) {
-      showToastMsg("Browser blocked printing. Please press Ctrl+P (Windows) or Cmd+P (Mac).");
+    // Collect all crews for the current view to allow selection
+    let crewsToSelect: any[] = [];
+    if (scheduleMode === 'daily') {
+      crewsToSelect = appData.schedules[selectedDailyDate] || [];
+    } else {
+      weekDays.forEach(d => {
+        const dateStr = formatDate(d);
+        const dayCrews = appData.schedules[dateStr] || [];
+        crewsToSelect = [...crewsToSelect, ...dayCrews.map(c => ({ ...c, dateStr }))];
+      });
     }
+    setPrintSelection((crewsToSelect as any[]).map(c => c.id));
+    setPrintType(scheduleMode);
+    setIsPrintModalOpen(true);
   };
 
 
@@ -381,13 +556,20 @@ export default function App() {
     // Optimistic update
     setAppData(newData);
     if (!user) return;
+    
+    // Scrubber: Firestore does not allow 'undefined'. Convert to null or remove.
+    const cleanData = JSON.parse(JSON.stringify(newData, (key, value) => 
+      value === undefined ? null : value
+    ));
+
     try { 
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'), newData); 
+      await setDoc(doc(doc(db, 'artifacts', appId), 'public', 'data', 'appData', 'main'), cleanData); 
+      return true;
     }
     catch (err: any) { 
       console.error("Database Save Error:", err); 
       showToastMsg(`Failed to save: ${err.code === 'permission-denied' ? 'Permission Denied (Rules Expired?)' : err.message}`);
-      // Note: We don't revert setAppData here because the onSnapshot will naturally revert it if the server rejects it.
+      return false;
     }
   };
 
@@ -547,7 +729,7 @@ export default function App() {
 
     const newSchedules = {
       ...appData.schedules,
-      [dateString]: [...daySchedules, { id: `crew-${Date.now()}`, division: 'Large Projects', crewNumber: nextNum, notes: '', employees: [], fleet: [], inventory: [] }]
+      [dateString]: [...daySchedules, { id: `crew-${Date.now()}`, division: 'Large Projects', crewNumber: nextNum, notes: '', employees: [], fleet: [], inventory: [], supplies: [] }]
     };
     syncToCloud({ ...appData, schedules: newSchedules });
   };
@@ -630,22 +812,37 @@ export default function App() {
     }
 
     const Icon = isEmp ? UserCircle : (item.type === 'equipment' ? SkidSteerIcon : (item.type === 'trailer' ? Wrench : Truck));
+    const draggable = isDraggable && canEditSchedule;
+
     return (
-      <div key={item.id} draggable={isDraggable} onDragStart={(e) => onDragStart(e, type, item)} className={`flex items-center gap-3 p-2.5 mb-2 border rounded-lg shadow-sm transition-all ${visClass} ${isDraggable ? 'cursor-grab' : ''}`}>
-        {isDraggable ? <GripVertical className="w-4 h-4 text-gray-400" /> : <div className="w-4" />}
+      <div key={item.id} draggable={draggable} onDragStart={(e) => onDragStart(e, type, item)} className={`flex items-center gap-3 p-2.5 mb-2 border rounded-lg shadow-sm transition-all ${visClass} ${draggable ? 'cursor-grab' : ''}`}>
+        {draggable ? <GripVertical className="w-4 h-4 text-gray-400" /> : <div className="w-4" />}
         <div className="flex-1 min-w-0">
           <div className="font-medium text-sm text-gray-900 flex items-center gap-1.5 truncate">
             {item.name}
             {isEmp && item.hasLicense && <IdCard className="w-3.5 h-3.5 text-green-600 flex-shrink-0" />}
             {isEmp && item.hasClassA && <ClassAIcon className="w-3.5 h-3.5 text-purple-600 flex-shrink-0" title="Class A" />}
             {isEmp && item.hasHeavyMachinery && <SkidSteerIcon className="w-3.5 h-3.5 text-orange-600 flex-shrink-0" title="Heavy Machinery" />}
+            {!isEmp && item.color && <div className={`w-3 h-3 rounded-full ${item.color} flex-shrink-0 shadow-sm border border-gray-300`} />}
           </div>
           <div className="flex flex-wrap items-center gap-1.5 mt-1">
-            {isEmp ? <span className="text-[10px] bg-gray-100 text-gray-600 border border-gray-200 px-1.5 rounded uppercase font-bold">{item.role}</span> : <span className="text-[10px] bg-gray-100 text-gray-600 border border-gray-200 px-1.5 rounded uppercase font-bold">{item.type}</span>}
+            {isEmp ? (
+              <span className="text-[10px] bg-gray-100 text-gray-600 border border-gray-200 px-1.5 rounded uppercase font-bold">{item.role}</span>
+            ) : (
+              <>
+                <span className="text-[10px] bg-gray-100 text-gray-600 border border-gray-200 px-1.5 rounded uppercase font-bold">{item.type}</span>
+                {(() => {
+                  const readiness = getUnitReadiness(item.id, appData, contextDate);
+                  const labels = { green: 'Inspected', yellow: 'Minor Defect', red: 'Out of Service', missing: 'Needs Inspection' };
+                  const colors = { green: 'bg-emerald-100 text-emerald-700 border-emerald-200', yellow: 'bg-yellow-100 text-yellow-700 border-yellow-200', red: 'bg-red-100 text-red-700 border-red-200', missing: 'bg-slate-100 text-slate-500 border-slate-200' };
+                  return <span className={`text-[10px] border px-1.5 rounded uppercase font-black ${colors[readiness]}`}>{labels[readiness]}</span>;
+                })()}
+              </>
+            )}
             {subText}
           </div>
         </div>
-        {isEmp && contextDate && isAdmin && (
+        {isEmp && contextDate && canManageResources && (
           <button onClick={() => toggleSickDay(item.id, contextDate)} className={`p-1.5 rounded-lg border transition-colors ${isAbsentToday ? 'bg-rose-100 border-rose-300 text-rose-600' : 'bg-gray-50 border-gray-200 text-gray-400 hover:text-rose-500 hover:bg-rose-50'}`} title="Toggle Absence">
             <Thermometer className="w-4 h-4" />
           </button>
@@ -674,13 +871,21 @@ export default function App() {
         {/* Header Ribbon */}
         <div className={`px-3 py-2 flex justify-between items-center ${colorClasses}`}>
           <div className="flex items-center gap-2 w-full">
-            <select className="text-sm font-bold bg-transparent outline-none flex-1 appearance-none cursor-pointer text-inherit" value={crew.division} onChange={(e) => { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, division: e.target.value } : c); syncToCloud({ ...appData, schedules: newSchedules }); }}>
-              {DIVISIONS.map(d => <option key={d} value={d} className="text-gray-900">{d}</option>)}
-            </select>
-            <select className="text-sm font-bold bg-transparent outline-none w-10 text-center appearance-none cursor-pointer text-inherit border-l border-white/20 pl-2" value={crew.crewNumber} onChange={(e) => { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, crewNumber: Number(e.target.value) } : c); syncToCloud({ ...appData, schedules: newSchedules }); }}>
-              {CREW_NUMBERS.map(n => <option key={n} value={n} className="text-gray-900">#{n}</option>)}
-            </select>
-            {isAdmin && <button onClick={() => { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].filter(c => c.id !== crew.id); syncToCloud({ ...appData, schedules: newSchedules }); }} className="text-white/60 hover:text-white ml-auto"><Trash2 className="w-4 h-4" /></button>}
+            {!canEditSchedule ? (
+              <div className="flex-1 text-sm font-bold px-1 truncate">{crew.division}</div>
+            ) : (
+              <select className="text-sm font-bold bg-transparent outline-none flex-1 appearance-none cursor-pointer text-inherit" value={crew.division} onChange={(e) => { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, division: e.target.value } : c); syncToCloud({ ...appData, schedules: newSchedules }); }}>
+                {DIVISIONS.map(d => <option key={d} value={d} className="text-gray-900">{d}</option>)}
+              </select>
+            )}
+            {!canEditSchedule ? (
+              <div className="text-sm font-bold w-10 text-center border-l border-white/20 pl-2">#{crew.crewNumber}</div>
+            ) : (
+              <select className="text-sm font-bold bg-transparent outline-none w-10 text-center appearance-none cursor-pointer text-inherit border-l border-white/20 pl-2" value={crew.crewNumber} onChange={(e) => { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, crewNumber: Number(e.target.value) } : c); syncToCloud({ ...appData, schedules: newSchedules }); }}>
+                {CREW_NUMBERS.map(n => <option key={n} value={n} className="text-gray-900">#{n}</option>)}
+              </select>
+            )}
+            {canEditSchedule && <button onClick={() => { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].filter(c => c.id !== crew.id); syncToCloud({ ...appData, schedules: newSchedules }); }} className="text-white/60 hover:text-white ml-auto"><Trash2 className="w-4 h-4" /></button>}
           </div>
         </div>
 
@@ -692,12 +897,7 @@ export default function App() {
         )}
 
         <div className="p-3 space-y-3 flex-1 flex flex-col">
-          <div className="print:hidden flex items-center justify-between">
-            <button onClick={() => handleGenerateMorningBriefing(dateString, crew, dayWeather)} className="text-[10px] font-bold text-teal-700 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded hover:bg-teal-100 flex items-center gap-1 transition-colors">
-              <Sparkles className="w-3 h-3" /> AI Briefing
-            </button>
-          </div>
-          <textarea className="w-full text-xs p-2 bg-gray-50 border border-gray-200 rounded-lg resize-none outline-none focus:bg-white focus:border-green-400 focus:ring-1 ring-green-400" placeholder="Manager notes / targets..." rows={2} defaultValue={crew.notes || ''} onBlur={(e) => { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, notes: e.target.value } : c); syncToCloud({ ...appData, schedules: newSchedules }); }} />
+          <textarea className="w-full text-xs p-2 bg-gray-50 border border-gray-200 rounded-lg resize-none outline-none focus:bg-white focus:border-green-400 focus:ring-1 ring-green-400" placeholder="Manager notes / targets..." rows={2} defaultValue={crew.notes || ''} readOnly={!canEditSchedule} onBlur={(e) => { if (canEditSchedule) { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, notes: e.target.value } : c); syncToCloud({ ...appData, schedules: newSchedules }); } }} />
 
           {/* Personnel Section */}
           <div className="bg-slate-50 rounded-lg border border-slate-200 p-2 flex flex-col gap-1.5 min-h-[50px]">
@@ -709,10 +909,10 @@ export default function App() {
                 <span className="truncate flex items-center gap-1.5 font-medium text-slate-800">
                   {emp.name} {emp.hasLicense && <IdCard className="w-3.5 h-3.5 text-green-600" />} {emp.hasClassA && <ClassAIcon className="w-3.5 h-3.5 text-purple-600" />} {emp.hasHeavyMachinery && <SkidSteerIcon className="w-3.5 h-3.5 text-orange-600" />}
                 </span>
-                <button onClick={() => updateCrewItem(dateString, crew.id, 'employee', 'remove', emp.id)} className="text-gray-300 hover:text-red-500"><X className="w-4 h-4" /></button>
+                {canEditSchedule && <button onClick={() => updateCrewItem(dateString, crew.id, 'employee', 'remove', emp.id)} className="text-gray-300 hover:text-red-500"><X className="w-4 h-4" /></button>}
               </div>
             ))}
-            {isAdmin && availableEmps.length > 0 && (
+            {canEditSchedule && availableEmps.length > 0 && (
               <div className="relative mt-1">
                 <select className="w-full text-xs text-slate-500 font-bold bg-white border border-dashed border-slate-300 rounded p-1.5 appearance-none cursor-pointer outline-none hover:bg-slate-50" onChange={(e) => { if (e.target.value) updateCrewItem(dateString, crew.id, 'employee', 'add', e.target.value); e.target.value = ''; }} defaultValue="">
                   <option value="" disabled>+ Assign Employee...</option>
@@ -728,17 +928,40 @@ export default function App() {
             <div className="flex justify-between items-center text-xs font-bold text-gray-700 uppercase tracking-wide px-1">
               <span className="flex items-center gap-1.5"><Truck className="w-3.5 h-3.5" /> Fleet & Equip</span>
             </div>
-            {crewFleet.map(veh => (
-              <div key={veh.id} className="flex items-center justify-between bg-white px-2 py-1.5 rounded border border-gray-200 text-sm shadow-sm">
-                <span className="truncate text-gray-800 font-medium flex items-center gap-1.5">
-                  {veh.name}
-                  {veh.repairTags?.includes('priority') && <span title="Priority Repair"><Flame className="w-3 h-3 text-red-500" /></span>}
-                  {veh.repairTags?.includes('waiting') && <span title="Waiting on Parts"><Hourglass className="w-3 h-3 text-orange-500" /></span>}
-                </span>
-                <button onClick={() => updateCrewItem(dateString, crew.id, 'fleet', 'remove', veh.id)} className="text-gray-300 hover:text-red-500"><X className="w-4 h-4" /></button>
-              </div>
-            ))}
-            {isAdmin && availableFleet.length > 0 && (
+            {crewFleet.map(veh => {
+              const readiness = getUnitReadiness(veh.id, appData, dateString);
+              const statusColors = { 
+                green: 'bg-green-500', 
+                yellow: 'bg-yellow-500', 
+                red: 'bg-red-500 animate-pulse', 
+                missing: 'bg-slate-300' 
+              };
+              const todayInsp = appData.inspections.find(i => i.unitId === veh.id && i.date === dateString);
+
+              return (
+                <div key={veh.id} className="flex items-center justify-between bg-white px-2 py-1.5 rounded border border-gray-200 text-sm shadow-sm group">
+                  <div className="flex items-center gap-2 overflow-hidden">
+                    <div className={`w-2 h-2 rounded-full shrink-0 ${statusColors[readiness]}`} />
+                    <span className="truncate text-gray-800 font-medium flex items-center gap-1.5">
+                      {veh.name}
+                      {veh.repairTags?.includes('priority') && <span title="Priority Repair"><Flame className="w-3 h-3 text-red-500" /></span>}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {readiness === 'missing' && (
+                      <button onClick={() => setActiveInspection({ unitId: veh.id, targetDate: dateString, defects: [], expandedCategory: null, draftSeverity: 'minor', draftNotes: '' })} className="text-[10px] font-black bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded uppercase hover:bg-blue-100 transition-colors">Inspect</button>
+                    )}
+                    {todayInsp && (
+                      <button onClick={() => setViewingInspectionId(todayInsp.id)} className="text-[10px] font-black bg-emerald-600 text-white px-2.5 py-1 rounded-lg uppercase hover:bg-emerald-700 shadow-sm transition-all flex items-center gap-1.5 ring-2 ring-emerald-100">
+                        <CheckCircle className="w-3.5 h-3.5" /> Inspected
+                      </button>
+                    )}
+                    {canEditSchedule && <button onClick={() => updateCrewItem(dateString, crew.id, 'fleet', 'remove', veh.id)} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-4 h-4" /></button>}
+                  </div>
+                </div>
+              );
+            })}
+            {canEditSchedule && availableFleet.length > 0 && (
               <div className="relative mt-1">
                 <select className="w-full text-xs text-gray-500 font-bold bg-white border border-dashed border-gray-300 rounded p-1.5 appearance-none cursor-pointer outline-none hover:bg-gray-50" onChange={(e) => { if (e.target.value) updateCrewItem(dateString, crew.id, 'fleet', 'add', e.target.value); e.target.value = ''; }} defaultValue="">
                   <option value="" disabled>+ Assign Fleet...</option>
@@ -761,7 +984,7 @@ export default function App() {
                 <button onClick={() => updateCrewItem(dateString, crew.id, 'inventory', 'remove', inv.id)} className="text-gray-300 hover:text-red-500 ml-2"><X className="w-4 h-4" /></button>
               </div>
             ))}
-            {isAdmin && (
+            {canManageResources && (
               <div className="flex gap-1 mt-1">
                 <div className="relative flex-1">
                   <select id={`inv-sel-${crew.id}`} className="w-full text-xs text-emerald-700 font-bold bg-white border border-dashed border-emerald-300 rounded p-1.5 appearance-none cursor-pointer outline-none hover:bg-emerald-50" defaultValue="">
@@ -783,6 +1006,76 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Supplies Section */}
+          <div className="bg-slate-50 rounded-lg border border-slate-200 p-2 flex flex-col gap-1.5">
+            <div className="flex justify-between items-center text-xs font-bold text-slate-700 uppercase tracking-wide px-1">
+              <span className="flex items-center gap-1.5"><Hammer className="w-3.5 h-3.5" /> Supplies & Tools</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {(crew.supplies || []).map(tool => (
+                <div key={tool} className="flex items-center gap-1 bg-white px-2 py-1 rounded border border-slate-300 text-[11px] font-bold text-slate-800 shadow-sm">
+                  {tool}
+                  {canEditSchedule && <button onClick={() => {
+                    const newSchedules = { ...appData.schedules };
+                    newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, supplies: (c.supplies || []).filter(t => t !== tool) } : c);
+                    syncToCloud({ ...appData, schedules: newSchedules });
+                  }} className="text-gray-300 hover:text-red-500"><X className="w-3 h-3" /></button>}
+                </div>
+              ))}
+            </div>
+            {canEditSchedule && (
+              <div className="relative mt-1">
+                <select className="w-full text-xs text-slate-500 font-bold bg-white border border-dashed border-slate-300 rounded p-1.5 appearance-none cursor-pointer outline-none hover:bg-slate-50" onChange={(e) => {
+                  if (e.target.value) {
+                    const tool = e.target.value;
+                    const newSchedules = { ...appData.schedules };
+                    newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, supplies: Array.from(new Set([...(c.supplies || []), tool])) } : c);
+                    syncToCloud({ ...appData, schedules: newSchedules });
+                  }
+                  e.target.value = '';
+                }} defaultValue="">
+                  <option value="" disabled>+ Add Tool/Supply...</option>
+                  {(appData.supplies || []).filter(t => !(crew.supplies || []).includes(t)).map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-2 pointer-events-none" />
+              </div>
+            )}
+          </div>
+          
+          {/* Dispatch Section */}
+          <div className="mt-auto pt-3 border-t border-slate-100">
+            {(() => {
+              const allUnitsReady = crew.fleet.every(fid => getUnitReadiness(fid, appData, dateString) === 'green' || getUnitReadiness(fid, appData, dateString) === 'yellow');
+              const anyMissing = crew.fleet.some(fid => getUnitReadiness(fid, appData, dateString) === 'missing');
+              const anyRed = crew.fleet.some(fid => getUnitReadiness(fid, appData, dateString) === 'red');
+              
+              if (crew.dispatched) {
+                return (
+                  <div className="bg-green-600 text-white p-3 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-green-600/20">
+                    <CheckCircle className="w-5 h-5" />
+                    <span className="text-sm font-black uppercase tracking-widest">Dispatched</span>
+                  </div>
+                );
+              }
+
+              return (
+                <button 
+                  disabled={!allUnitsReady || crew.fleet.length === 0}
+                  onClick={() => {
+                    const newSchedules = { ...appData.schedules };
+                    newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, dispatched: true } : c);
+                    syncToCloud({ ...appData, schedules: newSchedules });
+                    showToastMsg(`${crew.division} #${crew.crewNumber} dispatched!`);
+                  }}
+                  className={`w-full py-3 rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg font-black uppercase tracking-widest text-xs ${(!allUnitsReady || crew.fleet.length === 0) ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-800 text-white hover:bg-slate-900 active:scale-95 shadow-slate-200'}`}
+                >
+                  <TrendingUp className="w-4 h-4" /> 
+                  {anyRed ? 'Unit Out of Service' : anyMissing ? 'Inspection Required' : crew.fleet.length === 0 ? 'No Fleet Assigned' : 'Dispatch Crew'}
+                </button>
+              );
+            })()}
+          </div>
         </div>
       </div>
     );
@@ -797,10 +1090,11 @@ export default function App() {
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><PenTool className="w-6 h-6 text-green-600" /> MechanicMaster Pro</h2>
           <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
-            <button onClick={() => setMechanicView('tracker')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'tracker' ? 'bg-green-50 text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><List className="w-4 h-4" /> Fleet List</button>
-            <button onClick={() => setMechanicView('kanban')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'kanban' ? 'bg-green-50 text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><LayoutDashboard className="w-4 h-4" /> Repair Board</button>
-            <button onClick={() => setMechanicView('log')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'log' ? 'bg-green-50 text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><ClipboardList className="w-4 h-4" /> Repair Log</button>
+            <button onClick={() => setMechanicView('tracker')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'tracker' ? 'bg-slate-800 text-white' : 'text-gray-500 hover:text-gray-700'}`}><List className="w-4 h-4" /> Fleet List</button>
+            <button onClick={() => setMechanicView('kanban')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'kanban' ? 'bg-slate-800 text-white' : 'text-gray-500 hover:text-gray-700'}`}><LayoutDashboard className="w-4 h-4" /> Repair Board</button>
+            <button onClick={() => setMechanicView('log')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'log' ? 'bg-slate-800 text-white' : 'text-gray-500 hover:text-gray-700'}`}><ClipboardList className="w-4 h-4" /> Repair Log</button>
           </div>
+          <button onClick={() => setManualTaskModal({ isOpen: true, unitId: '', unitName: '', category: '', notes: '', severity: 'minor' })} className="px-6 py-2 bg-green-600 text-white font-black text-xs uppercase tracking-widest rounded-xl shadow-lg shadow-green-600/20 hover:bg-green-700 flex items-center gap-2"><Plus className="w-4 h-4" /> Report New Repair</button>
         </div>
 
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6 flex flex-wrap gap-4 items-center">
@@ -818,48 +1112,112 @@ export default function App() {
         </div>
 
         {mechanicView === 'kanban' ? (
-          <div className="flex gap-6 flex-1 min-h-[300px]">
-            <div className="flex-1 bg-red-50/50 rounded-xl border border-red-100 p-4 flex flex-col" onDragOver={e => e.preventDefault()} onDrop={e => {
-              e.preventDefault(); try { const d = JSON.parse(e.dataTransfer.getData('text/plain')); if (d.type === 'fleet') syncToCloud({ ...appData, fleet: appData.fleet.map(f => f.id === d.id ? { ...f, status: 'Out of Service' } : f) }); } catch (err) { }
-            }}>
-              <h4 className="font-bold text-red-800 mb-3 flex items-center justify-between"><div className="flex items-center gap-2"><AlertCircle className="w-4 h-4" /> Out of Service</div><span className="bg-red-200 text-red-800 text-xs px-2 py-0.5 rounded-full">{oosFleet.length}</span></h4>
-              <div className="flex-1 overflow-y-auto space-y-3">
-                {oosFleet.map(f => (
-                  <div key={f.id} draggable onDragStart={e => e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'fleet', id: f.id }))} className="bg-white p-3 rounded-lg border border-red-200 shadow-sm cursor-grab group">
-                    <div className="font-bold text-gray-800">{f.name}</div>
-                    <div className="text-xs text-gray-500 capitalize">{f.type} • {f.weightClass}</div>
-                    <div className="flex gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => toggleRepairTag(f.id, 'priority')} className={`p-1 rounded text-xs font-bold border ${f.repairTags?.includes('priority') ? 'bg-red-100 text-red-700 border-red-200' : 'bg-gray-50 text-gray-400 border-gray-200'}`}><Flame className="w-3.5 h-3.5 inline mr-1" /> Priority</button>
-                      <button onClick={() => toggleRepairTag(f.id, 'waiting')} className={`p-1 rounded text-xs font-bold border ${f.repairTags?.includes('waiting') ? 'bg-orange-100 text-orange-700 border-orange-200' : 'bg-gray-50 text-gray-400 border-gray-200'}`}><Hourglass className="w-3.5 h-3.5 inline mr-1" /> Parts</button>
-                    </div>
+          <div className="flex gap-6 flex-1 min-h-[300px] items-start">
+            {['todo', 'doing', 'done'].map((status) => {
+              const statusTasks = appData.mechanicTasks.filter(t => t.status === status);
+              // Add maintenance items to 'todo'
+              if (status === 'todo') {
+                appData.fleet.forEach(f => {
+                  const needsOil = f.nextOilChange && f.odometer && f.odometer >= f.nextOilChange;
+                  const needsInsp = f.nextInspection && f.odometer && f.odometer >= f.nextInspection;
+                  if (needsOil || needsInsp) {
+                    const taskType = needsOil ? 'Oil Change' : 'Safety Inspection';
+                    if (!statusTasks.find(t => t.unitId === f.id && t.category === taskType)) {
+                      statusTasks.push({
+                        id: `maint-${f.id}-${taskType}`,
+                        unitId: f.id,
+                        unitName: f.name,
+                        category: taskType,
+                        notes: `Maintenance Due: ${taskType}`,
+                        severity: 'minor',
+                        status: 'todo',
+                        dateReported: formatDate(new Date()),
+                        isMaintenance: true
+                      });
+                    }
+                  }
+                });
+                // Add OOS units that don't have a task
+                appData.fleet.filter(f => f.status === 'Out of Service').forEach(f => {
+                  if (!statusTasks.find(t => t.unitId === f.id && t.status !== 'done')) {
+                    statusTasks.push({
+                      id: `oos-auto-${f.id}`,
+                      unitId: f.id,
+                      unitName: f.name,
+                      category: 'Major Defect / Breakdown',
+                      notes: f.mechanicNotes || 'Unit marked Out of Service',
+                      severity: 'major',
+                      status: 'todo',
+                      dateReported: formatDate(new Date())
+                    });
+                  }
+                });
+              }
+
+              return (
+                <div key={status} className={`flex-1 rounded-2xl border p-5 flex flex-col min-h-[500px] ${status === 'todo' ? 'bg-slate-50 border-slate-200' : status === 'doing' ? 'bg-amber-50/30 border-amber-100' : 'bg-emerald-50/30 border-emerald-100'}`} 
+                  onDragOver={e => e.preventDefault()} 
+                  onDrop={e => {
+                    e.preventDefault();
+                    try {
+                      const { type, taskId } = JSON.parse(e.dataTransfer.getData('text/plain'));
+                      if (type === 'mechTask') {
+                        if (status === 'done') {
+                          const task = appData.mechanicTasks.find(t => t.id === taskId) || statusTasks.find(t => t.id === taskId);
+                          if (task) {
+                            setCompletionModal({
+                              isOpen: true,
+                              taskId: task.id,
+                              unitId: task.unitId,
+                              unitName: task.unitName,
+                              partCost: '',
+                              laborHours: '',
+                              fixNotes: task.notes || ''
+                            });
+                          }
+                        } else {
+                          syncToCloud({ ...appData, mechanicTasks: appData.mechanicTasks.map(t => t.id === taskId ? { ...t, status: status as any } : t) });
+                        }
+                      }
+                    } catch(err) {}
+                  }}>
+                  <div className="flex justify-between items-center mb-4">
+                    <h4 className={`font-black uppercase tracking-widest text-xs flex items-center gap-2 ${status === 'todo' ? 'text-slate-500' : status === 'doing' ? 'text-amber-600' : 'text-emerald-600'}`}>
+                      {status === 'todo' && <List className="w-4 h-4" />}
+                      {status === 'doing' && <Wrench className="w-4 h-4" />}
+                      {status === 'done' && <CheckCircle className="w-4 h-4" />}
+                      {status === 'done' ? 'Complete & Log' : status}
+                    </h4>
+                    <span className="bg-white px-2 py-0.5 rounded-full border border-slate-200 text-[10px] font-bold text-slate-400">{statusTasks.length}</span>
                   </div>
-                ))}
-              </div>
-            </div>
-            <div className="flex-1 bg-orange-50/50 rounded-xl border border-orange-100 p-4 flex flex-col" onDragOver={e => e.preventDefault()} onDrop={e => {
-              e.preventDefault(); try { const d = JSON.parse(e.dataTransfer.getData('text/plain')); if (d.type === 'fleet') syncToCloud({ ...appData, fleet: appData.fleet.map(f => f.id === d.id ? { ...f, status: 'In Repair' } : f) }); } catch (err) { }
-            }}>
-              <h4 className="font-bold text-orange-800 mb-3 flex items-center justify-between"><div className="flex items-center gap-2"><PenTool className="w-4 h-4" /> In Repair</div><span className="bg-orange-200 text-orange-800 text-xs px-2 py-0.5 rounded-full">{repairFleet.length}</span></h4>
-              <div className="flex-1 overflow-y-auto space-y-3">
-                {repairFleet.map(f => (
-                  <div key={f.id} draggable onDragStart={e => e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'fleet', id: f.id }))} className="bg-white p-3 rounded-lg border border-orange-200 shadow-sm cursor-grab group">
-                    <div className="font-bold text-gray-800">{f.name}</div>
-                    <div className="text-xs text-gray-500 capitalize mb-2">{f.type} • {f.weightClass}</div>
-                    <textarea className="w-full text-xs p-1.5 bg-orange-50/50 border border-orange-100 rounded resize-none outline-none focus:border-orange-300" placeholder="Mechanic notes..." defaultValue={f.mechanicNotes || ''} onBlur={(e) => syncToCloud({ ...appData, fleet: appData.fleet.map(v => v.id === f.id ? { ...v, mechanicNotes: e.target.value } : v) })} rows={2} />
-                    <div className="flex gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => toggleRepairTag(f.id, 'priority')} className={`p-1 rounded text-xs font-bold border ${f.repairTags?.includes('priority') ? 'bg-red-100 text-red-700 border-red-200' : 'bg-gray-50 text-gray-400 border-gray-200'}`}><Flame className="w-3.5 h-3.5 inline mr-1" /> Priority</button>
-                      <button onClick={() => toggleRepairTag(f.id, 'waiting')} className={`p-1 rounded text-xs font-bold border ${f.repairTags?.includes('waiting') ? 'bg-orange-100 text-orange-700 border-orange-200' : 'bg-gray-50 text-gray-400 border-gray-200'}`}><Hourglass className="w-3.5 h-3.5 inline mr-1" /> Parts</button>
-                    </div>
+
+                  <div className="flex-1 space-y-3">
+                    {statusTasks.map(task => (
+                      <div key={task.id} draggable onDragStart={e => e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'mechTask', taskId: task.id }))} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all group cursor-grab active:cursor-grabbing">
+                        <div className="flex justify-between items-start mb-2">
+                          <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${task.severity === 'major' ? 'bg-rose-600 text-white animate-pulse' : task.isMaintenance ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
+                            {task.severity === 'major' && <Flame className="w-3 h-3 inline mr-1" />}
+                            {task.category}
+                          </span>
+                          <span className="text-[9px] font-bold text-slate-300">{task.dateReported}</span>
+                        </div>
+                        <h5 className="font-bold text-slate-800 text-sm leading-tight">{task.unitName}</h5>
+                        {task.notes && <p className="text-[11px] text-slate-500 mt-2 font-medium leading-relaxed italic border-l-2 border-slate-100 pl-2">"{task.notes}"</p>}
+                        
+                        <div className="mt-3 pt-3 border-t border-slate-50 flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {status !== 'done' ? (
+                            <button onClick={() => syncToCloud({ ...appData, mechanicTasks: appData.mechanicTasks.map(t => t.id === task.id ? { ...t, status: status === 'todo' ? 'doing' : 'done' } : t) })} className="text-[10px] font-black text-emerald-600 hover:bg-emerald-50 px-2 py-1 rounded">Move Forward</button>
+                          ) : (
+                            <button onClick={() => syncToCloud({ ...appData, mechanicTasks: appData.mechanicTasks.filter(t => t.id !== task.id) })} className="text-rose-400 p-1.5 hover:bg-rose-50 rounded"><Trash2 className="w-3.5 h-3.5" /></button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {statusTasks.length === 0 && <div className="border-2 border-dashed border-slate-200 rounded-2xl p-8 flex flex-col items-center justify-center text-slate-300 italic text-xs">No tasks {status}</div>}
                   </div>
-                ))}
-              </div>
-            </div>
-            <div className="flex-1 bg-green-50/50 rounded-xl border border-green-100 p-4 flex flex-col" onDragOver={e => e.preventDefault()} onDrop={e => {
-              e.preventDefault(); try { const d = JSON.parse(e.dataTransfer.getData('text/plain')); if (d.type === 'fleet') setRepairModal({ isOpen: true, fleetId: d.id, fixNotes: '', cost: '' }); } catch (err) { }
-            }}>
-              <h4 className="font-bold text-green-800 mb-3 flex items-center gap-2"><CheckCircle className="w-4 h-4" /> Complete (Return to Active)</h4>
-              <div className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-green-300 rounded-lg bg-green-50/50 text-green-600/70 text-sm font-medium transition-colors hover:bg-green-100/50"><CheckCircle className="w-8 h-8 mb-2 opacity-50" />Drop here to complete & log repair</div>
-            </div>
+                </div>
+              );
+            })}
           </div>
         ) : mechanicView === 'log' ? (
           <div className="flex-1 bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -893,7 +1251,17 @@ export default function App() {
                     const needsInsp = f.nextInspection && f.odometer >= f.nextInspection;
                     return (
                       <tr key={f.id} className="hover:bg-gray-50">
-                        <td className="p-4"><div className="font-bold text-gray-800 flex items-center gap-2">{f.name}{f.status !== 'Active' && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded">{f.status}</span>}{f.isRental && <span className="bg-purple-100 text-purple-800 text-[10px] px-1.5 py-0.5 rounded">Rental</span>}</div><div className="text-xs text-gray-500 mt-1">{f.type.toUpperCase()} • {f.weightClass}</div></td>
+                        <td className="p-4">
+                          <div className="font-bold text-gray-800 flex items-center gap-2">
+                            {f.color && <div className={`w-3 h-3 rounded-full ${f.color} shadow-sm border border-gray-200`} />}
+                            {f.name}
+                            {f.status !== 'Active' && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded">{f.status}</span>}
+                            {f.isRental && <span className="bg-purple-100 text-purple-800 text-[10px] px-1.5 py-0.5 rounded">Rental</span>}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1 flex items-center gap-1.5">
+                            {f.type.toUpperCase()} <span className={f.color ? f.color.replace('bg-', 'text-') : 'text-gray-300'}>•</span> {f.weightClass}
+                          </div>
+                        </td>
                         <td className="p-4 align-top">
                           {f.type === 'trailer' ? <span className="text-gray-400 text-sm italic">N/A</span> : (
                             <div className="flex flex-col gap-1">
@@ -1380,15 +1748,87 @@ export default function App() {
   );
 
 
+  if (isSystemPrinting) {
+    return (
+      <div className="bg-white min-h-screen p-8">
+        <div className="max-w-4xl mx-auto space-y-12">
+          <div className="flex justify-between items-end border-b-4 border-slate-800 pb-4">
+            <div>
+              <h1 className="text-4xl font-black text-slate-900 tracking-tighter">CREW MASTER</h1>
+              <p className="text-xs font-black text-slate-500 uppercase tracking-[0.5em] mt-1">Official Operational Schedule</p>
+            </div>
+            <div className="text-right">
+              <div className="text-2xl font-black text-slate-800 uppercase">{printType === 'daily' ? 'Daily Report' : printType === 'weekly' ? 'Weekly Summary' : 'Operational Report'}</div>
+              <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">Generated: {new Date().toLocaleString()}</div>
+            </div>
+          </div>
+          
+          <div className="space-y-10">
+            {(() => {
+              const crewsToPrint: any[] = [];
+              const uniqueIds = new Set<string>();
+              if (printType === 'daily') { (appData.schedules[selectedDailyDate] || []).forEach(c => { if (printSelection.includes(c.id) && !uniqueIds.has(`${selectedDailyDate}-${c.id}`)) { crewsToPrint.push({ ...c, dateStr: selectedDailyDate }); uniqueIds.add(`${selectedDailyDate}-${c.id}`); } }); }
+              else if (printType === 'weekly') { weekDays.forEach(d => { const ds = formatDate(d); (appData.schedules[ds] || []).forEach(c => { if (printSelection.includes(c.id) && !uniqueIds.has(`${ds}-${c.id}`)) { crewsToPrint.push({ ...c, dateStr: ds }); uniqueIds.add(`${ds}-${c.id}`); } }); }); }
+              else {
+                const start = new Date(printDateRange.start); const end = new Date(printDateRange.end);
+                for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                  const ds = formatDate(d); (appData.schedules[ds] || []).forEach(c => { if (printSelection.includes(c.id) && !uniqueIds.has(`${ds}-${c.id}`)) { crewsToPrint.push({ ...c, dateStr: ds }); uniqueIds.add(`${ds}-${c.id}`); } });
+                }
+              }
+              return crewsToPrint.map(crew => {
+                const emps = crew.employees.map(id => appData.employees.find(e => e.id === id)).filter(Boolean);
+                const fleet = crew.fleet.map(id => appData.fleet.find(f => f.id === id)).filter(Boolean);
+                const inv = (crew.inventory || []).map(i => ({ name: appData.inventory.find(item => item.id === i.id)?.name || 'Unknown', qty: i.qty }));
+                return (
+                  <div key={`${crew.dateStr}-${crew.id}`} className="border-2 border-slate-200 rounded-3xl overflow-hidden break-inside-avoid shadow-sm mb-10">
+                    <div className="bg-slate-800 text-white p-6 flex justify-between items-center">
+                      <div><div className="text-[10px] font-black uppercase tracking-[0.3em] text-white/50 mb-1">{crew.dateStr}</div><h2 className="text-2xl font-black uppercase">{crew.division} <span className="text-green-400">#{crew.crewNumber}</span></h2></div>
+                    </div>
+                    <div className="p-8 grid grid-cols-2 gap-x-12 gap-y-8">
+                      <div className="space-y-4">
+                        <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b pb-2 flex items-center gap-2"><Users className="w-4 h-4" /> Personnel</h3>
+                        <div className="space-y-2">{emps.map((e: any) => (<div key={e.id} className="flex items-center justify-between text-sm font-bold text-slate-800 border-b border-slate-50 pb-1"><span>{e.name}</span><span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded uppercase">{e.role}</span></div>))}</div>
+                      </div>
+                      <div className="space-y-4">
+                        <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b pb-2 flex items-center gap-2"><Truck className="w-4 h-4" /> Fleet & Equipment</h3>
+                        <div className="space-y-2">{fleet.map((f: any) => (<div key={f.id} className="flex items-center justify-between text-sm font-bold text-slate-800 border-b border-slate-50 pb-1"><span>{f.name}</span><span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded uppercase">{f.type}</span></div>))}</div>
+                      </div>
+                      <div className="space-y-4">
+                        <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b pb-2 flex items-center gap-2"><Package className="w-4 h-4" /> Inventory</h3>
+                        <div className="space-y-2">{inv.length > 0 ? inv.map((i: any, idx: number) => (<div key={idx} className="flex justify-between text-sm font-bold text-slate-800 border-b border-slate-50 pb-1"><span>{i.name}</span><span className="text-green-600">{i.qty} units</span></div>)) : <div className="text-xs text-slate-300 italic font-medium">No inventory assigned</div>}</div>
+                      </div>
+                      <div className="space-y-4">
+                        <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b pb-2 flex items-center gap-2"><Flame className="w-4 h-4" /> Supplies / Tools</h3>
+                        <div className="flex flex-wrap gap-2">{crew.supplies && crew.supplies.length > 0 ? crew.supplies.map(s => (<span key={s} className="bg-slate-50 border border-slate-200 px-3 py-1 rounded-lg text-xs font-bold text-slate-600">{s}</span>)) : <div className="text-xs text-slate-300 italic font-medium">Standard kit only</div>}</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-screen bg-gray-100 font-sans overflow-hidden print:h-auto print:bg-white relative">
-      {toast && <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-6 py-3 rounded-xl shadow-2xl z-50 flex items-center gap-3 animate-in fade-in"><AlertTriangle className="w-5 h-5 text-lime-400" /><span className="font-medium text-sm">{toast}</span></div>}
+    <div className="flex h-screen bg-gray-100 font-sans overflow-hidden print:overflow-visible print:h-auto print:bg-white relative">
+      <style>{`
+        @media print {
+          body { background: white !important; overflow: visible !important; }
+          .no-print { display: none !important; }
+          .print-only { display: block !important; position: static !important; inset: auto !important; height: auto !important; overflow: visible !important; width: 100% !important; }
+          @page { margin: 1cm; }
+        }
+      `}</style>
+      {toast && <div className="fixed top-6 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-6 py-4 rounded-2xl shadow-2xl z-[200] flex items-center gap-3 animate-in slide-in-from-top-4 duration-300"><AlertTriangle className="w-5 h-5 text-lime-400" /><span className="font-bold text-sm">{toast}</span></div>}
 
       {/* LEFT SIDEBAR: RESOURCES */}
-      <div className="w-72 bg-gray-50 border-r border-gray-200 flex flex-col h-full shadow-lg z-10 print:hidden shrink-0">
+      <div className="w-72 bg-gray-50 border-r border-gray-200 flex flex-col h-full shadow-lg z-10 no-print shrink-0">
         <div className="p-4 bg-white border-b border-gray-200 shadow-sm flex flex-col gap-3">
           <div className="flex items-center justify-center py-2">
-            <img src={logoBlack} alt="Logo" className="h-16 w-auto" />
+            <img src={logoBlack} alt="Logo" className="h-24 w-auto" />
           </div>
           <div className="flex flex-col bg-gray-200 rounded-lg p-1 mt-1 gap-1">
             <button onClick={() => setCurrentView('schedule')} className={`flex items-center justify-between px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'schedule' ? 'bg-white shadow-sm text-green-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><span className="flex items-center gap-2"><CalendarDays className="w-4 h-4" /> Schedule</span></button>
@@ -1396,8 +1836,21 @@ export default function App() {
             <button onClick={() => setCurrentView('performance')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'performance' ? 'bg-white shadow-sm text-emerald-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><TrendingUp className="w-4 h-4" /> PerformanceMaster</button>
             <button onClick={() => setCurrentView('bulletins')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'bulletins' ? 'bg-white shadow-sm text-lime-600' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><Megaphone className="w-4 h-4" /> Bulletin Board</button>
           </div>
-          {isAdmin && (
-            <button onClick={() => { setLocalEmployees(JSON.parse(JSON.stringify(appData.employees))); setLocalFleet(JSON.parse(JSON.stringify(appData.fleet))); setLocalRoutes(JSON.parse(JSON.stringify(appData.routes || []))); setLocalAdmins(appData.authorizedEmails || []); setLocalInventory(JSON.parse(JSON.stringify(appData.inventory || []))); setIsManageModalOpen(true); }} className="flex justify-center items-center gap-2 w-full bg-white border border-gray-300 hover:border-green-500 hover:text-green-600 text-gray-700 px-3 py-2 rounded-lg font-medium shadow-sm transition-all text-sm mt-2"><Settings className="w-4 h-4" /> Manage Resources</button>
+          {canManageResources && (
+            <button onClick={() => { 
+              setLocalEmployees(JSON.parse(JSON.stringify(appData.employees))); 
+              setLocalFleet(JSON.parse(JSON.stringify(appData.fleet))); 
+              setLocalRoutes(JSON.parse(JSON.stringify(appData.routes || []))); 
+              setLocalAdmins(appData.authorizedEmails || []); 
+              setLocalRoles(appData.userRoles || {}); 
+              setLocalInventory(JSON.parse(JSON.stringify(appData.inventory || []))); 
+              setLocalSupplies(appData.supplies || []); 
+              setLocalPermissions(appData.rolePermissions || {
+                foreman: { canEditSchedule: false, canManageResources: false, canViewMechanic: false, canManagePermissions: false },
+                manager: { canEditSchedule: true, canManageResources: false, canViewMechanic: true, canManagePermissions: false }
+              });
+              setIsManageModalOpen(true); 
+            }} className="flex justify-center items-center gap-2 w-full bg-white border border-gray-300 hover:border-green-500 hover:text-green-600 text-gray-700 px-3 py-2 rounded-lg font-medium shadow-sm transition-all text-sm mt-2"><Settings className="w-4 h-4" /> Manage Resources</button>
           )}
         </div>
 
@@ -1417,10 +1870,19 @@ export default function App() {
               <div className="bg-lime-100 p-1.5 rounded-full"><UserCircle className="w-5 h-5 text-lime-700"/></div>
               <div className="min-w-0">
                 <div className="text-xs font-bold text-slate-800 truncate">{displayEmail}</div>
-                <div className={`text-[10px] font-black uppercase tracking-wider ${isAdmin ? 'text-lime-600' : 'text-slate-500'}`}>{isAdmin ? 'Admin' : 'Employee'}</div>
+                <div className={`text-[10px] font-black uppercase tracking-wider ${viewRole === 'admin' ? 'text-lime-600' : viewRole === 'manager' ? 'text-emerald-600' : 'text-slate-500'}`}>{viewRole === 'admin' ? 'Admin' : viewRole === 'manager' ? 'Manager' : 'Foreman'}</div>
               </div>
             </div>
           </div>
+
+          {/* ROLE TOGGLE (Visible to real admins only) */}
+          {isRealAdmin && (
+            <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
+              <button onClick={() => setViewRole('admin')} className={`flex-1 text-[10px] font-black uppercase py-1.5 rounded transition-all ${viewRole === 'admin' ? 'bg-white shadow-sm text-lime-600' : 'text-gray-400 hover:text-gray-600'}`}>Admin</button>
+              <button onClick={() => setViewRole('manager')} className={`flex-1 text-[10px] font-black uppercase py-1.5 rounded transition-all ${viewRole === 'manager' ? 'bg-white shadow-sm text-emerald-600' : 'text-gray-400 hover:text-gray-600'}`}>Mgr</button>
+              <button onClick={() => setViewRole('foreman')} className={`flex-1 text-[10px] font-black uppercase py-1.5 rounded transition-all ${viewRole === 'foreman' ? 'bg-white shadow-sm text-slate-600' : 'text-gray-400 hover:text-gray-600'}`}>Foreman</button>
+            </div>
+          )}
           <div className="flex flex-col gap-2">
             <button onClick={() => signOut(auth)} className="flex items-center justify-center gap-2 w-full text-sm text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 px-3 py-2 rounded font-bold transition shadow-sm">
               <LogOut size={16} /> Sign Out
@@ -1484,7 +1946,7 @@ export default function App() {
                           <div className="flex items-center gap-1 print:hidden">
                             {copiedDay && copiedDay.date !== dateString && <button onClick={() => handlePasteDay(dateString)} className="p-1.5 bg-green-50 border border-green-200 rounded-lg shadow-sm text-green-700 hover:bg-green-100"><ClipboardPaste className="w-4 h-4" /></button>}
                             <button onClick={() => handleCopyDay(dateString)} className="p-1.5 bg-white border border-gray-200 rounded-lg shadow-sm text-gray-600 hover:text-green-600"><Copy className="w-4 h-4" /></button>
-                            {isAdmin && <button onClick={() => addCrewToDay(dateString)} className="p-1.5 bg-green-600 text-white rounded-lg shadow-sm hover:bg-green-700 transition-colors"><Plus className="w-4 h-4" /></button>}
+                            {canEditSchedule && <button onClick={() => addCrewToDay(dateString)} className="p-1.5 bg-green-600 text-white rounded-lg shadow-sm hover:bg-green-700 transition-colors"><Plus className="w-4 h-4" /></button>}
                           </div>
                           {dayWeather && (
                             <button onClick={() => setIsWeatherModalOpen(true)} className="flex items-center gap-1 mt-1 bg-white px-1.5 py-0.5 rounded border border-gray-200 hover:bg-gray-50 print:hidden shadow-sm">
@@ -1526,7 +1988,7 @@ export default function App() {
                         <div className="flex gap-2">
                           {copiedDay && copiedDay.date !== selectedDailyDate && <button onClick={() => handlePasteDay(selectedDailyDate)} className="px-4 py-2 font-bold bg-green-50 border border-green-200 rounded-lg shadow-sm text-green-700 hover:bg-green-100 flex items-center gap-2"><ClipboardPaste className="w-4 h-4" /> Paste Copied Day</button>}
                           <button onClick={() => handleCopyDay(selectedDailyDate)} className="px-4 py-2 font-bold bg-white border border-gray-200 rounded-lg shadow-sm text-gray-600 hover:text-green-600 flex items-center gap-2"><Copy className="w-4 h-4" /> Copy Day</button>
-                          {isAdmin && <button onClick={() => addCrewToDay(selectedDailyDate)} className="px-4 py-2 font-bold bg-green-600 text-white rounded-lg shadow hover:bg-green-700 transition-colors flex items-center gap-2"><Plus className="w-4 h-4" /> Add Crew</button>}
+                          {canEditSchedule && <button onClick={() => addCrewToDay(selectedDailyDate)} className="px-4 py-2 font-bold bg-green-600 text-white rounded-lg shadow hover:bg-green-700 transition-colors flex items-center gap-2"><Plus className="w-4 h-4" /> Add Crew</button>}
                         </div>
                       </div>
 
@@ -1535,7 +1997,7 @@ export default function App() {
                         <div className="bg-white border-2 border-dashed border-gray-300 rounded-2xl p-20 flex flex-col items-center justify-center text-gray-400">
                           <CalendarIcon className="w-16 h-16 mb-4 opacity-20" />
                           <p className="text-xl font-medium text-gray-500">No crews scheduled for this day.</p>
-                          {isAdmin && <button onClick={() => addCrewToDay(selectedDailyDate)} className="mt-6 px-6 py-2 bg-green-50 text-green-700 border border-green-200 rounded-lg font-bold hover:bg-green-100">Click here to add one</button>}
+                          {canEditSchedule && <button onClick={() => addCrewToDay(selectedDailyDate)} className="mt-6 px-6 py-2 bg-green-50 text-green-700 border border-green-200 rounded-lg font-bold hover:bg-green-100">Click here to add one</button>}
                         </div>
                       ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 items-start">
@@ -1558,8 +2020,9 @@ export default function App() {
             <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50 shrink-0"><h2 className="text-xl font-black flex items-center gap-2 text-slate-800"><Settings className="w-5 h-5 text-lime-500" /> Manage Resources</h2><button onClick={() => setIsManageModalOpen(false)} className="text-gray-500 hover:text-gray-800"><X className="w-6 h-6" /></button></div>
             <div className="flex border-b border-gray-200 overflow-x-auto bg-white shrink-0">
               <button onClick={() => setManageTab('employees')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'employees' ? 'text-green-600 border-green-600 bg-green-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Users className="w-4 h-4" /> Personnel</button>
-              <button onClick={() => setManageTab('fleet')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'fleet' ? 'text-green-600 border-green-600 bg-green-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Truck className="w-4 h-4" /> Fleet & Equip</button>
+               <button onClick={() => setManageTab('fleet')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'fleet' ? 'text-green-600 border-green-600 bg-green-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Truck className="w-4 h-4" /> Fleet & Equip</button>
               <button onClick={() => setManageTab('inventory')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'inventory' ? 'text-emerald-600 border-emerald-600 bg-emerald-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Package className="w-4 h-4" /> InventoryMaster</button>
+              <button onClick={() => setManageTab('supplies')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'supplies' ? 'text-slate-600 border-slate-600 bg-slate-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Hammer className="w-4 h-4" /> Supplies/Tools</button>
               <button onClick={() => setManageTab('routes')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'routes' ? 'text-emerald-600 border-emerald-600 bg-emerald-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><Map className="w-4 h-4" /> Routes Database</button>
               <button onClick={() => setManageTab('permissions')} className={`px-6 py-3 font-bold text-sm flex items-center gap-2 border-b-2 transition-colors ${manageTab === 'permissions' ? 'text-lime-600 border-lime-600 bg-lime-50/50' : 'text-gray-500 border-transparent hover:bg-gray-50'}`}><ShieldCheck className="w-4 h-4" /> Permissions</button>
             </div>
@@ -1605,25 +2068,89 @@ export default function App() {
                           <input className="flex-1 min-w-[150px] border border-gray-300 rounded-lg p-2 text-sm font-bold text-gray-800 outline-none focus:ring-2 focus:ring-green-400" value={f.name} onChange={e => { const nf = [...localFleet]; nf[realIdx].name = e.target.value; setLocalFleet(nf); }} />
                           <select className="border border-gray-300 rounded-lg p-2 text-sm font-semibold bg-gray-50 capitalize" value={f.type} onChange={e => { const nf = [...localFleet]; nf[realIdx].type = e.target.value; setLocalFleet(nf); }}><option value="truck">Truck</option><option value="trailer">Trailer</option><option value="equipment">Equipment</option></select>
                           <select className="border border-gray-300 rounded-lg p-2 text-sm font-bold bg-gray-50" value={f.status} onChange={e => { const nf = [...localFleet]; nf[realIdx].status = e.target.value; setLocalFleet(nf); }}><option value="Active">Active</option><option value="Out of Service">Out of Service</option><option value="In Repair">In Repair</option></select>
+                          <div className="flex items-center gap-1.5 bg-gray-50 border border-gray-300 rounded-lg p-1.5">
+                            {['bg-black', 'bg-gray-500', 'bg-white', 'bg-blue-600', 'bg-red-500', 'bg-green-500', 'bg-yellow-400', 'bg-orange-500'].map(color => (
+                              <button key={color} onClick={() => { const nf = [...localFleet]; nf[realIdx].color = color; setLocalFleet(nf); }} className={`w-6 h-6 rounded-full ${color} border border-gray-300 transition-all ${f.color === color ? 'ring-2 ring-offset-1 ring-slate-800 scale-110' : 'opacity-60 hover:opacity-100'}`} />
+                            ))}
+                          </div>
                           <button onClick={() => setLocalFleet(localFleet.filter(item => item.id !== f.id))} className="text-red-400 hover:bg-red-50 p-2 rounded-lg transition-colors ml-auto"><Trash2 className="w-5 h-5" /></button>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-1">
-                          <div className="flex flex-col gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
-                            <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Compliance & Weights</h5>
-                            <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700 w-20">Class:</span><select className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-semibold bg-white" value={f.weightClass || 'N/A'} onChange={e => { const nf = [...localFleet]; nf[realIdx].weightClass = e.target.value; setLocalFleet(nf); }}>{WEIGHT_CLASSES.map(wc => <option key={wc} value={wc}>{wc}</option>)}</select></div>
-                            <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700 w-20">Reg Exp:</span><input type="date" className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-semibold bg-white" value={f.regExpiry || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].regExpiry = e.target.value; setLocalFleet(nf); }} /></div>
-                            <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700 w-20">Safety Exp:</span><input type="date" className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-semibold bg-white" value={f.safetyExpiry || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].safetyExpiry = e.target.value; setLocalFleet(nf); }} /></div>
+                          <div className="flex flex-col gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                            <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Identification & Compliance</h5>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-slate-700 w-24">Serial #:</span>
+                              <input className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-bold bg-white" placeholder="Serial Number" value={f.serialNumber || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].serialNumber = e.target.value; setLocalFleet(nf); }} />
+                            </div>
+                            {f.type === 'equipment' && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-slate-700 w-24">Model #:</span>
+                                <input className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-bold bg-white" placeholder="Model Number" value={f.modelNumber || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].modelNumber = e.target.value; setLocalFleet(nf); }} />
+                              </div>
+                            )}
+
+                            {f.type !== 'equipment' && (
+                              <>
+                                {f.type === 'truck' && (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-bold text-slate-700 w-24">Weight Class:</span>
+                                    <select className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-semibold bg-white" value={f.weightClass || 'N/A'} onChange={e => { const nf = [...localFleet]; nf[realIdx].weightClass = e.target.value; setLocalFleet(nf); }}>{WEIGHT_CLASSES.map(wc => <option key={wc} value={wc}>{wc}</option>)}</select>
+                                  </div>
+                                )}
+                                {f.type === 'truck' && (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-bold text-slate-700 w-24">Compliance:</span>
+                                    <label className="flex items-center gap-2 cursor-pointer bg-white px-2 py-1 rounded border border-slate-300 flex-1">
+                                      <input type="checkbox" checked={f.cvorRequired || false} onChange={e => { const nf = [...localFleet]; nf[realIdx].cvorRequired = e.target.checked; setLocalFleet(nf); }} className="w-4 h-4 rounded text-lime-600 focus:ring-lime-500" />
+                                      <span className="text-[10px] font-black uppercase text-slate-600">CVOR/Schedule 1 Required</span>
+                                    </label>
+                                  </div>
+                                )}
+                                {f.type === 'trailer' && (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-bold text-slate-700 w-24">Yellow Sticker:</span>
+                                    <label className="flex items-center gap-2 cursor-pointer bg-white px-2 py-1 rounded border border-slate-300 flex-1">
+                                      <input type="checkbox" checked={f.isYellowSticker || false} onChange={e => { const nf = [...localFleet]; nf[realIdx].isYellowSticker = e.target.checked; setLocalFleet(nf); }} className="w-4 h-4 rounded text-yellow-600 focus:ring-yellow-500" />
+                                      <span className="text-[10px] font-black uppercase text-slate-600">CVOR - Yellow Sticker</span>
+                                    </label>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                            
+                            {(f.type === 'truck' || (f.type === 'trailer' && f.isYellowSticker)) && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-slate-700 w-24">{f.type === 'truck' ? 'Safety Exp:' : 'Comm Safety Exp:'}</span>
+                                <input type="date" className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-semibold bg-white" value={f.safetyExpiry || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].safetyExpiry = e.target.value; setLocalFleet(nf); }} />
+                              </div>
+                            )}
+
+                            {f.type === 'truck' && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-slate-700 w-24">Plate Renewal:</span>
+                                <input type="date" className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-semibold bg-white" value={f.regExpiry || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].regExpiry = e.target.value; setLocalFleet(nf); }} />
+                              </div>
+                            )}
                           </div>
-                          <div className="flex flex-col gap-2 bg-green-50/50 p-3 rounded-lg border border-green-100">
-                            <h5 className="text-[10px] font-black text-green-800 uppercase tracking-widest">Maintenance Targets</h5>
-                            <div className="flex items-center gap-2"><span className="text-xs font-bold text-green-900 w-24">Next Oil:</span><input type="number" className="flex-1 border border-green-200 rounded p-1.5 text-xs font-mono font-bold bg-white" value={f.nextOilChange || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].nextOilChange = Number(e.target.value); setLocalFleet(nf); }} /></div>
-                            <div className="flex items-center gap-2"><span className="text-xs font-bold text-green-900 w-24">Next Insp:</span><input type="number" className="flex-1 border border-green-200 rounded p-1.5 text-xs font-mono font-bold bg-white" value={f.nextInspection || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].nextInspection = Number(e.target.value); setLocalFleet(nf); }} /></div>
+                          
+                          <div className="flex flex-col gap-2 bg-green-50/50 p-3 rounded-xl border border-green-100">
+                            <h5 className="text-[10px] font-black text-green-800 uppercase tracking-widest">Maintenance & Odometer</h5>
+                            {f.type !== 'trailer' && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-green-900 w-24">Oil Change:</span>
+                                <input type="number" className="flex-1 border border-green-200 rounded p-1.5 text-xs font-mono font-bold bg-white" value={f.nextOilChange || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].nextOilChange = Number(e.target.value); setLocalFleet(nf); }} />
+                              </div>
+                            )}
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-green-900 w-24">Inspection Due:</span>
+                              <input type="number" className="flex-1 border border-green-200 rounded p-1.5 text-xs font-mono font-bold bg-white" value={f.nextInspection || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].nextInspection = Number(e.target.value); setLocalFleet(nf); }} />
+                            </div>
                           </div>
                         </div>
                       </div>
                     )
                   })}
-                  <button onClick={() => setLocalFleet([...localFleet, { id: `f-${Date.now()}`, name: 'New Item', type: 'equipment', status: 'Active', weightClass: 'N/A', regExpiry: '', safetyExpiry: '', odometer: undefined, nextOilChange: undefined, nextInspection: undefined, lastOdometerUpdate: '', isRental: false, rentalEnd: '', repairTags: [] }])} className="w-full py-4 border-2 border-dashed border-green-300 text-green-600 rounded-xl font-bold hover:bg-green-50 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add Fleet/Equipment</button>
+                  <button onClick={() => setLocalFleet([...localFleet, { id: `f-${Date.now()}`, name: 'New Item', type: 'equipment', status: 'Active', weightClass: 'N/A', regExpiry: '', safetyExpiry: '', odometer: 0, nextOilChange: 0, nextInspection: 0, lastOdometerUpdate: '', isRental: false, rentalEnd: '', repairTags: [] }])} className="w-full py-4 border-2 border-dashed border-green-300 text-green-600 rounded-xl font-bold hover:bg-green-50 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add Fleet/Equipment</button>
                 </div>
               )}
 
@@ -1672,6 +2199,28 @@ export default function App() {
                     })}
                     <button onClick={() => setLocalInventory([...localInventory, { id: `inv-${Date.now()}`, name: 'New Material', unit: 'Units', stock: 0, lastAudit: formatDate(new Date()) }])} className="min-h-[200px] border-2 border-dashed border-emerald-300 text-emerald-600 rounded-xl font-bold hover:bg-emerald-50 transition-colors flex flex-col items-center justify-center gap-2"><Plus className="w-8 h-8" /><br />Add Inventory Item</button>
                   </div>
+                </div>
+              )}
+
+              {manageTab === 'supplies' && (
+                <div className="space-y-4 max-w-2xl">
+                  <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl flex items-start gap-4 shadow-sm">
+                    <Hammer className="w-8 h-8 text-slate-600 shrink-0" />
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-lg">Supplies & Tools Catalog</h3>
+                      <p className="text-slate-600 text-sm mt-1 leading-relaxed">List standard equipment like Blowers, Trimmers, or Rakes here. You can then assign these to specific crews on the Schedule Board to track exactly what gear each team is carrying.</p>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-white rounded-xl border border-slate-200 shadow-sm divide-y divide-slate-100">
+                    {localSupplies.map((item, sIdx) => (
+                      <div key={sIdx} className="p-3 flex items-center gap-4">
+                        <input className="flex-1 border border-slate-200 rounded-lg p-2 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-slate-400" value={item} onChange={e => { const ns = [...localSupplies]; ns[sIdx] = e.target.value; setLocalSupplies(ns); }} />
+                        <button onClick={() => setLocalSupplies(localSupplies.filter((_, i) => i !== sIdx))} className="text-red-400 hover:bg-red-50 p-2 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={() => setLocalSupplies([...localSupplies, 'New Tool/Supply'])} className="w-full py-4 border-2 border-dashed border-slate-300 text-slate-500 rounded-xl font-bold hover:bg-slate-100 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add to Catalog</button>
                 </div>
               )}
 
@@ -1725,36 +2274,91 @@ export default function App() {
               )}
 
               {manageTab === 'permissions' && (
-                <div className="space-y-6 max-w-3xl">
+                <div className="space-y-6 max-w-4xl">
                   <div className="bg-lime-50 border border-lime-200 p-5 rounded-xl flex items-start gap-4 shadow-sm">
                     <ShieldCheck className="w-8 h-8 text-lime-600 shrink-0" />
                     <div>
-                      <h4 className="font-bold text-lime-900 text-lg">Access Management</h4>
-                      <p className="text-lime-800 text-sm mt-1 leading-relaxed">Add email addresses here to give your managers Admin access. Admins can schedule crews, log repairs, and post to the Bulletin Board. Only the Super Admin ({displayEmail}) can delete other admins.</p>
+                      <h4 className="font-bold text-lime-900 text-lg">Team Access Management</h4>
+                      <p className="text-lime-800 text-sm mt-1 leading-relaxed">Manage permissions for everyone who has signed into the app. New users are automatically added as <strong>Foreman</strong>. Upgrade them to <strong>Manager</strong> or <strong>Admin</strong> below.</p>
                     </div>
                   </div>
 
-                  <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                    <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 block">Grant Admin Access</label>
-                    <div className="flex gap-3">
-                      <input type="email" placeholder="manager@company.com" value={newAdminEmail} onChange={e => setNewAdminEmail(e.target.value)} className="flex-1 p-3 border border-slate-300 rounded-lg outline-none focus:border-lime-500 focus:ring-1 ring-lime-500 font-bold text-slate-800" />
-                      <button onClick={() => { if (newAdminEmail.includes('@') && !localAdmins.includes(newAdminEmail.toLowerCase())) { setLocalAdmins([...localAdmins, newAdminEmail.toLowerCase()]); setNewAdminEmail(''); } }} className="bg-slate-800 text-white px-6 py-3 rounded-lg font-bold flex items-center gap-2 hover:bg-slate-700 transition-colors shadow-sm"><UserPlus size={18} /> Add Admin</button>
-                    </div>
+                  <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                          <th className="px-6 py-4">User Email</th>
+                          <th className="px-6 py-4">Current Access Role</th>
+                          <th className="px-6 py-4 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {Object.entries(localRoles).map(([email, role]) => (
+                          <tr key={email} className="hover:bg-slate-50 transition-colors">
+                            <td className="px-6 py-4 font-bold text-slate-800">
+                              <div className="flex items-center gap-3">
+                                <UserCircle className="w-5 h-5 text-slate-400" />
+                                {email}
+                                {email === 'marcoguidopalermo@gmail.com' && <span className="bg-lime-100 text-lime-700 text-[9px] px-2 py-0.5 rounded-full font-black">SUPER ADMIN</span>}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <select 
+                                value={role} 
+                                disabled={email === 'marcoguidopalermo@gmail.com'}
+                                onChange={(e) => setLocalRoles({ ...localRoles, [email]: e.target.value as any })}
+                                className="bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-green-400 disabled:opacity-50"
+                              >
+                                <option value="admin">Administrator</option>
+                                <option value="manager">Manager</option>
+                                <option value="foreman">Foreman</option>
+                              </select>
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              {email !== 'marcoguidopalermo@gmail.com' && (
+                                <button onClick={() => { const nr = { ...localRoles }; delete nr[email]; setLocalRoles(nr); }} className="text-rose-400 hover:text-rose-600 p-2 hover:bg-rose-50 rounded-lg transition-colors">
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
 
-                  <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100 overflow-hidden shadow-sm">
-                    {localAdmins.map((email) => (
-                      <div key={email} className="p-4 flex justify-between items-center hover:bg-slate-50 transition-colors">
-                        <div className="flex items-center gap-4">
-                          <div className="bg-slate-100 p-2 rounded-full text-slate-400"><UserCircle size={24} /></div>
-                          <span className="text-base font-bold text-slate-800">{email}</span>
-                          {email === displayEmail && <span className="text-[10px] bg-lime-100 text-lime-700 px-2.5 py-1 rounded-full font-black uppercase tracking-widest border border-lime-200">Super Admin</span>}
-                        </div>
-                        {email !== displayEmail && (
-                          <button onClick={() => setLocalAdmins(localAdmins.filter(x => x !== email))} className="text-rose-400 hover:text-rose-600 hover:bg-rose-50 p-2 rounded-lg transition-colors"><Trash2 size={18} /></button>
-                        )}
-                      </div>
-                    ))}
+                  <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm mt-6">
+                    <div className="bg-slate-50 border-b border-slate-200 px-6 py-4">
+                      <h4 className="font-bold text-slate-800">Feature Access by Role</h4>
+                      <p className="text-xs text-slate-500 mt-1 uppercase tracking-widest font-black">Control what Managers and Foremen can see and do</p>
+                    </div>
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50/50 border-b border-slate-200 text-[9px] font-black uppercase tracking-widest text-slate-400">
+                          <th className="px-6 py-3">Permission Name</th>
+                          <th className="px-6 py-3 text-center">Foreman</th>
+                          <th className="px-6 py-3 text-center">Manager</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {[
+                          { key: 'canEditSchedule', label: 'Edit Daily Schedule' },
+                          { key: 'canManageResources', label: 'Manage Fleet/Personnel' },
+                          { key: 'canViewMechanic', label: 'Access Mechanic Board' },
+                          { key: 'canManagePermissions', label: 'Administer Permissions' }
+                        ].map(p => (
+                          <tr key={p.key} className="hover:bg-slate-50/50">
+                            <td className="px-6 py-4 text-sm font-bold text-slate-700">{p.label}</td>
+                            <td className="px-6 py-4 text-center">
+                              <input type="checkbox" checked={(localPermissions.foreman as any)[p.key]} onChange={e => setLocalPermissions({ ...localPermissions, foreman: { ...localPermissions.foreman, [p.key]: e.target.checked } })} className="w-5 h-5 rounded border-slate-300 text-lime-600 focus:ring-lime-500" />
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              <input type="checkbox" checked={(localPermissions.manager as any)[p.key]} onChange={e => setLocalPermissions({ ...localPermissions, manager: { ...localPermissions.manager, [p.key]: e.target.checked } })} className="w-5 h-5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
@@ -1762,7 +2366,23 @@ export default function App() {
 
             <div className="p-4 border-t border-gray-200 bg-white flex justify-end gap-4 shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
               <button onClick={() => setIsManageModalOpen(false)} className="px-6 py-2.5 font-bold text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">Cancel</button>
-              <button onClick={() => { syncToCloud({ ...appData, employees: localEmployees, fleet: localFleet, routes: localRoutes, authorizedEmails: localAdmins, inventory: localInventory }); setIsManageModalOpen(false); showToastMsg("System Resources updated successfully!"); }} className="px-8 py-2.5 font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow transition-colors">Save All Changes</button>
+              <button onClick={async () => { 
+                const success = await syncToCloud({ 
+                  ...appData, 
+                  employees: localEmployees, 
+                  fleet: localFleet, 
+                  routes: localRoutes, 
+                  authorizedEmails: localAdmins, 
+                  userRoles: localRoles, 
+                  inventory: localInventory, 
+                  supplies: localSupplies,
+                  rolePermissions: localPermissions
+                }); 
+                if (success) {
+                  setIsManageModalOpen(false); 
+                  showToastMsg("System Resources updated successfully!"); 
+                }
+              }} className="px-8 py-2.5 font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow transition-colors">Save All Changes</button>
             </div>
           </div>
         </div>
@@ -1789,6 +2409,108 @@ export default function App() {
             <div className="p-5 border-t border-gray-200 bg-gray-50 flex justify-end gap-3">
               <button onClick={() => setRepairModal({ isOpen: false, fleetId: null, fixNotes: '', cost: '' })} className="px-5 py-2.5 font-bold text-gray-600 hover:bg-gray-200 rounded-lg">Cancel</button>
               <button onClick={handleRepairComplete} className="px-6 py-2.5 font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow">Save to Repair Log</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MANUAL TASK MODAL */}
+      {manualTaskModal.isOpen && (
+        <div className="fixed inset-0 bg-black/60 z-[110] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col animate-in slide-in-from-bottom-8">
+            <div className="p-5 border-b border-gray-200 bg-slate-900 text-white flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <PenTool className="w-6 h-6 text-lime-400" />
+                <h3 className="text-xl font-bold">Report New Repair</h3>
+              </div>
+              <button onClick={() => setManualTaskModal({ ...manualTaskModal, isOpen: false })} className="text-white/60 hover:text-white transition-colors"><X className="w-6 h-6" /></button>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Select Equipment (Optional)</label>
+                <select 
+                  className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-lime-400"
+                  value={manualTaskModal.unitId}
+                  onChange={e => {
+                    const unit = appData.fleet.find(f => f.id === e.target.value);
+                    setManualTaskModal({ ...manualTaskModal, unitId: e.target.value, unitName: unit ? unit.name : '' });
+                  }}
+                >
+                  <option value="">Other / Not in List</option>
+                  {appData.fleet.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                </select>
+              </div>
+
+              {!manualTaskModal.unitId && (
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Equipment Name</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. Red Rake, Custom Trailer"
+                    className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-lime-400"
+                    value={manualTaskModal.unitName}
+                    onChange={e => setManualTaskModal({ ...manualTaskModal, unitName: e.target.value })}
+                  />
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Category / Issue</label>
+                <input 
+                  type="text" 
+                  placeholder="e.g. Engine noise, Broken handle"
+                  className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-lime-400"
+                  value={manualTaskModal.category}
+                  onChange={e => setManualTaskModal({ ...manualTaskModal, category: e.target.value })}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Severity</label>
+                <div className="flex gap-2">
+                  <button onClick={() => setManualTaskModal({ ...manualTaskModal, severity: 'minor' })} className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase border transition-all ${manualTaskModal.severity === 'minor' ? 'bg-amber-50 border-amber-300 text-amber-700 shadow-sm' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>Minor</button>
+                  <button onClick={() => setManualTaskModal({ ...manualTaskModal, severity: 'major' })} className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase border transition-all ${manualTaskModal.severity === 'major' ? 'bg-rose-50 border-rose-300 text-rose-700 shadow-sm' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>Major/Safety</button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Notes</label>
+                <textarea 
+                  rows={3} 
+                  placeholder="Details about the repair needed..."
+                  className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-lime-400 resize-none"
+                  value={manualTaskModal.notes}
+                  onChange={e => setManualTaskModal({ ...manualTaskModal, notes: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
+              <button onClick={() => setManualTaskModal({ ...manualTaskModal, isOpen: false })} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors">Cancel</button>
+              <button 
+                disabled={!manualTaskModal.unitName || !manualTaskModal.category}
+                onClick={async () => {
+                  const newTask: MechanicTask = {
+                    id: `task-${Date.now()}`,
+                    unitId: manualTaskModal.unitId || undefined,
+                    unitName: manualTaskModal.unitName,
+                    category: manualTaskModal.category,
+                    notes: manualTaskModal.notes,
+                    severity: manualTaskModal.severity as any,
+                    status: 'todo',
+                    dateReported: formatDate(new Date())
+                  };
+                  const success = await syncToCloud({ ...appData, mechanicTasks: [newTask, ...appData.mechanicTasks] });
+                  if (success) {
+                    setManualTaskModal({ isOpen: false, unitId: '', unitName: '', category: '', notes: '', severity: 'minor' });
+                    showToastMsg("Repair task added to board.");
+                  }
+                }}
+                className="px-8 py-2.5 font-black text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-lg disabled:opacity-50 transition-all uppercase tracking-widest text-xs"
+              >
+                Submit Task
+              </button>
             </div>
           </div>
         </div>
@@ -1834,6 +2556,681 @@ export default function App() {
         </div>
       )}
 
+      {/* PRINT SELECTION MODAL */}
+      {isPrintModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-[70] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col animate-in zoom-in-95">
+            <div className="p-5 border-b border-gray-200 bg-slate-800 text-white flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <Printer className="w-6 h-6 text-green-400" />
+                <div>
+                  <h2 className="text-xl font-bold">Print Schedule Manager</h2>
+                  <p className="text-[10px] uppercase font-black tracking-widest text-slate-400">Select crews and options for professional printing</p>
+                </div>
+              </div>
+              <button onClick={() => setIsPrintModalOpen(false)} className="text-white/60 hover:text-white transition-colors"><X className="w-6 h-6" /></button>
+            </div>
+            
+            <div className="p-6 flex-1 overflow-y-auto space-y-6">
+              <div className="flex gap-2 p-1 bg-slate-100 rounded-xl border border-slate-200">
+                <button onClick={() => setPrintType('daily')} className={`flex-1 py-2.5 rounded-lg font-black uppercase text-[10px] tracking-widest transition-all ${printType === 'daily' ? 'bg-white shadow-sm text-green-600' : 'text-slate-400 hover:text-slate-600'}`}>Daily</button>
+                <button onClick={() => setPrintType('weekly')} className={`flex-1 py-2.5 rounded-lg font-black uppercase text-[10px] tracking-widest transition-all ${printType === 'weekly' ? 'bg-white shadow-sm text-green-600' : 'text-slate-400 hover:text-slate-600'}`}>Weekly</button>
+                <button onClick={() => setPrintType('range')} className={`flex-1 py-2.5 rounded-lg font-black uppercase text-[10px] tracking-widest transition-all ${printType === 'range' ? 'bg-white shadow-sm text-green-600' : 'text-slate-400 hover:text-slate-600'}`}>Date Range</button>
+              </div>
+
+              {printType === 'range' && (
+                <div className="grid grid-cols-2 gap-4 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                  <div>
+                    <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">Start Date</label>
+                    <input type="date" value={printDateRange.start} onChange={e => setPrintDateRange({ ...printDateRange, start: e.target.value })} className="w-full bg-white border border-slate-200 p-2 rounded-lg text-sm font-bold outline-none" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">End Date</label>
+                    <input type="date" value={printDateRange.end} onChange={e => setPrintDateRange({ ...printDateRange, end: e.target.value })} className="w-full bg-white border border-slate-200 p-2 rounded-lg text-sm font-bold outline-none" />
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-4">
+                <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+                  <h4 className="text-[11px] font-black text-slate-500 uppercase tracking-widest">Select Crews to Include</h4>
+                  <div className="flex gap-3">
+                    <button onClick={() => {
+                      const allIds: string[] = [];
+                      if (printType === 'daily') { (appData.schedules[selectedDailyDate] || []).forEach(c => allIds.push(c.id)); }
+                      else if (printType === 'weekly') { weekDays.forEach(d => (appData.schedules[formatDate(d)] || []).forEach(c => allIds.push(c.id))); }
+                      else {
+                        const start = new Date(printDateRange.start);
+                        const end = new Date(printDateRange.end);
+                        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                          (appData.schedules[formatDate(d)] || []).forEach(c => allIds.push(c.id));
+                        }
+                      }
+                      setPrintSelection(Array.from(new Set(allIds)));
+                    }} className="text-[10px] font-bold text-green-600 hover:underline">Select All</button>
+                    <button onClick={() => setPrintSelection([])} className="text-[10px] font-bold text-slate-400 hover:underline">Clear All</button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                  {(() => {
+                    const availableCrews: any[] = [];
+                    if (printType === 'daily') { (appData.schedules[selectedDailyDate] || []).forEach(c => availableCrews.push({ ...c, dateStr: selectedDailyDate })); }
+                    else if (printType === 'weekly') { weekDays.forEach(d => { const ds = formatDate(d); (appData.schedules[ds] || []).forEach(c => availableCrews.push({ ...c, dateStr: ds })); }); }
+                    else {
+                      const start = new Date(printDateRange.start);
+                      const end = new Date(printDateRange.end);
+                      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                        const ds = formatDate(d);
+                        (appData.schedules[ds] || []).forEach(c => availableCrews.push({ ...c, dateStr: ds }));
+                      }
+                    }
+                    
+                    if (availableCrews.length === 0) return <div className="col-span-2 py-8 text-center text-slate-400 italic font-medium">No crews available to print for this selection.</div>;
+                    
+                    return availableCrews.map(crew => (
+                      <label key={`${crew.dateStr}-${crew.id}`} className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${printSelection.includes(crew.id) ? 'bg-green-50 border-green-200' : 'bg-white border-slate-200 hover:bg-slate-50'}`}>
+                        <input type="checkbox" checked={printSelection.includes(crew.id)} onChange={e => { if (e.target.checked) setPrintSelection([...printSelection, crew.id]); else setPrintSelection(printSelection.filter(id => id !== crew.id)); }} className="w-5 h-5 rounded border-slate-300 text-green-600 focus:ring-green-500" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-black text-slate-800 truncate">{crew.division} #{crew.crewNumber}</div>
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">{crew.dateStr}</div>
+                        </div>
+                      </label>
+                    ));
+                  })()}
+                </div>
+              </div>
+
+              <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                <p className="text-[11px] font-bold text-amber-800 leading-relaxed uppercase">The printout will include Date, Personnel, Equipment, Inventory, and Tools/Supplies for each selected crew on a professional layout.</p>
+              </div>
+            </div>
+
+            <div className="p-5 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+              <button onClick={() => setIsPrintModalOpen(false)} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors">Cancel</button>
+              <button onClick={() => { 
+                setIsPrintModalOpen(false); 
+                setIsSystemPrinting(true); 
+                setTimeout(() => { 
+                  window.print(); 
+                  setIsSystemPrinting(false); 
+                }, 500); 
+              }} disabled={printSelection.length === 0} className="px-8 py-2.5 font-black text-white bg-green-600 hover:bg-green-700 rounded-lg shadow-lg shadow-green-600/20 disabled:opacity-50 transition-all flex items-center gap-2 uppercase tracking-widest text-xs"><Printer className="w-4 h-4" /> Generate Printout</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* INSPECTION MODAL */}
+      {activeInspection.unitId && (
+        <div className="fixed inset-0 bg-black/60 z-[80] flex items-center justify-center p-4">
+          {(() => {
+            const unit = appData.fleet.find(f => f.id === activeInspection.unitId);
+            if (!unit) return null;
+            const type = getRequiredInspectionType(unit);
+            const categories = type === 'DVIR' ? DVIR_DEFECTS : CIRCLE_CHECK_DEFECTS;
+            
+            return (
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden flex flex-col animate-in zoom-in-95 max-h-[90vh]">
+                <div className="p-5 border-b border-gray-200 bg-slate-800 text-white flex justify-between items-center shrink-0">
+                  <div className="flex items-center gap-3">
+                    <ShieldCheck className={`w-6 h-6 ${type === 'DVIR' ? 'text-blue-400' : 'text-green-400'}`} />
+                    <div>
+                      <h2 className="text-xl font-bold">{type === 'DVIR' ? 'Formal DVIR (Schedule 1)' : 'Company Circle Check'}</h2>
+                      <p className="text-[10px] uppercase font-black tracking-widest text-slate-400">Unit: {unit.name} • {unit.type}</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setActiveInspection({ unitId: null, targetDate: '', defects: [], expandedCategory: null, draftSeverity: 'minor', draftNotes: '' })} className="text-white/60 hover:text-white transition-colors"><X className="w-6 h-6" /></button>
+                </div>
+                
+                <div className="p-6 overflow-y-auto space-y-8 bg-slate-50 flex-1">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Odometer Reading</label>
+                      <input type="number" id="insp-odo" className="w-full border border-slate-300 rounded-xl p-3 font-mono font-bold text-lg outline-none focus:ring-2 focus:ring-slate-800" defaultValue={unit.odometer || 0} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Location</label>
+                      <input type="text" id="insp-loc" className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-slate-800" placeholder="e.g. Shop / Site" />
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center">
+                      <h3 className="text-xs font-black uppercase tracking-widest text-slate-800">Safety Checklist</h3>
+                      <button 
+                        onClick={() => {
+                          if (activeInspection.defects.length > 0) {
+                            if (!confirm("This will clear all reported defects. Proceed?")) return;
+                          }
+                          setActiveInspection({ ...activeInspection, defects: [], expandedCategory: null });
+                          showToastMsg("All items marked clear.");
+                          // Focus signature field
+                          setTimeout(() => {
+                            const sigField = document.getElementById('insp-sig');
+                            if (sigField) {
+                              sigField.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                              sigField.focus();
+                            }
+                          }, 500);
+                        }}
+                        className="text-[10px] font-black bg-green-50 text-green-700 px-3 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 transition-all uppercase tracking-widest"
+                      >
+                        No defects found — mark all clear
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      {categories.map(cat => {
+                        const existingDefect = activeInspection.defects.find(d => d.category === cat);
+                        const isExpanded = activeInspection.expandedCategory === cat;
+
+                        return (
+                          <div key={cat} className={`bg-white border rounded-xl overflow-hidden transition-all ${existingDefect ? 'border-rose-300 ring-1 ring-rose-100' : 'border-slate-200 shadow-sm'}`}>
+                            <button 
+                              onClick={() => {
+                                if (isExpanded) {
+                                  setActiveInspection({ ...activeInspection, expandedCategory: null });
+                                } else {
+                                  setActiveInspection({ 
+                                    ...activeInspection, 
+                                    expandedCategory: cat,
+                                    draftSeverity: existingDefect?.severity || 'minor',
+                                    draftNotes: existingDefect?.notes || ''
+                                  });
+                                }
+                              }}
+                              className="w-full p-4 flex items-center justify-between text-left hover:bg-slate-50 transition-colors"
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className={`w-2.5 h-2.5 rounded-full ${existingDefect ? (existingDefect.severity === 'major' ? 'bg-rose-500 animate-pulse' : 'bg-amber-500') : 'bg-slate-200'}`} />
+                                <span className={`text-sm font-bold ${existingDefect ? 'text-rose-900' : 'text-slate-700'}`}>{cat}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {existingDefect && <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${existingDefect.severity === 'major' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>{existingDefect.severity}</span>}
+                                {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+                              </div>
+                            </button>
+
+                            {isExpanded && (
+                              <div className="p-4 border-t border-slate-100 bg-slate-50 space-y-4 animate-in slide-in-from-top-2">
+                                <div className="space-y-2">
+                                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Severity Level</label>
+                                  <div className="flex bg-white p-1 rounded-xl border border-slate-200">
+                                    <button 
+                                      onClick={() => setActiveInspection({ ...activeInspection, draftSeverity: 'minor' })}
+                                      className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${activeInspection.draftSeverity === 'minor' ? 'bg-amber-100 text-amber-800' : 'text-slate-400 hover:text-slate-600'}`}
+                                    >
+                                      Minor Defect
+                                    </button>
+                                    <button 
+                                      onClick={() => {
+                                        if (confirm("Reporting a MAJOR DEFECT will ground this vehicle immediately. Are you sure?")) {
+                                          setActiveInspection({ ...activeInspection, draftSeverity: 'major' });
+                                        }
+                                      }}
+                                      className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${activeInspection.draftSeverity === 'major' ? 'bg-rose-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+                                    >
+                                      Major Defect
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {activeInspection.draftSeverity === 'major' && (
+                                  <div className="bg-rose-50 border border-rose-200 p-3 rounded-xl flex items-start gap-2 animate-in fade-in">
+                                    <AlertTriangle className="w-4 h-4 text-rose-600 mt-0.5" />
+                                    <p className="text-[10px] font-bold text-rose-800 leading-relaxed uppercase">Selecting this will mark the unit as **OUT OF SERVICE** and notify the mechanic and operations manager.</p>
+                                  </div>
+                                )}
+
+                                <div className="space-y-2">
+                                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Defect Notes</label>
+                                  <textarea 
+                                    className="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm font-medium outline-none focus:ring-2 focus:ring-slate-800 resize-none"
+                                    placeholder="Describe the issue..."
+                                    rows={2}
+                                    value={activeInspection.draftNotes}
+                                    onChange={e => setActiveInspection({ ...activeInspection, draftNotes: e.target.value })}
+                                  />
+                                </div>
+
+                                <div className="flex gap-2">
+                                  <button 
+                                    onClick={() => {
+                                      const newDefects = activeInspection.defects.filter(d => d.category !== cat);
+                                      setActiveInspection({ ...activeInspection, defects: newDefects, expandedCategory: null });
+                                    }}
+                                    className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-rose-600 transition-colors"
+                                  >
+                                    Clear
+                                  </button>
+                                  <button 
+                                    onClick={() => {
+                                      const newDefect: DefectDetail = {
+                                        category: cat,
+                                        severity: activeInspection.draftSeverity,
+                                        notes: activeInspection.draftNotes
+                                      };
+                                      const newDefects = [...activeInspection.defects.filter(d => d.category !== cat), newDefect];
+                                      setActiveInspection({ ...activeInspection, defects: newDefects, expandedCategory: null });
+                                    }}
+                                    className="flex-1 bg-slate-800 text-white py-2 rounded-lg text-xs font-black uppercase tracking-widest shadow-md hover:bg-slate-900 transition-all"
+                                  >
+                                    Save Defect
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Driver Confirmation</label>
+                    <input type="text" id="insp-sig" className="w-full border-b-2 border-slate-300 bg-transparent p-3 text-xl font-medium outline-none italic placeholder:text-slate-200" placeholder="Type name to sign..." />
+                  </div>
+                </div>
+
+                <div className="p-5 border-t border-gray-200 bg-white flex justify-end gap-3 shrink-0">
+                  <button onClick={() => setActiveInspection({ unitId: null, targetDate: '', defects: [], expandedCategory: null, draftSeverity: 'minor', draftNotes: '' })} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-100 rounded-lg transition-colors">Cancel</button>
+                  <button 
+                    onClick={async () => {
+                      const odo = Number((document.getElementById('insp-odo') as HTMLInputElement).value);
+                      const loc = (document.getElementById('insp-loc') as HTMLInputElement).value;
+                      const sig = (document.getElementById('insp-sig') as HTMLInputElement).value;
+                      
+                      // Handle potentially unsaved draft defect
+                      let finalDefects = [...activeInspection.defects];
+                      if (activeInspection.expandedCategory && activeInspection.draftNotes) {
+                        const draftDefect: DefectDetail = {
+                          category: activeInspection.expandedCategory,
+                          severity: activeInspection.draftSeverity,
+                          notes: activeInspection.draftNotes
+                        };
+                        finalDefects = [...finalDefects.filter(d => d.category !== activeInspection.expandedCategory), draftDefect];
+                      }
+
+                      const hasMajor = finalDefects.some(d => d.severity === 'major');
+                      
+                      if (!sig) return showToastMsg("Signature required.");
+                      if (hasMajor) {
+                        if (!confirm("This report contains a MAJOR DEFECT. The unit will be marked OUT OF SERVICE. Continue?")) return;
+                      }
+
+                      const newInsp: Inspection = {
+                        id: `insp-${Date.now()}`,
+                        unitId: unit.id,
+                        driverId: user.uid,
+                        driverName: user.displayName || user.email,
+                        type,
+                        date: activeInspection.targetDate || formatDate(new Date()),
+                        timestamp: new Date().toISOString(),
+                        odometer: odo,
+                        location: loc,
+                        defects: finalDefects,
+                        isMajor: hasMajor,
+                        signature: sig,
+                        status: hasMajor ? 'major' : finalDefects.length > 0 ? 'minor' : 'clean'
+                      };
+
+                      const newInspections = [newInsp, ...appData.inspections];
+                      
+                      // Process Defects into Mechanic Tasks
+                      let newTasks = [...appData.mechanicTasks];
+                      finalDefects.forEach(d => {
+                        // Dedup: only add if no active task for this unit and category exists
+                        const exists = newTasks.find(t => t.unitId === unit.id && t.category === d.category && t.status !== 'done');
+                        if (!exists) {
+                          newTasks.push({
+                            id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                            unitId: unit.id,
+                            unitName: unit.name,
+                            category: d.category,
+                            notes: d.notes,
+                            severity: d.severity,
+                            status: 'todo',
+                            dateReported: formatDate(new Date())
+                          });
+                        }
+                      });
+
+                      const newFleet = appData.fleet.map(f => f.id === unit.id ? { 
+                        ...f, 
+                        odometer: odo, 
+                        lastOdometerUpdate: formatDate(new Date()),
+                        lastInspectionId: newInsp.id,
+                        inspectionStatus: (hasMajor ? 'red' : finalDefects.length > 0 ? 'yellow' : 'green') as 'green' | 'yellow' | 'red' | 'missing',
+                        status: hasMajor ? 'Out of Service' : (f.status === 'Out of Service' ? 'Active' : f.status),
+                        repairTags: Array.from(new Set([...(f.repairTags || []), ...finalDefects.map(d => d.category), ...(hasMajor ? ['priority'] : [])]))
+                      } as FleetItem : f);
+
+                      const success = await syncToCloud({ ...appData, fleet: newFleet, inspections: newInspections, mechanicTasks: newTasks });
+                      if (success) {
+                        setActiveInspection({ unitId: null, defects: [], expandedCategory: null, draftSeverity: 'minor', draftNotes: '' });
+                        showToastMsg("Inspection completed successfully!");
+                      }
+                    }} 
+                    className={`px-8 py-2.5 font-black text-white rounded-lg shadow-lg transition-all uppercase tracking-widest text-xs flex items-center gap-2 ${type === 'DVIR' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-600/20' : 'bg-green-600 hover:bg-green-700 shadow-green-600/20'}`}
+                  >
+                    <CheckCircle className="w-4 h-4" /> Submit Report
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* INSPECTION REPORT MODAL */}
+      {viewingInspectionId && (
+        <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4">
+          {(() => {
+            const insp = appData.inspections.find(i => i.id === viewingInspectionId);
+            if (!insp) return null;
+            const unit = appData.fleet.find(f => f.id === insp.unitId);
+            
+            return (
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col animate-in slide-in-from-bottom-4">
+                <div className="p-5 border-b border-gray-200 bg-slate-900 text-white flex justify-between items-center">
+                  <div className="flex items-center gap-3">
+                    <FileSignature className="w-6 h-6 text-lime-400" />
+                    <div>
+                      <h2 className="text-xl font-bold">Inspection Report</h2>
+                      <p className="text-[10px] uppercase font-black tracking-widest text-slate-400">{insp.type} • {insp.date}</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setViewingInspectionId(null)} className="text-white/60 hover:text-white transition-colors"><X className="w-6 h-6" /></button>
+                </div>
+                
+                <div className="p-8 space-y-8 bg-white overflow-y-auto max-h-[70vh]">
+                  <div className="grid grid-cols-2 gap-8 border-b border-slate-100 pb-6">
+                    <div>
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Vehicle / Unit</h4>
+                      <p className="text-lg font-black text-slate-800">{unit?.name || 'Unknown'}</p>
+                      <p className="text-xs font-bold text-slate-500 uppercase">{unit?.type}</p>
+                    </div>
+                    <div className="text-right">
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Driver</h4>
+                      <p className="text-lg font-black text-slate-800">{insp.driverName}</p>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase">{new Date(insp.timestamp).toLocaleTimeString()}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-8">
+                    <div>
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Odometer</h4>
+                      <p className="text-xl font-mono font-black text-slate-800">{insp.odometer.toLocaleString()}</p>
+                    </div>
+                    <div>
+                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Location</h4>
+                      <p className="text-sm font-bold text-slate-800">{insp.location || 'Not Specified'}</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b pb-2">Defects Found</h4>
+                    {insp.defects.length === 0 ? (
+                      <div className="flex items-center gap-2 text-green-600 bg-green-50 p-4 rounded-xl border border-green-100">
+                        <CheckCircle className="w-5 h-5" />
+                        <span className="text-sm font-black uppercase tracking-widest">No Defects Reported</span>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {insp.defects.map(d => (
+                          <div key={d.category} className="flex flex-col gap-1 p-3 bg-rose-50 border border-rose-100 rounded-xl">
+                            <div className="flex items-center gap-2">
+                              <AlertCircle className={`w-4 h-4 ${d.severity === 'major' ? 'text-rose-600' : 'text-amber-600'}`} />
+                              <span className="text-sm font-black text-rose-900 uppercase">{d.category}</span>
+                              <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${d.severity === 'major' ? 'bg-rose-600 text-white' : 'bg-amber-100 text-amber-700'}`}>{d.severity}</span>
+                            </div>
+                            {d.notes && <p className="text-xs font-medium text-rose-800 italic ml-6">"{d.notes}"</p>}
+                          </div>
+                        ))}
+                        {insp.isMajor && (
+                          <div className="bg-rose-600 text-white p-3 rounded-xl text-center text-[10px] font-black uppercase tracking-[0.2em] shadow-lg shadow-rose-200 mt-4">
+                             Priority: Major Safety Defect
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-6 border-t border-slate-100">
+                    <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Driver Signature</h4>
+                    <div className="p-6 bg-slate-50 rounded-2xl border border-slate-200 text-center">
+                      <p className="text-2xl font-medium italic text-slate-800 tracking-tighter" style={{ fontFamily: 'Dancing Script, cursive' }}>{insp.signature}</p>
+                      <div className="h-0.5 w-48 bg-slate-300 mx-auto mt-2" />
+                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-2">Digitally Signed & Verified</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end">
+                  <button onClick={() => setViewingInspectionId(null)} className="px-8 py-2.5 bg-slate-900 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-slate-800 transition-colors shadow-lg">Close Report</button>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* PRINT-ONLY HIDDEN COMPONENT */}
+      <div className="hidden print-only bg-white p-8">
+        <div className="max-w-4xl mx-auto space-y-12">
+          <div className="flex justify-between items-end border-b-4 border-slate-800 pb-4">
+            <div>
+              <h1 className="text-4xl font-black text-slate-900 tracking-tighter">CREW MASTER</h1>
+              <p className="text-xs font-black text-slate-500 uppercase tracking-[0.5em] mt-1">Official Operational Schedule</p>
+            </div>
+            <div className="text-right">
+              <div className="text-2xl font-black text-slate-800 uppercase">{printType === 'daily' ? 'Daily Report' : printType === 'weekly' ? 'Weekly Summary' : 'Operational Report'}</div>
+              <div className="text-sm font-bold text-slate-500 tracking-widest">
+                {printType === 'daily' ? selectedDailyDate : 
+                 printType === 'weekly' ? `Week of ${formatDate(startOfWeek)}` : 
+                 `${printDateRange.start} — ${printDateRange.end}`}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-12">
+            {(() => {
+              const crewsToPrint: any[] = [];
+              const uniqueIds = new Set<string>();
+              
+              if (printType === 'daily') { 
+                (appData.schedules[selectedDailyDate] || []).forEach(c => {
+                  if (printSelection.includes(c.id) && !uniqueIds.has(`${selectedDailyDate}-${c.id}`)) {
+                    crewsToPrint.push({ ...c, dateStr: selectedDailyDate });
+                    uniqueIds.add(`${selectedDailyDate}-${c.id}`);
+                  }
+                }); 
+              } else if (printType === 'weekly') { 
+                weekDays.forEach(d => { 
+                  const ds = formatDate(d); 
+                  (appData.schedules[ds] || []).forEach(c => {
+                    if (printSelection.includes(c.id) && !uniqueIds.has(`${ds}-${c.id}`)) {
+                      crewsToPrint.push({ ...c, dateStr: ds });
+                      uniqueIds.add(`${ds}-${c.id}`);
+                    }
+                  }); 
+                }); 
+              } else {
+                // Range
+                const start = new Date(printDateRange.start);
+                const end = new Date(printDateRange.end);
+                for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                  const ds = formatDate(d);
+                  (appData.schedules[ds] || []).forEach(c => {
+                    if (printSelection.includes(c.id) && !uniqueIds.has(`${ds}-${c.id}`)) {
+                      crewsToPrint.push({ ...c, dateStr: ds });
+                      uniqueIds.add(`${ds}-${c.id}`);
+                    }
+                  });
+                }
+              }
+              
+              return crewsToPrint.map(crew => {
+                const emps = crew.employees.map(id => appData.employees.find(e => e.id === id)).filter(Boolean);
+                const fleet = crew.fleet.map(id => appData.fleet.find(f => f.id === id)).filter(Boolean);
+                const inv = (crew.inventory || []).map(i => ({ name: appData.inventory.find(item => item.id === i.id)?.name || 'Unknown', qty: i.qty }));
+                
+                return (
+                  <div key={`${crew.dateStr}-${crew.id}`} className="border-2 border-slate-200 rounded-3xl overflow-hidden break-inside-avoid">
+                    <div className="bg-slate-800 text-white p-6 flex justify-between items-center">
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.3em] text-white/50 mb-1">{crew.dateStr}</div>
+                        <h2 className="text-2xl font-black uppercase">{crew.division} <span className="text-green-400">#{crew.crewNumber}</span></h2>
+                      </div>
+                      <div className="text-right border-l border-white/20 pl-6">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-white/50">Est. Base Hours</div>
+                        <div className="text-2xl font-black text-white">{crew.isAdHoc ? 'AD-HOC' : 'STD'}</div>
+                      </div>
+                    </div>
+                    
+                    <div className="p-8 grid grid-cols-2 gap-x-12 gap-y-8">
+                      <div className="space-y-4">
+                        <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b pb-2 flex items-center gap-2"><Users className="w-4 h-4" /> Personnel</h3>
+                        <div className="space-y-2">
+                          {emps.map((e: any) => (
+                            <div key={e.id} className="flex items-center justify-between text-sm font-bold text-slate-800 border-b border-slate-50 pb-1">
+                              <span>{e.name}</span>
+                              <span className="text-[10px] uppercase text-slate-400">{e.role}</span>
+                            </div>
+                          ))}
+                          {emps.length === 0 && <p className="text-xs text-slate-300 italic">No personnel assigned</p>}
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b pb-2 flex items-center gap-2"><Truck className="w-4 h-4" /> Equipment & Fleet</h3>
+                        <div className="space-y-2">
+                          {fleet.map(f => {
+                    const readiness = getUnitReadiness(f.id, appData, crew.dateStr);
+                    const statusColors = { 
+                      green: 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]', 
+                      yellow: 'bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.6)]', 
+                      red: 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)] animate-pulse', 
+                      missing: 'bg-slate-300 border-2 border-slate-400' 
+                    };
+
+                    return (
+                      <div key={f.id} className="flex items-center justify-between bg-white px-3 py-2 rounded-lg border border-gray-200 shadow-sm group/item">
+                        <div className="flex items-center gap-3 overflow-hidden">
+                          <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusColors[readiness]}`} title={`Status: ${readiness}`} />
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-sm font-bold text-gray-800 truncate">{f.name}</span>
+                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">{f.type} • {getRequiredInspectionType(f)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                          {fleet.length === 0 && <p className="text-xs text-slate-300 italic">No equipment assigned</p>}
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b pb-2 flex items-center gap-2"><Package className="w-4 h-4" /> Inventory</h3>
+                        <div className="space-y-2">
+                          {inv.map((i: any, idx: number) => (
+                            <div key={idx} className="flex items-center justify-between text-sm font-bold text-slate-800 border-b border-slate-50 pb-1">
+                              <span>{i.name}</span>
+                              <span className="text-[10px] text-green-600 bg-green-50 px-2 py-0.5 rounded">x{i.qty}</span>
+                            </div>
+                          ))}
+                          {inv.length === 0 && <p className="text-xs text-slate-300 italic">No inventory assigned</p>}
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b pb-2 flex items-center gap-2"><Hammer className="w-4 h-4" /> Supplies & Tools</h3>
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          {(crew.supplies || []).map((s: string) => (
+                            <span key={s} className="bg-slate-100 text-slate-700 text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg border border-slate-200">{s}</span>
+                          ))}
+                          {(crew.supplies || []).length === 0 && <p className="text-xs text-slate-300 italic">No supplies assigned</p>}
+                        </div>
+                      </div>
+
+                      <div className="col-span-2 mt-4">
+                        <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b pb-2 mb-3">Crew Notes & Operational Instructions</h3>
+                        <div className="bg-slate-50 p-6 rounded-2xl text-sm font-medium text-slate-600 italic leading-relaxed border-l-4 border-slate-200 min-h-[80px]">
+                          {crew.notes || "No additional instructions provided for this shift."}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+          </div>
+          
+          <div className="pt-20 text-center border-t border-slate-100">
+            <p className="text-[9px] font-black text-slate-300 uppercase tracking-[1em]">END OF SCHEDULE REPORT • CONFIDENTIAL</p>
+          </div>
+        </div>
+      </div>
+
+
+      {/* REPAIR COMPLETION MODAL */}
+      {completionModal.isOpen && (
+        <div className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col animate-in zoom-in-95">
+            <div className="p-5 border-b border-gray-200 bg-slate-900 text-white flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <CheckCircle className="w-6 h-6 text-green-400" />
+                <h2 className="text-xl font-bold">Complete Repair</h2>
+              </div>
+              <button onClick={() => setCompletionModal({ ...completionModal, isOpen: false })} className="text-white/60 hover:text-white"><X className="w-6 h-6" /></button>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Unit</span>
+                <p className="font-bold text-slate-800">{completionModal.unitName}</p>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Est. Part Cost ($)</label>
+                  <input type="number" value={completionModal.partCost} onChange={e => setCompletionModal({ ...completionModal, partCost: e.target.value })} className="w-full border border-slate-300 rounded-xl p-3 font-mono font-bold text-lg outline-none focus:ring-2 focus:ring-green-500" placeholder="0.00" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Est. Labour Hours</label>
+                  <input type="number" value={completionModal.laborHours} onChange={e => setCompletionModal({ ...completionModal, laborHours: e.target.value })} className="w-full border border-slate-300 rounded-xl p-3 font-mono font-bold text-lg outline-none focus:ring-2 focus:ring-green-500" placeholder="0.0" />
+                </div>
+              </div>
+              
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Mechanic Fix Notes</label>
+                <textarea value={completionModal.fixNotes} onChange={e => setCompletionModal({ ...completionModal, fixNotes: e.target.value })} className="w-full border border-slate-300 rounded-xl p-3 text-sm font-medium outline-none focus:ring-2 focus:ring-green-500 resize-none" rows={3} placeholder="What was fixed?" />
+              </div>
+            </div>
+            
+            <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
+              <button onClick={() => setCompletionModal({ ...completionModal, isOpen: false })} className="px-6 py-2.5 font-bold text-slate-500">Cancel</button>
+              <button onClick={async () => {
+                const { taskId, unitId, partCost, laborHours, fixNotes } = completionModal;
+                const newLogEntry = {
+                  id: `rep-${Date.now()}`, equipmentId: unitId, equipmentName: completionModal.unitName,
+                  date: formatDate(new Date()), fixNotes, cost: Number(partCost) || 0, laborHours: Number(laborHours) || 0
+                };
+                const newFleet = appData.fleet.map(f => f.id === unitId ? { ...f, status: 'Active', repairTags: [] } : f);
+                const newTasks = appData.mechanicTasks.filter(t => t.id !== taskId);
+                const success = await syncToCloud({ ...appData, fleet: newFleet, mechanicTasks: newTasks, repairLog: [newLogEntry, ...appData.repairLog] });
+                if (success) {
+                  setCompletionModal({ ...completionModal, isOpen: false });
+                  showToastMsg("Repair completed and logged.");
+                }
+              }} className="px-8 py-2.5 font-black text-white bg-green-600 rounded-xl shadow-lg shadow-green-600/20 uppercase tracking-widest text-xs">Save & Close Task</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
