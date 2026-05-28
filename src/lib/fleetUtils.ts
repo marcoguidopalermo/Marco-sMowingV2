@@ -94,19 +94,20 @@ export function makeSubtypeId(name: string): string {
 export type WeightBand = 'under_3000' | '3000_4500' | '4501_10999' | '10999_plus';
 
 export const WEIGHT_BAND_LABELS: Record<WeightBand, string> = {
-  under_3000: 'Under 3000 kg',
+  under_3000: '3,000 kg or less',
   '3000_4500': '3000–4500 kg',
   '4501_10999': '4501–10999 kg',
   '10999_plus': '10999+ kg (Class A)',
 };
 
-// RGW boundaries (kg).
-//   rgw < 3000               → under_3000
-//   3000 <= rgw <= 4500      → 3000_4500
-//   4500 < rgw <= 10999      → 4501_10999
-//   rgw > 10999              → 10999_plus
+// RGW boundaries (kg). 3000 kg lands in the no-renewal band — the
+// inclusive upper bound on under_3000 is the legal threshold.
+//   rgw <= 3000              → under_3000  (no plate renewal)
+//   3000 <  rgw <= 4500      → 3000_4500
+//   4500 <  rgw <= 10999     → 4501_10999
+//   rgw >  10999             → 10999_plus
 export function bandFromRgw(rgw: number): WeightBand {
-  if (rgw < 3000) return 'under_3000';
+  if (rgw <= 3000) return 'under_3000';
   if (rgw <= 4500) return '3000_4500';
   if (rgw <= 10999) return '4501_10999';
   return '10999_plus';

@@ -10,11 +10,23 @@ export interface CompletionModalState {
   laborHours: string;
   fixNotes: string;
   // Maintenance-only inputs. Set when the task being completed has
-  // source==='maintenance' so the modal can prompt for the engine
-  // hour reading at service time and advance the unit's schedule.
+  // source==='maintenance' so the modal can prompt for the reading at
+  // service time and advance the unit's schedule.
   isMaintenance?: boolean;
   maintenanceItemName?: string;
+  // The numeric reading at service time. For hour-tracked equipment
+  // this is engine hours; for km-tracked trucks it is the odometer.
+  // The label flips on `maintenanceMetric`.
   hoursAtService?: string;
+  // Metric of the maintenance schedule being closed. 'hours' (mowers,
+  // legacy default) preserves the rigid-threshold flow. 'km' (trucks)
+  // surfaces the editable next-due input below.
+  maintenanceMetric?: 'hours' | 'km';
+  // Editable next-due target (km). Pre-filled with currentKm +
+  // item.threshold so the mechanic can accept the default OR override
+  // (synthetic ~12,000 vs conventional ~5,000). Ignored when
+  // maintenanceMetric === 'hours'.
+  nextDueAtService?: string;
 }
 
 interface CompletionModalProps {
@@ -25,6 +37,11 @@ interface CompletionModalProps {
 
 export default function CompletionModal({ state, setState, onSubmit }: CompletionModalProps) {
   if (!state.isOpen) return null;
+  const isKm = state.isMaintenance && state.maintenanceMetric === 'km';
+  const unitLabel = isKm ? 'km' : 'hrs';
+  const readingLabel = isKm
+    ? `Odometer (km) at service${state.maintenanceItemName ? ` (${state.maintenanceItemName})` : ''}`
+    : `Engine hours at service${state.maintenanceItemName ? ` (${state.maintenanceItemName})` : ''}`;
   return (
     <div className="fixed inset-0 bg-black/60 z-[90] flex md:items-center md:justify-center md:p-4">
       <div className="bg-white md:rounded-2xl shadow-2xl h-full md:h-auto w-full md:max-w-md overflow-hidden flex flex-col animate-in zoom-in-95">
@@ -65,7 +82,7 @@ export default function CompletionModal({ state, setState, onSubmit }: Completio
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                  Engine hours at service{state.maintenanceItemName ? ` (${state.maintenanceItemName})` : ''}
+                  {readingLabel}
                 </label>
                 <input
                   type="number"
@@ -76,8 +93,31 @@ export default function CompletionModal({ state, setState, onSubmit }: Completio
                   className="w-full border border-amber-200 rounded-xl p-3 font-mono font-bold text-lg outline-none focus:ring-2 focus:ring-amber-500 bg-white"
                   placeholder="0"
                 />
-                <div className="text-[11px] text-amber-700/80">Used to advance this unit's maintenance schedule and update its current engine hours.</div>
+                <div className="text-[11px] text-amber-700/80">
+                  {isKm
+                    ? "Updates the truck's odometer and advances this maintenance schedule."
+                    : "Used to advance this unit's maintenance schedule and update its current engine hours."}
+                </div>
               </div>
+              {isKm && (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                    Next oil change due ({unitLabel})
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min={0}
+                    value={state.nextDueAtService ?? ''}
+                    onChange={e => setState({ ...state, nextDueAtService: e.target.value })}
+                    className="w-full border border-amber-200 rounded-xl p-3 font-mono font-bold text-lg outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                    placeholder="0"
+                  />
+                  <div className="text-[11px] text-amber-700/80">
+                    Editable — pre-filled from the default interval. Adjust for the oil grade actually used (e.g. synthetic ~12,000 km, conventional ~5,000 km).
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

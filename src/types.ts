@@ -151,6 +151,11 @@ export interface FleetItem {
   // ms timestamp of the last hour reading — drives the Missing Hour
   // Updates banner.
   lastHourUpdateAt?: number;
+  // Km-based maintenance opt-in for trucks / trailers / tractors.
+  // Parallel to tracksEngineHours but keyed off the existing odometer
+  // reading. When true, maintenanceItems are evaluated on odometer
+  // updates by processMaintenanceForOdometerUpdate.
+  tracksMaintenance?: boolean;
   maintenanceItems?: MaintenanceItem[];
   // Seasonal storage. Winterized units hide from the active Fleet
   // List, can't be assigned, can't be inspected. Reactivate to
@@ -159,21 +164,31 @@ export interface FleetItem {
   winterizedAt?: number;
 }
 
-// One maintenance schedule on a fleet unit (e.g. engine-oil change at
-// every 100 hrs, hydraulic-oil change at every 500 hrs). When the
-// unit's currentEngineHours crosses (nextDueAt - 25), the auto-spawn
-// helper in App.tsx creates a MechanicTask with source='maintenance'
-// and sourceMaintenanceItemId pointing back here. Completing that
-// task (or hitting Manual Reset on the Fleet List row) advances
-// nextDueAt = enteredHours + threshold and clears activeTaskId.
+// One maintenance schedule on a fleet unit. Two metric variants:
+//   - 'hours' (default; mowers/equipment) — driven by currentEngineHours,
+//     500-style buffer = 25 hrs, completion auto-recomputes nextDueAt
+//     from threshold (rigid interval).
+//   - 'km' (trucks/trailers/tractors) — driven by odometer, 500 km
+//     buffer, threshold acts as a PRE-FILL default for next-due only;
+//     the mechanic enters the explicit next-due at service time
+//     (oil-grade dependent — synthetic vs conventional).
+// activeTaskId mirrors the most recent spawned maintenance task so
+// the helper doesn't double-spawn. Completing the task (or Manual
+// Reset) advances lastServiceAt + lastServiceValue + nextDueAt and
+// clears activeTaskId.
 export interface MaintenanceItem {
   id: string;
   name: string;
   threshold: number;
   nextDueAt: number;
   lastServiceAt?: number;
+  // Reading at last service. Generic name — works for hours or km.
+  // lastServiceHours is retained for back-compat reads of pre-unify
+  // data; new writes set lastServiceValue.
+  lastServiceValue?: number;
   lastServiceHours?: number;
   activeTaskId?: string;
+  metric?: 'hours' | 'km';
 }
 
 export interface UnitNote {
@@ -404,6 +419,11 @@ export interface Inspection {
   maintenanceItemId?: string;
   maintenanceItemName?: string;
   hoursAtService?: number;
+  // Km reading at the time of a truck/trailer/tractor maintenance
+  // service. Mutually exclusive with hoursAtService in practice
+  // (the unit either tracks hours or km).
+  kmAtService?: number;
+  maintenanceMetric?: 'hours' | 'km';
   performedBy?: { email: string; name: string };
   maintenanceNotes?: string;
   maintenanceSource?: 'task_completion' | 'manual_reset';

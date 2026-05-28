@@ -611,8 +611,19 @@ export default function ManageResourcesModal({
                       <div className="flex flex-col gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
                         <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Identification & Compliance</h5>
                         <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-slate-700 w-24">Serial #:</span>
-                          <input className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-bold bg-white" placeholder="Serial Number" value={f.serialNumber || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].serialNumber = e.target.value; setLocalFleet(nf); }} />
+                          {(() => {
+                            // Trucks, trailers, and tractors carry a VIN (vehicle
+                            // identification number); equipment carries a serial.
+                            // Display-only relabel — the underlying field is the
+                            // same `serialNumber` slot.
+                            const isVin = f.type === 'truck' || f.type === 'trailer' || f.type === 'tractor';
+                            return (
+                              <>
+                                <span className="text-xs font-bold text-slate-700 w-24">{isVin ? 'VIN #:' : 'Serial #:'}</span>
+                                <input className="flex-1 border border-slate-300 rounded p-1.5 text-xs font-bold bg-white" placeholder={isVin ? 'VIN Number' : 'Serial Number'} value={f.serialNumber || ''} onChange={e => { const nf = [...localFleet]; nf[realIdx].serialNumber = e.target.value; setLocalFleet(nf); }} />
+                              </>
+                            );
+                          })()}
                         </div>
                         {f.type === 'equipment' && (
                           <div className="flex items-center gap-2">
@@ -754,20 +765,21 @@ export default function ManageResourcesModal({
                       <div className="flex flex-col gap-2 bg-green-50/50 p-3 rounded-xl border border-green-100">
                         <h5 className="text-[10px] font-black text-green-800 uppercase tracking-widest">Maintenance & Odometer</h5>
 
-                        {/* Engine-hour tracking — equipment-only opt-in.
-                            Trucks/trailers/tractors don't track hours;
-                            those fall through to the calendar-based
-                            registration/safety/CVOR fields above. When
-                            enabled, the manager sets a baseline hour
-                            reading + a list of maintenance schedules.
-                            Each new schedule's nextDueAt is computed
-                            from the current reading + threshold at
-                            add time. The Current Hrs input locks after
-                            the unit's first persisted save — ongoing
-                            weekly updates happen via the Fleet List
-                            inline edit (which also runs the spawn
-                            helper), not here. */}
-                        {f.type === 'equipment' && (
+                        {/* Engine-hour tracking — equipment and tractors
+                            opt in. Trucks track maintenance by km
+                            (auto, separate block below); trailers
+                            don't track maintenance at all. When the
+                            toggle is on, the manager sets a baseline
+                            hour reading + a list of maintenance
+                            schedules. Each new schedule's nextDueAt
+                            is computed from the current reading +
+                            threshold at add time. The Current Hrs
+                            input locks after the unit's first
+                            persisted save — ongoing weekly updates
+                            happen via the Fleet List inline edit
+                            (which also runs the spawn helper),
+                            not here. */}
+                        {(f.type === 'equipment' || f.type === 'tractor') && (
                         <>
                         <div className="border-t border-green-200 pt-2 mt-1">
                           <label className="flex items-center gap-2 text-xs font-bold text-green-900 cursor-pointer">
@@ -912,6 +924,138 @@ export default function ManageResourcesModal({
                           );
                         })()}
                         </>
+                        )}
+
+                        {/* Km-based maintenance for trucks/trailers/tractors.
+                            Parallel to the equipment hour block above but
+                            keyed off the odometer (edited in MechanicBoard
+                            Fleet List, not here) and with a MANUALLY-entered
+                            initial next-due per item — the mechanic knows
+                            the truck's current oil-change status; we don't
+                            auto-calc from threshold + 0. Default interval
+                            stays per-item editable and acts as the
+                            CompletionModal pre-fill only. */}
+                        {(f.type === 'truck' || f.type === 'trailer' || f.type === 'tractor') && (
+                        <div className="border-t border-green-200 pt-2 mt-1">
+                          <label className="flex items-center gap-2 text-xs font-bold text-green-900 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!!f.tracksMaintenance}
+                              onChange={e => {
+                                const nf = [...localFleet];
+                                nf[realIdx] = { ...nf[realIdx], tracksMaintenance: e.target.checked };
+                                setLocalFleet(nf);
+                              }}
+                              className="w-4 h-4 rounded text-green-700 focus:ring-green-500"
+                            />
+                            Track oil changes / maintenance (km)
+                          </label>
+                          {f.tracksMaintenance && (
+                            <div className="flex flex-col gap-2 bg-white border border-green-200 rounded p-2 mt-2">
+                              <div className="text-[10px] font-black uppercase tracking-widest text-green-800">Maintenance Items</div>
+                              <div className="text-[10px] italic text-green-700/70">
+                                Odometer comes from Fleet List. Enter the initial "next due (km)" per item — admin knows the truck's current status.
+                              </div>
+                              {(f.maintenanceItems || []).filter(mi => (mi.metric || 'hours') === 'km').length === 0 ? (
+                                <div className="text-[11px] italic text-green-700/60">No items yet. Add one below (e.g. Oil change every 5,000 km).</div>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {(f.maintenanceItems || []).map((mi, miIdx) => {
+                                    if ((mi.metric || 'hours') !== 'km') return null;
+                                    return (
+                                      <div key={mi.id} className="flex flex-wrap items-center gap-2 bg-green-50/50 border border-green-200 rounded p-2">
+                                        <input
+                                          type="text"
+                                          placeholder="Name (e.g. Oil change)"
+                                          value={mi.name}
+                                          onChange={e => {
+                                            const nf = [...localFleet];
+                                            const items = [...(nf[realIdx].maintenanceItems || [])];
+                                            items[miIdx] = { ...items[miIdx], name: e.target.value };
+                                            nf[realIdx] = { ...nf[realIdx], maintenanceItems: items };
+                                            setLocalFleet(nf);
+                                          }}
+                                          className="flex-1 min-w-[120px] border border-green-200 rounded p-1.5 text-xs font-bold bg-white"
+                                        />
+                                        <div className="flex items-center gap-1">
+                                          <span className="text-[10px] font-bold text-green-900">Every</span>
+                                          <input
+                                            type="number"
+                                            min={1}
+                                            step={1}
+                                            value={mi.threshold || ''}
+                                            onChange={e => {
+                                              const nf = [...localFleet];
+                                              const items = [...(nf[realIdx].maintenanceItems || [])];
+                                              items[miIdx] = { ...items[miIdx], threshold: Number(e.target.value) || 0 };
+                                              nf[realIdx] = { ...nf[realIdx], maintenanceItems: items };
+                                              setLocalFleet(nf);
+                                            }}
+                                            className="w-20 border border-green-200 rounded p-1 text-xs font-mono font-bold bg-white"
+                                          />
+                                          <span className="text-[10px] font-bold text-green-900">km</span>
+                                        </div>
+                                        <div className="flex items-center gap-1">
+                                          <span className="text-[10px] font-bold text-green-900">Next due:</span>
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            step={1}
+                                            value={mi.nextDueAt || ''}
+                                            placeholder="km"
+                                            onChange={e => {
+                                              const nf = [...localFleet];
+                                              const items = [...(nf[realIdx].maintenanceItems || [])];
+                                              items[miIdx] = { ...items[miIdx], nextDueAt: Number(e.target.value) || 0 };
+                                              nf[realIdx] = { ...nf[realIdx], maintenanceItems: items };
+                                              setLocalFleet(nf);
+                                            }}
+                                            className="w-24 border border-green-200 rounded p-1 text-xs font-mono font-bold bg-white"
+                                          />
+                                          <span className="text-[10px] font-bold text-green-900">km</span>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const nf = [...localFleet];
+                                            const items = (nf[realIdx].maintenanceItems || []).filter((_, i) => i !== miIdx);
+                                            nf[realIdx] = { ...nf[realIdx], maintenanceItems: items };
+                                            setLocalFleet(nf);
+                                          }}
+                                          className="text-rose-400 hover:text-rose-600 p-1 ml-auto"
+                                          title="Remove this item"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const nf = [...localFleet];
+                                  const existing = nf[realIdx].maintenanceItems || [];
+                                  const kmCount = existing.filter(mi => (mi.metric || 'hours') === 'km').length;
+                                  const newItem = {
+                                    id: `mi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                                    name: kmCount === 0 ? 'Oil change' : '',
+                                    threshold: kmCount === 0 ? 5000 : 0,
+                                    nextDueAt: 0,
+                                    metric: 'km' as const,
+                                  };
+                                  nf[realIdx] = { ...nf[realIdx], maintenanceItems: [...existing, newItem] };
+                                  setLocalFleet(nf);
+                                }}
+                                className="text-[10px] font-black uppercase tracking-widest self-start inline-flex items-center gap-1 text-green-700 hover:text-green-900"
+                                title="Add a maintenance item"
+                              >
+                                <Plus className="w-3 h-3" /> Add maintenance item
+                              </button>
+                            </div>
+                          )}
+                        </div>
                         )}
                       </div>
                     </div>

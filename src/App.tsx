@@ -24,7 +24,7 @@ import {
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest
 } from './types';
-import { processMaintenanceForHourUpdate, resetMaintenanceItem } from './lib/maintenanceUtils';
+import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
 import { can, canForCrew, resolveRole, canAccessView, firstAccessibleView, defaultLandingView, AppView, setPermissionOverrides, ROLE_PERMISSIONS } from './lib/permissions';
 import { getResourceAvailability, describeUnavailability, ResourceType } from './lib/availability';
@@ -1646,7 +1646,25 @@ export default function App() {
       }}
       onDeleteTask={requestDeleteTask}
       onSaveOdometer={(fleetId) => {
-        syncToCloud({ ...appData, fleet: appData.fleet.map(v => v.id === fleetId ? { ...v, odometer: Number(tempOdo), lastOdometerUpdate: formatDate(new Date()) } : v) });
+        const unit = appData.fleet.find(v => v.id === fleetId);
+        if (!unit) { setEditingOdoId(null); return; }
+        const newKm = Number(tempOdo);
+        const updatedUnit: FleetItem = {
+          ...unit,
+          odometer: newKm,
+          lastOdometerUpdate: formatDate(new Date()),
+        };
+        // Truck/trailer/tractor maintenance: run the km spawn helper
+        // so an oil change crossing its nextDueKm (or coming within
+        // 500 km of it) surfaces as a yellow/red Repair Board task.
+        // No-op for units without tracksMaintenance.
+        const { items, mechanicTasks } = processMaintenanceForOdometerUpdate(
+          updatedUnit,
+          appData.mechanicTasks,
+        );
+        updatedUnit.maintenanceItems = items;
+        const nextFleet = appData.fleet.map(v => v.id === fleetId ? updatedUnit : v);
+        syncToCloud({ ...appData, fleet: nextFleet, mechanicTasks });
         setEditingOdoId(null);
         showToastMsg("Updated");
       }}
@@ -1733,35 +1751,49 @@ export default function App() {
           showToastMsg(`${unit.name} reactivated.`);
         }
       }}
-      onManualResetMaintenance={(fleetId, itemId, hoursAtService, notes) => {
+      onManualResetMaintenance={(fleetId, itemId, valueAtService, notes, explicitNextDue) => {
         if (!can('canCompleteRepairs', effectiveRole)) {
           showToastMsg(PERMISSION_DENIED);
           return;
         }
-        if (!Number.isFinite(hoursAtService) || hoursAtService < 0) {
-          showToastMsg('Service hours must be non-negative.');
+        if (!Number.isFinite(valueAtService) || valueAtService < 0) {
+          showToastMsg('Service reading must be non-negative.');
           return;
         }
         const unit = appData.fleet.find(f => f.id === fleetId);
         if (!unit) return;
         const item = (unit.maintenanceItems || []).find(mi => mi.id === itemId);
         if (!item) return;
-        const resetItem = resetMaintenanceItem(item, hoursAtService);
+        const metric = item.metric || 'hours';
+        if (metric === 'km' && (typeof explicitNextDue !== 'number' || !Number.isFinite(explicitNextDue) || explicitNextDue < 0)) {
+          showToastMsg('Next due (km) is required and must be non-negative.');
+          return;
+        }
+        const resetItem = resetMaintenanceItem(item, valueAtService, metric === 'km' ? explicitNextDue : undefined);
         const nextItems = (unit.maintenanceItems || []).map(mi => mi.id === itemId ? resetItem : mi);
-        const updatedUnit: FleetItem = {
-          ...unit,
-          maintenanceItems: nextItems,
-          // Treat the service-time reading as a fresh hour update.
-          currentEngineHours: hoursAtService,
-          lastHourUpdateAt: Date.now(),
-        };
+        const updatedUnit: FleetItem = metric === 'km'
+          ? {
+            ...unit,
+            maintenanceItems: nextItems,
+            odometer: valueAtService,
+            lastOdometerUpdate: formatDate(new Date()),
+          }
+          : {
+            ...unit,
+            maintenanceItems: nextItems,
+            currentEngineHours: valueAtService,
+            lastHourUpdateAt: Date.now(),
+          };
         // Delete the active task associated with this item, if any.
         const taskIdToDelete = item.activeTaskId;
         const nextTasks = taskIdToDelete
           ? appData.mechanicTasks.filter(t => t.id !== taskIdToDelete)
           : appData.mechanicTasks;
         // Write a Maintenance entry to the inspection log so the
-        // service is captured in the unit's history.
+        // service is captured in the unit's history. Km entries
+        // store the reading in kmAtService + odometer for parity
+        // with non-maintenance entries; hour entries continue to
+        // populate hoursAtService.
         const inspectionEntry: Inspection = {
           id: `insp-maint-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           unitId: unit.id,
@@ -1772,7 +1804,7 @@ export default function App() {
           type: 'Maintenance',
           date: new Date().toISOString().slice(0, 10),
           timestamp: new Date().toISOString(),
-          odometer: 0,
+          odometer: metric === 'km' ? valueAtService : 0,
           location: '',
           defects: [],
           isMajor: false,
@@ -1780,7 +1812,9 @@ export default function App() {
           status: 'clean',
           maintenanceItemId: itemId,
           maintenanceItemName: item.name,
-          hoursAtService,
+          hoursAtService: metric === 'hours' ? valueAtService : undefined,
+          kmAtService: metric === 'km' ? valueAtService : undefined,
+          maintenanceMetric: metric,
           performedBy: { email: displayEmail, name: displayName },
           maintenanceNotes: notes || undefined,
           maintenanceSource: 'manual_reset',
@@ -1788,7 +1822,7 @@ export default function App() {
         const nextFleet = appData.fleet.map(f => f.id === fleetId ? updatedUnit : f);
         const nextInspections = [inspectionEntry, ...appData.inspections];
         syncToCloud({ ...appData, fleet: nextFleet, mechanicTasks: nextTasks, inspections: nextInspections });
-        showToastMsg(`${item.name} reset to ${hoursAtService} hrs.`);
+        showToastMsg(`${item.name} reset to ${valueAtService} ${metric === 'km' ? 'km' : 'hrs'}.`);
       }}
       isAdmin={isAdmin}
       canEditRepairs={can('canEditRepairs', effectiveRole)}
@@ -3021,6 +3055,20 @@ export default function App() {
             fleetAfterSpawn = fleetAfterSpawn.map(f => f.id === unit.id ? updatedUnit : f);
             tasksAfterSpawn = nextTasks;
           }
+          // Same idea for truck/trailer/tractor maintenance — if the
+          // mechanic toggled tracksMaintenance on or added an item
+          // whose nextDueKm is already at/past the unit's odometer,
+          // we want the warning to surface immediately. Helper is
+          // idempotent (activeTaskId guard), so we don't need a
+          // "did the odometer change" gate.
+          for (const unit of fleetAfterSpawn) {
+            if (!isKmMaintenanceUnit(unit)) continue;
+            if (unit.isWinterized) continue;
+            const { items, mechanicTasks: nextTasks } = processMaintenanceForOdometerUpdate(unit, tasksAfterSpawn);
+            const updatedUnit: FleetItem = { ...unit, maintenanceItems: items };
+            fleetAfterSpawn = fleetAfterSpawn.map(f => f.id === unit.id ? updatedUnit : f);
+            tasksAfterSpawn = nextTasks;
+          }
           const success = await syncToCloud({
             ...appData,
             employees: normalizedEmployees,
@@ -3431,13 +3479,26 @@ export default function App() {
           // the submit handler can advance the schedule on save.
           const isMaint = existing.source === 'maintenance';
           let maintItemName: string | undefined;
-          let prefillHours = '';
+          let prefillReading = '';
+          let maintMetric: 'hours' | 'km' = 'hours';
+          let prefillNextDue = '';
           if (isMaint && existing.unitId) {
             const u = appData.fleet.find(f => f.id === existing.unitId);
             if (u) {
-              if (typeof u.currentEngineHours === 'number') prefillHours = String(u.currentEngineHours);
               const item = (u.maintenanceItems || []).find(mi => mi.id === existing.sourceMaintenanceItemId);
               maintItemName = item?.name;
+              maintMetric = item?.metric || 'hours';
+              if (maintMetric === 'km') {
+                const curKm = typeof u.odometer === 'number' ? u.odometer : 0;
+                prefillReading = String(curKm);
+                // Next-due pre-fill = current odometer + the item's
+                // default interval. Mechanic edits this in the modal
+                // based on the oil actually used.
+                const interval = typeof item?.threshold === 'number' ? item.threshold : 0;
+                prefillNextDue = String(curKm + interval);
+              } else if (typeof u.currentEngineHours === 'number') {
+                prefillReading = String(u.currentEngineHours);
+              }
             }
           }
           // Hand off to CompletionModal: it owns the part cost / labor
@@ -3456,7 +3517,9 @@ export default function App() {
             fixNotes: existing.description || '',
             isMaintenance: isMaint,
             maintenanceItemName: maintItemName,
-            hoursAtService: isMaint ? prefillHours : undefined,
+            hoursAtService: isMaint ? prefillReading : undefined,
+            maintenanceMetric: isMaint ? maintMetric : undefined,
+            nextDueAtService: isMaint && maintMetric === 'km' ? prefillNextDue : undefined,
           });
         }}
         onAssign={(taskId, assignedTo) => {
@@ -3727,11 +3790,23 @@ export default function App() {
           // resetMaintenanceItem and update its current engine hours
           // from the captured reading. Required when source==='maintenance'.
           const isMaint = completionModal.isMaintenance === true;
-          const maintHours = isMaint && completionModal.hoursAtService !== undefined && completionModal.hoursAtService !== ''
+          const maintMetric: 'hours' | 'km' = completionModal.maintenanceMetric === 'km' ? 'km' : 'hours';
+          const maintReading = isMaint && completionModal.hoursAtService !== undefined && completionModal.hoursAtService !== ''
             ? Number(completionModal.hoursAtService)
             : null;
-          if (isMaint && (maintHours === null || !Number.isFinite(maintHours) || maintHours < 0)) {
-            showToastMsg('Engine hours at service must be a non-negative number.');
+          if (isMaint && (maintReading === null || !Number.isFinite(maintReading) || maintReading < 0)) {
+            showToastMsg(
+              maintMetric === 'km'
+                ? 'Odometer at service must be a non-negative number.'
+                : 'Engine hours at service must be a non-negative number.',
+            );
+            return;
+          }
+          const maintNextDue = isMaint && maintMetric === 'km' && completionModal.nextDueAtService !== undefined && completionModal.nextDueAtService !== ''
+            ? Number(completionModal.nextDueAtService)
+            : null;
+          if (isMaint && maintMetric === 'km' && (maintNextDue === null || !Number.isFinite(maintNextDue) || maintNextDue < 0)) {
+            showToastMsg('Next oil change due (km) must be a non-negative number.');
             return;
           }
           const maintItemId = isMaint && existing ? existing.sourceMaintenanceItemId : undefined;
@@ -3739,21 +3814,33 @@ export default function App() {
             if (f.id !== unitId) return f;
             let next: FleetItem = hasOpenMajor ? f : { ...f, status: 'Active', repairTags: [] };
             // Maintenance schedule advance, in-place on the matching item.
-            if (isMaint && maintItemId && maintHours !== null) {
+            // Km path passes the mechanic-entered next-due in so the
+            // schedule jumps to that explicit target rather than
+            // current + threshold.
+            if (isMaint && maintItemId && maintReading !== null) {
               const items = (next.maintenanceItems || []).map(mi =>
-                mi.id === maintItemId ? resetMaintenanceItem(mi, maintHours) : mi,
+                mi.id === maintItemId
+                  ? resetMaintenanceItem(mi, maintReading, maintMetric === 'km' ? (maintNextDue as number) : undefined)
+                  : mi,
               );
-              next = {
-                ...next,
-                maintenanceItems: items,
-                currentEngineHours: maintHours,
-                lastHourUpdateAt: Date.now(),
-              };
+              next = maintMetric === 'km'
+                ? {
+                  ...next,
+                  maintenanceItems: items,
+                  odometer: maintReading,
+                  lastOdometerUpdate: formatDate(new Date()),
+                }
+                : {
+                  ...next,
+                  maintenanceItems: items,
+                  currentEngineHours: maintReading,
+                  lastHourUpdateAt: Date.now(),
+                };
             }
             return next;
           });
           // Inspection-log entry for the maintenance service (if applicable).
-          const maintInspection: Inspection | null = isMaint && maintHours !== null ? {
+          const maintInspection: Inspection | null = isMaint && maintReading !== null ? {
             id: `insp-maint-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             unitId: unitId || '',
             driverId: '',
@@ -3763,7 +3850,7 @@ export default function App() {
             type: 'Maintenance',
             date: formatDate(new Date()),
             timestamp: new Date().toISOString(),
-            odometer: 0,
+            odometer: maintMetric === 'km' ? maintReading : 0,
             location: '',
             defects: [],
             isMajor: false,
@@ -3771,7 +3858,9 @@ export default function App() {
             status: 'clean',
             maintenanceItemId: maintItemId,
             maintenanceItemName: completionModal.maintenanceItemName,
-            hoursAtService: maintHours,
+            hoursAtService: maintMetric === 'hours' ? maintReading : undefined,
+            kmAtService: maintMetric === 'km' ? maintReading : undefined,
+            maintenanceMetric: maintMetric,
             performedBy: { email: displayEmail, name: displayName },
             maintenanceNotes: fixNotes || undefined,
             maintenanceSource: 'task_completion',

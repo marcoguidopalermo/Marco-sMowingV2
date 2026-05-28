@@ -8,6 +8,7 @@ import {
 import { AppData, FleetItem, MechanicTask, PartsOrder } from '../types';
 import { isExpiringSoon, isExpired, isOdoStale } from '../lib/dateUtils';
 import { fleetItemLabel, needsPlateRenewal, needsCommercialSafety, weightBandLabel } from '../lib/fleetUtils';
+import { isKmMaintenanceUnit } from '../lib/maintenanceUtils';
 import InspectionLog from './InspectionLog';
 import ActivityLog from './ActivityLog';
 import MechanicPerformance from './MechanicPerformance';
@@ -62,11 +63,15 @@ interface MechanicBoardProps {
   // Out-of-band "this oil change happened in the field" path.
   // Updates the maintenance schedule + writes an Inspection Log
   // entry; clears any active spawned task for this item.
+  // `valueAtService` is hours OR km depending on the item's metric.
+  // `explicitNextDue` is required when the item is km-metric (the
+  // mechanic-edited next-due target); ignored for hours.
   onManualResetMaintenance: (
     fleetId: string,
     itemId: string,
-    hoursAtService: number,
+    valueAtService: number,
     notes?: string,
+    explicitNextDue?: number,
   ) => void;
   onViewInspection: (inspectionId: string) => void;
   onAssignTask: (taskId: string, assignedTo: { userEmail: string; userName: string } | null) => void;
@@ -190,10 +195,12 @@ export default function MechanicBoard({
   const [editingHrsId, setEditingHrsId] = useState<string | null>(null);
   const [tempHrs, setTempHrs] = useState('');
   // Manual maintenance reset modal — single source of truth for the
-  // small dialog that captures hours + notes when a manager logs a
-  // service that happened off-board.
-  const [resetCtx, setResetCtx] = useState<{ fleetId: string; itemId: string; itemName: string; defaultHours: number } | null>(null);
+  // small dialog that captures the reading + notes when a manager
+  // logs a service that happened off-board. `metric` controls the
+  // labels and whether the next-due input is surfaced (km only).
+  const [resetCtx, setResetCtx] = useState<{ fleetId: string; itemId: string; itemName: string; defaultHours: number; metric: 'hours' | 'km'; threshold: number } | null>(null);
   const [resetHrs, setResetHrs] = useState('');
+  const [resetNextDue, setResetNextDue] = useState('');
   const [resetNotes, setResetNotes] = useState('');
   // Whether to surface winterized units in the Fleet List. Off by
   // default — winterized units are hidden from the active view.
@@ -1201,8 +1208,11 @@ export default function MechanicBoard({
                                             itemId: mi.id,
                                             itemName: mi.name,
                                             defaultHours: cur,
+                                            metric: 'hours',
+                                            threshold: mi.threshold || 0,
                                           });
                                           setResetHrs(String(cur));
+                                          setResetNextDue('');
                                           setResetNotes('');
                                         }}
                                         className="text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 shrink-0"
@@ -1217,6 +1227,62 @@ export default function MechanicBoard({
                             )}
                           </div>
                         )}
+                        {/* Km maintenance — trucks/trailers/tractors with
+                            tracksMaintenance. Color-coded by km-to-next
+                            with a 500 km warning window. Reset button
+                            mirrors the equipment Reset. */}
+                        {isKmMaintenanceUnit(f) && !f.isWinterized && (() => {
+                          const kmItems = (f.maintenanceItems || []).filter(mi => (mi.metric || 'hours') === 'km');
+                          if (kmItems.length === 0) return null;
+                          const curKm = typeof f.odometer === 'number' ? f.odometer : 0;
+                          return (
+                            <div className="flex flex-col gap-1 mt-2 pt-2 border-t border-slate-100">
+                              {kmItems.map(mi => {
+                                const toNext = mi.nextDueAt - curKm;
+                                const overdue = toNext <= 0;
+                                const dueSoon = !overdue && toNext <= 500;
+                                const tintCls = overdue
+                                  ? 'bg-rose-50 border-rose-200 text-rose-800'
+                                  : dueSoon
+                                    ? 'bg-yellow-50 border-yellow-200 text-yellow-900'
+                                    : 'bg-slate-50 border-slate-200 text-slate-700';
+                                const readout = overdue
+                                  ? `OVERDUE by ${Math.abs(toNext).toLocaleString()} km`
+                                  : dueSoon
+                                    ? `DUE SOON · ${toNext.toLocaleString()} km`
+                                    : `${toNext.toLocaleString()} km to next`;
+                                return (
+                                  <div key={mi.id} className={`flex items-center gap-2 px-2 py-1 rounded border text-[11px] font-medium ${tintCls}`}>
+                                    <Wrench className="w-3 h-3 shrink-0" />
+                                    <span className="font-bold truncate">{mi.name}</span>
+                                    <span className="font-mono shrink-0">{curKm.toLocaleString()} / {mi.nextDueAt.toLocaleString()} km</span>
+                                    <span className="ml-auto text-[10px] font-black uppercase tracking-widest whitespace-nowrap">{readout}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setResetCtx({
+                                          fleetId: f.id,
+                                          itemId: mi.id,
+                                          itemName: mi.name,
+                                          defaultHours: curKm,
+                                          metric: 'km',
+                                          threshold: mi.threshold || 0,
+                                        });
+                                        setResetHrs(String(curKm));
+                                        setResetNextDue(String(curKm + (mi.threshold || 0)));
+                                        setResetNotes('');
+                                      }}
+                                      className="text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 shrink-0"
+                                      title={`Log a ${mi.name} service`}
+                                    >
+                                      Reset
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="p-4 align-top">
                         <div className="space-y-1.5 text-xs">
@@ -1320,18 +1386,50 @@ export default function MechanicBoard({
             </div>
             <div className="p-6 space-y-4">
               <div className="space-y-1.5">
-                <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Engine hours at service</label>
+                <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">
+                  {resetCtx.metric === 'km' ? 'Odometer (km) at service' : 'Engine hours at service'}
+                </label>
                 <input
                   type="number"
                   min={0}
                   step={1}
                   value={resetHrs}
-                  onChange={e => setResetHrs(e.target.value)}
+                  onChange={e => {
+                    const v = e.target.value;
+                    setResetHrs(v);
+                    if (resetCtx.metric === 'km') {
+                      // Keep the next-due pre-fill in lockstep with
+                      // the entered km reading until the mechanic
+                      // edits it themselves.
+                      const km = Number(v);
+                      if (Number.isFinite(km)) {
+                        setResetNextDue(String(km + (resetCtx.threshold || 0)));
+                      }
+                    }
+                  }}
                   autoFocus
                   className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
                 />
-                <div className="text-[11px] text-slate-500">Next service will be scheduled at this reading + the configured threshold.</div>
+                <div className="text-[11px] text-slate-500">
+                  {resetCtx.metric === 'km'
+                    ? "Replaces the truck's current odometer reading."
+                    : 'Next service will be scheduled at this reading + the configured threshold.'}
+                </div>
               </div>
+              {resetCtx.metric === 'km' && (
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Next due (km)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={resetNextDue}
+                    onChange={e => setResetNextDue(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                  <div className="text-[11px] text-slate-500">Editable — pre-filled from km + default interval. Adjust for the oil grade used.</div>
+                </div>
+              )}
               <div className="space-y-1.5">
                 <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Notes (optional)</label>
                 <textarea
@@ -1354,10 +1452,19 @@ export default function MechanicBoard({
                 onClick={() => {
                   const n = Number(resetHrs);
                   if (!Number.isFinite(n) || n < 0) return;
-                  onManualResetMaintenance(resetCtx.fleetId, resetCtx.itemId, n, resetNotes || undefined);
+                  if (resetCtx.metric === 'km') {
+                    const nd = Number(resetNextDue);
+                    if (!Number.isFinite(nd) || nd < 0) return;
+                    onManualResetMaintenance(resetCtx.fleetId, resetCtx.itemId, n, resetNotes || undefined, nd);
+                  } else {
+                    onManualResetMaintenance(resetCtx.fleetId, resetCtx.itemId, n, resetNotes || undefined);
+                  }
                   setResetCtx(null);
                 }}
-                disabled={!Number.isFinite(Number(resetHrs)) || Number(resetHrs) < 0}
+                disabled={
+                  !Number.isFinite(Number(resetHrs)) || Number(resetHrs) < 0 ||
+                  (resetCtx.metric === 'km' && (!Number.isFinite(Number(resetNextDue)) || Number(resetNextDue) < 0))
+                }
                 className="min-h-[44px] px-5 py-2.5 text-sm font-black uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow disabled:bg-slate-300 disabled:cursor-not-allowed"
               >
                 Log Service
