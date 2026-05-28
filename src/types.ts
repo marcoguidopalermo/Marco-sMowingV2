@@ -162,6 +162,12 @@ export interface FleetItem {
   // restore.
   isWinterized?: boolean;
   winterizedAt?: number;
+  // Equipment Time Off — same shape, same inclusive-range
+  // semantics as Employee.awayDates. Admin enters scheduled
+  // maintenance / service windows directly via ManageResources
+  // (no request/approval flow). Saving a range auto-removes
+  // the unit from any crew assignments on those dates.
+  awayDates?: { start: string; end: string }[];
 }
 
 // One maintenance schedule on a fleet unit. Two metric variants:

@@ -6,7 +6,7 @@ import {
   BookOpen, UserPlus, Package
 } from 'lucide-react';
 import { AppData, FleetItem, MechanicTask, PartsOrder } from '../types';
-import { isExpiringSoon, isExpired, isOdoStale } from '../lib/dateUtils';
+import { isExpiringSoon, isExpired, isOdoStale, formatTodayInToronto } from '../lib/dateUtils';
 import { fleetItemLabel, needsPlateRenewal, needsCommercialSafety, weightBandLabel } from '../lib/fleetUtils';
 import { isKmMaintenanceUnit, isHourMaintenanceUnit } from '../lib/maintenanceUtils';
 import InspectionLog from './InspectionLog';
@@ -1104,6 +1104,25 @@ export default function MechanicBoard({
                           {f.status !== 'Active' && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded">{f.status}</span>}
                           {f.isRental && <span className="bg-purple-100 text-purple-800 text-[10px] px-1.5 py-0.5 rounded">Rental</span>}
                           {f.isWinterized && <span className="bg-sky-100 text-sky-800 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">Winterized</span>}
+                          {(() => {
+                            // Equipment Time Off chip — mirrors the
+                            // Winterized chip style in the orange palette
+                            // that the Personnel awayDates editor uses.
+                            // Surfaces current AND upcoming ranges.
+                            const today = formatTodayInToronto();
+                            const ranges = (f.awayDates || []).filter(r => r.start && r.end);
+                            const current = ranges.find(r => today >= r.start && today <= r.end);
+                            if (current) {
+                              return <span className="bg-orange-100 text-orange-800 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider" title={`Booked off through ${current.end}`}>Booked off</span>;
+                            }
+                            const upcoming = ranges
+                              .filter(r => r.start > today)
+                              .sort((a, b) => a.start.localeCompare(b.start))[0];
+                            if (upcoming) {
+                              return <span className="bg-orange-50 text-orange-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider border border-orange-200" title={`Scheduled off ${upcoming.start} → ${upcoming.end}`}>Booked off {upcoming.start}</span>;
+                            }
+                            return null;
+                          })()}
                         </div>
                         <div className="text-xs text-gray-500 mt-1 flex items-center gap-1.5">
                           {f.type.toUpperCase()} <span className={f.color ? f.color.replace('bg-', 'text-') : 'text-gray-300'}>•</span> {weightBandLabel(f) || f.weightClass}

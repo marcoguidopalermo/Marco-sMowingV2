@@ -15,11 +15,12 @@ export type AvailabilityStatus =
 //   2. Employee in dailyAbsences[date] → absent (sick)
 //   3. Employee with awayDates range covering date → booked_off (vacation)
 //   4. Fleet item with status === 'Out of Service' → oos
-//   5. Resource present on any crew's roster for the date → assigned
-//   6. Otherwise → available
+//   5. Fleet item with awayDates range covering date → booked_off (service)
+//   6. Resource present on any crew's roster for the date → assigned
+//   7. Otherwise → available
 //
-// Unavailability for the resource itself (absent / oos) wins over crew-assignment so the
-// reason surfaced to the user matches the spec edge cases.
+// Unavailability for the resource itself (absent / oos / booked_off) wins over
+// crew-assignment so the reason surfaced to the user matches the spec edge cases.
 export function getResourceAvailability(
   resourceId: string,
   resourceType: ResourceType,
@@ -42,7 +43,18 @@ export function getResourceAvailability(
     }
   } else if (resourceType === 'fleet') {
     const f = appData.fleet.find(x => x.id === resourceId);
-    if (f && f.status === 'Out of Service') return { status: 'oos' };
+    if (f) {
+      if (f.status === 'Out of Service') return { status: 'oos' };
+      // Equipment Time Off — identical semantics to the employee
+      // awayDates check above (inclusive range comparison on the
+      // YYYY-MM-DD string).
+      const ranges = f.awayDates || [];
+      for (const r of ranges) {
+        if (r.start && r.end && dateString >= r.start && dateString <= r.end) {
+          return { status: 'booked_off', reason: 'service' };
+        }
+      }
+    }
   }
   // jobberAssignee has no "absent / oos" concept — only cross-crew uniqueness.
 

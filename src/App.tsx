@@ -491,6 +491,22 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appData.employees, appData.partialTimeOff, isManageModalOpen]);
 
+  // Parallel modal-clobber protection for fleet awayDates. When an
+  // external write changes appData.fleet (e.g. a deploy lands fresh
+  // Equipment Time Off ranges entered elsewhere), re-merge the
+  // awayDates slice into the modal's localFleet draft. In-progress
+  // edits to OTHER fleet fields (names, maintenance items, etc.)
+  // are preserved — only the time-off slice is re-derived.
+  useEffect(() => {
+    if (!isManageModalOpen) return;
+    setLocalFleet(prev => prev.map(local => {
+      const fresh = appData.fleet.find(f => f.id === local.id);
+      if (!fresh) return local;
+      return { ...local, awayDates: JSON.parse(JSON.stringify(fresh.awayDates || [])) };
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appData.fleet, isManageModalOpen]);
+
   // Mirror appData.rolePermissions into the permissions module-level cache.
   // can() reads this cache; useEffect ensures every appData update refreshes it.
   useEffect(() => {
@@ -3136,6 +3152,29 @@ export default function App() {
             fleetAfterSpawn = fleetAfterSpawn.map(f => f.id === unit.id ? updatedUnit : f);
             tasksAfterSpawn = nextTasks;
           }
+          // Equipment Time Off sweep — for every fleet unit, take
+          // the union of its awayDates ranges and strip the unit id
+          // from any crew assigned on those dates. Mirrors the
+          // employee approveTimeOffRequest auto-remove (App.tsx
+          // ~1287) but applied at modal-save time since fleet uses
+          // direct admin entry, not a request/approval flow.
+          // Idempotent: re-running with the same ranges produces
+          // the same nextSchedules.
+          let nextSchedules: Record<string, Crew[]> = { ...(appData.schedules || {}) };
+          for (const unit of fleetAfterSpawn) {
+            const ranges = unit.awayDates || [];
+            if (ranges.length === 0) continue;
+            const dates = new Set<string>();
+            for (const r of ranges) {
+              if (!r.start || !r.end) continue;
+              for (const d of eachDateInRange(r.start, r.end)) dates.add(d);
+            }
+            for (const d of dates) {
+              const day = nextSchedules[d];
+              if (!day) continue;
+              nextSchedules[d] = day.map(crew => ({ ...crew, fleet: crew.fleet.filter(id => id !== unit.id) }));
+            }
+          }
           const success = await syncToCloud({
             ...appData,
             employees: normalizedEmployees,
@@ -3149,6 +3188,7 @@ export default function App() {
             settings: localSettings,
             equipmentSubtypes: localEquipmentSubtypes,
             partialTimeOff: ptoMap,
+            schedules: nextSchedules,
           });
           if (success) {
             setIsManageModalOpen(false);

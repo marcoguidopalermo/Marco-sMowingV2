@@ -1124,6 +1124,69 @@ export default function ManageResourcesModal({
                         })()}
                       </div>
                     </div>
+                    {/* Equipment Time Off — mirrors the Personnel
+                        Scheduled Time Off editor, just on fleet.
+                        Full-day inclusive ranges only (no partial
+                        variant). Saving auto-removes the unit from
+                        any crew assignments on those dates; the
+                        scheduling availability check returns
+                        booked_off (reason: service) on these days. */}
+                    <div className="flex flex-col gap-3 bg-orange-50/50 p-3 rounded-lg border border-orange-100 mt-1">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <span className="text-xs font-bold text-orange-800 uppercase flex items-center gap-1.5">
+                          <CalendarIcon className="w-3.5 h-3.5" /> Equipment Time Off
+                        </span>
+                        <button
+                          onClick={() => {
+                            const nf = [...localFleet];
+                            if (!nf[realIdx].awayDates) nf[realIdx].awayDates = [];
+                            nf[realIdx].awayDates!.push({ start: '', end: '' });
+                            setLocalFleet(nf);
+                          }}
+                          className="text-xs font-bold text-orange-700 hover:bg-orange-200 bg-orange-100 border border-orange-200 px-2 py-1 rounded"
+                          title="Add a service / maintenance / out-of-rotation window"
+                        >+ Add Range</button>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-orange-700/80 pl-1">Scheduled</div>
+                        {(!f.awayDates || f.awayDates.length === 0)
+                          ? <div className="text-xs text-orange-600/60 italic font-medium pl-1">No time off scheduled.</div>
+                          : <div className="space-y-2">{f.awayDates.map((range, dIdx) => (
+                              <div key={dIdx} className="flex items-center gap-3 bg-white p-1.5 rounded-lg border border-orange-200 shadow-sm w-fit">
+                                <input
+                                  type="date"
+                                  className="border-none bg-transparent outline-none p-1 text-sm font-bold text-gray-700"
+                                  value={range.start || ''}
+                                  onChange={e => {
+                                    const nf = [...localFleet];
+                                    nf[realIdx].awayDates![dIdx].start = e.target.value;
+                                    setLocalFleet(nf);
+                                  }}
+                                />
+                                <span className="text-sm font-bold text-orange-400">to</span>
+                                <input
+                                  type="date"
+                                  className="border-none bg-transparent outline-none p-1 text-sm font-bold text-gray-700"
+                                  value={range.end || ''}
+                                  onChange={e => {
+                                    const nf = [...localFleet];
+                                    nf[realIdx].awayDates![dIdx].end = e.target.value;
+                                    setLocalFleet(nf);
+                                  }}
+                                />
+                                <button
+                                  onClick={() => {
+                                    const nf = [...localFleet];
+                                    nf[realIdx].awayDates!.splice(dIdx, 1);
+                                    setLocalFleet(nf);
+                                  }}
+                                  className="text-red-400 hover:bg-red-50 p-1.5 rounded ml-2"
+                                  title="Remove this range"
+                                ><X className="w-3.5 h-3.5" /></button>
+                              </div>
+                            ))}</div>}
+                      </div>
+                    </div>
                   </div>
                 )
               })}
