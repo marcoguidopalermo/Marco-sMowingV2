@@ -8,7 +8,7 @@ import {
 import { AppData, FleetItem, MechanicTask, PartsOrder } from '../types';
 import { isExpiringSoon, isExpired, isOdoStale } from '../lib/dateUtils';
 import { fleetItemLabel, needsPlateRenewal, needsCommercialSafety, weightBandLabel } from '../lib/fleetUtils';
-import { isKmMaintenanceUnit } from '../lib/maintenanceUtils';
+import { isKmMaintenanceUnit, isHourMaintenanceUnit } from '../lib/maintenanceUtils';
 import InspectionLog from './InspectionLog';
 import ActivityLog from './ActivityLog';
 import MechanicPerformance from './MechanicPerformance';
@@ -66,12 +66,17 @@ interface MechanicBoardProps {
   // `valueAtService` is hours OR km depending on the item's metric.
   // `explicitNextDue` is required when the item is km-metric (the
   // mechanic-edited next-due target); ignored for hours.
+  // `placeholderDefaults` upgrades the call to "upsert": when no
+  // item with `itemId` exists, the handler creates one with the
+  // supplied defaults (used by the truck Option A placeholder when
+  // a mechanic configures its initial next-due from Fleet List).
   onManualResetMaintenance: (
     fleetId: string,
     itemId: string,
     valueAtService: number,
     notes?: string,
     explicitNextDue?: number,
+    placeholderDefaults?: { name: string; threshold: number; metric: 'hours' | 'km' },
   ) => void;
   onViewInspection: (inspectionId: string) => void;
   onAssignTask: (taskId: string, assignedTo: { userEmail: string; userName: string } | null) => void;
@@ -232,7 +237,6 @@ export default function MechanicBoard({
 
     fleet.forEach(f => {
       if (f.isWinterized) return; // winterized units don't surface in alerts
-      const isTrailer = f.type === 'trailer';
       const plateGate = needsPlateRenewal(f);
       const safetyGate = needsCommercialSafety(f);
 
@@ -242,11 +246,12 @@ export default function MechanicBoard({
       if (safetyGate && isExpired(f.safetyExpiry)) safetyExpiredUnits.push(f);
       if (f.cvorRequired && cvorIsExpired) cvorExpiredUnits.push(f);
 
-      // WARNING — odo-stale predicate excludes hour-tracked equipment
-      // (those units update via currentEngineHours / lastHourUpdateAt;
-      // their odometer is intentionally frozen and would always look
-      // stale otherwise — the Missing Hour Updates banner covers them).
-      if (!isTrailer && !(f.type === 'equipment' && f.tracksEngineHours) && isOdoStale(f.lastOdometerUpdate)) odoStaleUnits.push(f);
+      // WARNING — odo-stale is truck-only (positive type gate via the
+      // canonical helper). Equipment / tractor / trailer don't track
+      // an odometer in this model, so they never appear here. Hour-
+      // tracked units are covered by the parallel Missing Hour
+      // Updates banner.
+      if (isKmMaintenanceUnit(f) && !f.isWinterized && isOdoStale(f.lastOdometerUpdate)) odoStaleUnits.push(f);
       if (plateGate && !isExpired(f.regExpiry) && isExpiringSoon(f.regExpiry)) regSoonUnits.push(f);
       if (safetyGate && !isExpired(f.safetyExpiry) && isExpiringSoon(f.safetyExpiry)) safetySoonUnits.push(f);
     });
@@ -993,7 +998,7 @@ export default function MechanicBoard({
             </div>
             <div className="flex-1 min-w-[200px] bg-red-50 border border-red-100 rounded-lg p-3">
               <h4 className="text-xs font-bold text-red-800 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Missing Odo Updates</h4>
-              <p className="text-sm text-red-600 font-medium mt-1">{fleet.filter(f => f.type !== 'trailer' && !f.isWinterized && !(f.type === 'equipment' && f.tracksEngineHours) && isOdoStale(f.lastOdometerUpdate)).length} vehicles unupdated in 30 days.</p>
+              <p className="text-sm text-red-600 font-medium mt-1">{fleet.filter(f => isKmMaintenanceUnit(f) && !f.isWinterized && isOdoStale(f.lastOdometerUpdate)).length} vehicles unupdated in 30 days.</p>
             </div>
             {/* Missing Hour Updates — parallel banner for engine-hour-
                 tracked units that haven't been read in 7+ days. Mirrors
@@ -1001,7 +1006,7 @@ export default function MechanicBoard({
             <div className="flex-1 min-w-[200px] bg-amber-50 border border-amber-100 rounded-lg p-3">
               <h4 className="text-xs font-bold text-amber-800 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Missing Hour Updates</h4>
               <p className="text-sm text-amber-700 font-medium mt-1">
-                {fleet.filter(f => f.tracksEngineHours && !f.isWinterized && (!f.lastHourUpdateAt || (Date.now() - f.lastHourUpdateAt) > 7 * 24 * 60 * 60 * 1000)).length} units unupdated in 7 days.
+                {fleet.filter(f => isHourMaintenanceUnit(f) && !f.isWinterized && (!f.lastHourUpdateAt || (Date.now() - f.lastHourUpdateAt) > 7 * 24 * 60 * 60 * 1000)).length} units unupdated in 7 days.
               </p>
             </div>
           </div>
@@ -1087,8 +1092,8 @@ export default function MechanicBoard({
                     return 0;
                   })
                   .map(f => {
-                  const isOdoOutdated = f.type !== 'trailer' && !f.isWinterized && isOdoStale(f.lastOdometerUpdate);
-                  const isHrsStale = !!f.tracksEngineHours && !f.isWinterized && (!f.lastHourUpdateAt || (Date.now() - f.lastHourUpdateAt) > 7 * 24 * 60 * 60 * 1000);
+                  const isOdoOutdated = isKmMaintenanceUnit(f) && !f.isWinterized && isOdoStale(f.lastOdometerUpdate);
+                  const isHrsStale = isHourMaintenanceUnit(f) && !f.isWinterized && (!f.lastHourUpdateAt || (Date.now() - f.lastHourUpdateAt) > 7 * 24 * 60 * 60 * 1000);
                   const isHighlighted = highlightedFleetId === f.id;
                   return (
                     <tr key={f.id} id={`fleet-row-${f.id}`} className={`hover:bg-gray-50 transition-colors ${isHighlighted ? 'bg-yellow-50 ring-2 ring-yellow-300 ring-inset' : ''} ${f.isWinterized ? 'opacity-60' : ''}`}>
@@ -1227,17 +1232,54 @@ export default function MechanicBoard({
                             )}
                           </div>
                         )}
-                        {/* Km maintenance — trucks/trailers/tractors with
-                            tracksMaintenance. Color-coded by km-to-next
-                            with a 500 km warning window. Reset button
-                            mirrors the equipment Reset. */}
+                        {/* Truck km maintenance — auto, no toggle.
+                            Trailers and tractors don't render here
+                            (isKmMaintenanceUnit is truck-only).
+                            Color-coded by km-to-next with a 500 km
+                            warning window. Trucks with no configured
+                            km item show an Option A placeholder row
+                            ("Set next oil change due (km)") that
+                            opens the reset modal — no countdown, no
+                            colour alert. */}
                         {isKmMaintenanceUnit(f) && !f.isWinterized && (() => {
                           const kmItems = (f.maintenanceItems || []).filter(mi => (mi.metric || 'hours') === 'km');
-                          if (kmItems.length === 0) return null;
                           const curKm = typeof f.odometer === 'number' ? f.odometer : 0;
+                          const placeholderId = `__placeholder__-${f.id}`;
                           return (
                             <div className="flex flex-col gap-1 mt-2 pt-2 border-t border-slate-100">
                               {kmItems.map(mi => {
+                                // Unconfigured items (nextDueAt <= 0) get
+                                // the neutral placeholder treatment too,
+                                // matching the spawn helper's skip rule.
+                                if (!mi.nextDueAt || mi.nextDueAt <= 0) {
+                                  return (
+                                    <div key={mi.id} className="flex items-center gap-2 px-2 py-1 rounded border text-[11px] font-medium bg-slate-50 border-slate-200 text-slate-700">
+                                      <Wrench className="w-3 h-3 shrink-0" />
+                                      <span className="font-bold truncate">{mi.name}</span>
+                                      <span className="ml-auto text-[10px] font-black uppercase tracking-widest text-amber-700 whitespace-nowrap">Set next due (km)</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setResetCtx({
+                                            fleetId: f.id,
+                                            itemId: mi.id,
+                                            itemName: mi.name,
+                                            defaultHours: curKm,
+                                            metric: 'km',
+                                            threshold: mi.threshold || 5000,
+                                          });
+                                          setResetHrs(String(curKm));
+                                          setResetNextDue(String(curKm + (mi.threshold || 5000)));
+                                          setResetNotes('');
+                                        }}
+                                        className="text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 shrink-0"
+                                        title="Set the next oil change km"
+                                      >
+                                        Set
+                                      </button>
+                                    </div>
+                                  );
+                                }
                                 const toNext = mi.nextDueAt - curKm;
                                 const overdue = toNext <= 0;
                                 const dueSoon = !overdue && toNext <= 500;
@@ -1280,6 +1322,37 @@ export default function MechanicBoard({
                                   </div>
                                 );
                               })}
+                              {kmItems.length === 0 && (
+                                <div className="flex items-center gap-2 px-2 py-1 rounded border text-[11px] font-medium bg-slate-50 border-slate-200 text-slate-700">
+                                  <Wrench className="w-3 h-3 shrink-0" />
+                                  <span className="font-bold truncate">Oil change</span>
+                                  <span className="ml-auto text-[10px] font-black uppercase tracking-widest text-amber-700 whitespace-nowrap">Set next due (km)</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      // Virtual placeholder — the reset
+                                      // modal will pass placeholderDefaults
+                                      // through to onManualResetMaintenance
+                                      // which materialises the real item.
+                                      setResetCtx({
+                                        fleetId: f.id,
+                                        itemId: placeholderId,
+                                        itemName: 'Oil change',
+                                        defaultHours: curKm,
+                                        metric: 'km',
+                                        threshold: 5000,
+                                      });
+                                      setResetHrs(String(curKm));
+                                      setResetNextDue(String(curKm + 5000));
+                                      setResetNotes('');
+                                    }}
+                                    className="text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 shrink-0"
+                                    title="Set the initial next oil change km"
+                                  >
+                                    Set
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           );
                         })()}
@@ -1452,12 +1525,22 @@ export default function MechanicBoard({
                 onClick={() => {
                   const n = Number(resetHrs);
                   if (!Number.isFinite(n) || n < 0) return;
+                  // Virtual placeholder ids are tagged so the App.tsx
+                  // upsert path knows to materialise a new item from
+                  // these defaults rather than search for an existing
+                  // one. Real items don't carry the prefix.
+                  const isPlaceholder = resetCtx.itemId.startsWith('__placeholder__-');
+                  const placeholderDefaults = isPlaceholder ? {
+                    name: resetCtx.itemName,
+                    threshold: resetCtx.threshold,
+                    metric: resetCtx.metric,
+                  } : undefined;
                   if (resetCtx.metric === 'km') {
                     const nd = Number(resetNextDue);
                     if (!Number.isFinite(nd) || nd < 0) return;
-                    onManualResetMaintenance(resetCtx.fleetId, resetCtx.itemId, n, resetNotes || undefined, nd);
+                    onManualResetMaintenance(resetCtx.fleetId, resetCtx.itemId, n, resetNotes || undefined, nd, placeholderDefaults);
                   } else {
-                    onManualResetMaintenance(resetCtx.fleetId, resetCtx.itemId, n, resetNotes || undefined);
+                    onManualResetMaintenance(resetCtx.fleetId, resetCtx.itemId, n, resetNotes || undefined, undefined, placeholderDefaults);
                   }
                   setResetCtx(null);
                 }}

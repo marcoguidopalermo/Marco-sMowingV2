@@ -838,6 +838,40 @@ export default function App() {
     setIsManageModalOpen(true);
   };
 
+  // --- MAINTENANCE COMPLETION PREFILL ---
+  // Shared by every path that closes a maintenance task — task-detail
+  // modal, drag-drop onto Done, and the arrow's todo→doing→done
+  // promotion. Returns the CompletionModalState fields that flip the
+  // dialog into Maintenance mode (km vs hours, default reading,
+  // mechanic-editable next-due pre-fill). Returns {} for repair
+  // tasks; the caller spreads the result into the modal state.
+  const buildMaintCompletionPrefill = (
+    task: { unitId?: string; source?: string; sourceMaintenanceItemId?: string } | undefined,
+  ): Partial<import('./components/CompletionModal').CompletionModalState> => {
+    if (!task || task.source !== 'maintenance' || !task.unitId) return {};
+    const u = appData.fleet.find(f => f.id === task.unitId);
+    if (!u) return { isMaintenance: true };
+    const item = (u.maintenanceItems || []).find(mi => mi.id === task.sourceMaintenanceItemId);
+    const metric: 'hours' | 'km' = item?.metric || 'hours';
+    let reading = '';
+    let nextDue = '';
+    if (metric === 'km') {
+      const curKm = typeof u.odometer === 'number' ? u.odometer : 0;
+      reading = String(curKm);
+      const interval = typeof item?.threshold === 'number' ? item.threshold : 0;
+      nextDue = String(curKm + interval);
+    } else if (typeof u.currentEngineHours === 'number') {
+      reading = String(u.currentEngineHours);
+    }
+    return {
+      isMaintenance: true,
+      maintenanceItemName: item?.name,
+      hoursAtService: reading,
+      maintenanceMetric: metric,
+      nextDueAtService: metric === 'km' ? nextDue : undefined,
+    };
+  };
+
   // --- TASK ACTIVITY HELPERS ---
   const makeActivity = (
     type: TaskActivityType,
@@ -1586,6 +1620,10 @@ export default function App() {
       onTaskDrop={(task, newStatus) => {
         if (newStatus === 'done') {
           if (!can('canCompleteRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+          // Look up the canonical task (might be a synthetic one not
+          // in appData.mechanicTasks yet — fall back to the dropped
+          // task for source/maint metadata in that case).
+          const canonical = appData.mechanicTasks.find(t => t.id === task.id) || task;
           setCompletionModal({
             isOpen: true,
             taskId: task.id,
@@ -1594,6 +1632,7 @@ export default function App() {
             partCost: '',
             laborHours: '',
             fixNotes: task.description || '',
+            ...buildMaintCompletionPrefill(canonical),
           });
         } else {
           if (!can('canEditRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
@@ -1623,7 +1662,9 @@ export default function App() {
         const newStatus = currentStatus === 'todo' ? 'doing' : 'done';
         if (newStatus === 'done' && existing) {
           if (!can('canCompleteRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
-          // Open completion modal instead of just changing status
+          // Open completion modal instead of just changing status.
+          // Maintenance tasks get the metric-aware prefill so the
+          // schedule advances on submit.
           setCompletionModal({
             isOpen: true,
             taskId: existing.id,
@@ -1632,6 +1673,7 @@ export default function App() {
             partCost: '',
             laborHours: '',
             fixNotes: existing.description || '',
+            ...buildMaintCompletionPrefill(existing),
           });
           return;
         }
@@ -1654,10 +1696,10 @@ export default function App() {
           odometer: newKm,
           lastOdometerUpdate: formatDate(new Date()),
         };
-        // Truck/trailer/tractor maintenance: run the km spawn helper
-        // so an oil change crossing its nextDueKm (or coming within
-        // 500 km of it) surfaces as a yellow/red Repair Board task.
-        // No-op for units without tracksMaintenance.
+        // Truck maintenance (auto, no toggle): run the km spawn
+        // helper so an oil change crossing its nextDueKm (or coming
+        // within 500 km of it) surfaces as a yellow/red Repair Board
+        // task. No-op for non-trucks and for unconfigured items.
         const { items, mechanicTasks } = processMaintenanceForOdometerUpdate(
           updatedUnit,
           appData.mechanicTasks,
@@ -1751,7 +1793,7 @@ export default function App() {
           showToastMsg(`${unit.name} reactivated.`);
         }
       }}
-      onManualResetMaintenance={(fleetId, itemId, valueAtService, notes, explicitNextDue) => {
+      onManualResetMaintenance={(fleetId, itemId, valueAtService, notes, explicitNextDue, placeholderDefaults) => {
         if (!can('canCompleteRepairs', effectiveRole)) {
           showToastMsg(PERMISSION_DENIED);
           return;
@@ -1762,7 +1804,19 @@ export default function App() {
         }
         const unit = appData.fleet.find(f => f.id === fleetId);
         if (!unit) return;
-        const item = (unit.maintenanceItems || []).find(mi => mi.id === itemId);
+        const existingItem = (unit.maintenanceItems || []).find(mi => mi.id === itemId);
+        // Upsert mode: when no item with this id exists, treat this
+        // as the first-time configuration of a virtual placeholder
+        // (Option A truck oil change). The caller provides the
+        // defaults (name, threshold, metric); we synthesize a new
+        // MaintenanceItem and append it.
+        const item: MaintenanceItem | undefined = existingItem || (placeholderDefaults ? {
+          id: `mi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          name: placeholderDefaults.name,
+          threshold: placeholderDefaults.threshold,
+          nextDueAt: 0,
+          metric: placeholderDefaults.metric,
+        } : undefined);
         if (!item) return;
         const metric = item.metric || 'hours';
         if (metric === 'km' && (typeof explicitNextDue !== 'number' || !Number.isFinite(explicitNextDue) || explicitNextDue < 0)) {
@@ -1770,7 +1824,9 @@ export default function App() {
           return;
         }
         const resetItem = resetMaintenanceItem(item, valueAtService, metric === 'km' ? explicitNextDue : undefined);
-        const nextItems = (unit.maintenanceItems || []).map(mi => mi.id === itemId ? resetItem : mi);
+        const nextItems = existingItem
+          ? (unit.maintenanceItems || []).map(mi => mi.id === itemId ? resetItem : mi)
+          : [...(unit.maintenanceItems || []), resetItem];
         const updatedUnit: FleetItem = metric === 'km'
           ? {
             ...unit,
@@ -1810,7 +1866,10 @@ export default function App() {
           isMajor: false,
           signature: '',
           status: 'clean',
-          maintenanceItemId: itemId,
+          // Use the resolved item's id so a first-time upsert (Option A
+          // truck oil change) links the inspection to the freshly
+          // generated MaintenanceItem id, not the virtual placeholder.
+          maintenanceItemId: resetItem.id,
           maintenanceItemName: item.name,
           hoursAtService: metric === 'hours' ? valueAtService : undefined,
           kmAtService: metric === 'km' ? valueAtService : undefined,
@@ -3055,17 +3114,25 @@ export default function App() {
             fleetAfterSpawn = fleetAfterSpawn.map(f => f.id === unit.id ? updatedUnit : f);
             tasksAfterSpawn = nextTasks;
           }
-          // Same idea for truck/trailer/tractor maintenance — if the
-          // mechanic toggled tracksMaintenance on or added an item
-          // whose nextDueKm is already at/past the unit's odometer,
-          // we want the warning to surface immediately. Helper is
-          // idempotent (activeTaskId guard), so we don't need a
-          // "did the odometer change" gate.
+          // Truck maintenance (auto, no toggle) — surface any item
+          // whose nextDueKm is already at/past the unit's odometer
+          // immediately. Helper is idempotent (activeTaskId guard)
+          // and skips unconfigured items (nextDueAt <= 0), so we
+          // don't need a "did the odometer change" gate. When the
+          // mechanic edited the odometer in this modal, stamp
+          // lastOdometerUpdate so the Missing Odo banner resets —
+          // mirrors what the Fleet List inline save does.
           for (const unit of fleetAfterSpawn) {
             if (!isKmMaintenanceUnit(unit)) continue;
             if (unit.isWinterized) continue;
+            const prior = appData.fleet.find(p => p.id === unit.id);
+            const odoChanged = prior?.odometer !== unit.odometer;
             const { items, mechanicTasks: nextTasks } = processMaintenanceForOdometerUpdate(unit, tasksAfterSpawn);
-            const updatedUnit: FleetItem = { ...unit, maintenanceItems: items };
+            const updatedUnit: FleetItem = {
+              ...unit,
+              maintenanceItems: items,
+              ...(odoChanged ? { lastOdometerUpdate: formatDate(new Date()) } : {}),
+            };
             fleetAfterSpawn = fleetAfterSpawn.map(f => f.id === unit.id ? updatedUnit : f);
             tasksAfterSpawn = nextTasks;
           }
@@ -3477,35 +3544,13 @@ export default function App() {
           // Maintenance-task path: pull current hours from the unit
           // so the modal can prefill "Engine hours at service" and
           // the submit handler can advance the schedule on save.
-          const isMaint = existing.source === 'maintenance';
-          let maintItemName: string | undefined;
-          let prefillReading = '';
-          let maintMetric: 'hours' | 'km' = 'hours';
-          let prefillNextDue = '';
-          if (isMaint && existing.unitId) {
-            const u = appData.fleet.find(f => f.id === existing.unitId);
-            if (u) {
-              const item = (u.maintenanceItems || []).find(mi => mi.id === existing.sourceMaintenanceItemId);
-              maintItemName = item?.name;
-              maintMetric = item?.metric || 'hours';
-              if (maintMetric === 'km') {
-                const curKm = typeof u.odometer === 'number' ? u.odometer : 0;
-                prefillReading = String(curKm);
-                // Next-due pre-fill = current odometer + the item's
-                // default interval. Mechanic edits this in the modal
-                // based on the oil actually used.
-                const interval = typeof item?.threshold === 'number' ? item.threshold : 0;
-                prefillNextDue = String(curKm + interval);
-              } else if (typeof u.currentEngineHours === 'number') {
-                prefillReading = String(u.currentEngineHours);
-              }
-            }
-          }
           // Hand off to CompletionModal: it owns the part cost / labor
           // hours / fix notes prompt and, on submit, writes the Repair
           // Log row, flips status to 'done', and emits activity. We
           // close the detail modal first so the CompletionModal renders
           // cleanly on top without two modal layers fighting for focus.
+          // Maintenance metadata (metric + readings) is built by the
+          // shared helper used by drag-drop and arrow paths too.
           setMyMechanicTaskId(null);
           setCompletionModal({
             isOpen: true,
@@ -3515,11 +3560,7 @@ export default function App() {
             partCost: '',
             laborHours: '',
             fixNotes: existing.description || '',
-            isMaintenance: isMaint,
-            maintenanceItemName: maintItemName,
-            hoursAtService: isMaint ? prefillReading : undefined,
-            maintenanceMetric: isMaint ? maintMetric : undefined,
-            nextDueAtService: isMaint && maintMetric === 'km' ? prefillNextDue : undefined,
+            ...buildMaintCompletionPrefill(existing),
           });
         }}
         onAssign={(taskId, assignedTo) => {
