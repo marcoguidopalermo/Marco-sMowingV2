@@ -10,9 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
-import logo from "@/public/logo/LOGOBLACK.png";
+import logo from "@/assets/logo/LOGOBLACK.png";
 
 // --------------------------------
 // Types and Enums
@@ -44,15 +43,16 @@ const signInSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters"),
 });
 
-const signUpSchema = z.object({
-  name: z.string().min(2, "Name must be at least 2 characters"),
-  email: z.string().email("Invalid email address"),
-  password: z.string().min(8, "Password must be at least 8 characters"),
-  pin: z.string().regex(/^4027$/, "Invalid Company PIN"),
-  terms: z.boolean().refine((val) => val === true, {
-    message: "You must agree to the terms",
-  }),
-});
+const signUpSchema = z
+  .object({
+    email: z.string().email("Please enter a valid email address"),
+    password: z.string().min(6, "Password must be at least 6 characters"),
+    confirmPassword: z.string().min(1, "Please confirm your password"),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Passwords don't match",
+    path: ["confirmPassword"],
+  });
 
 const forgotPasswordSchema = z.object({
   email: z.string().email("Invalid email address"),
@@ -63,10 +63,41 @@ type SignUpFormValues = z.infer<typeof signUpSchema>;
 type ForgotPasswordFormValues = z.infer<typeof forgotPasswordSchema>;
 
 // --------------------------------
+// Error Mapping
+// --------------------------------
+
+// Turns a raw Firebase / handler error into a plain-language message.
+// Unauthorized emails, known auth/* codes, and unknown failures all get a
+// readable string — a bare "Firebase: Error (...)" is never surfaced, and
+// unknown errors still show their real code so issues can be diagnosed.
+function mapAuthError(err: unknown): string {
+  const e = err as { code?: string; message?: string } | null | undefined;
+  const code = e?.code || "";
+  switch (code) {
+    case "app/not-authorized":
+      return (
+        e?.message ||
+        "This email isn't authorized. Contact your administrator to be added."
+      );
+    case "auth/email-already-in-use":
+      return "An account with this email already exists — try signing in instead.";
+    case "auth/weak-password":
+      return "Password must be at least 6 characters.";
+    case "auth/invalid-email":
+      return "Please enter a valid email address.";
+    case "auth/operation-not-allowed":
+      return "Email sign-up isn't enabled — contact your administrator.";
+    default:
+      if (code) return `Sign-up failed (${code}). Please try again.`;
+      return e?.message || "Sign-up failed. Please try again.";
+  }
+}
+
+// --------------------------------
 // Main Auth Component
 // --------------------------------
 
-function Auth({ className, onSignInSuccess, onSignUpSuccess, onGoogleLogin, ...props }: React.ComponentProps<"div"> & { onSignInSuccess?: (email: string, pass: string) => void; onSignUpSuccess?: (name: string, email: string, pass: string) => void; onGoogleLogin?: () => void }) {
+function Auth({ className, onSignInSuccess, onSignUpSuccess, onGoogleLogin, ...props }: React.ComponentProps<"div"> & { onSignInSuccess?: (email: string, pass: string) => void; onSignUpSuccess?: (email: string, pass: string) => void; onGoogleLogin?: () => void }) {
   const [state, setState] = React.useState<AuthState>({ view: AuthView.SIGN_IN });
 
   const setView = React.useCallback((view: AuthView) => {
@@ -347,14 +378,14 @@ function AuthSignIn({ onForgotPassword, onSignUp, onSubmitSuccess, onGoogleLogin
       <AuthSocialButtons isLoading={formState.isLoading} onGoogleLogin={onGoogleLogin} />
 
       <p className="mt-8 text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest">
-        New team member?{" "}
+        New to the crew?{" "}
         <button
           type="button"
           className="text-green-600 hover:text-green-700 font-black"
           onClick={onSignUp}
           disabled={formState.isLoading}
         >
-          Create Account
+          Create an account
         </button>
       </p>
     </motion.div>
@@ -367,7 +398,7 @@ function AuthSignIn({ onForgotPassword, onSignUp, onSubmitSuccess, onGoogleLogin
 
 interface AuthSignUpProps {
   onSignIn: () => void;
-  onSubmitSuccess?: (name: string, email: string, pass: string) => void;
+  onSubmitSuccess?: (email: string, pass: string) => void;
   onGoogleLogin?: () => void;
 }
 
@@ -378,23 +409,21 @@ function AuthSignUp({ onSignIn, onSubmitSuccess, onGoogleLogin }: AuthSignUpProp
     showPassword: false,
   });
 
-  const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<SignUpFormValues>({
+  const { register, handleSubmit, formState: { errors } } = useForm<SignUpFormValues>({
     resolver: zodResolver(signUpSchema),
-    defaultValues: { name: "", email: "", password: "", pin: "", terms: false as any },
+    defaultValues: { email: "", password: "", confirmPassword: "" },
   });
-
-  const terms = watch("terms");
 
   const onSubmit = async (data: SignUpFormValues) => {
     setFormState((prev) => ({ ...prev, isLoading: true, error: null }));
     try {
       if (onSubmitSuccess) {
-        await onSubmitSuccess(data.name, data.email, data.password);
+        await onSubmitSuccess(data.email, data.password);
       } else {
         await new Promise((resolve) => setTimeout(resolve, 1500));
       }
-    } catch (err: any) {
-      setFormState((prev) => ({ ...prev, error: err.message || "Registration failed" }));
+    } catch (err) {
+      setFormState((prev) => ({ ...prev, error: mapAuthError(err) }));
     } finally {
       setFormState((prev) => ({ ...prev, isLoading: false }));
     }
@@ -410,29 +439,16 @@ function AuthSignUp({ onSignIn, onSubmitSuccess, onGoogleLogin }: AuthSignUpProp
     >
       <div className="mb-8 text-center">
         <h1 className="text-xl font-black text-slate-900 uppercase tracking-tight">Join the Crew</h1>
-        <p className="mt-1 text-xs font-bold text-slate-400 uppercase tracking-widest">Register for access</p>
+        <p className="mt-1 text-xs font-bold text-slate-400 uppercase tracking-widest">Create your account</p>
       </div>
 
       <AuthError message={formState.error} />
 
       <AuthForm onSubmit={handleSubmit(onSubmit)}>
         <div className="space-y-1.5">
-          <Label htmlFor="name" className="text-[11px] font-black uppercase text-slate-500 tracking-wider">Full Name</Label>
+          <Label htmlFor="signup-email" className="text-[11px] font-black uppercase text-slate-500 tracking-wider">Email Address</Label>
           <Input
-            id="name"
-            type="text"
-            placeholder="John Doe"
-            disabled={formState.isLoading}
-            className={cn("h-12 bg-slate-50 border-slate-200 rounded-xl focus:ring-green-500 focus:bg-white transition-all font-medium", errors.name && "border-red-300 bg-red-50")}
-            {...register("name")}
-          />
-          {errors.name && <p className="text-[10px] font-bold text-red-500 mt-1">{errors.name.message}</p>}
-        </div>
-
-        <div className="space-y-1.5">
-          <Label htmlFor="email" className="text-[11px] font-black uppercase text-slate-500 tracking-wider">Email Address</Label>
-          <Input
-            id="email"
+            id="signup-email"
             type="email"
             placeholder="marco@marcosmowing.com"
             disabled={formState.isLoading}
@@ -443,12 +459,12 @@ function AuthSignUp({ onSignIn, onSubmitSuccess, onGoogleLogin }: AuthSignUpProp
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="password" className="text-[11px] font-black uppercase text-slate-500 tracking-wider">Create Password</Label>
+          <Label htmlFor="signup-password" className="text-[11px] font-black uppercase text-slate-500 tracking-wider">Create Password</Label>
           <div className="relative">
             <Input
-              id="password"
+              id="signup-password"
               type={formState.showPassword ? "text" : "password"}
-              placeholder="••••••••"
+              placeholder="At least 6 characters"
               disabled={formState.isLoading}
               className={cn("h-12 bg-slate-50 border-slate-200 rounded-xl focus:ring-green-500 focus:bg-white transition-all font-medium", errors.password && "border-red-300 bg-red-50")}
               {...register("password")}
@@ -470,35 +486,17 @@ function AuthSignUp({ onSignIn, onSubmitSuccess, onGoogleLogin }: AuthSignUpProp
         </div>
 
         <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="pin" className="text-[11px] font-black uppercase text-slate-500 tracking-wider">Company PIN</Label>
-            <span className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">Required for registration</span>
-          </div>
+          <Label htmlFor="signup-confirm" className="text-[11px] font-black uppercase text-slate-500 tracking-wider">Confirm Password</Label>
           <Input
-            id="pin"
-            type="password"
-            placeholder="••••"
-            maxLength={4}
+            id="signup-confirm"
+            type={formState.showPassword ? "text" : "password"}
+            placeholder="Re-enter your password"
             disabled={formState.isLoading}
-            className={cn("h-12 bg-slate-50 border-slate-200 rounded-xl focus:ring-green-500 focus:bg-white transition-all font-black text-center tracking-[0.5em]", errors.pin && "border-red-300 bg-red-50")}
-            {...register("pin")}
+            className={cn("h-12 bg-slate-50 border-slate-200 rounded-xl focus:ring-green-500 focus:bg-white transition-all font-medium", errors.confirmPassword && "border-red-300 bg-red-50")}
+            {...register("confirmPassword")}
           />
-          {errors.pin && <p className="text-[10px] font-bold text-red-500 mt-1">{errors.pin.message}</p>}
+          {errors.confirmPassword && <p className="text-[10px] font-bold text-red-500 mt-1">{errors.confirmPassword.message}</p>}
         </div>
-
-        <div className="flex items-center space-x-3 py-2">
-          <Checkbox
-            id="terms"
-            checked={terms as any}
-            onCheckedChange={(checked) => setValue("terms", (checked === true) as true)}
-            disabled={formState.isLoading}
-            className="w-5 h-5 rounded-lg border-slate-300 data-[state=checked]:bg-green-600 data-[state=checked]:border-green-600"
-          />
-          <Label htmlFor="terms" className="text-[11px] font-bold text-slate-500 leading-tight">
-            I agree to the <button type="button" className="text-green-600 underline">Terms of Operations</button> and safety protocols.
-          </Label>
-        </div>
-        {errors.terms && <p className="text-[10px] font-bold text-red-500 mt-1">{errors.terms.message}</p>}
 
         <Button type="submit" className="w-full h-14 bg-green-600 hover:bg-green-700 text-white rounded-xl font-black uppercase tracking-widest shadow-lg shadow-green-600/20 transition-all active:scale-[0.98]" disabled={formState.isLoading}>
           {formState.isLoading ? (

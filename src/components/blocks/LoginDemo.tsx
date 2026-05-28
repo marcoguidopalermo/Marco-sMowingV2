@@ -1,15 +1,17 @@
 'use client';
 import { Auth } from '@/components/ui/auth-form-1';
-import heroImg from '@/public/images/hero.png';
+import heroImg from '@/assets/images/hero.png';
 
-export function LoginDemo({ 
-  onSubmit, 
+export function LoginDemo({
+  onSubmit,
   onGoogleSubmit,
-  onSignUp
-}: { 
-  onSubmit: (email: string, pass: string) => void; 
+  onSignUp,
+  banner,
+}: {
+  onSubmit: (email: string, pass: string) => void;
   onGoogleSubmit: () => void;
-  onSignUp?: (name: string, email: string, pass: string) => void;
+  onSignUp?: (email: string, pass: string) => void;
+  banner?: string | null;
 }) {
 
   return (
@@ -40,7 +42,12 @@ export function LoginDemo({
 
       {/* CENTRAL AUTH CARD */}
       <div className='relative z-10 w-full max-w-md px-4 py-20'>
-        <Auth 
+        {banner && (
+          <div className="mb-4 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-800 shadow-lg" role="alert">
+            {banner}
+          </div>
+        )}
+        <Auth
           onSignInSuccess={onSubmit}
           onSignUpSuccess={onSignUp}
           onGoogleLogin={onGoogleSubmit}

@@ -26,3 +26,19 @@ dist-ssr
 # Firebase MCP Server secrets
 firebase-mcp-server/serviceAccountKey.json
 serviceAccountKey.json
+
+# Firebase local cache
+.firebase/
+
+# Vite cache
+.vite/
+
+# Scratch / one-off scripts
+scratch/
+
+# Editor backups
+*.backup
+*.before-refactor
+src/*.backup.tsx
+src/App.tsx.backup
+src/App.tsx.before-refactor

@@ -1,0 +1,31 @@
+rules_version = '2';
+
+// CrewMaster Firestore rules.
+// - Reads/writes require an authenticated user whose email is in the
+//   authorizedEmails list on the main appData doc, OR who is the hardcoded
+//   super admin.
+// - Emails are stored and compared in lowercase. The client save flow
+//   normalizes both authorizedEmails entries and Employee.linkedUserEmail.
+// - Firestore rules do not support .toLowerCase() on string lookups, so the
+//   token email is lowercased and matched against the stored list as-is.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSuperAdmin() {
+      return request.auth != null
+        && request.auth.token.email == 'marcoguidopalermo@gmail.com';
+    }
+
+    function isAuthorized() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() in
+          get(/databases/$(database)/documents/artifacts/crewmaster/public/data/appData/main).data.authorizedEmails;
+    }
+
+    // All artifacts (public app data + private subcollections) require auth.
+    match /artifacts/{document=**} {
+      allow read, write: if isAuthorized() || isSuperAdmin();
+    }
+  }
+}
