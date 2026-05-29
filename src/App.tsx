@@ -1525,7 +1525,9 @@ export default function App() {
             ) : (
               <>
                 <span className="text-[10px] bg-gray-100 text-gray-600 border border-gray-200 px-1.5 rounded uppercase font-bold">{item.type}</span>
-                {(() => {
+                {/* Inspection readiness pill — trucks/trailers/tractors
+                    only. Equipment (mowers etc.) is not inspected. */}
+                {item.type !== 'equipment' && (() => {
                   const readiness = getUnitReadiness(item.id, appData, contextDate);
                   const labels = { green: 'Inspected', yellow: 'Minor Defect', red: 'Out of Service', missing: 'Needs Inspection' };
                   const colors = { green: 'bg-emerald-100 text-emerald-700 border-emerald-200', yellow: 'bg-yellow-100 text-yellow-700 border-yellow-200', red: 'bg-red-100 text-red-700 border-red-200', missing: 'bg-slate-100 text-slate-500 border-slate-200' };
@@ -3773,21 +3775,25 @@ export default function App() {
                         <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b pb-2 flex items-center gap-2"><Truck className="w-4 h-4" /> Equipment & Fleet</h3>
                         <div className="space-y-2">
                           {fleet.map(f => {
-                    const readiness = getUnitReadiness(f.id, appData, crew.dateStr);
-                    const statusColors = { 
-                      green: 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]', 
-                      yellow: 'bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.6)]', 
+                    // Equipment (mowers etc.) isn't inspected — render
+                    // a neutral dot and skip the inspection-type label.
+                    const isEquipment = f.type === 'equipment';
+                    const readiness = isEquipment ? null : getUnitReadiness(f.id, appData, crew.dateStr);
+                    const statusColors = {
+                      green: 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]',
+                      yellow: 'bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.6)]',
                       red: 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]',
-                      missing: 'bg-slate-300 border-2 border-slate-400' 
+                      missing: 'bg-slate-300 border-2 border-slate-400'
                     };
+                    const dotCls = readiness ? statusColors[readiness] : 'bg-slate-200 border border-slate-300';
 
                     return (
                       <div key={f.id} className="flex items-center justify-between bg-white px-3 py-2 rounded-lg border border-gray-200 shadow-sm group/item">
                         <div className="flex items-center gap-3 overflow-hidden">
-                          <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusColors[readiness]}`} title={`Status: ${readiness}`} />
+                          <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${dotCls}`} title={readiness ? `Status: ${readiness}` : f.type} />
                           <div className="flex flex-col min-w-0">
                             <span className="text-sm font-bold text-gray-800 truncate">{fleetItemLabel(f)}</span>
-                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">{f.type} • {getRequiredInspectionType(f)}</span>
+                            <span className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">{f.type}{isEquipment ? '' : ` • ${getRequiredInspectionType(f)}`}</span>
                           </div>
                         </div>
                       </div>

@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction, ReactNode, DragEvent, ComponentType } fr
 import {
   CalendarDays, Calendar as CalendarIcon, ChevronLeft, ChevronRight,
   Filter, CloudSun, Cloud, Printer, Plus, Trash2, Users, Truck,
-  ChevronDown, ChevronUp, X, Package, Hammer, Flame, CheckCircle, AlertTriangle,
+  ChevronDown, ChevronUp, X, Package, Hammer, Flame, CheckCircle, AlertTriangle, AlertCircle,
   TrendingUp, CreditCard as IdCard, Copy, ClipboardPaste, ShieldCheck,
   Moon, Lock, Link2, ArrowLeft
 } from 'lucide-react';
@@ -673,15 +673,36 @@ export default function ScheduleBoard({
                       {veh.repairTags?.includes('priority') && <span title="Priority Repair"><Flame className="w-3 h-3 text-red-500" /></span>}
                     </span>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    {readiness === 'missing' && (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {/* Equipment (mowers etc.) doesn't get inspected —
+                        no Inspect button, no inspected indicator.
+                        Trucks/trailers/tractors carry compact icons
+                        only so the unit name is never truncated. */}
+                    {veh.type !== 'equipment' && readiness === 'missing' && (
                       <button onClick={() => setActiveInspection({ unitId: veh.id, targetDate: dateString, defects: [], expandedCategory: null, draftSeverity: 'minor', draftNotes: '' })} className="text-[10px] font-black bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded uppercase hover:bg-blue-100 transition-colors">Inspect</button>
                     )}
-                    {todayInsp && (
-                      <button onClick={() => setViewingInspectionId(todayInsp.id)} className="text-[10px] font-black bg-emerald-600 text-white px-2.5 py-1 rounded-lg uppercase hover:bg-emerald-700 shadow-sm transition-all flex items-center gap-1.5 ring-2 ring-emerald-100">
-                        <CheckCircle className="w-3.5 h-3.5" /> Inspected
-                      </button>
-                    )}
+                    {veh.type !== 'equipment' && todayInsp && (() => {
+                      const status = todayInsp.status;
+                      // Compact circular icon button. Colour follows
+                      // the inspection result; tap reaches the full
+                      // inspection detail just like the old pill did.
+                      const config = status === 'major'
+                        ? { cls: 'bg-red-100 text-red-700 ring-red-200 hover:bg-red-200', Icon: AlertCircle, title: 'Major defect — tap to view inspection' }
+                        : status === 'minor'
+                          ? { cls: 'bg-yellow-100 text-yellow-700 ring-yellow-200 hover:bg-yellow-200', Icon: AlertTriangle, title: 'Minor defect — tap to view inspection' }
+                          : { cls: 'bg-emerald-100 text-emerald-700 ring-emerald-200 hover:bg-emerald-200', Icon: CheckCircle, title: 'Inspected — tap to view inspection' };
+                      const { cls, Icon, title } = config;
+                      return (
+                        <button
+                          onClick={() => setViewingInspectionId(todayInsp.id)}
+                          className={`p-1 rounded-full ring-1 shadow-sm transition-colors ${cls}`}
+                          title={title}
+                          aria-label={title}
+                        >
+                          <Icon className="w-3.5 h-3.5" />
+                        </button>
+                      );
+                    })()}
                     {canEditSchedule && <button onClick={() => updateCrewItem(dateString, crew.id, 'fleet', 'remove', veh.id)} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-4 h-4" /></button>}
                   </div>
                 </div>
@@ -938,7 +959,15 @@ export default function ScheduleBoard({
           <div className="mt-auto pt-3 border-t border-slate-100">
             {(() => {
               const fleetEmpty = crew.fleet.length === 0;
-              const anyMissing = crew.fleet.some(fid => getUnitReadiness(fid, appData, dateString) === 'missing');
+              // Equipment (mowers etc.) doesn't get inspected — exclude
+              // it from the dispatch readiness gate. Otherwise an
+              // equipment-only crew would be permanently blocked by a
+              // "missing" inspection state that doesn't apply to it.
+              const anyMissing = crew.fleet.some(fid => {
+                const unit = appData.fleet.find(u => u.id === fid);
+                if (unit?.type === 'equipment') return false;
+                return getUnitReadiness(fid, appData, dateString) === 'missing';
+              });
 
               if (crew.dispatched) {
                 const dispOvs = crew.dispatchOverrides || [];
