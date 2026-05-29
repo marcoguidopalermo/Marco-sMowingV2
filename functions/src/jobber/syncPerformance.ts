@@ -1220,6 +1220,15 @@ async function runPerformanceSync(args: {
     // finalDuration stamps the true total and the next sync
     // overwrites the running value with it.
     const nowMs = Date.now();
+    const openCount = timesheets.filter(
+      (t) => typeof t.finalDuration !== "number",
+    ).length;
+    logger.info("timesheet_breakdown", {
+      total: timesheets.length,
+      open: openCount,
+      closed: timesheets.length - openCount,
+      date: targetDate,
+    });
     const secondsByJobberUser = new Map<string, number>();
     for (const ts of timesheets) {
       let sec: number;
@@ -1235,6 +1244,9 @@ async function runPerformanceSync(args: {
       const prev = secondsByJobberUser.get(ts.user.id) || 0;
       secondsByJobberUser.set(ts.user.id, prev + sec);
     }
+    logger.info("ah_attribution", {
+      usersWithSeconds: secondsByJobberUser.size,
+    });
 
     // Visit ID set used to reconcile existing rows against this sync.
     // Anything in this set is "still known to Jobber" (whether complete
