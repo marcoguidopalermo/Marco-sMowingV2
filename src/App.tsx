@@ -869,22 +869,24 @@ export default function App() {
     if (!u) return { isMaintenance: true };
     const item = (u.maintenanceItems || []).find(mi => mi.id === task.sourceMaintenanceItemId);
     const metric: 'hours' | 'km' = item?.metric || 'hours';
-    let reading = '';
-    let nextDue = '';
+    // Pre-fill the reading at service from the unit's current
+    // reading. Next-due defaults to (reading + interval) for BOTH
+    // metrics; the modal shows it as locked-with-edit so the
+    // mechanic accepts or overrides deliberately.
+    let reading = 0;
     if (metric === 'km') {
-      const curKm = typeof u.odometer === 'number' ? u.odometer : 0;
-      reading = String(curKm);
-      const interval = typeof item?.threshold === 'number' ? item.threshold : 0;
-      nextDue = String(curKm + interval);
+      reading = typeof u.odometer === 'number' ? u.odometer : 0;
     } else if (typeof u.currentEngineHours === 'number') {
-      reading = String(u.currentEngineHours);
+      reading = u.currentEngineHours;
     }
+    const interval = typeof item?.threshold === 'number' ? item.threshold : 0;
     return {
       isMaintenance: true,
       maintenanceItemName: item?.name,
-      hoursAtService: reading,
+      hoursAtService: String(reading),
       maintenanceMetric: metric,
-      nextDueAtService: metric === 'km' ? nextDue : undefined,
+      nextDueAtService: String(reading + interval),
+      nextDueLocked: true,
     };
   };
 
@@ -1837,11 +1839,13 @@ export default function App() {
         } : undefined);
         if (!item) return;
         const metric = item.metric || 'hours';
-        if (metric === 'km' && (typeof explicitNextDue !== 'number' || !Number.isFinite(explicitNextDue) || explicitNextDue < 0)) {
-          showToastMsg('Next due (km) is required and must be non-negative.');
+        if (typeof explicitNextDue !== 'number' || !Number.isFinite(explicitNextDue) || explicitNextDue < 0) {
+          showToastMsg(metric === 'km'
+            ? 'Next due (km) is required and must be non-negative.'
+            : 'Next due (hrs) is required and must be non-negative.');
           return;
         }
-        const resetItem = resetMaintenanceItem(item, valueAtService, metric === 'km' ? explicitNextDue : undefined);
+        const resetItem = resetMaintenanceItem(item, valueAtService, explicitNextDue);
         const nextItems = existingItem
           ? (unit.maintenanceItems || []).map(mi => mi.id === itemId ? resetItem : mi)
           : [...(unit.maintenanceItems || []), resetItem];
@@ -3889,25 +3893,29 @@ export default function App() {
             );
             return;
           }
-          const maintNextDue = isMaint && maintMetric === 'km' && completionModal.nextDueAtService !== undefined && completionModal.nextDueAtService !== ''
+          const maintNextDue = isMaint && completionModal.nextDueAtService !== undefined && completionModal.nextDueAtService !== ''
             ? Number(completionModal.nextDueAtService)
             : null;
-          if (isMaint && maintMetric === 'km' && (maintNextDue === null || !Number.isFinite(maintNextDue) || maintNextDue < 0)) {
-            showToastMsg('Next oil change due (km) must be a non-negative number.');
+          if (isMaint && (maintNextDue === null || !Number.isFinite(maintNextDue) || maintNextDue < 0)) {
+            showToastMsg(
+              maintMetric === 'km'
+                ? 'Next service due (km) must be a non-negative number.'
+                : 'Next service due (hrs) must be a non-negative number.',
+            );
             return;
           }
           const maintItemId = isMaint && existing ? existing.sourceMaintenanceItemId : undefined;
           const newFleet = appData.fleet.map(f => {
             if (f.id !== unitId) return f;
             let next: FleetItem = hasOpenMajor ? f : { ...f, status: 'Active', repairTags: [] };
-            // Maintenance schedule advance, in-place on the matching item.
-            // Km path passes the mechanic-entered next-due in so the
-            // schedule jumps to that explicit target rather than
-            // current + threshold.
+            // Maintenance schedule advance, in-place on the matching
+            // item. Both metrics now route the mechanic-entered
+            // next-due through resetMaintenanceItem as an explicit
+            // override (locked default = currentReading + interval).
             if (isMaint && maintItemId && maintReading !== null) {
               const items = (next.maintenanceItems || []).map(mi =>
                 mi.id === maintItemId
-                  ? resetMaintenanceItem(mi, maintReading, maintMetric === 'km' ? (maintNextDue as number) : undefined)
+                  ? resetMaintenanceItem(mi, maintReading, maintNextDue as number)
                   : mi,
               );
               next = maintMetric === 'km'

@@ -206,6 +206,9 @@ export default function MechanicBoard({
   const [resetCtx, setResetCtx] = useState<{ fleetId: string; itemId: string; itemName: string; defaultHours: number; metric: 'hours' | 'km'; threshold: number } | null>(null);
   const [resetHrs, setResetHrs] = useState('');
   const [resetNextDue, setResetNextDue] = useState('');
+  // Locked-with-edit toggle for the Next Due field in the reset
+  // modal. Defaults locked so the common case is one tap.
+  const [resetNextDueLocked, setResetNextDueLocked] = useState(true);
   const [resetNotes, setResetNotes] = useState('');
   // Whether to surface winterized units in the Fleet List. Off by
   // default — winterized units are hidden from the active view.
@@ -1236,7 +1239,8 @@ export default function MechanicBoard({
                                             threshold: mi.threshold || 0,
                                           });
                                           setResetHrs(String(cur));
-                                          setResetNextDue('');
+                                          setResetNextDue(String(cur + (mi.threshold || 0)));
+                                          setResetNextDueLocked(true);
                                           setResetNotes('');
                                         }}
                                         className="text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 shrink-0"
@@ -1289,6 +1293,7 @@ export default function MechanicBoard({
                                           });
                                           setResetHrs(String(curKm));
                                           setResetNextDue(String(curKm + (mi.threshold || 5000)));
+                                          setResetNextDueLocked(true);
                                           setResetNotes('');
                                         }}
                                         className="text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 shrink-0"
@@ -1331,6 +1336,7 @@ export default function MechanicBoard({
                                         });
                                         setResetHrs(String(curKm));
                                         setResetNextDue(String(curKm + (mi.threshold || 0)));
+                                        setResetNextDueLocked(true);
                                         setResetNotes('');
                                       }}
                                       className="text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 shrink-0"
@@ -1363,6 +1369,7 @@ export default function MechanicBoard({
                                       });
                                       setResetHrs(String(curKm));
                                       setResetNextDue(String(curKm + 5000));
+                                      setResetNextDueLocked(true);
                                       setResetNotes('');
                                     }}
                                     className="text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 shrink-0"
@@ -1489,13 +1496,13 @@ export default function MechanicBoard({
                   onChange={e => {
                     const v = e.target.value;
                     setResetHrs(v);
-                    if (resetCtx.metric === 'km') {
-                      // Keep the next-due pre-fill in lockstep with
-                      // the entered km reading until the mechanic
-                      // edits it themselves.
-                      const km = Number(v);
-                      if (Number.isFinite(km)) {
-                        setResetNextDue(String(km + (resetCtx.threshold || 0)));
+                    // Keep the next-due pre-fill in lockstep with the
+                    // reading while the field stays locked; the user
+                    // gets a sensible default until they click Edit.
+                    if (resetNextDueLocked) {
+                      const n = Number(v);
+                      if (Number.isFinite(n)) {
+                        setResetNextDue(String(n + (resetCtx.threshold || 0)));
                       }
                     }
                   }}
@@ -1505,23 +1512,39 @@ export default function MechanicBoard({
                 <div className="text-[11px] text-slate-500">
                   {resetCtx.metric === 'km'
                     ? "Replaces the truck's current odometer reading."
-                    : 'Next service will be scheduled at this reading + the configured threshold.'}
+                    : 'Replaces the unit\'s current engine hours.'}
                 </div>
               </div>
-              {resetCtx.metric === 'km' && (
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Next due (km)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    value={resetNextDue}
-                    onChange={e => setResetNextDue(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
-                  />
-                  <div className="text-[11px] text-slate-500">Editable — pre-filled from km + default interval. Adjust for the oil grade used.</div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">
+                  Next service due ({resetCtx.metric === 'km' ? 'km' : 'hrs'})
+                </label>
+                <div className="flex items-center gap-2">
+                  {resetNextDueLocked ? (
+                    <div className="flex-1 bg-slate-50 border border-slate-200 p-3 rounded-xl text-sm font-mono font-bold text-slate-700">
+                      {resetNextDue !== '' ? `${resetNextDue} ${resetCtx.metric === 'km' ? 'km' : 'hrs'}` : '—'}
+                    </div>
+                  ) : (
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={resetNextDue}
+                      onChange={e => setResetNextDue(e.target.value)}
+                      className="flex-1 bg-slate-50 border border-slate-200 p-3 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setResetNextDueLocked(v => !v)}
+                    className="px-3 py-2 text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:bg-emerald-50 rounded-lg border border-emerald-200"
+                    title={resetNextDueLocked ? 'Override the pre-filled default' : 'Accept the pre-filled default'}
+                  >
+                    {resetNextDueLocked ? 'Edit' : 'Lock'}
+                  </button>
                 </div>
-              )}
+                <div className="text-[11px] text-slate-500">Locked = reading + configured interval. Click Edit to override.</div>
+              </div>
               <div className="space-y-1.5">
                 <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Notes (optional)</label>
                 <textarea
@@ -1544,6 +1567,12 @@ export default function MechanicBoard({
                 onClick={() => {
                   const n = Number(resetHrs);
                   if (!Number.isFinite(n) || n < 0) return;
+                  // Always pass an explicit next-due now — for hours
+                  // items it locks in whatever the locked-with-edit
+                  // field shows (default = reading + interval, or the
+                  // mechanic's override).
+                  const nd = Number(resetNextDue);
+                  if (!Number.isFinite(nd) || nd < 0) return;
                   // Virtual placeholder ids are tagged so the App.tsx
                   // upsert path knows to materialise a new item from
                   // these defaults rather than search for an existing
@@ -1554,18 +1583,12 @@ export default function MechanicBoard({
                     threshold: resetCtx.threshold,
                     metric: resetCtx.metric,
                   } : undefined;
-                  if (resetCtx.metric === 'km') {
-                    const nd = Number(resetNextDue);
-                    if (!Number.isFinite(nd) || nd < 0) return;
-                    onManualResetMaintenance(resetCtx.fleetId, resetCtx.itemId, n, resetNotes || undefined, nd, placeholderDefaults);
-                  } else {
-                    onManualResetMaintenance(resetCtx.fleetId, resetCtx.itemId, n, resetNotes || undefined, undefined, placeholderDefaults);
-                  }
+                  onManualResetMaintenance(resetCtx.fleetId, resetCtx.itemId, n, resetNotes || undefined, nd, placeholderDefaults);
                   setResetCtx(null);
                 }}
                 disabled={
                   !Number.isFinite(Number(resetHrs)) || Number(resetHrs) < 0 ||
-                  (resetCtx.metric === 'km' && (!Number.isFinite(Number(resetNextDue)) || Number(resetNextDue) < 0))
+                  !Number.isFinite(Number(resetNextDue)) || Number(resetNextDue) < 0
                 }
                 className="min-h-[44px] px-5 py-2.5 text-sm font-black uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow disabled:bg-slate-300 disabled:cursor-not-allowed"
               >

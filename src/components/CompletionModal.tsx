@@ -18,15 +18,22 @@ export interface CompletionModalState {
   // this is engine hours; for km-tracked trucks it is the odometer.
   // The label flips on `maintenanceMetric`.
   hoursAtService?: string;
-  // Metric of the maintenance schedule being closed. 'hours' (mowers,
-  // legacy default) preserves the rigid-threshold flow. 'km' (trucks)
-  // surfaces the editable next-due input below.
+  // Metric of the maintenance schedule being closed. Drives the
+  // unit label and the placeholder; the rest of the maintenance
+  // panel is identical for both.
   maintenanceMetric?: 'hours' | 'km';
-  // Editable next-due target (km). Pre-filled with currentKm +
-  // item.threshold so the mechanic can accept the default OR override
-  // (synthetic ~12,000 vs conventional ~5,000). Ignored when
-  // maintenanceMetric === 'hours'.
+  // Next-due target, pre-filled by App.tsx with (currentReading +
+  // item.threshold) for both metrics. The modal renders this as a
+  // locked-by-default display with an Edit toggle (see
+  // nextDueLocked). The submit handler always reads it (locked or
+  // not) and forwards as the explicit override to
+  // resetMaintenanceItem, so the default still gets persisted
+  // unchanged if the mechanic accepts it.
   nextDueAtService?: string;
+  // UI-only: undefined / true => locked (read-only display +
+  // Edit button); false => unlocked (number input + Lock button).
+  // Defaults to locked so the common case is one click.
+  nextDueLocked?: boolean;
 }
 
 interface CompletionModalProps {
@@ -75,51 +82,69 @@ export default function CompletionModal({ state, setState, onSubmit }: Completio
             <textarea value={state.fixNotes} onChange={e => setState({ ...state, fixNotes: e.target.value })} className="w-full border border-slate-300 rounded-xl p-3 text-sm font-medium outline-none focus:ring-2 focus:ring-green-500 resize-none" rows={3} placeholder="What was fixed?" />
           </div>
 
-          {state.isMaintenance && (
-            <div className="bg-amber-50/40 border border-amber-200 rounded-xl p-4 space-y-3">
-              <div className="text-[10px] font-black uppercase tracking-widest text-amber-700 flex items-center gap-1.5">
-                <Wrench className="w-3.5 h-3.5" /> Maintenance Schedule
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                  {readingLabel}
-                </label>
-                <input
-                  type="number"
-                  required
-                  min={0}
-                  value={state.hoursAtService ?? ''}
-                  onChange={e => setState({ ...state, hoursAtService: e.target.value })}
-                  className="w-full border border-amber-200 rounded-xl p-3 font-mono font-bold text-lg outline-none focus:ring-2 focus:ring-amber-500 bg-white"
-                  placeholder="0"
-                />
-                <div className="text-[11px] text-amber-700/80">
-                  {isKm
-                    ? "Updates the truck's odometer and advances this maintenance schedule."
-                    : "Used to advance this unit's maintenance schedule and update its current engine hours."}
+          {state.isMaintenance && (() => {
+            const nextDueLocked = state.nextDueLocked !== false;
+            const hint = isKm
+              ? 'Locked default uses the truck\'s configured interval. Click Edit to override (e.g. synthetic ~12,000 km vs conventional ~5,000 km).'
+              : 'Locked default uses the unit\'s configured interval. Click Edit to override (e.g. set the real cadence when backfilling an in-progress unit).';
+            return (
+              <div className="bg-amber-50/40 border border-amber-200 rounded-xl p-4 space-y-3">
+                <div className="text-[10px] font-black uppercase tracking-widest text-amber-700 flex items-center gap-1.5">
+                  <Wrench className="w-3.5 h-3.5" /> Maintenance Schedule
                 </div>
-              </div>
-              {isKm && (
                 <div className="space-y-1">
                   <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
-                    Next oil change due ({unitLabel})
+                    {readingLabel}
                   </label>
                   <input
                     type="number"
                     required
                     min={0}
-                    value={state.nextDueAtService ?? ''}
-                    onChange={e => setState({ ...state, nextDueAtService: e.target.value })}
+                    value={state.hoursAtService ?? ''}
+                    onChange={e => setState({ ...state, hoursAtService: e.target.value })}
                     className="w-full border border-amber-200 rounded-xl p-3 font-mono font-bold text-lg outline-none focus:ring-2 focus:ring-amber-500 bg-white"
                     placeholder="0"
                   />
                   <div className="text-[11px] text-amber-700/80">
-                    Editable — pre-filled from the default interval. Adjust for the oil grade actually used (e.g. synthetic ~12,000 km, conventional ~5,000 km).
+                    {isKm
+                      ? "Updates the truck's odometer and advances this maintenance schedule."
+                      : "Used to advance this unit's maintenance schedule and update its current engine hours."}
                   </div>
                 </div>
-              )}
-            </div>
-          )}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                    Next service due ({unitLabel})
+                  </label>
+                  <div className="flex items-center gap-2">
+                    {nextDueLocked ? (
+                      <div className="flex-1 border border-amber-200 rounded-xl p-3 font-mono font-bold text-lg bg-white text-slate-700">
+                        {state.nextDueAtService && state.nextDueAtService !== '' ? `${state.nextDueAtService} ${unitLabel}` : `— ${unitLabel}`}
+                      </div>
+                    ) : (
+                      <input
+                        type="number"
+                        required
+                        min={0}
+                        value={state.nextDueAtService ?? ''}
+                        onChange={e => setState({ ...state, nextDueAtService: e.target.value })}
+                        className="flex-1 border border-amber-200 rounded-xl p-3 font-mono font-bold text-lg outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                        placeholder="0"
+                      />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setState({ ...state, nextDueLocked: !nextDueLocked })}
+                      className="px-3 py-2 text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:bg-emerald-50 rounded-lg border border-emerald-200"
+                      title={nextDueLocked ? 'Override the pre-filled default' : 'Accept the pre-filled default'}
+                    >
+                      {nextDueLocked ? 'Edit' : 'Lock'}
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-amber-700/80">{hint}</div>
+                </div>
+              </div>
+            );
+          })()}
 
         </div>
 

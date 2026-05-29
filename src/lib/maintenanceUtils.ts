@@ -76,12 +76,13 @@ function makeMaintenanceTask(
 
 // Internal: shared loop that processes one unit's maintenance items
 // against a numeric "current value" (hours OR km). The metric-aware
-// caller passes the right window. Returns updated items + tasks.
+// caller passes the metric default buffer; each item can override
+// via item.warnBuffer. Returns updated items + tasks.
 function processMaintenance(
   unit: FleetItem,
   mechanicTasks: MechanicTask[],
   currentValue: number,
-  window: number,
+  defaultBuffer: number,
   metricFilter: 'hours' | 'km',
 ): { items: MaintenanceItem[]; mechanicTasks: MechanicTask[] } {
   const items = unit.maintenanceItems || [];
@@ -107,8 +108,14 @@ function processMaintenance(
       nextItems.push(next);
       continue;
     }
+    // Per-item warning buffer overrides the metric default. Legacy
+    // items without warnBuffer keep the historic 25 hr / 500 km
+    // behaviour automatically.
+    const buffer = typeof item.warnBuffer === 'number' && item.warnBuffer > 0
+      ? item.warnBuffer
+      : defaultBuffer;
     const overdue = currentValue >= item.nextDueAt;
-    const dueSoon = !overdue && currentValue >= item.nextDueAt - window;
+    const dueSoon = !overdue && currentValue >= item.nextDueAt - buffer;
     const activeIdx = item.activeTaskId
       ? nextTasks.findIndex(t => t.id === item.activeTaskId && t.status !== 'done')
       : -1;

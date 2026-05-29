@@ -128,6 +128,11 @@ export default function ManageResourcesModal({
   // collide. Empty entries default to "0 hrs already worked" /
   // today's date inside the form's handler.
   const [chunkSetupDrafts, setChunkSetupDrafts] = useState<Record<string, { hours: string; startDate: string }>>({});
+  // Locked-with-edit state for each maintenance item's Next Due
+  // input. Keyed by item id. Falsy/missing => locked (read-only
+  // display). Clicking Edit on a row flips it to true, exposing
+  // a number input. Reset when the modal opens.
+  const [nextDueUnlocked, setNextDueUnlocked] = useState<Record<string, boolean>>({});
 
   // Tracks the linkedUserEmail at focus-start per employee, so onBlur can
   // detect whether the field was newly populated vs changed from a prior value.
@@ -827,16 +832,10 @@ export default function ManageResourcesModal({
                           </label>
                         </div>
                         {f.tracksEngineHours && (() => {
-                          // Lock the Current Hrs input once the unit has
-                          // been persisted with hours at least once. The
-                          // initial setup remains editable; ongoing
-                          // updates route through the Fleet List inline
-                          // edit (which fires the spawn helper).
-                          const persistedRecord = persistedFleet.find(p => p.id === f.id);
-                          const isHoursLocked = !!persistedRecord && typeof persistedRecord.currentEngineHours === 'number';
-                          // Add-schedule is gated on a positive hour
-                          // reading so newly-added items get a sane
-                          // nextDueAt (not threshold + 0).
+                          // Current Hrs is now editable in BOTH the edit form
+                          // and the Fleet List inline editor — same as the truck
+                          // odometer. The setup-form save still runs the spawn
+                          // helper so a fresh hour reading promotes due items.
                           const hasValidHours = typeof f.currentEngineHours === 'number' && f.currentEngineHours > 0;
                           return (
                           <div className="flex flex-col gap-2 bg-white border border-green-200 rounded p-2">
@@ -846,7 +845,6 @@ export default function ManageResourcesModal({
                                 type="number"
                                 min={0}
                                 step={1}
-                                disabled={isHoursLocked}
                                 value={typeof f.currentEngineHours === 'number' ? f.currentEngineHours : ''}
                                 onChange={e => {
                                   const nf = [...localFleet];
@@ -854,18 +852,19 @@ export default function ManageResourcesModal({
                                   nf[realIdx] = { ...nf[realIdx], currentEngineHours: v === '' ? undefined : Number(v) };
                                   setLocalFleet(nf);
                                 }}
-                                className={`flex-1 border border-green-200 rounded p-1.5 text-xs font-mono font-bold ${isHoursLocked ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : 'bg-white'}`}
+                                className="flex-1 border border-green-200 rounded p-1.5 text-xs font-mono font-bold bg-white"
                               />
                             </div>
-                            {isHoursLocked && (
-                              <div className="text-[10px] italic text-green-700/70 -mt-1">Edit hours in Fleet List (Repair Board → Fleet List).</div>
-                            )}
                             <div className="text-[10px] font-black uppercase tracking-widest text-green-800 mt-1">Maintenance Schedules</div>
                             {(f.maintenanceItems || []).length === 0 ? (
                               <div className="text-[11px] italic text-green-700/60">No schedules yet. Add one below (e.g. Engine oil at 100 hrs).</div>
                             ) : (
                               <div className="space-y-1.5">
-                                {(f.maintenanceItems || []).map((mi, miIdx) => (
+                                {(f.maintenanceItems || []).map((mi, miIdx) => {
+                                  if ((mi.metric || 'hours') !== 'hours') return null;
+                                  const isUnlocked = !!nextDueUnlocked[mi.id];
+                                  const buffer = typeof mi.warnBuffer === 'number' ? mi.warnBuffer : 25;
+                                  return (
                                   <div key={mi.id} className="flex flex-wrap items-center gap-2 bg-green-50/50 border border-green-200 rounded p-2">
                                     <input
                                       type="text"
@@ -898,7 +897,54 @@ export default function ManageResourcesModal({
                                       />
                                       <span className="text-[10px] font-bold text-green-900">hrs</span>
                                     </div>
-                                    <span className="text-[10px] text-green-700/70 font-medium">next at {mi.nextDueAt} hrs</span>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[10px] font-bold text-green-900">Next due:</span>
+                                      {isUnlocked ? (
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          step={1}
+                                          value={mi.nextDueAt || ''}
+                                          onChange={e => {
+                                            const nf = [...localFleet];
+                                            const items = [...(nf[realIdx].maintenanceItems || [])];
+                                            items[miIdx] = { ...items[miIdx], nextDueAt: Number(e.target.value) || 0 };
+                                            nf[realIdx] = { ...nf[realIdx], maintenanceItems: items };
+                                            setLocalFleet(nf);
+                                          }}
+                                          className="w-20 border border-green-200 rounded p-1 text-xs font-mono font-bold bg-white"
+                                        />
+                                      ) : (
+                                        <span className="text-[11px] font-mono font-bold text-green-900 bg-white border border-green-200 rounded px-2 py-1 min-w-[50px] text-center">{mi.nextDueAt}</span>
+                                      )}
+                                      <span className="text-[10px] font-bold text-green-900">hrs</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => setNextDueUnlocked(prev => ({ ...prev, [mi.id]: !prev[mi.id] }))}
+                                        className="text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:text-emerald-900 px-1"
+                                        title={isUnlocked ? 'Lock the default' : 'Override the default'}
+                                      >
+                                        {isUnlocked ? 'Lock' : 'Edit'}
+                                      </button>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[10px] font-bold text-green-900">Warn</span>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        step={1}
+                                        value={buffer}
+                                        onChange={e => {
+                                          const nf = [...localFleet];
+                                          const items = [...(nf[realIdx].maintenanceItems || [])];
+                                          items[miIdx] = { ...items[miIdx], warnBuffer: Number(e.target.value) || 0 };
+                                          nf[realIdx] = { ...nf[realIdx], maintenanceItems: items };
+                                          setLocalFleet(nf);
+                                        }}
+                                        className="w-14 border border-green-200 rounded p-1 text-xs font-mono font-bold bg-white"
+                                      />
+                                      <span className="text-[10px] font-bold text-green-900">hrs before</span>
+                                    </div>
                                     <button
                                       type="button"
                                       onClick={() => {
@@ -913,7 +959,8 @@ export default function ManageResourcesModal({
                                       <Trash2 className="w-3.5 h-3.5" />
                                     </button>
                                   </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             )}
                             <button
@@ -934,6 +981,8 @@ export default function ManageResourcesModal({
                                   name: existing.length === 0 ? 'Engine oil' : existing.length === 1 ? 'Hydraulic oil' : '',
                                   threshold: defaultThreshold,
                                   nextDueAt: currentHrs + defaultThreshold,
+                                  metric: 'hours' as const,
+                                  warnBuffer: 25,
                                 };
                                 nf[realIdx] = { ...nf[realIdx], maintenanceItems: [...existing, newItem] };
                                 setLocalFleet(nf);
@@ -975,6 +1024,7 @@ export default function ManageResourcesModal({
                               threshold: typeof patch.threshold === 'number' ? patch.threshold : 5000,
                               nextDueAt: typeof patch.nextDueAt === 'number' ? patch.nextDueAt : 0,
                               metric: 'km' as const,
+                              warnBuffer: 500,
                             };
                             nf[realIdx] = { ...nf[realIdx], maintenanceItems: [...existing, newItem] };
                             setLocalFleet(nf);
@@ -988,6 +1038,12 @@ export default function ManageResourcesModal({
                               <div className="space-y-1.5">
                                 {allItems.map((mi, miIdx) => {
                                   if ((mi.metric || 'hours') !== 'km') return null;
+                                  const isUnlocked = !!nextDueUnlocked[mi.id];
+                                  const buffer = typeof mi.warnBuffer === 'number' ? mi.warnBuffer : 500;
+                                  // Unconfigured items (nextDueAt <= 0) stay
+                                  // freely editable — there's no default to
+                                  // protect yet, just the initial entry.
+                                  const isUnconfigured = !mi.nextDueAt || mi.nextDueAt <= 0;
                                   return (
                                     <div key={mi.id} className="flex flex-wrap items-center gap-2 bg-green-50/50 border border-green-200 rounded p-2">
                                       <input
@@ -1023,22 +1079,54 @@ export default function ManageResourcesModal({
                                       </div>
                                       <div className="flex items-center gap-1">
                                         <span className="text-[10px] font-bold text-green-900">Next due:</span>
+                                        {(isUnlocked || isUnconfigured) ? (
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            step={1}
+                                            value={mi.nextDueAt || ''}
+                                            placeholder="km"
+                                            onChange={e => {
+                                              const nf = [...localFleet];
+                                              const items = [...(nf[realIdx].maintenanceItems || [])];
+                                              items[miIdx] = { ...items[miIdx], nextDueAt: Number(e.target.value) || 0 };
+                                              nf[realIdx] = { ...nf[realIdx], maintenanceItems: items };
+                                              setLocalFleet(nf);
+                                            }}
+                                            className="w-24 border border-green-200 rounded p-1 text-xs font-mono font-bold bg-white"
+                                          />
+                                        ) : (
+                                          <span className="text-[11px] font-mono font-bold text-green-900 bg-white border border-green-200 rounded px-2 py-1 min-w-[60px] text-center">{mi.nextDueAt}</span>
+                                        )}
+                                        <span className="text-[10px] font-bold text-green-900">km</span>
+                                        {!isUnconfigured && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setNextDueUnlocked(prev => ({ ...prev, [mi.id]: !prev[mi.id] }))}
+                                            className="text-[10px] font-black uppercase tracking-widest text-emerald-700 hover:text-emerald-900 px-1"
+                                            title={isUnlocked ? 'Lock the default' : 'Override the default'}
+                                          >
+                                            {isUnlocked ? 'Lock' : 'Edit'}
+                                          </button>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center gap-1">
+                                        <span className="text-[10px] font-bold text-green-900">Warn</span>
                                         <input
                                           type="number"
                                           min={0}
                                           step={1}
-                                          value={mi.nextDueAt || ''}
-                                          placeholder="km"
+                                          value={buffer}
                                           onChange={e => {
                                             const nf = [...localFleet];
                                             const items = [...(nf[realIdx].maintenanceItems || [])];
-                                            items[miIdx] = { ...items[miIdx], nextDueAt: Number(e.target.value) || 0 };
+                                            items[miIdx] = { ...items[miIdx], warnBuffer: Number(e.target.value) || 0 };
                                             nf[realIdx] = { ...nf[realIdx], maintenanceItems: items };
                                             setLocalFleet(nf);
                                           }}
-                                          className="w-24 border border-green-200 rounded p-1 text-xs font-mono font-bold bg-white"
+                                          className="w-16 border border-green-200 rounded p-1 text-xs font-mono font-bold bg-white"
                                         />
-                                        <span className="text-[10px] font-bold text-green-900">km</span>
+                                        <span className="text-[10px] font-bold text-green-900">km before</span>
                                       </div>
                                       <button
                                         type="button"
@@ -1110,6 +1198,7 @@ export default function ManageResourcesModal({
                                     threshold: kmCount === 0 ? 5000 : 0,
                                     nextDueAt: 0,
                                     metric: 'km' as const,
+                                    warnBuffer: 500,
                                   };
                                   nf[realIdx] = { ...nf[realIdx], maintenanceItems: [...existing, newItem] };
                                   setLocalFleet(nf);

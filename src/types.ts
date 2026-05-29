@@ -201,6 +201,11 @@ export interface MaintenanceItem {
   lastServiceHours?: number;
   activeTaskId?: string;
   metric?: 'hours' | 'km';
+  // Per-item due-soon buffer (yellow-warning window) in the item's
+  // metric units. Editable in the Fleet edit form; falls back to the
+  // metric default (500 km / 25 hrs) when undefined. Spawn helper
+  // reads this to decide when to surface a maintenance task.
+  warnBuffer?: number;
 }
 
 export interface UnitNote {
