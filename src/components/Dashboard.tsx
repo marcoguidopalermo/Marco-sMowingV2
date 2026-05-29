@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { LayoutDashboard, TrendingUp, Crown, Users } from 'lucide-react';
-import { Crew, Employee, PerformanceLog } from '../types';
+import { AppSettings, Crew, Employee, PerformanceLog } from '../types';
 import { addDaysToronto } from '../lib/dateUtils';
 import {
   buildCrewLeaderboard,
@@ -14,6 +14,7 @@ interface DashboardProps {
   schedules: Record<string, Crew[]>;
   performance: Record<string, Record<string, PerformanceLog>>;
   employees: Employee[];
+  settings?: AppSettings | null;
 }
 
 // ---------- WIDGET: CREW LEADERBOARD ----------
@@ -26,16 +27,18 @@ function CrewLeaderboardWidget({
   schedules,
   performance,
   employees,
+  settings,
 }: {
   date: string;
   live: boolean;
   schedules: Record<string, Crew[]>;
   performance: Record<string, Record<string, PerformanceLog>>;
   employees: Employee[];
+  settings?: AppSettings | null;
 }) {
   const ranked = useMemo<CrewLeaderboardEntry[]>(
-    () => rankLeaderboard(buildCrewLeaderboard(date, schedules, performance, employees)),
-    [date, schedules, performance, employees],
+    () => rankLeaderboard(buildCrewLeaderboard(date, schedules, performance, employees, settings || undefined)),
+    [date, schedules, performance, employees, settings],
   );
   const eligible = ranked.filter(r => r.eligible);
   const ineligible = ranked.filter(r => !r.eligible);
@@ -122,8 +125,15 @@ function LeaderboardRow({
       </div>
       <div className="col-span-2 text-right font-mono font-bold text-slate-700 text-sm">{entry.bh.toFixed(1)}<span className="text-[9px] font-black text-slate-400 ml-0.5">BH</span></div>
       <div className="col-span-2 text-right font-mono font-bold text-slate-700 text-sm">{entry.ah.toFixed(1)}<span className="text-[9px] font-black text-slate-400 ml-0.5">AH</span></div>
-      <div className="col-span-2 text-right font-mono font-black text-emerald-700">
-        {entry.efficiency != null ? `${entry.efficiency}%` : <span className="text-slate-300">—</span>}
+      <div className="col-span-2 text-right">
+        <div className="font-mono font-black text-emerald-700">
+          {entry.efficiency != null ? `${entry.efficiency}%` : <span className="text-slate-300">—</span>}
+        </div>
+        {entry.allowancePct > 0 && entry.efficiency != null && (
+          <div className="text-[9px] font-medium text-slate-500 mt-0.5 whitespace-nowrap">
+            incl. {entry.allowancePct}% {entry.scheduledSize}-man adj
+          </div>
+        )}
       </div>
     </div>
   );
@@ -139,6 +149,7 @@ export default function Dashboard({
   schedules,
   performance,
   employees,
+  settings,
 }: DashboardProps) {
   const [tab, setTab] = useState<'today' | 'yesterday'>('today');
   const yesterday = useMemo(() => {
@@ -173,6 +184,7 @@ export default function Dashboard({
             schedules={schedules}
             performance={performance}
             employees={employees}
+            settings={settings}
           />
           {/* Future widgets land here — keep each as its own component
               so the section list stays composable. */}

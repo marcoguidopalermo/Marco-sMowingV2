@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Crown, Users } from 'lucide-react';
-import { Crew, Employee, PerformanceLog } from '../types';
+import { AppSettings, Crew, Employee, PerformanceLog } from '../types';
 import {
   buildCrewLeaderboard,
   topCrew,
@@ -18,6 +18,10 @@ interface TopCrewSpotlightProps {
   schedules: Record<string, Crew[]>;
   performance: Record<string, Record<string, PerformanceLog>>;
   employees: Employee[];
+  // Pass appData.settings through so the leaderboard helper can
+  // resolve crewSizeAllowance — either from each crew-day's stamped
+  // snapshot or from this current table as a live fallback.
+  settings?: AppSettings | null;
 }
 
 export default function TopCrewSpotlight({
@@ -26,10 +30,11 @@ export default function TopCrewSpotlight({
   schedules,
   performance,
   employees,
+  settings,
 }: TopCrewSpotlightProps) {
   const entries = useMemo(
-    () => buildCrewLeaderboard(date, schedules, performance, employees),
-    [date, schedules, performance, employees],
+    () => buildCrewLeaderboard(date, schedules, performance, employees, settings || undefined),
+    [date, schedules, performance, employees, settings],
   );
   const winner = topCrew(entries);
 
@@ -74,6 +79,11 @@ export default function TopCrewSpotlight({
                 {winner.efficiency != null ? `${winner.efficiency}%` : '—'}
               </div>
               <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mt-0.5">Efficiency</div>
+              {winner.allowancePct > 0 && winner.rawEfficiency != null && (
+                <div className="text-[10px] font-medium text-slate-500 mt-0.5">
+                  Raw {winner.rawEfficiency}% · includes {winner.allowancePct}% {winner.scheduledSize}-man adjustment
+                </div>
+              )}
             </div>
           </div>
           <div className="grid grid-cols-3 gap-2 mt-3">

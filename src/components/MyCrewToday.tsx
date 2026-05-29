@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Calendar as CalendarIcon, Target, Clock, TrendingUp, Link2, Users, Truck, Hammer, Wrench } from 'lucide-react';
-import { Crew, Employee, FleetItem, EquipmentSubtypeDefinition, PerformanceLog, PartialTimeOff } from '../types';
+import { AppSettings, Crew, Employee, FleetItem, EquipmentSubtypeDefinition, PerformanceLog, PartialTimeOff } from '../types';
 import { formatTimeRange, addDaysToronto } from '../lib/dateUtils';
 import { sortFleetGrouped, fleetItemLabel, isFleetOutOfService } from '../lib/fleetUtils';
 import { accumulateEmployeeEff, efficiencyPct, EmpEffStat } from '../lib/efficiency';
@@ -16,6 +16,7 @@ interface MyCrewTodayProps {
   equipmentSubtypes: EquipmentSubtypeDefinition[];
   partialTimeOff: Record<string, PartialTimeOff[]>;
   jobberConnected: boolean;
+  settings?: AppSettings | null;
   // Caller-controlled visibility for the Report-a-Repair launcher. App.tsx
   // passes a handler only for worker + foreman roles; admin/manager/mechanic
   // get `undefined` and the button stays hidden. The handler opens the
@@ -47,6 +48,7 @@ export default function MyCrewToday({
   equipmentSubtypes,
   partialTimeOff,
   jobberConnected,
+  settings,
   onReportRepair,
 }: MyCrewTodayProps) {
   const myCrews = useMemo<Crew[]>(() => {
@@ -174,6 +176,7 @@ export default function MyCrewToday({
           schedules={schedules}
           performance={performance}
           employees={employees}
+          settings={settings}
         />
 
         {/* TAB TOGGLE — Today (existing content) / Yesterday (individual perf) */}

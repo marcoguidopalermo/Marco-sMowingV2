@@ -2752,6 +2752,7 @@ export default function App() {
           schedules={appData.schedules}
           performance={appData.performance}
           employees={appData.employees}
+          settings={appData.settings}
         />
       ) : currentView === 'mycrew' ? (
         <MyCrewToday
@@ -2764,6 +2765,7 @@ export default function App() {
           equipmentSubtypes={appData.equipmentSubtypes || []}
           partialTimeOff={appData.partialTimeOff || {}}
           jobberConnected={jobberConnected}
+          settings={appData.settings}
           onReportRepair={(effectiveRole === 'worker' || effectiveRole === 'foreman' || effectiveRole === 'manager') ? () => setManualTaskModal({
             isOpen: true,
             unitId: '',

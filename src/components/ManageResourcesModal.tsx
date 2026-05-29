@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { Employee, FleetItem, InventoryItem, Job, AppSettings, RolePermissionsOverride, UserRole, JobberUser, PRIMARY_CREWS, EquipmentSubtypeDefinition, PartialTimeOff } from '../types';
 import { makeSubtypeId } from '../lib/fleetUtils';
-import { DIVISIONS, CREW_NUMBERS, ROUTE_FREQUENCIES, DAYS_OF_WEEK, DEFAULT_EOD_REMINDER } from '../constants';
+import { DIVISIONS, CREW_NUMBERS, ROUTE_FREQUENCIES, DAYS_OF_WEEK, DEFAULT_EOD_REMINDER, DEFAULT_CREW_SIZE_ALLOWANCE } from '../constants';
 import { resolveWeightBand, weightBandLabel, hasLegacyWeightClassOnly, needsPlateRenewal, needsCommercialSafety } from '../lib/fleetUtils';
 import { ROLE_PERMISSIONS, Permission, can } from '../lib/permissions';
 import { formatDate, needsAudit } from '../lib/dateUtils';
@@ -1602,6 +1602,97 @@ export default function ManageResourcesModal({
                     </button>
                   )}
                 </div>
+              </div>
+
+              {/* Crew-size efficiency allowance — additive bracket applied
+                  to a crew's raw efficiency to correct for bigger-crew
+                  drive/coordination overhead. The sync stamps each
+                  crew-day with the CURRENT table values; past days that
+                  were already stamped won't change when this table is
+                  retuned. */}
+              <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-1">Crew-Size Efficiency Allowance</label>
+                <p className="text-xs text-slate-500 mb-3">
+                  Additive % added to a crew's raw efficiency based on the SCHEDULED roster size. Drop-in helpers don't count toward the bracket. Editing the table affects future syncs only — past stamped days keep their values.
+                </p>
+                <div className="space-y-2">
+                  {(localSettings.crewSizeAllowance && localSettings.crewSizeAllowance.length > 0
+                    ? localSettings.crewSizeAllowance
+                    : DEFAULT_CREW_SIZE_ALLOWANCE).map((row, idx, rows) => (
+                    <div key={idx} className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg p-2">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 w-16">Size ≥</span>
+                      <input
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={row.minSize}
+                        disabled={!isAdmin}
+                        onChange={e => {
+                          const v = Number(e.target.value);
+                          if (!Number.isFinite(v)) return;
+                          const next = [...rows];
+                          next[idx] = { ...next[idx], minSize: v };
+                          setLocalSettings({ ...localSettings, crewSizeAllowance: next });
+                        }}
+                        className="w-16 border border-slate-300 rounded p-1 text-sm font-mono font-bold bg-white outline-none disabled:opacity-60 disabled:cursor-not-allowed"
+                      />
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 w-16 text-right">Pct +</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={row.pct}
+                        disabled={!isAdmin}
+                        onChange={e => {
+                          const v = Number(e.target.value);
+                          if (!Number.isFinite(v)) return;
+                          const next = [...rows];
+                          next[idx] = { ...next[idx], pct: v };
+                          setLocalSettings({ ...localSettings, crewSizeAllowance: next });
+                        }}
+                        className="w-16 border border-slate-300 rounded p-1 text-sm font-mono font-bold bg-white outline-none disabled:opacity-60 disabled:cursor-not-allowed"
+                      />
+                      <span className="text-xs text-slate-500">%</span>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = rows.filter((_, i) => i !== idx);
+                            setLocalSettings({ ...localSettings, crewSizeAllowance: next });
+                          }}
+                          className="ml-auto text-rose-400 hover:text-rose-600 p-1"
+                          title="Remove this row"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {isAdmin && (
+                  <div className="flex items-center gap-3 mt-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const current = localSettings.crewSizeAllowance && localSettings.crewSizeAllowance.length > 0
+                          ? localSettings.crewSizeAllowance
+                          : DEFAULT_CREW_SIZE_ALLOWANCE;
+                        const next = [...current, { minSize: current[current.length - 1]?.minSize + 1 || 1, pct: 0 }];
+                        setLocalSettings({ ...localSettings, crewSizeAllowance: next });
+                      }}
+                      className="text-[10px] font-black uppercase tracking-widest text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 border border-slate-300 rounded px-2 py-1"
+                    >
+                      <Plus className="w-3 h-3" /> Add row
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLocalSettings({ ...localSettings, crewSizeAllowance: DEFAULT_CREW_SIZE_ALLOWANCE.slice() })}
+                      className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-800"
+                    >
+                      Reset to default
+                    </button>
+                  </div>
+                )}
               </div>
 
               {isAdmin && (

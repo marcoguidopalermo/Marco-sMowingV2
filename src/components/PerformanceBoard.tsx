@@ -15,6 +15,7 @@ import AHSplitModal from './AHSplitModal';
 import SplitBHModal from './SplitBHModal';
 import PerformanceActivityLog from './PerformanceActivityLog';
 import { can } from '../lib/permissions';
+import { getCrewAllowance, adjustedEfficiency, allowanceTag } from '../lib/crewAllowance';
 import { DIVISIONS, CREW_NUMBERS, PERMISSION_DENIED } from '../constants';
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto, addDaysToronto } from '../lib/dateUtils';
 import RouteSelectionModal from './RouteSelectionModal';
@@ -1224,11 +1225,25 @@ export default function PerformanceBoard({
                 const sumAH = Math.max(0, rawAH - deducAH);
                 const eff = sumAH > 0 ? Number(((sumBH / sumAH) * 100).toFixed(1)) : 0;
 
+                // Crew-size allowance — additive on top of raw eff. The
+                // sync stamps log.crewSizeAllowance per crew-day; in its
+                // absence (today before the first sync, ad-hoc crews,
+                // legacy data) we fall back to a live compute from the
+                // current settings table. Bracket comes from the
+                // SCHEDULED roster minus removedEmployees, never from
+                // employeeAH (drop-ins don't inflate the size).
+                const crewObj = (appData.schedules?.[perfDate] || []).find(c => c.id === cId);
+                const allowance = getCrewAllowance(crewObj, log, appData.settings);
+                const rawEffOrNull = sumAH > 0 ? eff : null;
+                const adjEffNum = adjustedEfficiency(rawEffOrNull, allowance.pct);
+                const effForColor = adjEffNum ?? 0;
+                const effTag = allowanceTag(allowance.size, allowance.pct);
+
                 let effColor = 'text-gray-500 bg-gray-100 border-gray-200';
                 if (sumAH > 0) {
-                  if (eff >= 90) effColor = 'text-purple-700 bg-purple-100 border-purple-300 shadow-purple-100';
-                  else if (eff >= 80) effColor = 'text-emerald-700 bg-emerald-100 border-emerald-300 shadow-emerald-100';
-                  else if (eff >= 70) effColor = 'text-yellow-700 bg-yellow-100 border-yellow-300 shadow-yellow-100';
+                  if (effForColor >= 90) effColor = 'text-purple-700 bg-purple-100 border-purple-300 shadow-purple-100';
+                  else if (effForColor >= 80) effColor = 'text-emerald-700 bg-emerald-100 border-emerald-300 shadow-emerald-100';
+                  else if (effForColor >= 70) effColor = 'text-yellow-700 bg-yellow-100 border-yellow-300 shadow-yellow-100';
                   else effColor = 'text-red-700 bg-red-100 border-red-300 shadow-red-100';
                 }
 
@@ -1290,7 +1305,10 @@ export default function PerformanceBoard({
                           <div className="shrink-0">
                             <div className={`px-4 py-2 rounded-lg border shadow-sm font-bold flex flex-col items-center ${effColor}`}>
                               <span className="text-xs uppercase tracking-wide opacity-80 mb-0.5">Efficiency</span>
-                              <span className="text-2xl leading-none">{sumAH > 0 ? `${eff}%` : '--'}</span>
+                              <span className="text-2xl leading-none">{sumAH > 0 && adjEffNum !== null ? `${adjEffNum}%` : '--'}</span>
+                              {sumAH > 0 && effTag && (
+                                <span className="text-[9px] font-medium tracking-wide opacity-80 mt-0.5">Raw {eff}% · {effTag}</span>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1309,7 +1327,10 @@ export default function PerformanceBoard({
                         <div className="flex items-center gap-3">
                           <div className={`px-4 py-2 rounded-lg border shadow-sm font-bold flex flex-col items-center ${effColor}`}>
                             <span className="text-xs uppercase tracking-wide opacity-80 mb-0.5">Efficiency</span>
-                            <span className="text-2xl leading-none">{sumAH > 0 ? `${eff}%` : '--'}</span>
+                            <span className="text-2xl leading-none">{sumAH > 0 && adjEffNum !== null ? `${adjEffNum}%` : '--'}</span>
+                            {sumAH > 0 && effTag && (
+                              <span className="text-[9px] font-medium tracking-wide opacity-80 mt-0.5">Raw {eff}% · {effTag}</span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1862,7 +1883,24 @@ export default function PerformanceBoard({
                       <div>
                         <h4 className="font-semibold text-gray-700 mb-3 flex justify-between border-b pb-2"><span className="flex items-center gap-1.5"><Clock className="w-4 h-4 text-green-600" /> Clocked Hours (AH)</span><span className="text-sm bg-green-50 text-green-800 px-2 py-0.5 rounded font-bold">Total: {sumAH.toFixed(1)} AH</span></h4>
                         <div className="space-y-2">
-                          {Object.entries(log.employeeAH).map(([empId, hrs]) => {
+                          {(() => {
+                          // Split the flat employeeAH list into the
+                          // SCHEDULED roster (crew.employees minus
+                          // removedEmployees) and HELPED-OUT drop-ins.
+                          // Drop-in helpers (from the AH Split and
+                          // "+ Add Unscheduled Employee" flows) live
+                          // in employeeAH but not in crew.employees,
+                          // so they sort to the second section and
+                          // are excluded from the crew-size bracket.
+                          const scheduledSet = new Set(
+                            (crewObj?.employees || []).filter(
+                              id => !(log.removedEmployees || []).includes(id),
+                            ),
+                          );
+                          const allAhEntries = Object.entries(log.employeeAH);
+                          const scheduledEntries = allAhEntries.filter(([id]) => scheduledSet.has(id));
+                          const helpedOutEntries = allAhEntries.filter(([id]) => !scheduledSet.has(id));
+                          const renderAhRow = ([empId, hrs]: [string, unknown]) => {
                             const hrsIsMissing = hrs === '' || hrs == null || Number.isNaN(Number(hrs));
                             const wasSynced = !!log.lastJobberSyncAt;
                             const empJobberLinked = !!employees.find(e => e.id === empId)?.jobberUserId;
@@ -2062,7 +2100,29 @@ export default function PerformanceBoard({
                               </div>
                             </div>
                             );
-                          })}
+                          };
+                          const sectionHeader = (
+                            <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1 mt-1">
+                              Scheduled crew · {allowance.size}-man{allowance.pct ? ` · ${allowance.pct}% allowance` : ''}
+                            </div>
+                          );
+                          return (
+                            <>
+                              {sectionHeader}
+                              {scheduledEntries.length > 0
+                                ? scheduledEntries.map(renderAhRow)
+                                : <div className="text-[11px] italic text-slate-400 px-1.5 py-2">No scheduled members logged hours yet.</div>}
+                              {helpedOutEntries.length > 0 && (
+                                <>
+                                  <div className="text-[10px] font-black uppercase tracking-widest text-amber-700 mt-3 mb-1">
+                                    Helped out · not counted for crew size
+                                  </div>
+                                  {helpedOutEntries.map(renderAhRow)}
+                                </>
+                              )}
+                            </>
+                          );
+                          })()}
                           <select disabled={isApproved} title={lockTitle} onChange={e => {
                             const v = e.target.value;
                             if (!v) return;

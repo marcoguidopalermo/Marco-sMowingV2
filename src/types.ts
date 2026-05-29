@@ -656,6 +656,11 @@ export interface PerformanceLog {
   approvedByName?: string;
   lastJobberSyncAt?: number;
   removedEmployees?: string[];
+  // Snapshot of the crew-size efficiency allowance applied to this
+  // crew on this date. Stamped by the sync from
+  // appData.settings.crewSizeAllowance + scheduledSize at sync
+  // time so retuning the table later doesn't rewrite history.
+  crewSizeAllowance?: { size: number; pct: number };
 }
 
 export interface SyncLogEntry {
@@ -678,8 +683,20 @@ export interface SyncLogEntry {
   carryForwardCandidates?: CarryForwardCandidate[];
 }
 
+// Editable rule for the crew-size efficiency allowance. Each row
+// applies to a min headcount, ordered ascending. The applied
+// percentage for a given size is the pct of the highest row whose
+// minSize ≤ size. See DEFAULT_CREW_SIZE_ALLOWANCE for the seed.
+export interface CrewSizeAllowanceRow {
+  minSize: number;
+  pct: number;
+}
+
 export interface AppSettings {
   endOfDayReminder?: string;
+  // Admin-editable allowance table. When absent, the default
+  // (1-2 → 0%, 3 → 10%, 4 → 15%, 5+ → 20%) applies.
+  crewSizeAllowance?: CrewSizeAllowanceRow[];
 }
 
 export type BulletinAudienceRole = 'admin' | 'manager' | 'foreman' | 'mechanic' | 'worker';

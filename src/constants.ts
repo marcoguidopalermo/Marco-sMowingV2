@@ -55,6 +55,19 @@ export const CIRCLE_CHECK_DEFECTS = ["Fluid Leaks", "Body Damage", "Tire Pressur
 export const TRAILER_DEFECTS = ["Tire Pressure", "Lights Working", "Hitch Properly Secured"];
 
 export const DEFAULT_EOD_REMINDER = "Lock trailers and sea cans, charge any equipment batteries.";
+
+// Default crew-size efficiency allowance — additive % added to raw
+// efficiency to correct for drive/coordination overhead on bigger
+// crews. Editable from Manage Resources → App Settings; absent
+// values fall back to this table. Rows are sorted ascending; the
+// applied pct is the highest row whose minSize ≤ size.
+import type { CrewSizeAllowanceRow } from './types';
+export const DEFAULT_CREW_SIZE_ALLOWANCE: CrewSizeAllowanceRow[] = [
+  { minSize: 1, pct: 0 },
+  { minSize: 3, pct: 10 },
+  { minSize: 4, pct: 15 },
+  { minSize: 5, pct: 20 },
+];
 export const EOD_WARNING_HOUR = 22;
 export const PERMISSION_DENIED = 'Permission denied.';
 

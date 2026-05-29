@@ -1,5 +1,12 @@
-import { Crew, Employee, PerformanceLog, DeductionValue } from '../types';
+import {
+  AppSettings,
+  Crew,
+  Employee,
+  PerformanceLog,
+  DeductionValue,
+} from '../types';
 import { deductHours } from './efficiency';
+import { getCrewAllowance, adjustedEfficiency } from './crewAllowance';
 
 // Minimum credited BH a crew needs before it's eligible for ranking.
 // Below this we treat the crew as "not enough data yet" — keeps the
@@ -11,11 +18,17 @@ export interface CrewLeaderboardEntry {
   crewLabel: string;
   bh: number;
   ah: number;
+  // Adjusted efficiency = rawEfficiency + allowancePct. This is the
+  // headline number for ranking and display everywhere — callers can
+  // still read rawEfficiency / allowancePct for the breakdown UI.
   efficiency: number | null;
+  rawEfficiency: number | null;
+  allowancePct: number;
+  scheduledSize: number;
   jobCount: number;
   memberNames: string[];
   // True when bh > LEADERBOARD_MIN_BH. Eligible entries are ranked
-  // by efficiency desc; ineligible ones fall to the bottom group.
+  // by adjusted efficiency desc; ineligible ones fall to the bottom group.
   eligible: boolean;
 }
 
@@ -50,12 +63,14 @@ function crewTotals(log: PerformanceLog): {
 // scheduled that day with no performance entry surface as
 // zero/ineligible rather than being dropped, so a crew that hasn't
 // reported anything yet still appears in the Dashboard "not enough
-// data" group.
+// data" group. Each entry carries both the raw efficiency and the
+// crew-size allowance applied so callers can show the breakdown.
 export function buildCrewLeaderboard(
   date: string,
   schedules: Record<string, Crew[]>,
   performance: Record<string, Record<string, PerformanceLog>>,
   employees: Employee[],
+  settings?: AppSettings | null,
 ): CrewLeaderboardEntry[] {
   const dayCrews = schedules[date] || [];
   const dayPerf = performance[date] || {};
@@ -67,6 +82,8 @@ export function buildCrewLeaderboard(
     const totals = log
       ? crewTotals(log)
       : { bh: 0, ah: 0, efficiency: null, jobCount: 0 };
+    const allowance = getCrewAllowance(crew, log || null, settings || null);
+    const adjusted = adjustedEfficiency(totals.efficiency, allowance.pct);
     const memberNames = (crew.employees || [])
       .map(id => empById.get(id)?.name || '')
       .filter(Boolean);
@@ -75,7 +92,10 @@ export function buildCrewLeaderboard(
       crewLabel: `${crew.division} #${crew.crewNumber}`,
       bh: totals.bh,
       ah: totals.ah,
-      efficiency: totals.efficiency,
+      efficiency: adjusted,
+      rawEfficiency: totals.efficiency,
+      allowancePct: allowance.pct,
+      scheduledSize: allowance.size,
       jobCount: totals.jobCount,
       memberNames,
       eligible: totals.bh > LEADERBOARD_MIN_BH,

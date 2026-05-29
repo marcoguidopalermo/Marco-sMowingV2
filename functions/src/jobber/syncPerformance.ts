@@ -190,6 +190,23 @@ interface PerformanceLog {
   approvedBy?: string;
   approvedByName?: string;
   lastJobberSyncAt?: number;
+  removedEmployees?: string[];
+  // Per-crew-day snapshot of the applied size + allowance pct.
+  // Sync re-stamps for the current targetDate every run; once a
+  // date is in the past, the stamp freezes (no more runs target
+  // that day), so changes to appData.settings.crewSizeAllowance
+  // don't rewrite history.
+  crewSizeAllowance?: { size: number; pct: number };
+}
+
+interface CrewSizeAllowanceRow {
+  minSize: number;
+  pct: number;
+}
+
+interface AppSettingsDoc {
+  endOfDayReminder?: string;
+  crewSizeAllowance?: CrewSizeAllowanceRow[];
 }
 
 interface CrewSchedule {
@@ -221,10 +238,45 @@ interface AppDataShape {
   multiDayJobs?: Record<string, MultiDayJob>;
   visitBHSplits?: Record<string, VisitBHSplit>;
   dailyAbsences?: Record<string, string[]>;
+  settings?: AppSettingsDoc;
   // Schema sentinel. < 2 (or missing) triggers a one-time wipe of
   // multiDayJobs so legacy jobId-keyed entries don't cohabit with new
   // visit-keyed ones.
   __multiDayKeyVersion?: number;
+}
+
+// Default crew-size allowance table — mirrors src/constants.ts so a
+// sync run against a brand-new tenant with no settings doc still
+// stamps sensible values. Keep in lockstep with the frontend default.
+const DEFAULT_CREW_SIZE_ALLOWANCE: CrewSizeAllowanceRow[] = [
+  {minSize: 1, pct: 0},
+  {minSize: 3, pct: 10},
+  {minSize: 4, pct: 15},
+  {minSize: 5, pct: 20},
+];
+
+/**
+ * Looks up the allowance percentage for a given scheduled size.
+ * Walks the table ascending and keeps the highest matching pct.
+ * @param {number} size Scheduled headcount on the crew that day.
+ * @param {CrewSizeAllowanceRow[] | undefined} table Custom table
+ *     from appData.settings.crewSizeAllowance, or undefined to fall
+ *     back to DEFAULT_CREW_SIZE_ALLOWANCE.
+ * @return {number} The applied pct (0 if no row matches).
+ */
+function pctForCrewSize(
+  size: number,
+  table: CrewSizeAllowanceRow[] | undefined,
+): number {
+  const rows = (table && table.length > 0 ? table : DEFAULT_CREW_SIZE_ALLOWANCE)
+    .slice()
+    .sort((a, b) => a.minSize - b.minSize);
+  let pct = 0;
+  for (const row of rows) {
+    if (size >= row.minSize) pct = row.pct;
+    else break;
+  }
+  return pct;
 }
 
 interface SyncResultSummary {
@@ -1801,6 +1853,23 @@ async function runPerformanceSync(args: {
         // else: linked worker but no timesheet for this date — leave
         //       base.employeeAH[empId] untouched (could be manual entry).
       }
+
+      // Stamp the crew-size allowance snapshot for this crew-day.
+      // size = scheduled roster minus the manager-curated removed
+      // set; drop-in helpers (employeeAH keys not in crew.employees)
+      // are deliberately NOT counted toward the bracket. Re-stamping
+      // every sync for targetDate is fine because the scheduled
+      // function only ever runs against "today" — once the date
+      // turns over the value freezes.
+      const removedSet = new Set(base.removedEmployees || []);
+      const scheduledSize = (crew.employees || []).filter(
+        (id) => !removedSet.has(id),
+      ).length;
+      const pct = pctForCrewSize(
+        scheduledSize,
+        appData.settings?.crewSizeAllowance,
+      );
+      base.crewSizeAllowance = {size: scheduledSize, pct};
 
       base.lastJobberSyncAt = summary.triggeredAt;
       newPerformanceDay[crew.id] = base;
