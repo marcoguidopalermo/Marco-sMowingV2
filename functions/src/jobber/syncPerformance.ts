@@ -1212,10 +1212,25 @@ async function runPerformanceSync(args: {
       return slot ? slot.bh : 0;
     };
 
-    // Compute timesheet totals per Jobber user.
+    // Compute timesheet totals per Jobber user. Closed shifts use
+    // Jobber's finalDuration; open shifts (finalDuration null,
+    // worker still on the clock) contribute their running elapsed
+    // time from startAt to now, so AH no longer waits for clock-out
+    // before showing up. When the worker eventually clocks out,
+    // finalDuration stamps the true total and the next sync
+    // overwrites the running value with it.
+    const nowMs = Date.now();
     const secondsByJobberUser = new Map<string, number>();
     for (const ts of timesheets) {
-      const sec = typeof ts.finalDuration === "number" ? ts.finalDuration : 0;
+      let sec: number;
+      if (typeof ts.finalDuration === "number") {
+        sec = ts.finalDuration;
+      } else {
+        const startMs = new Date(ts.startAt).getTime();
+        sec = Number.isFinite(startMs) ?
+          Math.max(0, (nowMs - startMs) / 1000) :
+          0;
+      }
       if (sec < MIN_TIMESHEET_SECONDS) continue;
       const prev = secondsByJobberUser.get(ts.user.id) || 0;
       secondsByJobberUser.set(ts.user.id, prev + sec);
@@ -1970,7 +1985,7 @@ export const jobberSyncPerformance = onCall(
 export const jobberSyncPerformanceScheduled = onSchedule(
   {
     region: REGION,
-    schedule: "0,30 6-23 * * *",
+    schedule: "0,15,30,45 6-23 * * *",
     timeZone: TIMEZONE,
     secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET],
     timeoutSeconds: 540,
