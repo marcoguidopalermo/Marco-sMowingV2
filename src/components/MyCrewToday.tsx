@@ -4,6 +4,7 @@ import { Crew, Employee, FleetItem, EquipmentSubtypeDefinition, PerformanceLog, 
 import { formatTimeRange, addDaysToronto } from '../lib/dateUtils';
 import { sortFleetGrouped, fleetItemLabel, isFleetOutOfService } from '../lib/fleetUtils';
 import { accumulateEmployeeEff, efficiencyPct, EmpEffStat } from '../lib/efficiency';
+import TopCrewSpotlight from './TopCrewSpotlight';
 
 interface MyCrewTodayProps {
   today: string;
@@ -163,6 +164,17 @@ export default function MyCrewToday({
             Report a Repair
           </button>
         )}
+
+        {/* TOP CREW SPOTLIGHT — surfaces the company leader for the
+            selected day. Live dot pulses while activeTab === 'today';
+            yesterday view shows the final standing with no dot. */}
+        <TopCrewSpotlight
+          date={activeTab === 'today' ? today : yesterdayDate}
+          live={activeTab === 'today'}
+          schedules={schedules}
+          performance={performance}
+          employees={employees}
+        />
 
         {/* TAB TOGGLE — Today (existing content) / Yesterday (individual perf) */}
         <div className="flex bg-white rounded-lg p-1 border border-slate-200 shadow-sm mb-4" role="tablist">

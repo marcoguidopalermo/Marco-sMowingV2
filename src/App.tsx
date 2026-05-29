@@ -45,6 +45,7 @@ import BulletinBoard from './components/BulletinBoard';
 import MechanicBoard from './components/MechanicBoard';
 import PerformanceBoard from './components/PerformanceBoard';
 import MyCrewToday from './components/MyCrewToday';
+import Dashboard from './components/Dashboard';
 import MyMechanic from './components/MyMechanic';
 import MyMechanicTaskModal from './components/MyMechanicTaskModal';
 import ConfirmDeleteModal from './components/ConfirmDeleteModal';
@@ -2425,6 +2426,9 @@ export default function App() {
             {canAccessView('performance', effectiveRole) && (
               <button onClick={() => setCurrentView('performance')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'performance' ? 'bg-white shadow-sm text-emerald-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><TrendingUp className="w-4 h-4" /> PerformanceMaster</button>
             )}
+            {canAccessView('dashboard', effectiveRole) && (
+              <button onClick={() => setCurrentView('dashboard')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'dashboard' ? 'bg-white shadow-sm text-emerald-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><LayoutDashboard className="w-4 h-4" /> Dashboard</button>
+            )}
             {canAccessView('mycrew', effectiveRole) && !canAccessView('performance', effectiveRole) && (
               <button onClick={() => setCurrentView('mycrew')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'mycrew' ? 'bg-white shadow-sm text-lime-600' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><TrendingUp className="w-4 h-4" /> My Crew Today</button>
             )}
@@ -2742,6 +2746,13 @@ export default function App() {
           timeEntries={appData.timeEntries || []}
           onOpenTask={(taskId) => setMyMechanicTaskId(taskId)}
         />
+      ) : currentView === 'dashboard' ? (
+        <Dashboard
+          today={formatTodayInToronto()}
+          schedules={appData.schedules}
+          performance={appData.performance}
+          employees={appData.employees}
+        />
       ) : currentView === 'mycrew' ? (
         <MyCrewToday
           today={formatTodayInToronto()}
@@ -2938,6 +2949,10 @@ export default function App() {
               isActive: currentView === 'performance',
               onClick: () => setCurrentView('performance'),
               visible: canAccessView('performance', effectiveRole) },
+            { key: 'dashboard', label: 'Dash', Icon: LayoutDashboard, badge: 0,
+              isActive: currentView === 'dashboard',
+              onClick: () => setCurrentView('dashboard'),
+              visible: canAccessView('dashboard', effectiveRole) },
             { key: 'timemaster', label: 'Time', Icon: Clock,
               badge: (can('canApproveTimeOff', effectiveRole) ? timeOffPendingForAdminCount : 0) + timeOffStatusChangesForMeCount,
               isActive: currentView === 'timemaster',

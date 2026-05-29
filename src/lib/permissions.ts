@@ -60,6 +60,7 @@ export const ROLE_PERMISSIONS = {
     canViewTaskMaster: true,
     canCreateTasks: true,
     canApproveTimeOff: true,
+    canViewDashboard: true,
   },
   manager: {
     canViewSchedule: true,
@@ -122,6 +123,7 @@ export const ROLE_PERMISSIONS = {
     canViewTaskMaster: true,
     canCreateTasks: false,
     canApproveTimeOff: false,
+    canViewDashboard: true,
   },
   foreman: {
     canViewSchedule: true,
@@ -182,6 +184,7 @@ export const ROLE_PERMISSIONS = {
     canViewTaskMaster: false,
     canCreateTasks: false,
     canApproveTimeOff: false,
+    canViewDashboard: false,
   },
   worker: {
     canViewSchedule: true,
@@ -242,6 +245,7 @@ export const ROLE_PERMISSIONS = {
     canViewTaskMaster: false,
     canCreateTasks: false,
     canApproveTimeOff: false,
+    canViewDashboard: false,
   },
   mechanic: {
     canViewSchedule: false,
@@ -304,6 +308,7 @@ export const ROLE_PERMISSIONS = {
     canViewTaskMaster: false,
     canCreateTasks: false,
     canApproveTimeOff: false,
+    canViewDashboard: false,
   },
 } as const;
 
@@ -359,9 +364,9 @@ export function resolveRole(employee: Employee | null | undefined): UserRole {
   return employee.systemRole || 'worker';
 }
 
-export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster';
+export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'dashboard' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster';
 
-export const APP_VIEW_ORDER: AppView[] = ['schedule', 'mechanic', 'mymechanic', 'performance', 'mycrew', 'timemaster', 'bulletins', 'taskmaster'];
+export const APP_VIEW_ORDER: AppView[] = ['schedule', 'mechanic', 'mymechanic', 'performance', 'dashboard', 'mycrew', 'timemaster', 'bulletins', 'taskmaster'];
 
 export function canAccessView(view: AppView, role: UserRole | null | undefined): boolean {
   switch (view) {
@@ -372,6 +377,9 @@ export function canAccessView(view: AppView, role: UserRole | null | undefined):
     // admin/manager preview via View As → Mechanic.
     case 'mymechanic': return role === 'mechanic';
     case 'performance': return can('canViewPerformance', role);
+    // Company-wide rollup view (crew leaderboard today, more widgets
+    // to come). Manager + admin only by default.
+    case 'dashboard': return can('canViewDashboard', role);
     case 'mycrew': return can('canViewOwnCrewLive', role);
     // TimeMaster now also hosts the time-off approval queue as an
     // internal tab (gated by canApproveTimeOff), so the top-level
