@@ -635,38 +635,51 @@ export default function TimeMaster({
   };
 
   const renderUsersTable = () => (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
-      <div className="bg-gray-50 border-b border-gray-200 p-3"><h3 className="font-bold text-gray-800 flex items-center gap-2"><Users className="w-4 h-4 text-gray-500" /> All Users</h3></div>
-      <table className="w-full text-left">
-        <thead><tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase"><th className="p-3">User</th><th className="p-3 text-right">Today</th><th className="p-3 text-right">This Week</th><th className="p-3 text-right">This Month</th><th className="p-3">Last Punch</th><th className="p-3 text-right">Status</th></tr></thead>
-        <tbody className="divide-y divide-gray-100">
-          {userSummaries.length === 0 ? (
-            <tr><td colSpan={6} className="p-6 text-center text-slate-400 italic">No time entries recorded yet.</td></tr>
-          ) : (
-            userSummaries.map(u => (
-              <tr key={u.email} className="hover:bg-slate-50 cursor-pointer transition-colors" onClick={() => setDrilledUserEmail(u.email)}>
-                <td className="p-3">
-                  <div className="font-bold text-slate-800 text-sm">{u.name}</div>
-                  <div className="text-[10px] text-slate-400 font-medium">{u.email}</div>
-                </td>
-                <td className="p-3 text-right font-mono font-bold text-emerald-700 text-sm">{formatHM(u.today)}</td>
-                <td className="p-3 text-right font-mono font-bold text-emerald-700 text-sm">{formatHM(u.week)}</td>
-                <td className="p-3 text-right font-mono font-bold text-emerald-700 text-sm">{formatHM(u.month)}</td>
-                <td className="p-3 text-xs text-slate-600">{u.lastPunchTs ? new Date(u.lastPunchTs).toLocaleString() : '—'}</td>
-                <td className="p-3 text-right">
-                  {u.hasUnclosed ? (
-                    <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-rose-100 text-rose-700 border-rose-200 inline-flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Unclosed</span>
-                  ) : u.active ? (
-                    <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-emerald-100 text-emerald-700 border-emerald-200">Active</span>
-                  ) : (
-                    <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-slate-100 text-slate-600 border-slate-200">Off</span>
-                  )}
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+    // Self-contained scroll surface for the All Users list. The card
+    // bounds itself to 70vh and the table body has its own
+    // overflow-y-auto + min-h-0, so the full list renders and
+    // scrolls inside the card regardless of how the outer flex
+    // chain behaves on the current viewport. Sticky thead keeps the
+    // column titles in view while scrolling, and overflow-x-auto
+    // saves the layout if the columns ever overflow on a phone.
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6 flex flex-col max-h-[70vh]">
+      <div className="bg-gray-50 border-b border-gray-200 p-3 shrink-0">
+        <h3 className="font-bold text-gray-800 flex items-center gap-2"><Users className="w-4 h-4 text-gray-500" /> All Users</h3>
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto">
+        <table className="w-full text-left">
+          <thead className="sticky top-0 bg-gray-50 z-10">
+            <tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase"><th className="p-3">User</th><th className="p-3 text-right">Today</th><th className="p-3 text-right">This Week</th><th className="p-3 text-right">This Month</th><th className="p-3">Last Punch</th><th className="p-3 text-right">Status</th></tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {userSummaries.length === 0 ? (
+              <tr><td colSpan={6} className="p-6 text-center text-slate-400 italic">No time entries recorded yet.</td></tr>
+            ) : (
+              userSummaries.map(u => (
+                <tr key={u.email} className="hover:bg-slate-50 cursor-pointer transition-colors" onClick={() => setDrilledUserEmail(u.email)}>
+                  <td className="p-3">
+                    <div className="font-bold text-slate-800 text-sm">{u.name}</div>
+                    <div className="text-[10px] text-slate-400 font-medium">{u.email}</div>
+                  </td>
+                  <td className="p-3 text-right font-mono font-bold text-emerald-700 text-sm">{formatHM(u.today)}</td>
+                  <td className="p-3 text-right font-mono font-bold text-emerald-700 text-sm">{formatHM(u.week)}</td>
+                  <td className="p-3 text-right font-mono font-bold text-emerald-700 text-sm">{formatHM(u.month)}</td>
+                  <td className="p-3 text-xs text-slate-600">{u.lastPunchTs ? new Date(u.lastPunchTs).toLocaleString() : '—'}</td>
+                  <td className="p-3 text-right">
+                    {u.hasUnclosed ? (
+                      <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-rose-100 text-rose-700 border-rose-200 inline-flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Unclosed</span>
+                    ) : u.active ? (
+                      <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-emerald-100 text-emerald-700 border-emerald-200">Active</span>
+                    ) : (
+                      <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-slate-100 text-slate-600 border-slate-200">Off</span>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 
