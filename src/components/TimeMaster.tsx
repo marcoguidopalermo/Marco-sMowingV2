@@ -96,6 +96,11 @@ export default function TimeMaster({
   const [editingEntry, setEditingEntry] = useState<TimeEntry | null>(null);
   const [editForm, setEditForm] = useState({ clockIn: '', clockOut: '', reason: '' });
 
+  // CSV export popup — replaces the inline export bar that used to
+  // sit beneath the All Users list. Icon in the card header opens
+  // this; date range + Export button live inside.
+  const [isExportOpen, setIsExportOpen] = useState(false);
+
   // Manual entry modal — for missed punches. Admin / manager can
   // file one against any employee; everyone else is locked to
   // themselves (employeeEmail / Name pre-populated with the caller).
@@ -643,35 +648,45 @@ export default function TimeMaster({
     // column titles in view while scrolling, and overflow-x-auto
     // saves the layout if the columns ever overflow on a phone.
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6 flex flex-col max-h-[70vh]">
-      <div className="bg-gray-50 border-b border-gray-200 p-3 shrink-0">
-        <h3 className="font-bold text-gray-800 flex items-center gap-2"><Users className="w-4 h-4 text-gray-500" /> All Users</h3>
+      <div className="bg-gray-50 border-b border-gray-200 px-3 py-2 shrink-0 flex items-center justify-between gap-2">
+        <h3 className="font-bold text-gray-800 flex items-center gap-2 text-sm"><Users className="w-4 h-4 text-gray-500" /> All Users</h3>
+        {canExportCSV && (
+          <button
+            onClick={() => setIsExportOpen(true)}
+            className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 transition-colors"
+            title="Export to CSV"
+            aria-label="Export to CSV"
+          >
+            <Download className="w-4 h-4" />
+          </button>
+        )}
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto">
         <table className="w-full text-left">
           <thead className="sticky top-0 bg-gray-50 z-10">
-            <tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase"><th className="p-3">User</th><th className="p-3 text-right">Today</th><th className="p-3 text-right">This Week</th><th className="p-3 text-right">This Month</th><th className="p-3">Last Punch</th><th className="p-3 text-right">Status</th></tr>
+            <tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase"><th className="px-2 py-1.5">User</th><th className="px-2 py-1.5 text-right">Today</th><th className="px-2 py-1.5 text-right">Week</th><th className="px-2 py-1.5 text-right">Month</th><th className="px-2 py-1.5">Last Punch</th><th className="px-2 py-1.5 text-right">Status</th></tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {userSummaries.length === 0 ? (
-              <tr><td colSpan={6} className="p-6 text-center text-slate-400 italic">No time entries recorded yet.</td></tr>
+              <tr><td colSpan={6} className="p-4 text-center text-slate-400 italic text-xs">No time entries recorded yet.</td></tr>
             ) : (
               userSummaries.map(u => (
                 <tr key={u.email} className="hover:bg-slate-50 cursor-pointer transition-colors" onClick={() => setDrilledUserEmail(u.email)}>
-                  <td className="p-3">
-                    <div className="font-bold text-slate-800 text-sm">{u.name}</div>
-                    <div className="text-[10px] text-slate-400 font-medium">{u.email}</div>
+                  <td className="px-2 py-1.5">
+                    <div className="font-bold text-slate-800 text-xs leading-tight">{u.name}</div>
+                    <div className="text-[9px] text-slate-400 font-medium leading-tight truncate max-w-[180px]" title={u.email}>{u.email}</div>
                   </td>
-                  <td className="p-3 text-right font-mono font-bold text-emerald-700 text-sm">{formatHM(u.today)}</td>
-                  <td className="p-3 text-right font-mono font-bold text-emerald-700 text-sm">{formatHM(u.week)}</td>
-                  <td className="p-3 text-right font-mono font-bold text-emerald-700 text-sm">{formatHM(u.month)}</td>
-                  <td className="p-3 text-xs text-slate-600">{u.lastPunchTs ? new Date(u.lastPunchTs).toLocaleString() : '—'}</td>
-                  <td className="p-3 text-right">
+                  <td className="px-2 py-1.5 text-right font-mono font-bold text-emerald-700 text-xs">{formatHM(u.today)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono font-bold text-emerald-700 text-xs">{formatHM(u.week)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono font-bold text-emerald-700 text-xs">{formatHM(u.month)}</td>
+                  <td className="px-2 py-1.5 text-[11px] text-slate-600 whitespace-nowrap">{u.lastPunchTs ? new Date(u.lastPunchTs).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'}</td>
+                  <td className="px-2 py-1.5 text-right">
                     {u.hasUnclosed ? (
-                      <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-rose-100 text-rose-700 border-rose-200 inline-flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Unclosed</span>
+                      <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border bg-rose-100 text-rose-700 border-rose-200 inline-flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Unclosed</span>
                     ) : u.active ? (
-                      <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-emerald-100 text-emerald-700 border-emerald-200">Active</span>
+                      <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border bg-emerald-100 text-emerald-700 border-emerald-200">Active</span>
                     ) : (
-                      <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-slate-100 text-slate-600 border-slate-200">Off</span>
+                      <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border bg-slate-100 text-slate-600 border-slate-200">Off</span>
                     )}
                   </td>
                 </tr>
@@ -683,27 +698,9 @@ export default function TimeMaster({
     </div>
   );
 
-  const renderExport = () => (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
-      <h3 className="font-bold text-gray-800 flex items-center gap-2 mb-3"><Download className="w-4 h-4 text-gray-500" /> Export</h3>
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-slate-500">From</span>
-          <input type="date" value={exportStart} onChange={e => setExportStart(e.target.value)} className="border border-gray-300 rounded p-1.5 text-sm" />
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-slate-500">To</span>
-          <input type="date" value={exportEnd} onChange={e => setExportEnd(e.target.value)} className="border border-gray-300 rounded p-1.5 text-sm" />
-        </div>
-        <button
-          onClick={exportCsv}
-          className="ml-auto flex items-center gap-2 bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-lg text-xs font-black uppercase tracking-widest shadow-sm"
-        >
-          <Download className="w-4 h-4" /> Export to CSV
-        </button>
-      </div>
-    </div>
-  );
+  // Export bar is now a popup launched from the All Users card
+  // header icon (modal rendered at the bottom of TimeMaster).
+  // The export logic itself stays in exportCsv() above.
 
   // ---------- MAIN RENDER ----------
 
@@ -883,7 +880,6 @@ export default function TimeMaster({
             <>
               {renderTimeline()}
               {renderUsersTable()}
-              {canExportCSV && renderExport()}
             </>
           ) : (
             <>
@@ -943,6 +939,61 @@ export default function TimeMaster({
             <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
               <button onClick={() => setEditingEntry(null)} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors">Cancel</button>
               <button onClick={saveEdit} className="px-6 py-2.5 font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow uppercase tracking-widest text-xs flex items-center gap-2"><Save className="w-4 h-4" /> Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXPORT POPUP — launched from the Download icon in the All
+          Users card header. Same date range + CSV launch as the old
+          inline bar; just moved off the page so the user list owns
+          the vertical space. */}
+      {isExportOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-[100] flex md:items-center md:justify-center md:p-4"
+          onMouseDown={(e) => { if (e.target === e.currentTarget) setIsExportOpen(false); }}
+        >
+          <div className="bg-white md:rounded-2xl shadow-2xl h-full md:h-auto w-full md:max-w-md overflow-hidden flex flex-col animate-in zoom-in-95">
+            <div className="p-5 border-b border-gray-200 bg-slate-900 text-white flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <Download className="w-5 h-5 text-emerald-400" />
+                <h3 className="text-lg font-bold">Export to CSV</h3>
+              </div>
+              <button onClick={() => setIsExportOpen(false)} className="text-white/60 hover:text-white min-w-[44px] min-h-[44px] inline-flex items-center justify-center"><X className="w-6 h-6" /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">From</label>
+                  <input
+                    type="date"
+                    value={exportStart}
+                    onChange={e => setExportStart(e.target.value)}
+                    className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">To</label>
+                  <input
+                    type="date"
+                    value={exportEnd}
+                    onChange={e => setExportEnd(e.target.value)}
+                    className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                </div>
+              </div>
+              <div className="text-[11px] text-slate-500">
+                Exports every TimeEntry whose clock-in falls in this range. Manual entries are included with their full row.
+              </div>
+            </div>
+            <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
+              <button onClick={() => setIsExportOpen(false)} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors">Cancel</button>
+              <button
+                onClick={() => { exportCsv(); setIsExportOpen(false); }}
+                className="px-6 py-2.5 font-black text-white bg-slate-800 hover:bg-slate-900 rounded-lg shadow uppercase tracking-widest text-xs flex items-center gap-2"
+              >
+                <Download className="w-4 h-4" /> Export to CSV
+              </button>
             </div>
           </div>
         </div>
