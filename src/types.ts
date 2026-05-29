@@ -73,6 +73,12 @@ export interface TimeEntry {
   editedBy?: string;
   editedAt?: string;
   isUnclosed?: boolean;
+  // Manual entry — created via the "Add Manual Entry" modal for
+  // missed punches rather than a real clock-in / clock-out tap.
+  // Functionally identical to a clocked entry (same hours math,
+  // same pay-chunk feeding); the flag is purely a record/UI marker.
+  manualEntry?: boolean;
+  enteredBy?: { email: string; name: string };
 }
 
 export type FleetType = 'truck' | 'trailer' | 'tractor' | 'equipment';

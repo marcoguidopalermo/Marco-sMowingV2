@@ -96,6 +96,19 @@ export default function TimeMaster({
   const [editingEntry, setEditingEntry] = useState<TimeEntry | null>(null);
   const [editForm, setEditForm] = useState({ clockIn: '', clockOut: '', reason: '' });
 
+  // Manual entry modal — for missed punches. Admin / manager can
+  // file one against any employee; everyone else is locked to
+  // themselves (employeeEmail / Name pre-populated with the caller).
+  const [isManualEntryOpen, setIsManualEntryOpen] = useState(false);
+  const [manualForm, setManualForm] = useState({
+    employeeEmail: '',
+    employeeName: '',
+    date: formatTodayInToronto(),
+    clockInTime: '',
+    clockOutTime: '',
+    note: '',
+  });
+
   const [exportStart, setExportStart] = useState(formatDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)));
   const [exportEnd, setExportEnd] = useState(formatDate(new Date()));
 
@@ -231,6 +244,64 @@ export default function TimeMaster({
       clockOut: entry.clockOut ? toLocalInputValue(entry.clockOut) : '',
       reason: '',
     });
+  };
+
+  // Open the manual-entry modal. Non-admin/manager callers get
+  // their own identity locked in — they can only file for themselves.
+  const openManualEntry = () => {
+    setManualForm({
+      employeeEmail: canEditAny ? '' : userEmail,
+      employeeName: canEditAny ? '' : userName,
+      date: formatTodayInToronto(),
+      clockInTime: '',
+      clockOutTime: '',
+      note: '',
+    });
+    setIsManualEntryOpen(true);
+  };
+
+  // Submit a manual entry. Builds a normal TimeEntry (same shape as
+  // a clocked entry; clockIn / clockOut are ISO timestamps) plus the
+  // manualEntry flag + enteredBy stamp. The syncToCloud wrapper at
+  // the App layer fans into processPayChunksOnTimeUpdate, so hours
+  // count toward pay chunks identically to a real punch.
+  const submitManualEntry = () => {
+    const { employeeEmail, employeeName, date, clockInTime, clockOutTime, note } = manualForm;
+    if (!employeeEmail) { showToastMsg('Pick an employee.'); return; }
+    if (!date) { showToastMsg('Date is required.'); return; }
+    if (!clockInTime || !clockOutTime) { showToastMsg('Both clock-in and clock-out times are required.'); return; }
+    const clockIn = new Date(`${date}T${clockInTime}:00`);
+    const clockOut = new Date(`${date}T${clockOutTime}:00`);
+    if (!Number.isFinite(clockIn.getTime()) || !Number.isFinite(clockOut.getTime())) {
+      showToastMsg('Invalid date or time.');
+      return;
+    }
+    if (clockOut.getTime() <= clockIn.getTime()) {
+      showToastMsg('Clock-out must be after clock-in.');
+      return;
+    }
+    const trimmedNote = note.trim();
+    const newEntry: TimeEntry = {
+      id: `te-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      userEmail: employeeEmail.toLowerCase(),
+      userName: employeeName,
+      clockIn: clockIn.toISOString(),
+      clockOut: clockOut.toISOString(),
+      notes: trimmedNote ? [{
+        author: userEmail,
+        authorName: userName,
+        timestamp: new Date().toISOString(),
+        text: `[Manual entry] ${trimmedNote}`,
+      }] : [],
+      manualEntry: true,
+      enteredBy: { email: userEmail, name: userName },
+    };
+    syncToCloud({
+      ...appData,
+      timeEntries: [...appData.timeEntries, newEntry],
+    });
+    setIsManualEntryOpen(false);
+    showToastMsg('Manual entry added.');
   };
 
   const saveEdit = () => {
@@ -375,7 +446,15 @@ export default function TimeMaster({
               {entry.notes.length} {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
             </button>
           </div>
-          <div className="col-span-2 flex items-center gap-2 justify-end">
+          <div className="col-span-2 flex items-center gap-2 justify-end flex-wrap">
+            {entry.manualEntry && (
+              <span
+                className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-amber-50 text-amber-700 border-amber-200"
+                title={entry.enteredBy ? `Manual entry by ${entry.enteredBy.name}` : 'Manual entry'}
+              >
+                Manual{entry.enteredBy ? ` · ${entry.enteredBy.name}` : ''}
+              </span>
+            )}
             <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusClass}`}>{status}</span>
             {canEdit && (
               <button onClick={() => openEdit(entry)} title="Edit entry (admin)" className="p-1.5 bg-slate-50 border border-slate-200 rounded hover:bg-slate-100 text-slate-600">
@@ -724,7 +803,7 @@ export default function TimeMaster({
   );
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-gray-100 p-6">
+    <div className="flex-1 flex flex-col h-full min-h-0 overflow-y-auto bg-gray-100 p-6">
       <div className="flex justify-between items-center mb-6 flex-wrap gap-3">
         <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
           <Clock className="w-6 h-6 text-emerald-600" /> TimeMaster
@@ -742,6 +821,13 @@ export default function TimeMaster({
             title="Request time off"
           >
             <Plane className="w-3.5 h-3.5" /> Request Time Off
+          </button>
+          <button
+            onClick={openManualEntry}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-black uppercase tracking-widest text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm"
+            title={canEditAny ? 'Add a manual time entry for any employee' : 'Add a manual time entry for yourself (missed punch)'}
+          >
+            <Plus className="w-3.5 h-3.5" /> Add Manual Entry
           </button>
           {drilledUserEmail && (
             <button onClick={() => setDrilledUserEmail(null)} className="flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg text-xs font-black uppercase tracking-widest">
@@ -844,6 +930,96 @@ export default function TimeMaster({
             <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
               <button onClick={() => setEditingEntry(null)} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors">Cancel</button>
               <button onClick={saveEdit} className="px-6 py-2.5 font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow uppercase tracking-widest text-xs flex items-center gap-2"><Save className="w-4 h-4" /> Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MANUAL ENTRY MODAL — for missed punches. Admin / manager see
+          an employee dropdown; everyone else sees their identity
+          locked. Submit routes through syncToCloud (App-side wrapper
+          recomputes pay chunks). */}
+      {isManualEntryOpen && (
+        <div className="fixed inset-0 bg-black/60 z-[100] flex md:items-center md:justify-center md:p-4">
+          <div className="bg-white md:rounded-2xl shadow-2xl h-full md:h-auto w-full md:max-w-md overflow-hidden flex flex-col animate-in zoom-in-95">
+            <div className="p-5 border-b border-gray-200 bg-slate-900 text-white flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <Plus className="w-5 h-5 text-emerald-400" />
+                <h3 className="text-lg font-bold">Add Manual Entry</h3>
+              </div>
+              <button onClick={() => setIsManualEntryOpen(false)} className="text-white/60 hover:text-white min-w-[44px] min-h-[44px] inline-flex items-center justify-center"><X className="w-6 h-6" /></button>
+            </div>
+            <div className="p-6 space-y-4 overflow-y-auto">
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Employee</label>
+                {canEditAny ? (
+                  <select
+                    value={manualForm.employeeEmail}
+                    onChange={ev => {
+                      const em = ev.target.value;
+                      const match = appData.employees.find(e => (e.linkedUserEmail || e.email || '').toLowerCase() === em);
+                      setManualForm(p => ({ ...p, employeeEmail: em, employeeName: match?.name || '' }));
+                    }}
+                    className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold bg-white outline-none focus:ring-2 focus:ring-emerald-400"
+                  >
+                    <option value="">— pick an employee —</option>
+                    {appData.employees
+                      .filter(e => e.status === 'Active' && (e.linkedUserEmail || e.email))
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map(e => {
+                        const em = (e.linkedUserEmail || e.email || '').toLowerCase();
+                        return <option key={e.id} value={em}>{e.name} — {em}</option>;
+                      })}
+                  </select>
+                ) : (
+                  <div className="w-full border border-slate-200 rounded-xl p-3 text-sm font-bold bg-slate-50 text-slate-800">
+                    {userName} <span className="text-slate-400 font-medium">({userEmail})</span>
+                  </div>
+                )}
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Date</label>
+                <input
+                  type="date"
+                  value={manualForm.date}
+                  onChange={e => setManualForm(p => ({ ...p, date: e.target.value }))}
+                  className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Clock In</label>
+                  <input
+                    type="time"
+                    value={manualForm.clockInTime}
+                    onChange={e => setManualForm(p => ({ ...p, clockInTime: e.target.value }))}
+                    className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Clock Out</label>
+                  <input
+                    type="time"
+                    value={manualForm.clockOutTime}
+                    onChange={e => setManualForm(p => ({ ...p, clockOutTime: e.target.value }))}
+                    className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Note (optional)</label>
+                <textarea
+                  rows={3}
+                  value={manualForm.note}
+                  onChange={e => setManualForm(p => ({ ...p, note: e.target.value }))}
+                  placeholder="e.g. forgot to clock in this morning"
+                  className="w-full border border-slate-300 rounded-xl p-3 text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-400 resize-none"
+                />
+              </div>
+            </div>
+            <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
+              <button onClick={() => setIsManualEntryOpen(false)} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors">Cancel</button>
+              <button onClick={submitManualEntry} className="px-6 py-2.5 font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow uppercase tracking-widest text-xs flex items-center gap-2"><Save className="w-4 h-4" /> Submit</button>
             </div>
           </div>
         </div>
