@@ -61,6 +61,7 @@ const TIMESHEETS_QUERY = `query TimesheetsOnDate(
   ) {
     nodes {
       id
+      ticking
       finalDuration
       startAt
       endAt
@@ -88,6 +89,12 @@ interface VisitNode {
 
 interface TimesheetNode {
   id: string;
+  // Live-timer flag from Jobber. True while a worker is clocked in
+  // (open shift); false once they've clocked out. finalDuration
+  // resolves to 0 while ticking is true, so this is the canonical
+  // signal — finalDuration alone can't distinguish open from a
+  // <1s closed entry.
+  ticking: boolean;
   finalDuration: number | null;
   startAt: string;
   endAt: string | null;
@@ -1213,16 +1220,14 @@ async function runPerformanceSync(args: {
     };
 
     // Compute timesheet totals per Jobber user. Closed shifts use
-    // Jobber's finalDuration; open shifts (finalDuration null,
-    // worker still on the clock) contribute their running elapsed
-    // time from startAt to now, so AH no longer waits for clock-out
-    // before showing up. When the worker eventually clocks out,
-    // finalDuration stamps the true total and the next sync
-    // overwrites the running value with it.
+    // Jobber's finalDuration. Open shifts are flagged by
+    // ticking: true with finalDuration: 0; for those we compute
+    // running elapsed time from startAt to now so AH no longer
+    // waits for clock-out before showing up. When the worker
+    // clocks out, ticking flips to false and finalDuration stamps
+    // the true total — the next sync overwrites the running value.
     const nowMs = Date.now();
-    const openCount = timesheets.filter(
-      (t) => typeof t.finalDuration !== "number",
-    ).length;
+    const openCount = timesheets.filter((t) => t.ticking === true).length;
     logger.info("timesheet_breakdown", {
       total: timesheets.length,
       open: openCount,
@@ -1232,12 +1237,14 @@ async function runPerformanceSync(args: {
     const secondsByJobberUser = new Map<string, number>();
     for (const ts of timesheets) {
       let sec: number;
-      if (typeof ts.finalDuration === "number") {
-        sec = ts.finalDuration;
-      } else {
+      if (ts.ticking === true) {
         const startMs = new Date(ts.startAt).getTime();
         sec = Number.isFinite(startMs) ?
           Math.max(0, (nowMs - startMs) / 1000) :
+          0;
+      } else {
+        sec = typeof ts.finalDuration === "number" ?
+          ts.finalDuration :
           0;
       }
       if (sec < MIN_TIMESHEET_SECONDS) continue;
