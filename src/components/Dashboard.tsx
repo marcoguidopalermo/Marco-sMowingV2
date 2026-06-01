@@ -8,6 +8,7 @@ import {
   CrewLeaderboardEntry,
   LEADERBOARD_MIN_BH,
 } from '../lib/leaderboard';
+import MtdCompanyWidget from './MtdCompanyWidget';
 
 interface DashboardProps {
   today: string;
@@ -181,6 +182,17 @@ export default function Dashboard({
           <CrewLeaderboardWidget
             date={date}
             live={live}
+            schedules={schedules}
+            performance={performance}
+            employees={employees}
+            settings={settings}
+          />
+          {/* Month-to-date company performance + per-employee BH
+              breakdown. Gated by the Dashboard view itself (admin /
+              manager via canViewDashboard), so non-managers never
+              see other individuals' BH. */}
+          <MtdCompanyWidget
+            today={today}
             schedules={schedules}
             performance={performance}
             employees={employees}

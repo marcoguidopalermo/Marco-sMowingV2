@@ -5,6 +5,7 @@ import { formatTimeRange, addDaysToronto } from '../lib/dateUtils';
 import { sortFleetGrouped, fleetItemLabel, isFleetOutOfService } from '../lib/fleetUtils';
 import { accumulateEmployeeEff, efficiencyPct, EmpEffStat } from '../lib/efficiency';
 import TopCrewSpotlight from './TopCrewSpotlight';
+import MtdSelfWidget from './MtdSelfWidget';
 
 interface MyCrewTodayProps {
   today: string;
@@ -173,6 +174,19 @@ export default function MyCrewToday({
         <TopCrewSpotlight
           date={activeTab === 'today' ? today : yesterdayDate}
           live={activeTab === 'today'}
+          schedules={schedules}
+          performance={performance}
+          employees={employees}
+          settings={settings}
+        />
+
+        {/* Month-to-date — company totals + the signed-in user's own
+            BH share. Visible to every role that has My Crew Today;
+            never surfaces other individuals' numbers (that's a
+            manager-only Dashboard widget). */}
+        <MtdSelfWidget
+          today={today}
+          currentUserEmployee={currentUserEmployee}
           schedules={schedules}
           performance={performance}
           employees={employees}
