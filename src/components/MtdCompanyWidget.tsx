@@ -34,14 +34,19 @@ export default function MtdCompanyWidget({
 
   return (
     <section className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-      <header className="bg-gray-50 border-b border-gray-200 px-4 py-3 flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-2">
-          <CalendarRange className="w-4 h-4 text-emerald-600" />
-          <h3 className="text-sm font-bold text-slate-800">
-            {mtd.monthLabel || 'This Month'} · Month-to-date
-          </h3>
+      <header className="bg-gray-50 border-b border-gray-200 px-4 py-3 flex items-start justify-between flex-wrap gap-2">
+        <div className="flex flex-col gap-0.5">
+          <div className="flex items-center gap-2">
+            <CalendarRange className="w-4 h-4 text-emerald-600" />
+            <h3 className="text-sm font-bold text-slate-800">
+              {mtd.monthLabel || 'This Month'}
+            </h3>
+          </div>
+          <span className="text-[10px] text-slate-500 italic">
+            Settled — today's data isn't included until end of day. Bonus-pool input.
+          </span>
         </div>
-        <div className="flex items-center gap-3 text-xs text-slate-600">
+        <div className="flex items-center gap-3 text-xs text-slate-600 shrink-0">
           <div>
             <span className="font-black uppercase tracking-widest text-[10px] text-slate-400 mr-1">Company BH</span>
             <span className="font-mono font-black text-slate-800">{formatBH(mtd.companyBH)}</span>

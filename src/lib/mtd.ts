@@ -17,8 +17,12 @@ export interface MtdEmployeeStat {
 
 export interface MtdResult {
   monthStart: string;       // YYYY-MM-DD, 1st of the calendar month
-  monthEnd: string;         // YYYY-MM-DD, today (Toronto)
-  monthLabel: string;       // "JUNE", "JULY", etc.
+  // YYYY-MM-DD of the last completed day < today with performance
+  // data in the current month. null when nothing has settled yet
+  // this month (first of the month before any data lands).
+  cutoff: string | null;
+  monthLabel: string;       // "JUNE — through Fri Jun 13"
+  monthName: string;        // "JUNE" — bare month name for compact UI
   companyBH: number;
   companyAH: number;
   // Adjusted via the per-crew snapshotted allowance (the virtual-BH
@@ -30,27 +34,60 @@ export interface MtdResult {
   perEmployee: MtdEmployeeStat[];
 }
 
-// Toronto YYYY-MM-DD anchor → month start + end + display label.
-// Defensive: malformed `today` returns a degenerate range so callers
-// render zeros instead of crashing.
+// Toronto YYYY-MM-DD anchor → month start + bare month name.
+// Defensive: malformed `today` returns a degenerate result so
+// callers render zeros instead of crashing.
 export function getMonthRange(today: string): {
   start: string;
-  end: string;
-  label: string;
+  monthName: string;
 } {
   const [yStr, mStr] = (today || '').split('-');
   const y = Number(yStr);
   const m = Number(mStr);
   if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) {
-    return { start: today, end: today, label: '' };
+    return { start: today, monthName: '' };
   }
   const start = `${y}-${String(m).padStart(2, '0')}-01`;
   // Noon UTC avoids the "month name shifts on a TZ edge" trap; we
   // only care about the month name, not the day-of-month rendering.
-  const label = new Date(`${start}T12:00:00Z`)
+  const monthName = new Date(`${start}T12:00:00Z`)
     .toLocaleDateString('en-US', { month: 'long' })
     .toUpperCase();
-  return { start, end: today, label };
+  return { start, monthName };
+}
+
+// Latest date with performance data that is (a) strictly before
+// today and (b) inside the current calendar month. Returns null
+// when no completed day has landed yet this month — the widgets
+// surface that as "no completed days yet" instead of showing
+// stale prior-month data under the current month's header.
+//
+// Bonus integrity: this is the cutoff that drives every monthly
+// total. Today is deliberately excluded because project crews
+// don't report until end of day and including a partial day
+// distorts the totals the bonus pool reads.
+export function getMtdCutoff(
+  today: string,
+  performance: Record<string, Record<string, PerformanceLog>>,
+  monthStart: string,
+): string | null {
+  let latest: string | null = null;
+  for (const date of Object.keys(performance || {})) {
+    if (date >= today) continue;
+    if (date < monthStart) continue;
+    if (latest === null || date > latest) latest = date;
+  }
+  return latest;
+}
+
+// Human-readable cutoff suffix, e.g. "Fri Jun 13". Strips the
+// comma toLocaleDateString inserts so the headers stay compact.
+function formatCutoffSuffix(cutoff: string): string {
+  const d = new Date(`${cutoff}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return cutoff;
+  return d
+    .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+    .replace(',', '');
 }
 
 // Calendar-month aggregation across appData.performance. Composes
@@ -68,16 +105,21 @@ export function buildMtd(
   employees: Employee[],
   settings?: AppSettings | null,
 ): MtdResult {
-  const { start, end, label } = getMonthRange(today);
+  const { start, monthName } = getMonthRange(today);
+  const cutoff = getMtdCutoff(today, performance, start);
   const empById = new Map(employees.map(e => [e.id, e]));
   const empStats: Record<string, EmpEffStat> = {};
   let companyBH = 0;
   let companyAH = 0;
   let companyAdjustedNumerator = 0;
 
-  for (const [date, dayLogs] of Object.entries(performance || {})) {
-    if (date < start || date > end) continue;
-    const daySchedule = schedules[date] || [];
+  // No completed day yet this month → all totals stay at 0 and
+  // perEmployee stays empty. The widgets render "no completed
+  // days yet" rather than fabricating numbers.
+  if (cutoff !== null) {
+    for (const [date, dayLogs] of Object.entries(performance || {})) {
+      if (date < start || date > cutoff) continue;
+      const daySchedule = schedules[date] || [];
     for (const [crewId, log] of Object.entries(dayLogs || {})) {
       const cBH = (log.jobs || []).reduce(
         (s: number, j) => s + Number((j as { bh?: unknown }).bh || 0),
@@ -136,6 +178,7 @@ export function buildMtd(
         }
       }
     }
+    }
   }
 
   const companyAdjustedEfficiency = companyAH > 0
@@ -151,10 +194,15 @@ export function buildMtd(
     }))
     .sort((a, b) => b.bh - a.bh);
 
+  const monthLabel = cutoff
+    ? `${monthName} — through ${formatCutoffSuffix(cutoff)}`
+    : `${monthName} — no completed days yet`;
+
   return {
     monthStart: start,
-    monthEnd: end,
-    monthLabel: label,
+    cutoff,
+    monthLabel,
+    monthName,
     companyBH: Number(companyBH.toFixed(1)),
     companyAH: Number(companyAH.toFixed(1)),
     companyAdjustedEfficiency,

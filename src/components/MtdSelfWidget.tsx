@@ -33,14 +33,19 @@ export default function MtdSelfWidget({
 
   return (
     <div className="bg-gradient-to-br from-emerald-50 via-white to-emerald-50 border border-emerald-200 rounded-2xl shadow-sm p-4 mb-4">
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <CalendarRange className="w-4 h-4 text-emerald-600" />
-          <h3 className="text-[11px] font-black uppercase tracking-widest text-emerald-800">
-            {mtd.monthLabel || 'This Month'}
-          </h3>
+      <div className="flex items-start justify-between mb-3 gap-2 flex-wrap">
+        <div className="flex flex-col gap-0.5">
+          <div className="flex items-center gap-2">
+            <CalendarRange className="w-4 h-4 text-emerald-600" />
+            <h3 className="text-[11px] font-black uppercase tracking-widest text-emerald-800">
+              {mtd.monthLabel || 'This Month'}
+            </h3>
+          </div>
+          <span className="text-[10px] text-slate-500 italic">
+            Monthly totals settle at end of day — today's hours land tomorrow.
+          </span>
         </div>
-        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Month-to-date</span>
+        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 shrink-0">Month-to-date</span>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
