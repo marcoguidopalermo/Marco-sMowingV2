@@ -79,6 +79,13 @@ export interface TimeEntry {
   // same pay-chunk feeding); the flag is purely a record/UI marker.
   manualEntry?: boolean;
   enteredBy?: { email: string; name: string };
+  // Sub-variant of manualEntry. When true, the manager entered
+  // HOURS only (not specific times). clockIn / clockOut are
+  // synthesized (nominal 8:00 AM start + hours duration) so the
+  // existing timestamp-based math (pay chunks, duration, etc.)
+  // works unchanged. The TimeMaster row uses this flag to render
+  // "X hrs (entered as hours)" instead of the in/out columns.
+  manualHoursOnly?: boolean;
 }
 
 export type FleetType = 'truck' | 'trailer' | 'tractor' | 'equipment';

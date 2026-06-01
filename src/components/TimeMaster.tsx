@@ -109,8 +109,14 @@ export default function TimeMaster({
     employeeEmail: '',
     employeeName: '',
     date: formatTodayInToronto(),
+    // 'times' = manager enters explicit clock-in / clock-out (today's
+    // default). 'hours' = manager only knows total hours; we
+    // synthesize a nominal 8:00 AM start + duration so the same
+    // timestamp-based pay-chunk + duration math handles it unchanged.
+    entryMode: 'times' as 'times' | 'hours',
     clockInTime: '',
     clockOutTime: '',
+    hours: '',
     note: '',
   });
 
@@ -258,8 +264,10 @@ export default function TimeMaster({
       employeeEmail: canEditAny ? '' : userEmail,
       employeeName: canEditAny ? '' : userName,
       date: formatTodayInToronto(),
+      entryMode: 'times',
       clockInTime: '',
       clockOutTime: '',
+      hours: '',
       note: '',
     });
     setIsManualEntryOpen(true);
@@ -271,20 +279,50 @@ export default function TimeMaster({
   // the App layer fans into processPayChunksOnTimeUpdate, so hours
   // count toward pay chunks identically to a real punch.
   const submitManualEntry = () => {
-    const { employeeEmail, employeeName, date, clockInTime, clockOutTime, note } = manualForm;
+    const { employeeEmail, employeeName, date, entryMode, clockInTime, clockOutTime, hours, note } = manualForm;
     if (!employeeEmail) { showToastMsg('Pick an employee.'); return; }
     if (!date) { showToastMsg('Date is required.'); return; }
-    if (!clockInTime || !clockOutTime) { showToastMsg('Both clock-in and clock-out times are required.'); return; }
-    const clockIn = new Date(`${date}T${clockInTime}:00`);
-    const clockOut = new Date(`${date}T${clockOutTime}:00`);
-    if (!Number.isFinite(clockIn.getTime()) || !Number.isFinite(clockOut.getTime())) {
-      showToastMsg('Invalid date or time.');
-      return;
+
+    let clockIn: Date;
+    let clockOut: Date;
+    let manualHoursOnly = false;
+
+    if (entryMode === 'hours') {
+      // Hours mode: synthesize a nominal 8:00 AM start + duration.
+      // The synthesized timestamps let pay-chunk + duration math
+      // consume this entry unchanged; the manualHoursOnly flag tells
+      // the TimeMaster row to render it as "X hrs (entered as hours)"
+      // instead of two clock-time columns.
+      const hoursNum = Number(hours);
+      if (!Number.isFinite(hoursNum) || hoursNum <= 0) {
+        showToastMsg('Hours must be greater than 0.');
+        return;
+      }
+      if (hoursNum > 24) {
+        showToastMsg('Hours must be 24 or less.');
+        return;
+      }
+      clockIn = new Date(`${date}T08:00:00`);
+      if (!Number.isFinite(clockIn.getTime())) {
+        showToastMsg('Invalid date.');
+        return;
+      }
+      clockOut = new Date(clockIn.getTime() + hoursNum * 3600 * 1000);
+      manualHoursOnly = true;
+    } else {
+      if (!clockInTime || !clockOutTime) { showToastMsg('Both clock-in and clock-out times are required.'); return; }
+      clockIn = new Date(`${date}T${clockInTime}:00`);
+      clockOut = new Date(`${date}T${clockOutTime}:00`);
+      if (!Number.isFinite(clockIn.getTime()) || !Number.isFinite(clockOut.getTime())) {
+        showToastMsg('Invalid date or time.');
+        return;
+      }
+      if (clockOut.getTime() <= clockIn.getTime()) {
+        showToastMsg('Clock-out must be after clock-in.');
+        return;
+      }
     }
-    if (clockOut.getTime() <= clockIn.getTime()) {
-      showToastMsg('Clock-out must be after clock-in.');
-      return;
-    }
+
     const trimmedNote = note.trim();
     const newEntry: TimeEntry = {
       id: `te-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -296,10 +334,11 @@ export default function TimeMaster({
         author: userEmail,
         authorName: userName,
         timestamp: new Date().toISOString(),
-        text: `[Manual entry] ${trimmedNote}`,
+        text: `[Manual entry${manualHoursOnly ? ' · hours-only' : ''}] ${trimmedNote}`,
       }] : [],
       manualEntry: true,
       enteredBy: { email: userEmail, name: userName },
+      ...(manualHoursOnly ? { manualHoursOnly: true } : {}),
     };
     syncToCloud({
       ...appData,
@@ -428,20 +467,32 @@ export default function TimeMaster({
       <div key={entry.id} className={`bg-white rounded-xl border ${unclosed ? 'border-rose-200 ring-1 ring-rose-100' : 'border-gray-200'} shadow-sm overflow-hidden`}>
         <div className="grid grid-cols-12 gap-3 p-3 items-center text-sm">
           <div className="col-span-2 font-bold text-slate-700">{formatDate(new Date(entry.clockIn))}</div>
-          <div className="col-span-2 flex items-center gap-1.5">
-            <span className="font-mono font-bold text-slate-800">{formatClockTime(entry.clockIn)}</span>
-            {inMapsUrl && <a href={inMapsUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] font-black text-emerald-600 hover:underline flex items-center gap-0.5"><MapPin className="w-3 h-3" /> Map</a>}
-          </div>
-          <div className="col-span-2 flex items-center gap-1.5">
-            {entry.clockOut ? (
-              <>
-                <span className="font-mono font-bold text-slate-800">{formatClockTime(entry.clockOut)}</span>
-                {outMapsUrl && <a href={outMapsUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] font-black text-emerald-600 hover:underline flex items-center gap-0.5"><MapPin className="w-3 h-3" /> Map</a>}
-              </>
-            ) : (
-              <span className="text-slate-400 italic">—</span>
-            )}
-          </div>
+          {entry.manualHoursOnly ? (
+            // Hours-only manual entry: synthesize-style times aren't
+            // meaningful, so collapse the two clock-time columns into
+            // a single "X hrs (entered as hours)" cell.
+            <div className="col-span-4 flex items-center gap-1.5">
+              <span className="font-mono font-bold text-slate-800">{formatHM(entryDurationHours(entry))}</span>
+              <span className="text-[10px] italic text-slate-400">(entered as hours)</span>
+            </div>
+          ) : (
+            <>
+              <div className="col-span-2 flex items-center gap-1.5">
+                <span className="font-mono font-bold text-slate-800">{formatClockTime(entry.clockIn)}</span>
+                {inMapsUrl && <a href={inMapsUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] font-black text-emerald-600 hover:underline flex items-center gap-0.5"><MapPin className="w-3 h-3" /> Map</a>}
+              </div>
+              <div className="col-span-2 flex items-center gap-1.5">
+                {entry.clockOut ? (
+                  <>
+                    <span className="font-mono font-bold text-slate-800">{formatClockTime(entry.clockOut)}</span>
+                    {outMapsUrl && <a href={outMapsUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] font-black text-emerald-600 hover:underline flex items-center gap-0.5"><MapPin className="w-3 h-3" /> Map</a>}
+                  </>
+                ) : (
+                  <span className="text-slate-400 italic">—</span>
+                )}
+              </div>
+            </>
+          )}
           <div className="col-span-2 font-mono font-bold text-emerald-700">{formatHM(entryDurationHours(entry))}</div>
           <div className="col-span-1">
             <button
@@ -1050,26 +1101,62 @@ export default function TimeMaster({
                   className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Clock In</label>
-                  <input
-                    type="time"
-                    value={manualForm.clockInTime}
-                    onChange={e => setManualForm(p => ({ ...p, clockInTime: e.target.value }))}
-                    className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Clock Out</label>
-                  <input
-                    type="time"
-                    value={manualForm.clockOutTime}
-                    onChange={e => setManualForm(p => ({ ...p, clockOutTime: e.target.value }))}
-                    className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
-                  />
-                </div>
+              {/* Times / Hours mode toggle. Hours mode is for cases
+                  where the manager knows total hours but not exact
+                  clock-in/out times. On submit, hours mode synthesizes
+                  a nominal 8:00 AM start + duration so pay-chunks and
+                  duration math see a normal interval. */}
+              <div className="flex bg-slate-100 rounded-lg p-1">
+                <button
+                  type="button"
+                  onClick={() => setManualForm(p => ({ ...p, entryMode: 'times' }))}
+                  className={`flex-1 px-3 py-1.5 text-xs font-black uppercase tracking-widest rounded-md transition-colors ${manualForm.entryMode === 'times' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >Enter Times</button>
+                <button
+                  type="button"
+                  onClick={() => setManualForm(p => ({ ...p, entryMode: 'hours' }))}
+                  className={`flex-1 px-3 py-1.5 text-xs font-black uppercase tracking-widest rounded-md transition-colors ${manualForm.entryMode === 'hours' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >Enter Hours</button>
               </div>
+              {manualForm.entryMode === 'times' ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Clock In</label>
+                    <input
+                      type="time"
+                      value={manualForm.clockInTime}
+                      onChange={e => setManualForm(p => ({ ...p, clockInTime: e.target.value }))}
+                      className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Clock Out</label>
+                    <input
+                      type="time"
+                      value={manualForm.clockOutTime}
+                      onChange={e => setManualForm(p => ({ ...p, clockOutTime: e.target.value }))}
+                      className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Hours Worked</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={24}
+                    step={0.25}
+                    placeholder="e.g. 6.5"
+                    value={manualForm.hours}
+                    onChange={e => setManualForm(p => ({ ...p, hours: e.target.value }))}
+                    className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                  <div className="text-[11px] text-slate-500 italic">
+                    Saved as a nominal 8:00 AM shift of this length. Pay chunks count the hours; the row shows "X hrs (entered as hours)" instead of clock times. Edit later to set precise times if needed.
+                  </div>
+                </div>
+              )}
               <div className="space-y-1">
                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Note (optional)</label>
                 <textarea
