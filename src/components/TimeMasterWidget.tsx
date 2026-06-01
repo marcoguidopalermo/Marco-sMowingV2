@@ -31,8 +31,15 @@ export default function TimeMasterWidget({ appData, userEmail, userName, syncToC
     return () => clearInterval(id);
   }, []);
 
-  // Check if TimeMaster is enabled for this user (defaults to enabled if no employee link)
-  const linkedEmployee = appData.employees.find(e => e.email && e.email.toLowerCase() === userEmail.toLowerCase());
+  // Check if TimeMaster is enabled for this user. The lookup must
+  // match App.tsx:275's linkage convention — by `linkedUserEmail`,
+  // normalized (trim + lowercase) on both sides — so the
+  // enable/disable gate is consistent with the rest of the app.
+  // Defaults to enabled when no employee link is found.
+  const normalizedUserEmail = (userEmail || '').trim().toLowerCase();
+  const linkedEmployee = appData.employees.find(
+    e => (e.linkedUserEmail || '').trim().toLowerCase() === normalizedUserEmail,
+  );
   const enabled = linkedEmployee?.timeMasterEnabled !== false;
   if (!enabled) return null;
 

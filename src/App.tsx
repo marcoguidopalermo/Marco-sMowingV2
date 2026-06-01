@@ -2737,15 +2737,31 @@ export default function App() {
         </div>
 
       {currentView === 'mechanic' ? renderMechanicBoard() : currentView === 'performance' ? renderPerformanceBoard() : currentView === 'mymechanic' ? (
-        <MyMechanic
-          currentUserEmail={displayEmail}
-          currentUserEmployee={currentUserEmployee}
-          mechanicPayChunks={appData.mechanicPayChunks || {}}
-          mechanicTasks={appData.mechanicTasks || []}
-          activityLog={appData.activityLog || []}
-          timeEntries={appData.timeEntries || []}
-          onOpenTask={(taskId) => setMyMechanicTaskId(taskId)}
-        />
+        <>
+          {/* Mobile-only clock-in bar — the desktop sidebar widget
+              is hidden below md, leaving phone users with no path
+              to Clock In/Out. Mount the same TimeMasterWidget here
+              so mechanics can clock in from their landing screen
+              even when MyMechanic's "no linked employee" wall is
+              showing (the widget itself doesn't gate on linkage). */}
+          <div className="md:hidden shrink-0 px-4 pt-4 bg-gray-100">
+            <TimeMasterWidget
+              appData={appData}
+              userEmail={displayEmail}
+              userName={displayName}
+              syncToCloud={syncToCloud}
+            />
+          </div>
+          <MyMechanic
+            currentUserEmail={displayEmail}
+            currentUserEmployee={currentUserEmployee}
+            mechanicPayChunks={appData.mechanicPayChunks || {}}
+            mechanicTasks={appData.mechanicTasks || []}
+            activityLog={appData.activityLog || []}
+            timeEntries={appData.timeEntries || []}
+            onOpenTask={(taskId) => setMyMechanicTaskId(taskId)}
+          />
+        </>
       ) : currentView === 'dashboard' ? (
         <Dashboard
           today={formatTodayInToronto()}
@@ -2755,17 +2771,30 @@ export default function App() {
           settings={appData.settings}
         />
       ) : currentView === 'mycrew' ? (
-        <MyCrewToday
-          today={formatTodayInToronto()}
-          currentUserEmployee={currentUserEmployee}
-          schedules={appData.schedules}
-          performance={appData.performance}
-          employees={appData.employees}
-          fleet={appData.fleet}
-          equipmentSubtypes={appData.equipmentSubtypes || []}
-          partialTimeOff={appData.partialTimeOff || {}}
-          jobberConnected={jobberConnected}
-          settings={appData.settings}
+        <>
+          {/* Mobile-only clock-in bar — see the mirror block above
+              the MyMechanic mount for the rationale. Workers and
+              foremen land on MyCrewToday on mobile and need a path
+              to clock in without leaving the page. */}
+          <div className="md:hidden shrink-0 px-4 pt-4 bg-gray-100">
+            <TimeMasterWidget
+              appData={appData}
+              userEmail={displayEmail}
+              userName={displayName}
+              syncToCloud={syncToCloud}
+            />
+          </div>
+          <MyCrewToday
+            today={formatTodayInToronto()}
+            currentUserEmployee={currentUserEmployee}
+            schedules={appData.schedules}
+            performance={appData.performance}
+            employees={appData.employees}
+            fleet={appData.fleet}
+            equipmentSubtypes={appData.equipmentSubtypes || []}
+            partialTimeOff={appData.partialTimeOff || {}}
+            jobberConnected={jobberConnected}
+            settings={appData.settings}
           onReportRepair={(effectiveRole === 'worker' || effectiveRole === 'foreman' || effectiveRole === 'manager') ? () => setManualTaskModal({
             isOpen: true,
             unitId: '',
@@ -2775,7 +2804,8 @@ export default function App() {
             severity: 'minor',
             priority: false,
           }) : undefined}
-        />
+          />
+        </>
       ) : currentView === 'timemaster' ? (
         <TimeMaster
           appData={appData}
