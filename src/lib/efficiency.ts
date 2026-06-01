@@ -16,22 +16,55 @@ export interface EmpEffStat {
   ah: number;
 }
 
-// Per-employee BH/AH accumulator copied character-for-character from
-// PerformanceBoard.calcReports's empStats block (the inner loop in
-// lines 998-1008). Same crew-net-AH denominator, same proportional
-// crew-BH share, same eAH > 0 gate. Workers with zero net AH contribute
-// nothing.
+export interface CrewTotals {
+  cBH: number;
+  rawAH: number;
+  deducAH: number;
+  cAH: number;
+}
+
+// Single source of truth for the four crew-day numbers every
+// downstream calc needs. Test users are excluded from BOTH the AH
+// numerator and the matching deductions, so the remaining real
+// members still split 100% of cBH among themselves (preserving the
+// "Σ individuals = company total" invariant). Drop-in helpers
+// (employeeAH keys outside crew.employees) are still summed — they
+// helped, they get credit.
+export function crewTotals(
+  log: Pick<PerformanceLog, 'jobs' | 'employeeAH' | 'deductions'>,
+  testUserIds?: Set<string> | null,
+): CrewTotals {
+  const cBH = (log.jobs || []).reduce(
+    (s: number, j) => s + Number((j as { bh?: unknown }).bh || 0),
+    0,
+  );
+  let rawAH = 0;
+  for (const [empId, ah] of Object.entries(log.employeeAH || {})) {
+    if (testUserIds && testUserIds.has(empId)) continue;
+    rawAH += Number(ah || 0);
+  }
+  let deducAH = 0;
+  for (const [empId, v] of Object.entries(log.deductions || {})) {
+    if (testUserIds && testUserIds.has(empId)) continue;
+    deducAH += deductHours(v as DeductionValue);
+  }
+  const cAH = Math.max(0, rawAH - deducAH);
+  return { cBH, rawAH, deducAH, cAH };
+}
+
+// Per-employee BH/AH accumulator. Routes the crew totals through
+// crewTotals() so any test-user filter applied there also flows
+// through the per-employee BH share (eBH = cBH * eAH / cAH). The
+// iteration itself also skips test users, so they never accrue a
+// row in `into`.
 export function accumulateEmployeeEff(
   log: PerformanceLog,
   into: Record<string, EmpEffStat>,
+  testUserIds?: Set<string> | null,
 ): Record<string, EmpEffStat> {
-  const cBH = (log.jobs || []).reduce((s: number, j: any) => s + Number(j.bh || 0), 0);
-  const rawAH = Object.values(log.employeeAH || {}).reduce((s: number, v: any) => s + Number(v || 0), 0);
-  let deducAH = 0;
-  for (const v of Object.values(log.deductions || {})) deducAH += deductHours(v as DeductionValue);
-  const cAH = Math.max(0, rawAH - deducAH);
-
+  const { cBH, cAH } = crewTotals(log, testUserIds || null);
   Object.entries(log.employeeAH || {}).forEach(([empId, ah]) => {
+    if (testUserIds && testUserIds.has(empId)) return;
     const baseAH = Number(ah || 0);
     const indvDeduc = deductHours(log.deductions?.[empId] as DeductionValue);
     const eAH = Math.max(0, baseAH - indvDeduc);

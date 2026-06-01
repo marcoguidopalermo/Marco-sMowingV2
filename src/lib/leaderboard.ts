@@ -3,9 +3,8 @@ import {
   Crew,
   Employee,
   PerformanceLog,
-  DeductionValue,
 } from '../types';
-import { deductHours } from './efficiency';
+import { crewTotals } from './efficiency';
 import { getCrewAllowance, adjustedEfficiency } from './crewAllowance';
 
 // Minimum credited BH a crew needs before it's eligible for ranking.
@@ -32,29 +31,16 @@ export interface CrewLeaderboardEntry {
   eligible: boolean;
 }
 
-// Crew-level totals — character-for-character the same math
-// PerformanceBoard does in calcReports's per-crew block (BH summed
-// from jobs; net AH = max(0, raw AH − total deductions);
-// efficiency = BH / AH × 100). Reuses deductHours from efficiency.ts.
-function crewTotals(log: PerformanceLog): {
-  bh: number;
-  ah: number;
-  efficiency: number | null;
-  jobCount: number;
-} {
-  const bh = (log.jobs || []).reduce(
-    (s, j) => s + Number(j.bh || 0),
-    0,
-  );
-  const rawAH = Object.values(log.employeeAH || {}).reduce(
-    (s: number, v) => s + Number(v || 0),
-    0,
-  );
-  let deducAH = 0;
-  for (const v of Object.values(log.deductions || {})) {
-    deducAH += deductHours(v as DeductionValue);
-  }
-  const ah = Math.max(0, rawAH - deducAH);
+// Crew-level totals wrapper — routes through the shared
+// crewTotals() in lib/efficiency.ts so test-user exclusion is
+// applied consistently with every other surface (PerformanceBoard,
+// MTD, accumulateEmployeeEff). Adds the efficiency % and jobCount
+// the ranking display needs on top.
+function crewSummary(
+  log: PerformanceLog,
+  testUserIds?: Set<string> | null,
+): { bh: number; ah: number; efficiency: number | null; jobCount: number } {
+  const { cBH: bh, cAH: ah } = crewTotals(log, testUserIds || null);
   const efficiency = ah > 0 ? Number(((bh / ah) * 100).toFixed(1)) : null;
   return { bh, ah, efficiency, jobCount: (log.jobs || []).length };
 }
@@ -75,16 +61,23 @@ export function buildCrewLeaderboard(
   const dayCrews = schedules[date] || [];
   const dayPerf = performance[date] || {};
   const empById = new Map(employees.map(e => [e.id, e]));
+  // Test-user sentinel(s) are ghosts to every performance number.
+  // Derive once per call and forward to the helpers so crew size,
+  // crew AH, and the per-employee BH share all stay consistent.
+  const testUserIds = new Set(
+    employees.filter(e => e.isTestUser).map(e => e.id),
+  );
 
   const entries: CrewLeaderboardEntry[] = [];
   for (const crew of dayCrews) {
     const log = dayPerf[crew.id];
     const totals = log
-      ? crewTotals(log)
+      ? crewSummary(log, testUserIds)
       : { bh: 0, ah: 0, efficiency: null, jobCount: 0 };
-    const allowance = getCrewAllowance(crew, log || null, settings || null);
+    const allowance = getCrewAllowance(crew, log || null, settings || null, testUserIds);
     const adjusted = adjustedEfficiency(totals.efficiency, allowance.pct);
     const memberNames = (crew.employees || [])
+      .filter(id => !testUserIds.has(id))
       .map(id => empById.get(id)?.name || '')
       .filter(Boolean);
     entries.push({

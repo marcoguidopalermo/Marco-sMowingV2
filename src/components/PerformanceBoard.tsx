@@ -193,6 +193,15 @@ export default function PerformanceBoard({
     setCarryForwardModalOpen(false);
   }, [perfDate]);
 
+  // Test-user sentinel(s) are ghosts to performance math. Memoize
+  // the id set once; every downstream calc (calcReports, per-crew
+  // display, allowance lookup, Scheduled / Helped-out filter)
+  // routes through it.
+  const testUserIds = useMemo(
+    () => new Set(employees.filter(e => e.isTestUser).map(e => e.id)),
+    [employees],
+  );
+
   const pendingCarryForward = useMemo(() => {
     const candidates = lastSync?.carryForwardCandidates || [];
     return candidates.filter(c => {
@@ -1014,9 +1023,19 @@ export default function PerformanceBoard({
           const cName = `${div} ${log.crewNumber || 1}`;
 
           let cBH = log.jobs.reduce((s: number, j: any) => s + Number(j.bh || 0), 0);
-          let rawAH = Object.values(log.employeeAH).reduce((s: number, v: any) => s + Number(v || 0), 0);
+          // Test users are excluded from BOTH the AH numerator and
+          // their matching deductions, so the remaining real members
+          // still split 100% of cBH among themselves.
+          let rawAH = 0;
+          for (const [empId, v] of Object.entries(log.employeeAH || {})) {
+            if (testUserIds.has(empId)) continue;
+            rawAH += Number(v || 0);
+          }
           let deducAH = 0;
-          for (const v of Object.values(log.deductions || {})) deducAH += deductHours(v as DeductionValue);
+          for (const [empId, v] of Object.entries(log.deductions || {})) {
+            if (testUserIds.has(empId)) continue;
+            deducAH += deductHours(v as DeductionValue);
+          }
           let cAH = Math.max(0, rawAH - deducAH); // Net AH
           let jCount = log.jobs.length;
 
@@ -1027,6 +1046,7 @@ export default function PerformanceBoard({
           crewStats[cName].bh += cBH; crewStats[cName].ah += cAH; crewStats[cName].jobs += jCount;
 
           Object.entries(log.employeeAH).forEach(([empId, ah]) => {
+            if (testUserIds.has(empId)) return;
             const baseAH = Number(ah || 0);
             const indvDeduc = deductHours(log.deductions?.[empId]);
             const eAH = Math.max(0, baseAH - indvDeduc);
@@ -1219,9 +1239,20 @@ export default function PerformanceBoard({
                   if (j.isIncompleteVisit && bh <= 0) return s;
                   return s + bh;
                 }, 0);
-                const rawAH = Object.values(log.employeeAH).reduce((s: number, v: any) => s + Number(v || 0), 0);
+                // Test users are excluded from BOTH the AH numerator
+                // and their matching deductions so the crew display
+                // reflects only real members. Drop-in helpers (non-
+                // roster keys in employeeAH) still count.
+                let rawAH = 0;
+                for (const [empId, v] of Object.entries(log.employeeAH || {})) {
+                  if (testUserIds.has(empId)) continue;
+                  rawAH += Number(v || 0);
+                }
                 let deducAH = 0;
-                for (const v of Object.values(log.deductions || {})) deducAH += deductHours(v as DeductionValue);
+                for (const [empId, v] of Object.entries(log.deductions || {})) {
+                  if (testUserIds.has(empId)) continue;
+                  deducAH += deductHours(v as DeductionValue);
+                }
                 const sumAH = Math.max(0, rawAH - deducAH);
                 const eff = sumAH > 0 ? Number(((sumBH / sumAH) * 100).toFixed(1)) : 0;
 
@@ -1233,7 +1264,7 @@ export default function PerformanceBoard({
                 // SCHEDULED roster minus removedEmployees, never from
                 // employeeAH (drop-ins don't inflate the size).
                 const crewObj = (appData.schedules?.[perfDate] || []).find(c => c.id === cId);
-                const allowance = getCrewAllowance(crewObj, log, appData.settings);
+                const allowance = getCrewAllowance(crewObj, log, appData.settings, testUserIds);
                 const rawEffOrNull = sumAH > 0 ? eff : null;
                 const adjEffNum = adjustedEfficiency(rawEffOrNull, allowance.pct);
                 const effForColor = adjEffNum ?? 0;
@@ -1892,12 +1923,20 @@ export default function PerformanceBoard({
                           // in employeeAH but not in crew.employees,
                           // so they sort to the second section and
                           // are excluded from the crew-size bracket.
+                          // Scheduled roster minus removed minus
+                          // test users — drives both the bracket and
+                          // the display section header.
                           const scheduledSet = new Set(
                             (crewObj?.employees || []).filter(
-                              id => !(log.removedEmployees || []).includes(id),
+                              id => !(log.removedEmployees || []).includes(id)
+                                    && !testUserIds.has(id),
                             ),
                           );
-                          const allAhEntries = Object.entries(log.employeeAH);
+                          // Test users are also stripped from the
+                          // displayed AH list so they don't appear as
+                          // editable rows in either section.
+                          const allAhEntries = Object.entries(log.employeeAH)
+                            .filter(([id]) => !testUserIds.has(id));
                           const scheduledEntries = allAhEntries.filter(([id]) => scheduledSet.has(id));
                           const helpedOutEntries = allAhEntries.filter(([id]) => !scheduledSet.has(id));
                           const renderAhRow = ([empId, hrs]: [string, unknown]) => {

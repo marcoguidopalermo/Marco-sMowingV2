@@ -220,6 +220,12 @@ interface CrewSchedule {
 interface EmployeeDoc {
   id: string;
   jobberUserId?: string;
+  // Sentinel record auto-bootstrapped for the "View As: Test User"
+  // impersonation flow. Test users are ghosts to performance math:
+  // excluded from crew-size brackets, BH splits, AH totals, and the
+  // headcount-proportional multi-crew visit split. Their employee
+  // record stays put for impersonation; only the numbers ignore them.
+  isTestUser?: boolean;
 }
 
 // Multi-crew visit BH split. Single-crew visits have no entry here.
@@ -1137,11 +1143,14 @@ async function runPerformanceSync(args: {
     };
     const dailyAbsencesMap = appData.dailyAbsences || {};
     const absentTodaySet = new Set(dailyAbsencesMap[targetDate] || []);
+    const testUserIds = new Set(
+      employees.filter((e) => e.isTestUser).map((e) => e.id),
+    );
     const headcountFor = (crewId: string): number => {
       const c = daySchedule.find((x) => x.id === crewId);
       if (!c) return 0;
       return (c.employees || []).filter(
-        (empId) => !absentTodaySet.has(empId),
+        (empId) => !absentTodaySet.has(empId) && !testUserIds.has(empId),
       ).length;
     };
     const round1 = (n: number): number => Math.round(n * 10) / 10;
@@ -1856,14 +1865,16 @@ async function runPerformanceSync(args: {
 
       // Stamp the crew-size allowance snapshot for this crew-day.
       // size = scheduled roster minus the manager-curated removed
-      // set; drop-in helpers (employeeAH keys not in crew.employees)
-      // are deliberately NOT counted toward the bracket. Re-stamping
-      // every sync for targetDate is fine because the scheduled
-      // function only ever runs against "today" — once the date
-      // turns over the value freezes.
+      // set minus any test-user sentinel on the roster (test users
+      // are ghosts to performance math). Drop-in helpers (employeeAH
+      // keys not in crew.employees) are deliberately NOT counted
+      // toward the bracket either. Re-stamping every sync for
+      // targetDate is fine because the scheduled function only ever
+      // runs against "today" — once the date turns over the value
+      // freezes.
       const removedSet = new Set(base.removedEmployees || []);
       const scheduledSize = (crew.employees || []).filter(
-        (id) => !removedSet.has(id),
+        (id) => !removedSet.has(id) && !testUserIds.has(id),
       ).length;
       const pct = pctForCrewSize(
         scheduledSize,

@@ -1,11 +1,10 @@
 import {
   AppSettings,
   Crew,
-  DeductionValue,
   Employee,
   PerformanceLog,
 } from '../types';
-import { accumulateEmployeeEff, deductHours, EmpEffStat } from './efficiency';
+import { accumulateEmployeeEff, crewTotals, EmpEffStat } from './efficiency';
 import { getCrewAllowance } from './crewAllowance';
 
 export interface MtdEmployeeStat {
@@ -108,6 +107,12 @@ export function buildMtd(
   const { start, monthName } = getMonthRange(today);
   const cutoff = getMtdCutoff(today, performance, start);
   const empById = new Map(employees.map(e => [e.id, e]));
+  // Test-user sentinel(s) are ghosts to every performance number.
+  // Derive once and forward to every helper so crew size, crew AH,
+  // and the per-employee BH share all stay consistent.
+  const testUserIds = new Set(
+    employees.filter(e => e.isTestUser).map(e => e.id),
+  );
   const empStats: Record<string, EmpEffStat> = {};
   let companyBH = 0;
   let companyAH = 0;
@@ -120,64 +125,55 @@ export function buildMtd(
     for (const [date, dayLogs] of Object.entries(performance || {})) {
       if (date < start || date > cutoff) continue;
       const daySchedule = schedules[date] || [];
-    for (const [crewId, log] of Object.entries(dayLogs || {})) {
-      const cBH = (log.jobs || []).reduce(
-        (s: number, j) => s + Number((j as { bh?: unknown }).bh || 0),
-        0,
-      );
-      const rawAH = Object.values(log.employeeAH || {}).reduce(
-        (s: number, v) => s + Number(v || 0),
-        0,
-      );
-      let deducAH = 0;
-      for (const v of Object.values(log.deductions || {})) {
-        deducAH += deductHours(v as DeductionValue);
-      }
-      const cAH = Math.max(0, rawAH - deducAH);
+      for (const [crewId, log] of Object.entries(dayLogs || {})) {
+        const { cBH, cAH } = crewTotals(log, testUserIds);
 
-      const crewObj = daySchedule.find(c => c.id === crewId);
-      const allowance = getCrewAllowance(crewObj, log, settings || null);
-
-      companyBH += cBH;
-      companyAH += cAH;
-      // Virtual-BH method: per-crew adjusted eff = (cBH + cAH×pct/100) / cAH.
-      // Summing the numerators and dividing by ΣcAH yields the AH-weighted
-      // average of crew adjusted efficiencies — the mathematically correct
-      // company-level adjusted number when each crew has its own snapshot.
-      companyAdjustedNumerator += cBH + (cAH * allowance.pct) / 100;
-
-      // Per-employee BH share — proportional to each member's eAH.
-      // Drop-in helpers (employeeAH keys outside crew.employees) get a
-      // proportional slice via the same identity (Σ eBH = cBH when cAH > 0).
-      if (cAH > 0) {
-        accumulateEmployeeEff(log, empStats);
-        continue;
-      }
-
-      // Edge case: BH credited but no AH yet. The default helper
-      // would lose `cBH` from the per-employee sum and break the
-      // invariant. Even-split across the scheduled roster
-      // (crew.employees − removedEmployees) so each scheduled
-      // member carries `cBH / size` and the totals still match.
-      if (cBH > 0) {
-        const removed = new Set(log.removedEmployees || []);
-        const roster = (crewObj?.employees || []).filter(
-          id => !removed.has(id),
+        const crewObj = daySchedule.find(c => c.id === crewId);
+        const allowance = getCrewAllowance(
+          crewObj, log, settings || null, testUserIds,
         );
-        if (roster.length === 0) {
-          // Pathological — no roster, no AH, but cBH credited.
-          // Falling through here intentionally drops the share so
-          // the company-sum invariant breaks loudly rather than
-          // silently mis-attributing. In practice this never fires.
+
+        companyBH += cBH;
+        companyAH += cAH;
+        // Virtual-BH method: per-crew adjusted eff = (cBH + cAH×pct/100) / cAH.
+        // Summing the numerators and dividing by ΣcAH yields the AH-weighted
+        // average of crew adjusted efficiencies — the mathematically correct
+        // company-level adjusted number when each crew has its own snapshot.
+        companyAdjustedNumerator += cBH + (cAH * allowance.pct) / 100;
+
+        // Per-employee BH share — proportional to each member's eAH.
+        // Drop-in helpers (employeeAH keys outside crew.employees) get a
+        // proportional slice via the same identity (Σ eBH = cBH when cAH > 0).
+        // Test users are gated inside accumulateEmployeeEff via testUserIds.
+        if (cAH > 0) {
+          accumulateEmployeeEff(log, empStats, testUserIds);
           continue;
         }
-        const shareBH = cBH / roster.length;
-        for (const empId of roster) {
-          if (!empStats[empId]) empStats[empId] = { bh: 0, ah: 0 };
-          empStats[empId].bh += shareBH;
+
+        // Edge case: BH credited but no AH yet. The default helper
+        // would lose `cBH` from the per-employee sum and break the
+        // invariant. Even-split across the scheduled roster
+        // (crew.employees − removedEmployees − testUsers) so each
+        // real member carries `cBH / size` and the totals still match.
+        if (cBH > 0) {
+          const removed = new Set(log.removedEmployees || []);
+          const roster = (crewObj?.employees || []).filter(
+            id => !removed.has(id) && !testUserIds.has(id),
+          );
+          if (roster.length === 0) {
+            // Pathological — no real roster, no AH, but cBH credited.
+            // Falling through here intentionally drops the share so
+            // the company-sum invariant breaks loudly rather than
+            // silently mis-attributing. In practice this never fires.
+            continue;
+          }
+          const shareBH = cBH / roster.length;
+          for (const empId of roster) {
+            if (!empStats[empId]) empStats[empId] = { bh: 0, ah: 0 };
+            empStats[empId].bh += shareBH;
+          }
         }
       }
-    }
     }
   }
 
