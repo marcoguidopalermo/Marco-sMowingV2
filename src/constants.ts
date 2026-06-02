@@ -90,13 +90,15 @@ export const ENGINE_HOURS_JUMP_WARN = 50;
 //
 // Tuning notes:
 //   * 30 — only ignores clock-stagger; lunches dilute.
-//   * 60 — ignores most lunches; longer mid-shift errands dilute.
-//   * 90 — ignores lunches + lunch-runs + shop-stops; only "left
-//          for the day" or "stayed an extra 90+ min solo" counts.
+//   * 60 — ignores lunches (incl. 45-min) + clock-stagger; any
+//          departure ≥ 1 hour counts. Current setting.
+//   * 90 — also ignores lunch-runs + shop-stops.
 //   * 120+ — ignores half-shift movements; not recommended.
-// Bumped to the new value re-stamps via the version-check in
-// getCrewAllowance — no manual re-sync required.
-export const CONCURRENCY_TOLERANCE_MIN = 90;
+// Changing the value rebases history automatically via the
+// stamp.tolerance version-check in getCrewAllowance — no manual
+// re-sync required (and re-sync couldn't touch approved logs
+// anyway).
+export const CONCURRENCY_TOLERANCE_MIN = 60;
 
 export const LAWN_JOKES: string[] = [
   "Why did the lawn mower break up with the grass? It just wasn't cutting it anymore.",

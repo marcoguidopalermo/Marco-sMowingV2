@@ -30,7 +30,7 @@ const MIN_BUDGET_FOR_SYNC = 1000;
 // the stamp against this value, so the sync must stamp it. Keep
 // duplicated here rather than imported because functions/ is its
 // own TS package with no path back into src/.
-const CONCURRENCY_TOLERANCE_MIN = 90;
+const CONCURRENCY_TOLERANCE_MIN = 60;
 
 const VISITS_QUERY = `query VisitsOnDate(
   $after: ISO8601DateTime!,
