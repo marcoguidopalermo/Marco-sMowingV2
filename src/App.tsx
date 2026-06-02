@@ -3,7 +3,7 @@ import logo from '@/assets/logo/logowhite.png';
 import logoBlack from '@/assets/logo/LOGOBLACK.png';
 import { LoginDemo } from './components/blocks/LoginDemo';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, sendPasswordResetEmail } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteField } from 'firebase/firestore';
 import {
   Calendar as CalendarIcon, ChevronLeft, ChevronRight, Users, Truck, Plus, Trash2, GripVertical,
@@ -2289,11 +2289,26 @@ export default function App() {
     await createUserWithEmailAndPassword(auth, normalized, password);
   };
 
+  // Forgot Password handler — wires the Forgot Password form to
+  // Firebase's sendPasswordResetEmail. Email is normalized (trim +
+  // lowercase) so a Reset request from a mis-typed casing still
+  // hits the right account. Firebase deliberately does NOT throw
+  // on unknown emails (privacy — avoid leaking which accounts
+  // exist), so the form's success transition is reached for
+  // legitimate sends AND for unknown emails. Real errors
+  // (network, malformed, rate-limit) bubble up to the form's
+  // error state instead of a fake success.
+  const handlePasswordReset = async (email: string): Promise<void> => {
+    const normalized = normalizeEmail(email);
+    await sendPasswordResetEmail(auth, normalized);
+  };
+
   if (!user) return (
     <LoginDemo
       onSubmit={(email, pass) => { setAuthRejected(null); return signInWithEmailAndPassword(auth, email, pass).catch(err => alert(err.message)); }}
       onGoogleSubmit={() => { setAuthRejected(null); handleGoogleLogin(); }}
       onSignUp={handleEmailSignUp}
+      onPasswordReset={handlePasswordReset}
       banner={authRejected}
     />
   );

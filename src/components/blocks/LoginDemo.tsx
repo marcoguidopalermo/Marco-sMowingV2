@@ -6,11 +6,13 @@ export function LoginDemo({
   onSubmit,
   onGoogleSubmit,
   onSignUp,
+  onPasswordReset,
   banner,
 }: {
   onSubmit: (email: string, pass: string) => void;
   onGoogleSubmit: () => void;
   onSignUp?: (email: string, pass: string) => void;
+  onPasswordReset?: (email: string) => Promise<void>;
   banner?: string | null;
 }) {
 
@@ -51,6 +53,7 @@ export function LoginDemo({
           onSignInSuccess={onSubmit}
           onSignUpSuccess={onSignUp}
           onGoogleLogin={onGoogleSubmit}
+          onPasswordReset={onPasswordReset}
           className="w-full"
         />
       </div>

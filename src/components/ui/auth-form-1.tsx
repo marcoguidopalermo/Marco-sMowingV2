@@ -97,7 +97,7 @@ function mapAuthError(err: unknown): string {
 // Main Auth Component
 // --------------------------------
 
-function Auth({ className, onSignInSuccess, onSignUpSuccess, onGoogleLogin, ...props }: React.ComponentProps<"div"> & { onSignInSuccess?: (email: string, pass: string) => void; onSignUpSuccess?: (email: string, pass: string) => void; onGoogleLogin?: () => void }) {
+function Auth({ className, onSignInSuccess, onSignUpSuccess, onGoogleLogin, onPasswordReset, ...props }: React.ComponentProps<"div"> & { onSignInSuccess?: (email: string, pass: string) => void; onSignUpSuccess?: (email: string, pass: string) => void; onGoogleLogin?: () => void; onPasswordReset?: (email: string) => Promise<void> }) {
   const [state, setState] = React.useState<AuthState>({ view: AuthView.SIGN_IN });
 
   const setView = React.useCallback((view: AuthView) => {
@@ -143,6 +143,7 @@ function Auth({ className, onSignInSuccess, onSignUpSuccess, onGoogleLogin, ...p
                 key="forgot-password"
                 onSignIn={() => setView(AuthView.SIGN_IN)}
                 onSuccess={() => setView(AuthView.RESET_SUCCESS)}
+                onSubmitReset={onPasswordReset}
               />
             )}
             {state.view === AuthView.RESET_SUCCESS && (
@@ -532,9 +533,14 @@ function AuthSignUp({ onSignIn, onSubmitSuccess, onGoogleLogin }: AuthSignUpProp
 interface AuthForgotPasswordProps {
   onSignIn: () => void;
   onSuccess: () => void;
+  // Real reset handler — wires the form to Firebase's
+  // sendPasswordResetEmail at the App layer. Optional only so the
+  // standalone storybook/demo render of this file still mounts;
+  // production always passes a handler.
+  onSubmitReset?: (email: string) => Promise<void>;
 }
 
-function AuthForgotPassword({ onSignIn, onSuccess }: AuthForgotPasswordProps) {
+function AuthForgotPassword({ onSignIn, onSuccess, onSubmitReset }: AuthForgotPasswordProps) {
   const [formState, setFormState] = React.useState<FormState>({
     isLoading: false,
     error: null,
@@ -549,10 +555,26 @@ function AuthForgotPassword({ onSignIn, onSuccess }: AuthForgotPasswordProps) {
   const onSubmit = async (data: ForgotPasswordFormValues) => {
     setFormState((prev) => ({ ...prev, isLoading: true, error: null }));
     try {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      if (onSubmitReset) {
+        // Real Firebase call. By design, sendPasswordResetEmail
+        // resolves successfully for unknown emails too (privacy —
+        // don't leak which addresses have accounts), so the
+        // success-screen transition is correct for both real sends
+        // and silent no-ops on unknown emails. Only genuine errors
+        // (network, malformed, rate-limit) reach the catch.
+        await onSubmitReset(data.email);
+      } else {
+        // Defensive fallback only used when this file is mounted
+        // outside the app (storybook / preview). Never reaches the
+        // production sign-in flow.
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
       onSuccess();
-    } catch {
-      setFormState((prev) => ({ ...prev, error: "System error" }));
+    } catch (err: unknown) {
+      const message = err instanceof Error && err.message
+        ? err.message
+        : "We couldn't send the reset email. Please try again.";
+      setFormState((prev) => ({ ...prev, error: message }));
     } finally {
       setFormState((prev) => ({ ...prev, isLoading: false }));
     }
