@@ -1051,21 +1051,38 @@ export default function App() {
 
 
   const syncToCloud = async (newData: AppData) => {
+    // Defensive normalize-on-save for authorizedEmails. Firestore rules
+    // compare the request token's lowercased email against the stored
+    // array AS-IS, so any uppercase/whitespace entry silently denies
+    // reads. Every UI write path already normalizes, but a direct edit
+    // via Firebase Console (or any future write that forgets to call
+    // normalizeEmail) would re-introduce drift. Re-normalizing on every
+    // syncToCloud is idempotent (clean lists pass through unchanged)
+    // and cheap (one map+filter+sort over a tiny array).
+    const normalizedAuthEmails = Array.from(
+      new Set((newData.authorizedEmails || [])
+        .map(e => normalizeEmail(e))
+        .filter(Boolean)),
+    ).sort();
+    const safeData: AppData = {
+      ...newData,
+      authorizedEmails: normalizedAuthEmails,
+    };
     // Optimistic update
-    setAppData(newData);
+    setAppData(safeData);
     if (!user) return;
-    
+
     // Scrubber: Firestore does not allow 'undefined'. Convert to null or remove.
-    const cleanData = JSON.parse(JSON.stringify(newData, (key, value) => 
+    const cleanData = JSON.parse(JSON.stringify(safeData, (key, value) =>
       value === undefined ? null : value
     ));
 
-    try { 
-      await setDoc(doc(doc(db, 'artifacts', appId), 'public', 'data', 'appData', 'main'), cleanData); 
+    try {
+      await setDoc(doc(doc(db, 'artifacts', appId), 'public', 'data', 'appData', 'main'), cleanData);
       return true;
     }
-    catch (err: any) { 
-      console.error("Database Save Error:", err); 
+    catch (err: any) {
+      console.error("Database Save Error:", err);
       showToastMsg(`Failed to save: ${err.code === 'permission-denied' ? 'Permission Denied (Rules Expired?)' : err.message}`);
       return false;
     }

@@ -1567,6 +1567,7 @@ export default function ManageResourcesModal({
               setEmails={setLocalAdmins}
               employees={localEmployees}
               showToastMsg={showToastMsg}
+              isSuperAdmin={isSuperAdmin}
             />
           )}
 
@@ -1848,15 +1849,65 @@ interface AuthorizedEmailsPanelProps {
   setEmails: Dispatch<SetStateAction<string[]>>;
   employees: Employee[];
   showToastMsg: (msg: string) => void;
+  // Super admin sees the drift detector and the Normalize-All control.
+  // Regular admins see the rest of the panel unchanged. Gating to super
+  // admin keeps the diagnostic surface invisible during normal use and
+  // safe from accidental triggering by other admin roles.
+  isSuperAdmin?: boolean;
 }
 
-function AuthorizedEmailsPanel({ emails, setEmails, employees, showToastMsg }: AuthorizedEmailsPanelProps) {
+function AuthorizedEmailsPanel({ emails, setEmails, employees, showToastMsg, isSuperAdmin }: AuthorizedEmailsPanelProps) {
   const [draft, setDraft] = useState('');
 
   const normalized = useMemo(
     () => emails.map(e => (e || '').trim().toLowerCase()).filter(Boolean),
     [emails],
   );
+
+  // Drift detector: surface stored entries whose normalized form differs
+  // from how they're persisted, plus any duplicates that collapse on
+  // normalization. The Firestore rules compare the request token's
+  // lowercased email against the stored array AS-IS — so a stray
+  // uppercase letter or whitespace silently denies reads even when the
+  // rest of the app would accept the user. Listing the affected entries
+  // before normalization gives a chance to spot intentional weird casing
+  // (shouldn't happen for emails, but be safe) before the in-place fix.
+  const drift = useMemo(() => {
+    const issues: { stored: string; normalized: string; issue: 'case' | 'whitespace' | 'empty' }[] = [];
+    const normCounts = new Map<string, number>();
+    for (const raw of emails) {
+      if (typeof raw !== 'string') {
+        issues.push({ stored: String(raw), normalized: '', issue: 'empty' });
+        continue;
+      }
+      const norm = raw.trim().toLowerCase();
+      if (!norm) {
+        issues.push({ stored: raw, normalized: '', issue: 'empty' });
+        continue;
+      }
+      normCounts.set(norm, (normCounts.get(norm) || 0) + 1);
+      if (norm !== raw) {
+        const issue: 'case' | 'whitespace' = raw.trim() !== raw ? 'whitespace' : 'case';
+        issues.push({ stored: raw, normalized: norm, issue });
+      }
+    }
+    const duplicates: string[] = [];
+    normCounts.forEach((count, key) => {
+      if (count > 1) duplicates.push(key);
+    });
+    const cleaned = Array.from(new Set(normalized)).sort();
+    return { issues, duplicates, cleaned, dirty: issues.length > 0 || duplicates.length > 0 };
+  }, [emails, normalized]);
+
+  const normalizeAll = () => {
+    setEmails(drift.cleaned);
+    const parts: string[] = [];
+    if (drift.issues.length > 0) parts.push(`${drift.issues.length} entry${drift.issues.length === 1 ? '' : 'ies'} normalized`);
+    if (drift.duplicates.length > 0) parts.push(`${drift.duplicates.length} duplicate${drift.duplicates.length === 1 ? '' : 's'} merged`);
+    showToastMsg(parts.length > 0
+      ? `${parts.join(', ')}. Click Save All Changes to persist.`
+      : 'No drift detected.');
+  };
 
   const addEmail = () => {
     const candidate = draft.trim().toLowerCase();
@@ -1898,6 +1949,63 @@ function AuthorizedEmailsPanel({ emails, setEmails, employees, showToastMsg }: A
           </p>
         </div>
       </div>
+
+      {isSuperAdmin && drift.dirty && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-5 space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="text-amber-700 mt-0.5"><Mail className="w-5 h-5" /></div>
+            <div className="flex-1">
+              <h4 className="font-black text-amber-900 text-sm uppercase tracking-widest">Email drift detected</h4>
+              <p className="text-amber-900 text-sm mt-1 leading-relaxed">
+                Some stored entries differ from their normalized form. Firestore rules match stored entries as-is, so these silently deny sign-in even when the user types the email correctly. Review the list below, then normalize and Save All Changes to fix.
+              </p>
+            </div>
+          </div>
+
+          {drift.issues.length > 0 && (
+            <div className="bg-white border border-amber-200 rounded-lg p-3">
+              <div className="text-[10px] font-black uppercase tracking-widest text-amber-800 mb-2">Entries with whitespace or uppercase ({drift.issues.length})</div>
+              <ul className="space-y-1.5">
+                {drift.issues.map((d, i) => (
+                  <li key={`d-${i}`} className="flex items-center gap-2 text-sm flex-wrap">
+                    <code className="font-mono bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded">{JSON.stringify(d.stored)}</code>
+                    <span className="text-slate-400">→</span>
+                    <code className="font-mono bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded">{JSON.stringify(d.normalized)}</code>
+                    <span className="text-[10px] font-black uppercase tracking-widest bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded">{d.issue}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {drift.duplicates.length > 0 && (
+            <div className="bg-white border border-amber-200 rounded-lg p-3">
+              <div className="text-[10px] font-black uppercase tracking-widest text-amber-800 mb-2">Duplicates after normalization ({drift.duplicates.length})</div>
+              <ul className="space-y-1">
+                {drift.duplicates.map((e, i) => (
+                  <li key={`dup-${i}`} className="text-sm">
+                    <code className="font-mono bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded">{e}</code>
+                    <span className="text-slate-500 ml-2 text-[11px]">appears multiple times in different forms</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-3 pt-1 flex-wrap">
+            <div className="text-[11px] text-amber-900">
+              After normalize: <strong>{drift.cleaned.length}</strong> unique entr{drift.cleaned.length === 1 ? 'y' : 'ies'} (was {emails.length}).
+            </div>
+            <button
+              type="button"
+              onClick={normalizeAll}
+              className="min-h-[44px] inline-flex items-center gap-1.5 px-4 py-2 text-xs font-black uppercase tracking-widest bg-amber-600 hover:bg-amber-700 text-white rounded-lg shadow"
+            >
+              Normalize Now
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white border border-slate-200 rounded-xl p-4">
         <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-2">Add an email</label>
