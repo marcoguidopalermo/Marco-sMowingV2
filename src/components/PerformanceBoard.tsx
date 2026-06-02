@@ -17,6 +17,7 @@ import PerformanceActivityLog from './PerformanceActivityLog';
 import { can } from '../lib/permissions';
 import { getCrewAllowance, adjustedEfficiency, allowanceTag } from '../lib/crewAllowance';
 import { accumulateEmployeeEff } from '../lib/efficiency';
+import { isBonusEligible } from '../lib/mtd';
 import { DIVISIONS, CREW_NUMBERS, PERMISSION_DENIED } from '../constants';
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto, addDaysToronto } from '../lib/dateUtils';
 import RouteSelectionModal from './RouteSelectionModal';
@@ -1020,6 +1021,13 @@ export default function PerformanceBoard({
     Object.entries(performance || {}).forEach(([date, dayLogs]) => {
       if (date >= reportStartDate && date <= reportEndDate) {
         Object.entries(dayLogs).forEach(([crewId, log]) => {
+          // Bonus gate: Advanced Reports only counts approved
+          // crew-days. Unapproved (pending + legacy undefined) are
+          // skipped entirely — AH, BH, allowance, every per-employee
+          // share all drop together. Live "today" views are
+          // intentionally not gated; this only applies to the
+          // reporting surface.
+          if (!isBonusEligible(log)) return;
           const div = log.division || 'Large Projects';
           const cName = `${div} ${log.crewNumber || 1}`;
 

@@ -7,6 +7,19 @@ import {
 import { accumulateEmployeeEff, crewTotals, EmpEffStat, flattenEmployeeIntervals } from './efficiency';
 import { getCrewAllowance } from './crewAllowance';
 
+// Bonus-eligibility gate. Only crew-days explicitly signed off via
+// the "Approve & Sign Off" button count toward bonus inputs. Pending
+// AND legacy undefined logs are excluded: bonus starts 2026-06-01,
+// pre-June data is test, and shop-odd-jobs days are intentionally
+// left unapproved so they don't pollute efficiency. Strict equality
+// is the contract — `!== 'approved'` covers both pending and
+// undefined.
+export function isBonusEligible(
+  log: Pick<PerformanceLog, 'approvalStatus'> | undefined | null,
+): boolean {
+  return !!log && log.approvalStatus === 'approved';
+}
+
 export interface MtdEmployeeStat {
   empId: string;
   name: string;
@@ -71,9 +84,15 @@ export function getMtdCutoff(
   monthStart: string,
 ): string | null {
   let latest: string | null = null;
-  for (const date of Object.keys(performance || {})) {
+  for (const [date, dayLogs] of Object.entries(performance || {})) {
     if (date >= today) continue;
     if (date < monthStart) continue;
+    // A date counts toward the cutoff only when at least one crew
+    // on it is bonus-eligible. Otherwise the header would advertise
+    // a "through" date whose data we just excluded from every total.
+    const hasApproved = Object.values(dayLogs || {})
+      .some(l => isBonusEligible(l));
+    if (!hasApproved) continue;
     if (latest === null || date > latest) latest = date;
   }
   return latest;
@@ -126,6 +145,11 @@ export function buildMtd(
       if (date < start || date > cutoff) continue;
       const daySchedule = schedules[date] || [];
       for (const [crewId, log] of Object.entries(dayLogs || {})) {
+        // Bonus gate: skip unapproved crew-days entirely. AH and BH
+        // drop together by construction — cBH never accumulates,
+        // employees on this log get no eAH/eBH, allowance from this
+        // log doesn't apply. Pending + legacy undefined both drop.
+        if (!isBonusEligible(log)) continue;
         const { cBH, cAH } = crewTotals(log, testUserIds);
 
         const crewObj = daySchedule.find(c => c.id === crewId);
