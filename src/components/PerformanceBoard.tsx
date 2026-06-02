@@ -1052,6 +1052,19 @@ export default function PerformanceBoard({
           // table. Days without timesheets fall back to today's
           // eAH/cAH formula inside the helper — bit-for-bit
           // identical to the previous inlined code.
+          //
+          // Adjusted-BH accumulator: per crew-day we pull the
+          // SAME allowance pct the crew display uses (effectivePct
+          // when the sync stamped one — concurrency-aware; flat
+          // pct otherwise — today's behavior). Each member's
+          // adjBH contribution = dBH + dAH × pct/100 — the
+          // virtual-BH aggregation method (Σ adjBH / Σ AH × 100
+          // matches the AH-weighted average of crew adjusted
+          // efficiencies, the mathematically correct rollup).
+          const crewObj = appData.schedules?.[date]?.find((c: any) => c.id === crewId);
+          const allowanceForDay = getCrewAllowance(
+            crewObj, log, appData.settings, testUserIds,
+          );
           const accBefore: Record<string, { bh: number; ah: number }> = {};
           Object.keys(empStats).forEach(k => {
             accBefore[k] = { bh: empStats[k].bh, ah: empStats[k].ah };
@@ -1063,9 +1076,16 @@ export default function PerformanceBoard({
             const dBH = stat.bh - prior.bh;
             const dAH = stat.ah - prior.ah;
             if (dAH > 0 || dBH > 0) {
-              if (!empStats[empId]) empStats[empId] = { name: getEmpName(empId), bh: 0, ah: 0 };
+              if (!empStats[empId]) empStats[empId] = { name: getEmpName(empId), bh: 0, ah: 0, adjBH: 0 };
               empStats[empId].ah += dAH;
               empStats[empId].bh += dBH;
+              // Apply the crew-day's allowance to this member's
+              // share. Using virtual-BH ensures that aggregating
+              // across days reproduces the AH-weighted average
+              // of crew adjusted efficiencies — which is what the
+              // crew-level display and bonus basis use.
+              empStats[empId].adjBH = (empStats[empId].adjBH || 0)
+                + dBH + (dAH * allowanceForDay.pct) / 100;
             }
           });
         });
@@ -2443,15 +2463,28 @@ export default function PerformanceBoard({
               <div className="bg-gray-50 border-b border-gray-200 p-3"><h3 className="font-bold text-gray-800 flex items-center gap-2"><Users className="w-4 h-4 text-gray-500" /> Employee Breakdown (Proportional Split)</h3></div>
               <div className="max-h-80 overflow-y-auto">
                 <table className="w-full text-left">
-                  <thead className="sticky top-0 bg-white"><tr className="border-b border-gray-200 text-xs text-gray-500 uppercase"><th className="p-3">Employee</th><th className="p-3 text-right">Earned BH</th><th className="p-3 text-right">Net Clocked AH</th><th className="p-3 text-right">Indiv Eff %</th></tr></thead>
+                  <thead className="sticky top-0 bg-white"><tr className="border-b border-gray-200 text-xs text-gray-500 uppercase"><th className="p-3">Employee</th><th className="p-3 text-right">Earned BH</th><th className="p-3 text-right">Net Clocked AH</th><th className="p-3 text-right">Raw Eff %</th><th className="p-3 text-right" title="Raw efficiency + the crew's effective crew-size allowance (same value the crew display uses)">Adjusted Eff %</th></tr></thead>
                   <tbody className="divide-y divide-gray-100">
                     {Object.entries(r.empStats).sort((a, b) => (b[1] as any).bh - (a[1] as any).bh).map(([eId, s]) => {
-                      const score = s.ah > 0 ? Number(((s.bh / s.ah) * 100).toFixed(1)) : 0;
-                      let color = 'text-gray-500';
-                      if (s.ah > 0) { if (score >= 90) color = 'text-purple-600'; else if (score >= 80) color = 'text-emerald-600'; else if (score >= 70) color = 'text-yellow-600'; else color = 'text-red-600'; }
-                      return <tr key={eId} className="hover:bg-gray-50"><td className="p-3 font-bold text-gray-800 text-sm">{s.name}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className={`p-3 text-right font-black text-sm ${color}`}>{s.ah > 0 ? `${score}%` : '--'}</td></tr>
+                      const raw = s.ah > 0 ? Number(((s.bh / s.ah) * 100).toFixed(1)) : 0;
+                      // Virtual-BH aggregation: adjusted = Σ(eBH + eAH×pct/100) / Σ eAH × 100.
+                      // For a single crew-day this collapses to raw + pct. For multi-day ranges
+                      // it produces the AH-weighted average of per-day adjusted efficiencies,
+                      // matching how the crew + company displays roll up.
+                      const adjBH = (s as any).adjBH || 0;
+                      const adjusted = s.ah > 0 ? Number(((adjBH / s.ah) * 100).toFixed(1)) : 0;
+                      const colorFor = (score: number): string => {
+                        if (s.ah <= 0) return 'text-gray-500';
+                        if (score >= 90) return 'text-purple-600';
+                        if (score >= 80) return 'text-emerald-600';
+                        if (score >= 70) return 'text-yellow-600';
+                        return 'text-red-600';
+                      };
+                      const rawColor = colorFor(raw);
+                      const adjColor = colorFor(adjusted);
+                      return <tr key={eId} className="hover:bg-gray-50"><td className="p-3 font-bold text-gray-800 text-sm">{s.name}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className={`p-3 text-right font-black text-sm ${rawColor}`}>{s.ah > 0 ? `${raw}%` : '--'}</td><td className={`p-3 text-right font-black text-sm ${adjColor}`}>{s.ah > 0 ? `${adjusted}%` : '--'}</td></tr>
                     })}
-                    {Object.keys(r.empStats).length === 0 ? <tr><td colSpan={4} className="p-4 text-center text-gray-400 text-sm">No employee data in this range.</td></tr> : null}
+                    {Object.keys(r.empStats).length === 0 ? <tr><td colSpan={5} className="p-4 text-center text-gray-400 text-sm">No employee data in this range.</td></tr> : null}
                   </tbody>
                 </table>
               </div>
