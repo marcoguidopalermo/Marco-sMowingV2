@@ -4,8 +4,52 @@ import {
   CrewSizeAllowanceRow,
   AppSettings,
 } from '../types';
-import { DEFAULT_CREW_SIZE_ALLOWANCE } from '../constants';
+import { DEFAULT_CREW_SIZE_ALLOWANCE, CONCURRENCY_TOLERANCE_MIN } from '../constants';
 import { flattenEmployeeIntervals } from './efficiency';
+
+// Promote any segment shorter than the tolerance window into its
+// neighbours by raising its headcount to the higher of the
+// adjacent neighbours' sizes BEFORE the pct lookup. The durations
+// are unchanged — total clocked-union time stays correct. This
+// is what keeps a normal-break-pattern day reading as a clean
+// flat bracket: a 30/45-min lunch, a 3× sequential lunch
+// sequence, a clock-stagger at start/end, or a one-hour shop
+// run are all sub-threshold drops and get absorbed into the
+// surrounding peak headcount. Only sustained changes — a worker
+// genuinely leaving for the day, or a 2-hour solo finish —
+// stay as their own segment.
+//
+// Two-pass coalescing. First pass walks left-to-right with a
+// settled "previous neighbour" size; second pass walks
+// right-to-left so the chosen size is the max of both sides
+// (matters when a short segment sits between two heterogeneous
+// neighbours). Boundary segments shorter than tolerance promote
+// to their single neighbour.
+function coalesceShortSegments(
+  segments: { size: number; durationMs: number }[],
+  thresholdMs: number,
+): { size: number; durationMs: number }[] {
+  if (segments.length <= 1) return segments;
+  const left = segments.map(s => s.size);
+  let prev = segments[0].size;
+  for (let i = 0; i < segments.length; i++) {
+    if (segments[i].durationMs <= thresholdMs) {
+      const next = i + 1 < segments.length ? segments[i + 1].size : prev;
+      left[i] = Math.max(prev, next);
+    }
+    prev = left[i];
+  }
+  const result = segments.map((s, i) => ({ size: left[i], durationMs: s.durationMs }));
+  let prevR = result[result.length - 1].size;
+  for (let i = result.length - 1; i >= 0; i--) {
+    if (segments[i].durationMs <= thresholdMs) {
+      const next = i - 1 >= 0 ? result[i - 1].size : prevR;
+      result[i].size = Math.max(result[i].size, prevR, next);
+    }
+    prevR = result[i].size;
+  }
+  return result;
+}
 
 // Scheduled crew size = roster on the schedule minus people the
 // manager explicitly removed from this crew's perf entry, AND
@@ -73,8 +117,8 @@ function computeTimeWindowedAllowance(
     breakSet.add(iv.end);
   }
   const points = Array.from(breakSet).sort((a, b) => a - b);
-  const segments: { size: number; pct: number; durationMs: number }[] = [];
-  let maxSize = 0;
+  // Phase 1: raw segments keyed by exact concurrent headcount.
+  const raw: { size: number; durationMs: number }[] = [];
   for (let i = 0; i < points.length - 1; i++) {
     const t1 = points[i];
     const t2 = points[i + 1];
@@ -85,18 +129,25 @@ function computeTimeWindowedAllowance(
       if (iv.start <= t1 && iv.end >= t2) present.add(iv.empId);
     }
     if (present.size === 0) continue;
-    if (present.size > maxSize) maxSize = present.size;
-    segments.push({
-      size: present.size,
-      pct: pctForSize(present.size, table || undefined),
-      durationMs: dur,
-    });
+    raw.push({ size: present.size, durationMs: dur });
   }
+  if (raw.length === 0) return null;
+  // Phase 2: coalesce break-pattern noise into surrounding peaks.
+  const thresholdMs = CONCURRENCY_TOLERANCE_MIN * 60_000;
+  const coalesced = coalesceShortSegments(raw, thresholdMs);
+  // Phase 3: pct lookup per (coalesced) segment, build the
+  // audit-friendly segments array, and time-weight the effective
+  // pct over the original (unchanged) durations.
+  const segments: { size: number; pct: number; durationMs: number }[] = [];
+  let maxSize = 0;
   let totalMs = 0;
   let weighted = 0;
-  for (const s of segments) {
+  for (const s of coalesced) {
+    const pct = pctForSize(s.size, table || undefined);
+    segments.push({ size: s.size, pct, durationMs: s.durationMs });
     totalMs += s.durationMs;
-    weighted += s.pct * s.durationMs;
+    weighted += pct * s.durationMs;
+    if (s.size > maxSize) maxSize = s.size;
   }
   if (totalMs === 0) return null;
   return {
@@ -154,7 +205,17 @@ export function getCrewAllowance(
   // test-user exclusion. The effectivePct stamp is computed inside
   // the sync from intervals (which already filter test users), so
   // it doesn't need a corrective re-derive at read time.
-  if (stamp && Number.isFinite(stamp.effectivePct)) {
+  //
+  // Tolerance gate: only honour the stamp when it was computed
+  // against the current CONCURRENCY_TOLERANCE_MIN. A mismatch (or
+  // a missing tolerance field on a pre-tolerance stamp) means the
+  // stamp's blend reflects an outdated coalescing rule, so we
+  // fall through to step 3 (live-recompute from the immutable
+  // intervals). This is how tuning the threshold rebases history
+  // automatically — no manual re-sync, no touching approved logs.
+  if (stamp
+      && Number.isFinite(stamp.effectivePct)
+      && stamp.tolerance === CONCURRENCY_TOLERANCE_MIN) {
     return {
       size: stamp.size,
       pct: stamp.effectivePct as number,

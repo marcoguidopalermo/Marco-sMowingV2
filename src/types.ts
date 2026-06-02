@@ -693,6 +693,14 @@ export interface PerformanceLog {
     pct: number;
     effectivePct?: number;
     segments?: { size: number; pct: number; durationMs: number }[];
+    // Coalescing threshold (minutes) the stamp was computed against.
+    // Stamped by the sync from CONCURRENCY_TOLERANCE_MIN. On read,
+    // getCrewAllowance honours the stamp only when it matches the
+    // current constant; mismatch triggers live-recompute from the
+    // immutable employeeTimesheets. This lets us tune the threshold
+    // and have history auto-rebase on the next render without a
+    // bulk re-sync (which couldn't touch approved crew-days anyway).
+    tolerance?: number;
   };
   // Per-employee Jobber timesheet intervals captured at sync time.
   // Same source as employeeAH (the daily totals are unchanged) — this

@@ -80,6 +80,24 @@ export const PERMISSION_DENIED = 'Permission denied.';
 export const ODOMETER_JUMP_WARN_KM = 500;
 export const ENGINE_HOURS_JUMP_WARN = 50;
 
+// Concurrency-tolerance window for the time-windowed crew-size
+// allowance. Segments where the concurrent headcount drops below
+// the day's peak for less than this duration (lunches, clock-
+// staggers, short errands) are coalesced into their neighbours so
+// the crew still earns its flat bracket rate. Only sustained
+// departures longer than this — a worker leaving early, a solo
+// late-finish — actually blend the allowance down.
+//
+// Tuning notes:
+//   * 30 — only ignores clock-stagger; lunches dilute.
+//   * 60 — ignores most lunches; longer mid-shift errands dilute.
+//   * 90 — ignores lunches + lunch-runs + shop-stops; only "left
+//          for the day" or "stayed an extra 90+ min solo" counts.
+//   * 120+ — ignores half-shift movements; not recommended.
+// Bumped to the new value re-stamps via the version-check in
+// getCrewAllowance — no manual re-sync required.
+export const CONCURRENCY_TOLERANCE_MIN = 90;
+
 export const LAWN_JOKES: string[] = [
   "Why did the lawn mower break up with the grass? It just wasn't cutting it anymore.",
   "What do you call a lazy lawnmower? A grasshopper that retired.",

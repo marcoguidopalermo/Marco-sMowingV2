@@ -25,6 +25,12 @@ const MIN_TIMESHEET_SECONDS = 60;
 const TIMEZONE = "America/Toronto";
 const PAGE_DELAY_MS = 250;
 const MIN_BUDGET_FOR_SYNC = 1000;
+// Mirrors src/constants.ts CONCURRENCY_TOLERANCE_MIN. The two values
+// must stay in lock-step — getCrewAllowance on the frontend gates
+// the stamp against this value, so the sync must stamp it. Keep
+// duplicated here rather than imported because functions/ is its
+// own TS package with no path back into src/.
+const CONCURRENCY_TOLERANCE_MIN = 90;
 
 const VISITS_QUERY = `query VisitsOnDate(
   $after: ISO8601DateTime!,
@@ -204,6 +210,12 @@ interface PerformanceLog {
     pct: number;
     effectivePct?: number;
     segments?: { size: number; pct: number; durationMs: number }[];
+    // Coalescing threshold (minutes) the stamp was computed against.
+    // Read-side gate in getCrewAllowance lets a tolerance bump
+    // auto-rebase history on next render without bulk re-sync
+    // (sync skips approved crew-days, so re-sync alone can't
+    // re-stamp).
+    tolerance?: number;
   };
   // Per-employee Jobber timesheet intervals captured at sync time.
   // Additive to employeeAH (daily totals stay the same) — drives
@@ -302,6 +314,43 @@ function pctForCrewSize(
 }
 
 /**
+ * Promote any segment shorter than the tolerance window into its
+ * neighbours by raising its headcount to the max of the adjacent
+ * neighbours' sizes BEFORE the pct lookup. Identical algorithm
+ * to crewAllowance.ts coalesceShortSegments on the frontend.
+ * @param {object[]} segments Raw concurrency segments.
+ * @param {number} thresholdMs Tolerance window in ms.
+ * @return {object[]} Coalesced segments.
+ */
+function coalesceShortSegments(
+  segments: Array<{ size: number; durationMs: number }>,
+  thresholdMs: number,
+): Array<{ size: number; durationMs: number }> {
+  if (segments.length <= 1) return segments;
+  const left = segments.map((s) => s.size);
+  let prev = segments[0].size;
+  for (let i = 0; i < segments.length; i++) {
+    if (segments[i].durationMs <= thresholdMs) {
+      const next = i + 1 < segments.length ? segments[i + 1].size : prev;
+      left[i] = Math.max(prev, next);
+    }
+    prev = left[i];
+  }
+  const result = segments.map((s, i) => ({
+    size: left[i], durationMs: s.durationMs,
+  }));
+  let prevR = result[result.length - 1].size;
+  for (let i = result.length - 1; i >= 0; i--) {
+    if (segments[i].durationMs <= thresholdMs) {
+      const next = i - 1 >= 0 ? result[i - 1].size : prevR;
+      result[i].size = Math.max(result[i].size, prevR, next);
+    }
+    prevR = result[i].size;
+  }
+  return result;
+}
+
+/**
  * Concurrency-aware crew-size allowance for a crew-day. See
  * crewAllowance.ts on the frontend for the full contract — this
  * is the sync-side mirror that stamps the result into the
@@ -344,7 +393,8 @@ function timeWindowedAllowance(
     breakSet.add(iv.end);
   }
   const points = Array.from(breakSet).sort((a, b) => a - b);
-  const segments: Array<{size: number; pct: number; durationMs: number}> = [];
+  // Phase 1: raw segments keyed by exact concurrent headcount.
+  const raw: Array<{size: number; durationMs: number}> = [];
   for (let i = 0; i < points.length - 1; i++) {
     const t1 = points[i];
     const t2 = points[i + 1];
@@ -355,17 +405,21 @@ function timeWindowedAllowance(
       if (iv.start <= t1 && iv.end >= t2) presentIds.add(iv.empId);
     }
     if (presentIds.size === 0) continue;
-    segments.push({
-      size: presentIds.size,
-      pct: pctForCrewSize(presentIds.size, table),
-      durationMs: dur,
-    });
+    raw.push({size: presentIds.size, durationMs: dur});
   }
+  if (raw.length === 0) return null;
+  // Phase 2: coalesce break-pattern noise into surrounding peaks.
+  const thresholdMs = CONCURRENCY_TOLERANCE_MIN * 60_000;
+  const coalesced = coalesceShortSegments(raw, thresholdMs);
+  // Phase 3: pct lookup per (coalesced) segment + time-weight.
+  const segments: Array<{size: number; pct: number; durationMs: number}> = [];
   let totalMs = 0;
   let weighted = 0;
-  for (const s of segments) {
+  for (const s of coalesced) {
+    const pct = pctForCrewSize(s.size, table);
+    segments.push({size: s.size, pct, durationMs: s.durationMs});
     totalMs += s.durationMs;
-    weighted += s.pct * s.durationMs;
+    weighted += pct * s.durationMs;
   }
   if (totalMs === 0) return null;
   const effectivePct = Number((weighted / totalMs).toFixed(2));
@@ -2036,6 +2090,7 @@ async function runPerformanceSync(args: {
           pct,
           effectivePct: timeWindowed.effectivePct,
           segments: timeWindowed.segments,
+          tolerance: CONCURRENCY_TOLERANCE_MIN,
         } :
         {size: scheduledSize, pct};
 
