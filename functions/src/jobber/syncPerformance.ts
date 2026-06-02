@@ -195,8 +195,24 @@ interface PerformanceLog {
   // Sync re-stamps for the current targetDate every run; once a
   // date is in the past, the stamp freezes (no more runs target
   // that day), so changes to appData.settings.crewSizeAllowance
-  // don't rewrite history.
-  crewSizeAllowance?: { size: number; pct: number };
+  // don't rewrite history. effectivePct is the concurrency-weighted
+  // blend (solo windows use 1-man pct, fully-staffed windows use
+  // the N-man pct, blended by duration) — undefined on legacy
+  // stamps written before this field landed.
+  crewSizeAllowance?: {
+    size: number;
+    pct: number;
+    effectivePct?: number;
+    segments?: { size: number; pct: number; durationMs: number }[];
+  };
+  // Per-employee Jobber timesheet intervals captured at sync time.
+  // Additive to employeeAH (daily totals stay the same) — drives
+  // concurrency-weighted BH split and time-windowed crew-size
+  // allowance on the frontend. endAt === null = open/ticking shift.
+  employeeTimesheets?: Record<
+    string,
+    { startAt: string; endAt: string | null }[]
+  >;
 }
 
 interface CrewSizeAllowanceRow {
@@ -283,6 +299,77 @@ function pctForCrewSize(
     else break;
   }
   return pct;
+}
+
+/**
+ * Concurrency-aware crew-size allowance for a crew-day. See
+ * crewAllowance.ts on the frontend for the full contract — this
+ * is the sync-side mirror that stamps the result into the
+ * PerformanceLog so retuning the settings table doesn't rewrite
+ * frozen history.
+ * @param {object} timesheetsByEmp Per-emp intervals.
+ * @param {Set<string>} removedSet Manager-curated removed empIds.
+ * @param {Set<string>} testUserIds Test-user sentinels.
+ * @param {object | undefined} table Settings table.
+ * @param {number} nowMs Reference now for open shifts.
+ * @return {object | null} effectivePct + segments, or null.
+ */
+function timeWindowedAllowance(
+  timesheetsByEmp: Record<
+    string, Array<{startAt: string; endAt: string | null}>
+  >,
+  removedSet: Set<string>,
+  testUserIds: Set<string>,
+  table: CrewSizeAllowanceRow[] | undefined,
+  nowMs: number,
+): {
+  effectivePct: number;
+  segments: Array<{size: number; pct: number; durationMs: number}>;
+} | null {
+  const intervals: Array<{empId: string; start: number; end: number}> = [];
+  for (const [empId, list] of Object.entries(timesheetsByEmp)) {
+    if (removedSet.has(empId) || testUserIds.has(empId)) continue;
+    for (const ts of list || []) {
+      const start = new Date(ts.startAt).getTime();
+      const end = ts.endAt ? new Date(ts.endAt).getTime() : nowMs;
+      if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+        intervals.push({empId, start, end});
+      }
+    }
+  }
+  if (intervals.length === 0) return null;
+  const breakSet = new Set<number>();
+  for (const iv of intervals) {
+    breakSet.add(iv.start);
+    breakSet.add(iv.end);
+  }
+  const points = Array.from(breakSet).sort((a, b) => a - b);
+  const segments: Array<{size: number; pct: number; durationMs: number}> = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const t1 = points[i];
+    const t2 = points[i + 1];
+    const dur = t2 - t1;
+    if (dur <= 0) continue;
+    const presentIds = new Set<string>();
+    for (const iv of intervals) {
+      if (iv.start <= t1 && iv.end >= t2) presentIds.add(iv.empId);
+    }
+    if (presentIds.size === 0) continue;
+    segments.push({
+      size: presentIds.size,
+      pct: pctForCrewSize(presentIds.size, table),
+      durationMs: dur,
+    });
+  }
+  let totalMs = 0;
+  let weighted = 0;
+  for (const s of segments) {
+    totalMs += s.durationMs;
+    weighted += s.pct * s.durationMs;
+  }
+  if (totalMs === 0) return null;
+  const effectivePct = Number((weighted / totalMs).toFixed(2));
+  return {effectivePct, segments};
 }
 
 interface SyncResultSummary {
@@ -1296,6 +1383,19 @@ async function runPerformanceSync(args: {
       date: targetDate,
     });
     const secondsByJobberUser = new Map<string, number>();
+    // Per-jobber-user interval list, kept in parallel with the daily
+    // seconds total. employeeAH semantics are unchanged (still the
+    // sum of intervals minus the <MIN_TIMESHEET_SECONDS noise floor);
+    // this is additive so the frontend can recover the per-person
+    // clock-in/clock-out windows for concurrency-weighted BH split
+    // + time-windowed allowance. Open shifts persist endAt === null
+    // so the frontend can recompute "now" at read time, not at sync
+    // time. Below-noise intervals are dropped from both maps for
+    // consistency.
+    const intervalsByJobberUser = new Map<
+      string,
+      Array<{ startAt: string; endAt: string | null }>
+    >();
     for (const ts of timesheets) {
       let sec: number;
       if (ts.ticking === true) {
@@ -1311,6 +1411,12 @@ async function runPerformanceSync(args: {
       if (sec < MIN_TIMESHEET_SECONDS) continue;
       const prev = secondsByJobberUser.get(ts.user.id) || 0;
       secondsByJobberUser.set(ts.user.id, prev + sec);
+      const intervals = intervalsByJobberUser.get(ts.user.id) || [];
+      intervals.push({
+        startAt: ts.startAt,
+        endAt: ts.ticking === true ? null : ts.endAt,
+      });
+      intervalsByJobberUser.set(ts.user.id, intervals);
     }
     logger.info("ah_attribution", {
       usersWithSeconds: secondsByJobberUser.size,
@@ -1851,6 +1957,18 @@ async function runPerformanceSync(args: {
       // entered. The frontend's missing-AH approval gate still blocks
       // approval on empty values, so visibility of "missing clock-out"
       // is preserved without us nuking manual entries.
+      //
+      // Intervals are written in lock-step with employeeAH so the
+      // concurrency-weighted helpers on the frontend can rely on
+      // "if employeeAH was written, employeeTimesheets exists for the
+      // same empId." Workers whose AH falls through to a manual entry
+      // get no interval list — frontend treats that as "fall back to
+      // today's flat math" for the whole crew-day.
+      const timesheetsByEmp: Record<
+        string,
+        Array<{ startAt: string; endAt: string | null }>
+      > = {};
+      let anyTimesheetWritten = false;
       for (const empId of crew.employees || []) {
         const emp = employees.find((e) => e.id === empId);
         if (!emp || !emp.jobberUserId) continue;
@@ -1858,9 +1976,25 @@ async function runPerformanceSync(args: {
         const sec = secondsByJobberUser.get(emp.jobberUserId) ?? null;
         if (sec != null && sec >= MIN_TIMESHEET_SECONDS) {
           base.employeeAH[empId] = Math.round((sec / 3600) * 10) / 10;
+          const intervals = intervalsByJobberUser.get(emp.jobberUserId);
+          if (intervals && intervals.length > 0) {
+            timesheetsByEmp[empId] = intervals;
+            anyTimesheetWritten = true;
+          }
         }
         // else: linked worker but no timesheet for this date — leave
         //       base.employeeAH[empId] untouched (could be manual entry).
+      }
+      if (anyTimesheetWritten) {
+        base.employeeTimesheets = timesheetsByEmp;
+      } else {
+        // Sync produced no timesheet intervals for this crew-day
+        // (everyone's hours came from manual entry, or no linked
+        // workers). Drop any stale field from a prior sync so the
+        // frontend falls back to today's flat math rather than
+        // walking a partial interval list. This is the additive
+        // contract: present + complete, or absent — never partial.
+        delete base.employeeTimesheets;
       }
 
       // Stamp the crew-size allowance snapshot for this crew-day.
@@ -1880,7 +2014,30 @@ async function runPerformanceSync(args: {
         scheduledSize,
         appData.settings?.crewSizeAllowance,
       );
-      base.crewSizeAllowance = {size: scheduledSize, pct};
+      // When we have intervals for this crew-day, compute the
+      // concurrency-weighted effective pct and stamp it alongside
+      // the flat scheduled-size pct. Frontend prefers effectivePct
+      // when present; legacy stamps and no-interval crew-days keep
+      // the flat pct. On normal days (everyone clocked together
+      // for the full window), every segment has size === scheduledSize
+      // and effectivePct collapses to pct — no regression.
+      const timeWindowed = anyTimesheetWritten ?
+        timeWindowedAllowance(
+          timesheetsByEmp,
+          removedSet,
+          testUserIds,
+          appData.settings?.crewSizeAllowance,
+          nowMs,
+        ) :
+        null;
+      base.crewSizeAllowance = timeWindowed ?
+        {
+          size: scheduledSize,
+          pct,
+          effectivePct: timeWindowed.effectivePct,
+          segments: timeWindowed.segments,
+        } :
+        {size: scheduledSize, pct};
 
       base.lastJobberSyncAt = summary.triggeredAt;
       newPerformanceDay[crew.id] = base;

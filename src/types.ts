@@ -682,7 +682,28 @@ export interface PerformanceLog {
   // crew on this date. Stamped by the sync from
   // appData.settings.crewSizeAllowance + scheduledSize at sync
   // time so retuning the table later doesn't rewrite history.
-  crewSizeAllowance?: { size: number; pct: number };
+  // `effectivePct` is the concurrency-weighted blend when the sync
+  // had timesheet intervals to walk — solo windows use the 1-man
+  // pct, fully-staffed windows use the N-man pct, blended by
+  // duration. Legacy stamps without `effectivePct` fall back to
+  // `pct` (single roster-based number) so historical reads don't
+  // change. `segments` is the per-window breakdown kept for audit.
+  crewSizeAllowance?: {
+    size: number;
+    pct: number;
+    effectivePct?: number;
+    segments?: { size: number; pct: number; durationMs: number }[];
+  };
+  // Per-employee Jobber timesheet intervals captured at sync time.
+  // Same source as employeeAH (the daily totals are unchanged) — this
+  // is the additive interval list used to derive concurrency-weighted
+  // BH split + time-windowed crew-size allowance. A worker can have
+  // multiple intervals per day (split shifts). endAt === null marks
+  // an open/ticking shift at sync time; downstream math treats null
+  // as "[startAt, now]". Absent (legacy log, or sync ran before this
+  // field landed) → downstream math falls back to today's flat
+  // formulas, no regression.
+  employeeTimesheets?: Record<string, { startAt: string; endAt: string | null }[]>;
 }
 
 export interface SyncLogEntry {

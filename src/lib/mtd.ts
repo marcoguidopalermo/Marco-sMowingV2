@@ -4,7 +4,7 @@ import {
   Employee,
   PerformanceLog,
 } from '../types';
-import { accumulateEmployeeEff, crewTotals, EmpEffStat } from './efficiency';
+import { accumulateEmployeeEff, crewTotals, EmpEffStat, flattenEmployeeIntervals } from './efficiency';
 import { getCrewAllowance } from './crewAllowance';
 
 export interface MtdEmployeeStat {
@@ -155,11 +155,33 @@ export function buildMtd(
         // invariant. Even-split across the scheduled roster
         // (crew.employees − removedEmployees − testUsers) so each
         // real member carries `cBH / size` and the totals still match.
+        //
+        // Solo-time hardening: when timesheet intervals exist for
+        // this crew-day, narrow the even-split roster to workers
+        // who actually had a clocked interval. This stops the
+        // partial-departure case from over-attributing solo-window
+        // BH to workers who'd already left — they had no interval
+        // covering "now," so they get no share. Falls back to the
+        // unfiltered roster when no intervals exist (today's
+        // behavior preserved for legacy + manual-entry days).
         if (cBH > 0) {
           const removed = new Set(log.removedEmployees || []);
-          const roster = (crewObj?.employees || []).filter(
+          let roster = (crewObj?.employees || []).filter(
             id => !removed.has(id) && !testUserIds.has(id),
           );
+          if (log.employeeTimesheets) {
+            const intervalIds = new Set(
+              flattenEmployeeIntervals(
+                log.employeeTimesheets, log.removedEmployees, testUserIds,
+              ).map(i => i.empId),
+            );
+            const narrowed = roster.filter(id => intervalIds.has(id));
+            // Only adopt the narrowed roster when at least one
+            // member has intervals — otherwise fall back to the
+            // unfiltered list so we don't lose the share entirely
+            // when timesheets are present but mismatched.
+            if (narrowed.length > 0) roster = narrowed;
+          }
           if (roster.length === 0) {
             // Pathological — no real roster, no AH, but cBH credited.
             // Falling through here intentionally drops the share so

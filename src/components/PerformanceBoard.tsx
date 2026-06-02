@@ -16,6 +16,7 @@ import SplitBHModal from './SplitBHModal';
 import PerformanceActivityLog from './PerformanceActivityLog';
 import { can } from '../lib/permissions';
 import { getCrewAllowance, adjustedEfficiency, allowanceTag } from '../lib/crewAllowance';
+import { accumulateEmployeeEff } from '../lib/efficiency';
 import { DIVISIONS, CREW_NUMBERS, PERMISSION_DENIED } from '../constants';
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto, addDaysToronto } from '../lib/dateUtils';
 import RouteSelectionModal from './RouteSelectionModal';
@@ -1045,16 +1046,26 @@ export default function PerformanceBoard({
           if (!crewStats[cName]) crewStats[cName] = { div, bh: 0, ah: 0, jobs: 0 };
           crewStats[cName].bh += cBH; crewStats[cName].ah += cAH; crewStats[cName].jobs += jCount;
 
-          Object.entries(log.employeeAH).forEach(([empId, ah]) => {
-            if (testUserIds.has(empId)) return;
-            const baseAH = Number(ah || 0);
-            const indvDeduc = deductHours(log.deductions?.[empId]);
-            const eAH = Math.max(0, baseAH - indvDeduc);
-
-            if (eAH > 0) {
-              const eBH = cAH > 0 ? cBH * (eAH / cAH) : 0;
+          // Routes through the shared accumulator so the
+          // concurrency-weighted BH split (when timesheets exist)
+          // flows uniformly into Advanced Reporting's per-employee
+          // table. Days without timesheets fall back to today's
+          // eAH/cAH formula inside the helper — bit-for-bit
+          // identical to the previous inlined code.
+          const accBefore: Record<string, { bh: number; ah: number }> = {};
+          Object.keys(empStats).forEach(k => {
+            accBefore[k] = { bh: empStats[k].bh, ah: empStats[k].ah };
+          });
+          const accAfter: Record<string, { bh: number; ah: number }> = JSON.parse(JSON.stringify(accBefore));
+          accumulateEmployeeEff(log, accAfter, testUserIds);
+          Object.entries(accAfter).forEach(([empId, stat]) => {
+            const prior = accBefore[empId] || { bh: 0, ah: 0 };
+            const dBH = stat.bh - prior.bh;
+            const dAH = stat.ah - prior.ah;
+            if (dAH > 0 || dBH > 0) {
               if (!empStats[empId]) empStats[empId] = { name: getEmpName(empId), bh: 0, ah: 0 };
-              empStats[empId].ah += eAH; empStats[empId].bh += eBH;
+              empStats[empId].ah += dAH;
+              empStats[empId].bh += dBH;
             }
           });
         });
