@@ -17,6 +17,7 @@ import { formatDate, addDays, formatTodayInToronto, addDaysToronto, formatTimeRa
 import { resolveWeightBand } from '../lib/fleetUtils';
 import { sortFleetGrouped, fleetItemLabel, isFleetOutOfService } from '../lib/fleetUtils';
 import { getUnitReadiness } from '../lib/inspectionUtils';
+import { isHourMaintenanceUnit } from '../lib/maintenanceUtils';
 import type { ActiveInspectionState } from './InspectionModal';
 import CrewCardWarning from './CrewCardWarning';
 import OverrideModal from './OverrideModal';
@@ -674,14 +675,18 @@ export default function ScheduleBoard({
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    {/* Equipment (mowers etc.) doesn't get inspected —
-                        no Inspect button, no inspected indicator.
-                        Trucks/trailers/tractors carry compact icons
-                        only so the unit name is never truncated. */}
-                    {veh.type !== 'equipment' && readiness === 'missing' && (
+                    {/* Equipment that doesn't track engine hours stays
+                        out of the inspection UI (no Inspect button, no
+                        indicator) — same rule that was added to keep
+                        mowers from being permanently blocked. Hour-
+                        tracked equipment + tractors opt back in so the
+                        inspection can capture engine hours for the
+                        oil-change schedule. Trucks/trailers always
+                        surface. Compact icons keep unit names readable. */}
+                    {(veh.type !== 'equipment' || isHourMaintenanceUnit(veh)) && readiness === 'missing' && (
                       <button onClick={() => setActiveInspection({ unitId: veh.id, targetDate: dateString, defects: [], expandedCategory: null, draftSeverity: 'minor', draftNotes: '' })} className="text-[10px] font-black bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded uppercase hover:bg-blue-100 transition-colors">Inspect</button>
                     )}
-                    {veh.type !== 'equipment' && todayInsp && (() => {
+                    {(veh.type !== 'equipment' || isHourMaintenanceUnit(veh)) && todayInsp && (() => {
                       const status = todayInsp.status;
                       // Compact circular icon button. Colour follows
                       // the inspection result; tap reaches the full

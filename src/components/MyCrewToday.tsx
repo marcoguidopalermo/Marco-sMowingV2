@@ -1,9 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Calendar as CalendarIcon, Target, Clock, TrendingUp, Link2, Users, Truck, Hammer, Wrench } from 'lucide-react';
-import { AppSettings, Crew, Employee, FleetItem, EquipmentSubtypeDefinition, PerformanceLog, PartialTimeOff } from '../types';
+import type { Dispatch, SetStateAction } from 'react';
+import { Calendar as CalendarIcon, Target, Clock, TrendingUp, Link2, Users, Truck, Hammer, Wrench, AlertCircle, AlertTriangle, CheckCircle } from 'lucide-react';
+import { AppSettings, Crew, Employee, FleetItem, EquipmentSubtypeDefinition, PerformanceLog, PartialTimeOff, Inspection } from '../types';
 import { formatTimeRange, addDaysToronto } from '../lib/dateUtils';
 import { sortFleetGrouped, fleetItemLabel, isFleetOutOfService } from '../lib/fleetUtils';
 import { accumulateEmployeeEff, efficiencyPct, EmpEffStat } from '../lib/efficiency';
+import { isHourMaintenanceUnit } from '../lib/maintenanceUtils';
+import type { ActiveInspectionState } from './InspectionModal';
 import TopCrewSpotlight from './TopCrewSpotlight';
 import MtdSelfWidget from './MtdSelfWidget';
 
@@ -23,6 +26,15 @@ interface MyCrewTodayProps {
   // get `undefined` and the button stays hidden. The handler opens the
   // existing ManualTaskModal (the same modal launched from MechanicBoard).
   onReportRepair?: () => void;
+  // Inspection access — App owns the modal state. Passing the setter
+  // and the inspection list lets each fleet row open the same global
+  // InspectionModal / InspectionReportModal that ScheduleBoard uses,
+  // so workers can DVIR/CircleCheck or capture engine hours without
+  // leaving My Crew Today. Optional: omit on roles/views where
+  // inspections aren't relevant.
+  setActiveInspection?: Dispatch<SetStateAction<ActiveInspectionState>>;
+  setViewingInspectionId?: (id: string) => void;
+  inspections?: Inspection[];
 }
 
 const numericOr = (v: unknown, fallback = 0): number => {
@@ -51,6 +63,9 @@ export default function MyCrewToday({
   jobberConnected,
   settings,
   onReportRepair,
+  setActiveInspection,
+  setViewingInspectionId,
+  inspections,
 }: MyCrewTodayProps) {
   const myCrews = useMemo<Crew[]>(() => {
     if (!currentUserEmployee) return [];
@@ -314,6 +329,27 @@ export default function MyCrewToday({
                             <ul className="space-y-1.5">
                               {sortedFleet.map(item => {
                                 const oos = isFleetOutOfService(item);
+                                // Mirror of the ScheduleBoard inspection
+                                // affordance: hour-tracked equipment +
+                                // every non-equipment surface the Inspect
+                                // button (when no inspection on this date)
+                                // or a compact status icon (when one
+                                // exists). Mowers/equipment without
+                                // tracksEngineHours stay hidden — same
+                                // rule as the schedule.
+                                const canInspect = item.type !== 'equipment' || isHourMaintenanceUnit(item);
+                                const todayInsp = canInspect && inspections
+                                  ? inspections.find(i => i.unitId === item.id && i.date === today)
+                                  : undefined;
+                                const inspBadge = canInspect && todayInsp ? (() => {
+                                  const status = todayInsp.status;
+                                  const config = status === 'major'
+                                    ? { cls: 'bg-red-100 text-red-700 ring-red-200 hover:bg-red-200', Icon: AlertCircle, title: 'Major defect — tap to view inspection' }
+                                    : status === 'minor'
+                                      ? { cls: 'bg-yellow-100 text-yellow-700 ring-yellow-200 hover:bg-yellow-200', Icon: AlertTriangle, title: 'Minor defect — tap to view inspection' }
+                                      : { cls: 'bg-emerald-100 text-emerald-700 ring-emerald-200 hover:bg-emerald-200', Icon: CheckCircle, title: 'Inspected — tap to view inspection' };
+                                  return config;
+                                })() : null;
                                 return (
                                   <li
                                     key={item.id}
@@ -331,6 +367,22 @@ export default function MyCrewToday({
                                       <span className="text-[10px] font-black uppercase bg-red-100 text-red-700 border border-red-200 px-1.5 py-0.5 rounded shrink-0">
                                         OOS
                                       </span>
+                                    )}
+                                    {canInspect && !todayInsp && setActiveInspection && (
+                                      <button
+                                        onClick={() => setActiveInspection({ unitId: item.id, targetDate: today, defects: [], expandedCategory: null, draftSeverity: 'minor', draftNotes: '' })}
+                                        className="text-[10px] font-black bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded uppercase hover:bg-blue-100 transition-colors shrink-0"
+                                      >Inspect</button>
+                                    )}
+                                    {inspBadge && setViewingInspectionId && todayInsp && (
+                                      <button
+                                        onClick={() => setViewingInspectionId(todayInsp.id)}
+                                        className={`p-1 rounded-full ring-1 shadow-sm transition-colors shrink-0 ${inspBadge.cls}`}
+                                        title={inspBadge.title}
+                                        aria-label={inspBadge.title}
+                                      >
+                                        <inspBadge.Icon className="w-3.5 h-3.5" />
+                                      </button>
                                     )}
                                   </li>
                                 );

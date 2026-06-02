@@ -3,6 +3,7 @@ import { ShieldCheck, X, ChevronUp, ChevronDown, AlertTriangle, CheckCircle } fr
 import { DefectDetail, FleetItem } from '../types';
 import { DVIR_DEFECTS, CIRCLE_CHECK_DEFECTS, TRAILER_DEFECTS } from '../constants';
 import { getRequiredInspectionType } from '../lib/inspectionUtils';
+import { isHourMaintenanceUnit } from '../lib/maintenanceUtils';
 
 export interface ActiveInspectionState {
   unitId: string | null;
@@ -46,12 +47,24 @@ export default function InspectionModal({ state: activeInspection, setState: set
 
             <div className="p-6 overflow-y-auto space-y-8 bg-slate-50 flex-1">
               <div className={`grid ${type === 'Trailer' ? 'grid-cols-1' : 'grid-cols-2'} gap-4`}>
-                {type !== 'Trailer' && (
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Odometer Reading</label>
-                    <input type="number" id="insp-odo" className="w-full border border-slate-300 rounded-xl p-3 font-mono font-bold text-lg outline-none focus:ring-2 focus:ring-slate-800" defaultValue={unit.odometer || 0} />
-                  </div>
-                )}
+                {type !== 'Trailer' && (() => {
+                  // Hour-tracked equipment/tractors capture engine
+                  // hours instead of km — same input id so App-level
+                  // submit reads one DOM node, but label/default/step
+                  // flip so the operator sees the right metric.
+                  const hourUnit = isHourMaintenanceUnit(unit);
+                  const label = hourUnit ? 'Engine Hours' : 'Odometer Reading';
+                  const defaultVal = hourUnit
+                    ? (unit.currentEngineHours ?? 0)
+                    : (unit.odometer ?? 0);
+                  const step = hourUnit ? '0.1' : '1';
+                  return (
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">{label}</label>
+                      <input type="number" id="insp-odo" step={step} className="w-full border border-slate-300 rounded-xl p-3 font-mono font-bold text-lg outline-none focus:ring-2 focus:ring-slate-800" defaultValue={defaultVal} />
+                    </div>
+                  );
+                })()}
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Location</label>
                   <input type="text" id="insp-loc" className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-slate-800" placeholder="e.g. Shop / Site" />

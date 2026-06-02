@@ -71,6 +71,15 @@ export const DEFAULT_CREW_SIZE_ALLOWANCE: CrewSizeAllowanceRow[] = [
 export const EOD_WARNING_HOUR = 22;
 export const PERMISSION_DENIED = 'Permission denied.';
 
+// Reading-validation thresholds for the inspection submit flow. A
+// "jump" warning fires when the entered reading exceeds the unit's
+// last stored reading by more than the threshold. Tune these as
+// fleet usage patterns change — the warning is overridable, so
+// the cost of a too-tight threshold is a confirm dialog rather
+// than a hard block.
+export const ODOMETER_JUMP_WARN_KM = 500;
+export const ENGINE_HOURS_JUMP_WARN = 50;
+
 export const LAWN_JOKES: string[] = [
   "Why did the lawn mower break up with the grass? It just wasn't cutting it anymore.",
   "What do you call a lazy lawnmower? A grasshopper that retired.",

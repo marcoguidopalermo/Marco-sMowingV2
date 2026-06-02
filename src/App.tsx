@@ -24,7 +24,7 @@ import {
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest
 } from './types';
-import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit } from './lib/maintenanceUtils';
+import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
 import { can, canForCrew, resolveRole, canAccessView, firstAccessibleView, defaultLandingView, AppView, setPermissionOverrides, ROLE_PERMISSIONS } from './lib/permissions';
 import { getResourceAvailability, describeUnavailability, ResourceType } from './lib/availability';
@@ -88,7 +88,8 @@ import {
   INITIAL_EMPLOYEES, INITIAL_FLEET, INITIAL_INVENTORY,
   TEST_USER_ID, TEST_USER_EMAIL, TEST_USER_NAME,
   DIVISIONS, CREW_NUMBERS, WEIGHT_CLASSES, ROUTE_FREQUENCIES, DAYS_OF_WEEK,
-  DVIR_DEFECTS, CIRCLE_CHECK_DEFECTS, DEFAULT_EOD_REMINDER, PERMISSION_DENIED
+  DVIR_DEFECTS, CIRCLE_CHECK_DEFECTS, DEFAULT_EOD_REMINDER, PERMISSION_DENIED,
+  ODOMETER_JUMP_WARN_KM, ENGINE_HOURS_JUMP_WARN
 } from './constants';
 
 
@@ -2810,6 +2811,9 @@ export default function App() {
             partialTimeOff={appData.partialTimeOff || {}}
             jobberConnected={jobberConnected}
             settings={appData.settings}
+            setActiveInspection={setActiveInspection}
+            setViewingInspectionId={setViewingInspectionId}
+            inspections={appData.inspections}
           onReportRepair={(effectiveRole === 'worker' || effectiveRole === 'foreman' || effectiveRole === 'manager') ? () => setManualTaskModal({
             isOpen: true,
             unitId: '',
@@ -3405,7 +3409,7 @@ export default function App() {
         showToastMsg={showToastMsg}
         onSubmit={async (unit, type) => {
           const odoEl = document.getElementById('insp-odo') as HTMLInputElement | null;
-          const odo = odoEl ? Number(odoEl.value) : 0;
+          const reading = odoEl ? Number(odoEl.value) : 0;
           const loc = (document.getElementById('insp-loc') as HTMLInputElement).value;
           const sig = (document.getElementById('insp-sig') as HTMLInputElement).value;
 
@@ -3423,6 +3427,65 @@ export default function App() {
           const hasMajor = finalDefects.some(d => d.severity === 'major');
 
           if (!sig) return showToastMsg("Signature required.");
+
+          // ---- Reading guards (lower-than-last, big-jump) -----------------
+          // Trailers don't capture a numeric reading — skip both guards.
+          // Hour-tracked units validate against currentEngineHours with
+          // the hour threshold; km units against odometer with the km
+          // threshold. The (confirmed) reading then flows through the
+          // normal maintenance recompute below, so override only means
+          // "yes this reading is intended" — it never bypasses the
+          // oil-change trigger.
+          const hourUnit = isHourMaintenanceUnit(unit);
+          const kmUnit = isKmMaintenanceUnit(unit) || (type !== 'Trailer' && !hourUnit);
+          const metric: 'hours' | 'km' = hourUnit ? 'hours' : 'km';
+          const unitLabel = hourUnit ? 'hrs' : 'km';
+          const baseline: number | null = type === 'Trailer'
+            ? null
+            : hourUnit
+              ? (typeof unit.currentEngineHours === 'number' ? unit.currentEngineHours : null)
+              : (typeof unit.odometer === 'number' ? unit.odometer : null);
+          let readingOverride: Inspection['readingOverride'] | undefined;
+          if (type !== 'Trailer' && baseline !== null && Number.isFinite(reading)) {
+            if (reading < baseline) {
+              const proceed = window.confirm(
+                `This is lower than the last reading (${baseline} ${unitLabel}). ` +
+                "Readings shouldn't decrease.\n\n" +
+                "OK = Override (it's correct)\n" +
+                'Cancel = Fix it'
+              );
+              if (!proceed) return;
+              readingOverride = {
+                type: 'lower',
+                metric,
+                enteredValue: reading,
+                lastValue: baseline,
+                overriddenBy: { email: displayEmail, name: displayName },
+                at: new Date().toISOString(),
+              };
+            } else {
+              const threshold = hourUnit ? ENGINE_HOURS_JUMP_WARN : ODOMETER_JUMP_WARN_KM;
+              const delta = reading - baseline;
+              if (delta > threshold) {
+                const proceed = window.confirm(
+                  `This is ${delta} ${unitLabel} more than the last reading ` +
+                  `(${baseline} ${unitLabel}) — that's a large jump. Is this correct?\n\n` +
+                  'OK = Override (proceed)\n' +
+                  'Cancel = Fix it'
+                );
+                if (!proceed) return;
+                readingOverride = {
+                  type: 'jump',
+                  metric,
+                  enteredValue: reading,
+                  lastValue: baseline,
+                  overriddenBy: { email: displayEmail, name: displayName },
+                  at: new Date().toISOString(),
+                };
+              }
+            }
+          }
+
           if (hasMajor) {
             if (!confirm("This report contains a MAJOR DEFECT. The unit will be marked OUT OF SERVICE. Continue?")) return;
           }
@@ -3437,12 +3500,13 @@ export default function App() {
             type,
             date: activeInspection.targetDate || formatDate(new Date()),
             timestamp: new Date().toISOString(),
-            odometer: odo,
+            odometer: reading,
             location: loc,
             defects: finalDefects,
             isMajor: hasMajor,
             signature: sig,
-            status: hasMajor ? 'major' : finalDefects.length > 0 ? 'minor' : 'clean'
+            status: hasMajor ? 'major' : finalDefects.length > 0 ? 'minor' : 'clean',
+            ...(readingOverride ? { readingOverride } : {}),
           };
 
           const newInspections = [newInsp, ...appData.inspections];
@@ -3474,14 +3538,41 @@ export default function App() {
             }
           });
 
-          const newFleet = appData.fleet.map(f => f.id === unit.id ? {
+          // Build the updated unit. Hour-tracked units capture engine
+          // hours; km units capture odometer; trailers capture neither.
+          // Inspection status / OOS / repairTags are uniform across types.
+          const baseFleetUpdate = (f: FleetItem): FleetItem => ({
             ...f,
-            ...(type === 'Trailer' ? {} : { odometer: odo, lastOdometerUpdate: formatDate(new Date()) }),
+            ...(type === 'Trailer'
+              ? {}
+              : hourUnit
+                ? { currentEngineHours: reading, lastHourUpdateAt: Date.now() }
+                : { odometer: reading, lastOdometerUpdate: formatDate(new Date()) }),
             lastInspectionId: newInsp.id,
             inspectionStatus: (hasMajor ? 'red' : finalDefects.length > 0 ? 'yellow' : 'green') as 'green' | 'yellow' | 'red' | 'missing',
             status: hasMajor ? 'Out of Service' : (f.status === 'Out of Service' ? 'Active' : f.status),
             repairTags: Array.from(new Set([...(f.repairTags || []), ...finalDefects.map(d => d.category), ...(hasMajor ? ['priority'] : [])]))
-          } as FleetItem : f);
+          } as FleetItem);
+
+          let updatedUnit = baseFleetUpdate(unit);
+
+          // Run the maintenance spawn helper on the updated unit so an
+          // inspection-captured reading crossing an oil-change interval
+          // surfaces (or promotes) a Repair Board task. Helper is
+          // idempotent (activeTaskId guard) and bails out for the wrong
+          // unit type or winterized units, so it's safe to call
+          // unconditionally for non-trailers.
+          if (hourUnit && !updatedUnit.isWinterized) {
+            const { items, mechanicTasks: nextTasks } = processMaintenanceForHourUpdate(updatedUnit, newTasks);
+            updatedUnit = { ...updatedUnit, maintenanceItems: items };
+            newTasks = nextTasks;
+          } else if (kmUnit && type !== 'Trailer' && !updatedUnit.isWinterized) {
+            const { items, mechanicTasks: nextTasks } = processMaintenanceForOdometerUpdate(updatedUnit, newTasks);
+            updatedUnit = { ...updatedUnit, maintenanceItems: items };
+            newTasks = nextTasks;
+          }
+
+          const newFleet = appData.fleet.map(f => f.id === unit.id ? updatedUnit : f);
 
           const success = await syncToCloud({
             ...appData,
@@ -3491,7 +3582,7 @@ export default function App() {
             activityLog: [...spawnedActivity, ...(appData.activityLog || [])]
           });
           if (success) {
-            setActiveInspection({ unitId: null, defects: [], expandedCategory: null, draftSeverity: 'minor', draftNotes: '' });
+            setActiveInspection({ unitId: null, targetDate: '', defects: [], expandedCategory: null, draftSeverity: 'minor', draftNotes: '' });
             showToastMsg("Inspection completed successfully!");
           }
         }}

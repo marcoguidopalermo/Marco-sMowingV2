@@ -451,6 +451,21 @@ export interface Inspection {
   performedBy?: { email: string; name: string };
   maintenanceNotes?: string;
   maintenanceSource?: 'task_completion' | 'manual_reset';
+  // Audit trail for reading-validation overrides. Set when the
+  // inspector confirmed a reading that tripped a guard
+  // (lower-than-last, or jumped by more than the threshold) and
+  // chose to proceed anyway. Absence = reading was within range
+  // or equal to the prior value. Stored on the inspection itself
+  // so the trail survives even if the unit's reading is later
+  // corrected.
+  readingOverride?: {
+    type: 'lower' | 'jump';
+    metric: 'km' | 'hours';
+    enteredValue: number;
+    lastValue: number;
+    overriddenBy: { email: string; name: string };
+    at: string;
+  };
 }
 
 export interface InventoryItem {
