@@ -141,6 +141,16 @@ export default function App() {
 
   // Auth gate state
   const [authRejected, setAuthRejected] = useState<string | null>(null);
+  // True once the current signed-in user has passed the client-side
+  // authorizedEmails check at least once this session. After that we do
+  // NOT eject them on a later snapshot that momentarily lacks their email
+  // (stale/empty/mid-write list) — real revocation is enforced
+  // server-side by Firestore rules and surfaces via the snapshot
+  // permission-denied error handler. Reset whenever `user` changes (new
+  // sign-in / sign-out) so the first decision for a fresh user is always
+  // a genuine check. A ref (not state) so updating it never re-renders or
+  // re-runs the snapshot effect.
+  const sessionAuthorizedRef = useRef(false);
 
   // Modals & Forms State
   const [isManageModalOpen, setIsManageModalOpen] = useState(false);
@@ -154,6 +164,13 @@ export default function App() {
   const [localFleet, setLocalFleet] = useState<FleetItem[]>([]);
   const [localRoutes, setLocalRoutes] = useState<Job[]>([]);
   const [localAdmins, setLocalAdmins] = useState<string[]>([]);
+  // Baseline snapshot of authorizedEmails captured when the Manage modal
+  // opens. Used at save time to apply only the admin's intentional deltas
+  // (added / removed emails) on top of the LATEST server list, instead of
+  // overwriting it wholesale with a possibly-stale localAdmins — which
+  // could silently drop an admin added by someone else while the modal
+  // was open. See the Personnel save handler.
+  const localAdminsBaselineRef = useRef<string[]>([]);
   const [localEquipmentSubtypes, setLocalEquipmentSubtypes] = useState<EquipmentSubtypeDefinition[]>([]);
   // Inline-edit drafts of pre-scheduled partial time-off. Flat shape (date inside
   // the record) makes inline editing easy; rehydrated into the keyed
@@ -636,6 +653,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // New sign-in (or sign-out): the next authorization decision for this
+    // user is a genuine first check, not a re-check of an active session.
+    sessionAuthorizedRef.current = false;
     if (!user) return;
     const dataRef = doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main');
     return onSnapshot(dataRef, (snapshot) => {
@@ -700,20 +720,50 @@ export default function App() {
             : DEFAULT_EQUIPMENT_SUBTYPES,
         };
 
-        // AUTH GATE: confirm this user's email is on the authorized list.
+        // AUTH GATE — confirm this user's email is on the authorized list.
+        //
+        // This client-side check is a convenience / early-rejection layer
+        // only. The REAL security gate is server-side Firestore rules,
+        // which reject reads for unauthorized users and surface here as a
+        // permission-denied snapshot error (handled in the error callback
+        // below). So this check is deliberately LENIENT for active
+        // sessions to avoid kicking out a genuinely-authorized user on a
+        // transient snapshot:
+        //   • Eject only on the user's FIRST authorization decision this
+        //     session — a fresh login that is genuinely not on the list.
+        //   • Once a user has passed once, never eject them on a later
+        //     snapshot. A momentarily stale / empty / mid-write
+        //     authorizedEmails array (e.g. another client's full-document
+        //     save echoing an out-of-date list) can no longer kick a live
+        //     session. Real revocation still takes effect server-side.
+        //   • Treat an empty or missing authorizedEmails array as
+        //     INDETERMINATE (don't eject) — never as "deny everyone".
+        //     This also closes the old `[] is truthy` edge where an empty
+        //     array bypassed the super-admin fallback and ejected everyone.
         const userEmail = normalizeEmail(user.email);
         const isSuper = userEmail === SUPER_ADMIN_EMAIL;
-        const allowed = (newAppData.authorizedEmails || []).map((e: string) => normalizeEmail(e));
-        const authorized = isSuper || (userEmail && allowed.includes(userEmail));
-        if (!authorized) {
+        const allowed = (Array.isArray(data.authorizedEmails) ? data.authorizedEmails : [])
+          .map((e: string) => normalizeEmail(e))
+          .filter(Boolean);
+        const listKnown = allowed.length > 0; // empty/missing = indeterminate
+        const authorized = isSuper || (!!userEmail && allowed.includes(userEmail));
+        // Reject ONLY a confirmed, stable rejection: we have a definitive
+        // list, the user isn't on it, and this is their initial decision
+        // this session (not a re-check of an already-authorized session).
+        if (!authorized && listKnown && !sessionAuthorizedRef.current) {
           setAuthRejected(`Your email (${userEmail || 'unknown'}) is not authorized to access CrewMaster. Contact your administrator.`);
           signOut(auth).catch(() => { /* ignore — onAuthStateChanged will clear user regardless */ });
           setLoading(false);
           return;
         }
+        if (authorized) {
+          // Mark the session as having passed the gate so subsequent
+          // snapshots can't eject it on a transient miss.
+          sessionAuthorizedRef.current = true;
+          setAuthRejected(null);
+        }
 
         setAppData(newAppData);
-        setAuthRejected(null);
       } else {
         console.warn("No remote data found, initializing with defaults.");
         setDoc(dataRef, appData).catch((err: any) => console.error("Init err:", err));
@@ -841,6 +891,8 @@ export default function App() {
     setLocalFleet(JSON.parse(JSON.stringify(appData.fleet)));
     setLocalRoutes(JSON.parse(JSON.stringify(appData.routes || [])));
     setLocalAdmins(appData.authorizedEmails || []);
+    // Remember the list as loaded so the save can diff against it.
+    localAdminsBaselineRef.current = (appData.authorizedEmails || []).map(e => normalizeEmail(e)).filter(Boolean);
     setLocalInventory(JSON.parse(JSON.stringify(appData.inventory || [])));
     setLocalSupplies(appData.supplies || []);
     setLocalPermissions(JSON.parse(JSON.stringify(appData.rolePermissions || {})));
@@ -3180,7 +3232,28 @@ export default function App() {
             linkedUserEmail: e.linkedUserEmail ? normalizeEmail(e.linkedUserEmail) : e.linkedUserEmail,
             email: e.email ? normalizeEmail(e.email) : e.email,
           }));
-          const normalizedAdmins = Array.from(new Set(localAdmins.map(e => normalizeEmail(e)).filter(Boolean)));
+          // Authorized-emails save = a 3-way merge, NOT a wholesale
+          // overwrite. localAdmins was captured when the modal opened and
+          // may be stale (another admin could have added someone since).
+          // Overwriting with it would silently drop that person and kick
+          // them out at the next snapshot. Instead, compute only THIS
+          // admin's intentional deltas (added / removed vs. the baseline
+          // loaded at modal-open) and apply them on top of the LATEST
+          // server list. Net effect: untouched lists pass the live list
+          // through unchanged; concurrent additions by others survive;
+          // the admin's own add/remove still take effect.
+          const baseline = localAdminsBaselineRef.current; // normalized at modal-open
+          const current = localAdmins.map(e => normalizeEmail(e)).filter(Boolean);
+          const baselineSet = new Set(baseline);
+          const currentSet = new Set(current);
+          const added = current.filter(e => !baselineSet.has(e));
+          const removed = baseline.filter(e => !currentSet.has(e));
+          const removedSet = new Set(removed);
+          const latest = (appData.authorizedEmails || []).map(e => normalizeEmail(e)).filter(Boolean);
+          const merged = new Set(latest);
+          for (const e of added) merged.add(e);
+          for (const e of removedSet) merged.delete(e);
+          const normalizedAdmins = Array.from(merged).sort();
 
           // Validate pre-scheduled partial time-off drafts and rebuild the keyed map.
           // A row touched but not fully filled is a save-blocker; an entirely blank
