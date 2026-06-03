@@ -72,12 +72,14 @@ export interface UnitAttention {
   missingInfo: boolean;  // any unfilled/stale required field
   missing: string[];     // human-readable list of what's missing/stale
   // Oil-change / maintenance status for the per-row colour chip.
-  //   'overdue' (red) / 'soon' (yellow) / 'good' (green) when the unit has
-  //   at least one configured maintenance schedule for its metric;
-  //   'none' when it tracks no maintenance or has no configured schedule
-  //   (the missing-info icon covers that case instead of a misleading
-  //   green tag).
-  maintStatus: 'overdue' | 'soon' | 'good' | 'none';
+  //   'overdue' (red)  — current >= nextDueAt
+  //   'soon'    (yellow) — within the warn buffer of next-due
+  //   'good'    (green)  — below next-due − buffer
+  //   'unset'   (grey)   — a maintenance unit (km/hour) with NO configured
+  //                        schedule; shown grey so it's clearly "not set".
+  //   'none'             — not a maintenance unit (trailer / non-tracking
+  //                        equipment); no oil chip applies.
+  maintStatus: 'overdue' | 'soon' | 'good' | 'unset' | 'none';
 }
 
 // Compute the display status for one unit. Composes existing predicates;
@@ -119,13 +121,17 @@ export function getUnitAttention(
     else if (current >= mi.nextDueAt - buffer) comingDue = true;
   }
 
-  // Oil-change / maintenance chip status. Only meaningful for units that
-  // track maintenance AND have at least one configured schedule — others
-  // get 'none' (no chip; the missing-info icon flags the unset case).
+  // Oil-change / maintenance chip status. Maintenance units (km trucks /
+  // hour equipment+tractors) always get a chip: grey 'unset' when no
+  // schedule is configured, else green/yellow/red. Non-maintenance units
+  // (trailers / non-tracking equipment) get 'none' (no chip).
+  const isMaintUnit = isKm || isHr;
   const maintStatus: UnitAttention['maintStatus'] =
-    (!(isKm || isHr) || configuredCount === 0)
+    !isMaintUnit
       ? 'none'
-      : pastDue ? 'overdue' : comingDue ? 'soon' : 'good';
+      : configuredCount === 0
+        ? 'unset'
+        : pastDue ? 'overdue' : comingDue ? 'soon' : 'good';
 
   const missing: string[] = [];
   // A maintenance-tracked unit with NO matching schedules, or one with an

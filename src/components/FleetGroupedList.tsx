@@ -7,19 +7,21 @@ import { groupFleet, getUnitAttention, openRepairUnitIds, UnitAttention } from '
 // (coming due / open repair, amber), and a distinct missing-info icon
 // (slate/blue), shown alongside any severity icon. Pure presentation.
 // Color-coded oil-change / maintenance chip for a collapsed row.
-// green = good, yellow = within warn buffer, red = past due. Hidden when
-// the unit has no configured maintenance schedule (the missing-info icon
-// covers that instead of a misleading green tag).
+// green = good, yellow = within warn buffer, red = past due, grey = no
+// schedule set. Rendered on every maintenance unit (km trucks / hour
+// equipment+tractors); non-maintenance units ('none') get no chip.
 export function OilTag({ status }: { status: UnitAttention['maintStatus'] }) {
   if (status === 'none') return null;
   const cls =
     status === 'overdue' ? 'bg-rose-100 text-rose-700 border-rose-200'
       : status === 'soon' ? 'bg-yellow-100 text-yellow-800 border-yellow-200'
-        : 'bg-emerald-100 text-emerald-700 border-emerald-200';
+        : status === 'unset' ? 'bg-slate-100 text-slate-500 border-slate-200'
+          : 'bg-emerald-100 text-emerald-700 border-emerald-200';
   const title =
     status === 'overdue' ? 'Oil change past due'
       : status === 'soon' ? 'Oil change coming due'
-        : 'Oil change up to date';
+        : status === 'unset' ? 'No oil-change schedule set'
+          : 'Oil change up to date';
   return (
     <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border shrink-0 ${cls}`} title={title}>
       Oil
