@@ -243,7 +243,7 @@ export interface DeletionAuditEntry {
   userEmail: string;
   userName: string;
   userRole: UserRole;
-  recordType: 'task' | 'repair_log' | 'inspection_log';
+  recordType: 'task' | 'repair_log' | 'inspection_log' | 'time_entry';
   recordId: string;
   summary: {
     title?: string;

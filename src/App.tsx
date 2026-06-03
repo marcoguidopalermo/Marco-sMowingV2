@@ -2939,6 +2939,7 @@ export default function App() {
           }}
           userEmail={displayEmail}
           userName={displayName}
+          currentUserRole={effectiveRole}
           isAdmin={isAdmin}
           canViewAll={can('canViewAllTimeMaster', effectiveRole)}
           canEditAny={can('canEditAnyTimeEntry', effectiveRole)}

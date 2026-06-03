@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Clock, MapPin, Edit, Plus, Download, Users, AlertTriangle,
   ChevronDown, ChevronUp, X, Save, ArrowLeft, Calendar as CalendarIcon,
-  Plane, RotateCcw
+  Plane, RotateCcw, Trash2
 } from 'lucide-react';
-import { AppData, TimeEntry, TimeEntryNote, TimeOffRequest } from '../types';
+import { AppData, TimeEntry, TimeEntryNote, TimeOffRequest, UserRole, DeletionAuditEntry } from '../types';
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto } from '../lib/dateUtils';
+import { chunksForMechanic, computeHoursWorkedBetween } from '../lib/payChunkUtils';
 import TimeOffApprovalPage from './TimeOffApprovalPage';
 
 interface TimeMasterProps {
@@ -13,6 +14,11 @@ interface TimeMasterProps {
   syncToCloud: (data: AppData) => Promise<boolean | undefined>;
   userEmail: string;
   userName: string;
+  // Role of the acting user — stamped onto the DeletionAuditEntry when a
+  // time entry is hard-deleted. Edit/delete itself is NOT gated on role
+  // (anyone can edit/delete entries they can already see); this is for
+  // the audit trail only.
+  currentUserRole: UserRole;
   isAdmin: boolean;
   canViewAll: boolean;
   canEditAny: boolean;
@@ -60,6 +66,7 @@ export default function TimeMaster({
   syncToCloud,
   userEmail,
   userName,
+  currentUserRole,
   isAdmin,
   canViewAll,
   canEditAny,
@@ -94,7 +101,21 @@ export default function TimeMaster({
   const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
 
   const [editingEntry, setEditingEntry] = useState<TimeEntry | null>(null);
-  const [editForm, setEditForm] = useState({ clockIn: '', clockOut: '', reason: '' });
+  // editMode: 'times' edits clock-in/out directly (hours derived);
+  // 'hours' edits the total hours directly (clockOut synthesized from
+  // clockIn + hours). `hours` holds the hours-mode input.
+  const [editForm, setEditForm] = useState<{ mode: 'times' | 'hours'; clockIn: string; clockOut: string; hours: string; reason: string }>(
+    { mode: 'times', clockIn: '', clockOut: '', hours: '', reason: '' },
+  );
+
+  // Generic warn+confirm gate, used to surface pay-chunk warnings before
+  // an edit/delete that touches settled or about-to-close pay. `warnings`
+  // is a list of plain-language reasons; `onConfirm` runs the actual
+  // mutation. Not a permission gate — purely a heads-up.
+  const [pendingAction, setPendingAction] = useState<{ title: string; warnings: string[]; confirmLabel: string; onConfirm: () => void } | null>(null);
+
+  // Per-row delete confirm (a row with no pay-chunk warning still gets a
+  // plain "delete this entry?" confirm via the same modal).
 
   // CSV export popup — replaces the inline export bar that used to
   // sit beneath the All Users list. Icon in the card header opens
@@ -189,6 +210,21 @@ export default function TimeMaster({
   const monthHours = sumHours(filterRange(ownerEntries, ...monthRange()));
   const filteredOwnerEntries = filterByDateFilter(ownerEntries);
 
+  // Deleted time entries for this owner, surfaced as read-only audit
+  // rows in the log so a hard-delete still leaves a visible "who/when"
+  // trace (the entry itself is gone from timeEntries — and from pay).
+  // Filtered to the same date range, keyed on the deleted snapshot's
+  // clockIn.
+  const deletedOwnerRows = useMemo(() => {
+    const ownerLc = (effectiveOwnerEmail || '').toLowerCase();
+    const rows = (appData.deletionAuditLog || [])
+      .filter(d => d.recordType === 'time_entry')
+      .map(d => ({ audit: d, entry: d.snapshot as TimeEntry }))
+      .filter(x => x.entry && (x.entry.userEmail || '').toLowerCase() === ownerLc);
+    return rows.filter(x => filterByDateFilter([x.entry]).length > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appData.deletionAuditLog, effectiveOwnerEmail, dateFilter, customStart, customEnd]);
+
   // All users (for admin overview)
   const allUsers = useMemo(() => {
     const map = new Map<string, string>();
@@ -247,12 +283,54 @@ export default function TimeMaster({
     setNoteInputs(p => ({ ...p, [entry.id]: '' }));
   };
 
-  // Admin edit
+  // Anyone can edit an entry they can see (own entries for non-admins,
+  // all for admins/managers). `canModify` reflects exactly that — a
+  // worker can only ever see their own rows, so this also bounds reach.
+  const canModify = (entry: TimeEntry) =>
+    (entry.userEmail || '').toLowerCase() === (userEmail || '').toLowerCase() || canEditAny;
+
+  // --- PAY-CHUNK SAFETY (warn, don't block) ----------------------------
+  // Does an entry's [clockIn, clockOut] window overlap any CLOSED
+  // (paid-out) chunk for that mechanic? Editing/deleting an entry in a
+  // paid window rewrites settled pay history — we warn before proceeding.
+  // ($ on a closed chunk stays frozen by construction; this is about
+  // ledger honesty, so it's a heads-up, not a block.)
+  const overlapsPaidChunk = (mechanicEmail: string, clockInIso: string, clockOutIso: string | undefined): boolean => {
+    const { closed } = chunksForMechanic(mechanicEmail, appData.mechanicPayChunks || {});
+    if (closed.length === 0) return false;
+    const inMs = new Date(clockInIso).getTime();
+    const outMs = clockOutIso ? new Date(clockOutIso).getTime() : Date.now();
+    if (Number.isNaN(inMs)) return false;
+    return closed.some(c => {
+      const cs = c.startTimestamp;
+      const ce = c.endTimestamp ?? cs;
+      return inMs < ce && outMs > cs; // window overlap
+    });
+  };
+
+  // Would the prospective set of entries push the mechanic's OPEN chunk
+  // over its threshold? The recompute engine only CLOSES (never
+  // re-opens), so an edit that crosses the line is irreversible — warn
+  // before it happens. Delete can only reduce hours, so it never trips
+  // this.
+  const wouldCloseOpenChunk = (mechanicEmail: string, prospectiveEntries: TimeEntry[]): boolean => {
+    const { open } = chunksForMechanic(mechanicEmail, appData.mechanicPayChunks || {});
+    if (!open) return false;
+    const offset = open.manualHoursOffset || 0;
+    const hrs = offset + computeHoursWorkedBetween(open.mechanicEmail, open.startTimestamp, Date.now(), prospectiveEntries);
+    return hrs >= open.hoursThreshold;
+  };
+
+  // Admin/any edit
   const openEdit = (entry: TimeEntry) => {
     setEditingEntry(entry);
     setEditForm({
+      // Hours-only entries default to the hours editor (their clock
+      // times aren't meaningful); everything else defaults to times.
+      mode: entry.manualHoursOnly ? 'hours' : 'times',
       clockIn: toLocalInputValue(entry.clockIn),
       clockOut: entry.clockOut ? toLocalInputValue(entry.clockOut) : '',
+      hours: entryDurationHours(entry).toFixed(2),
       reason: '',
     });
   };
@@ -352,6 +430,42 @@ export default function TimeMaster({
     if (!editingEntry) return;
     if (!editForm.reason.trim()) { showToastMsg('Reason is required for edits.'); return; }
     if (!editForm.clockIn) { showToastMsg('Clock In time is required.'); return; }
+
+    // Resolve the new clockIn/clockOut + manualHoursOnly flag from the
+    // chosen mode.
+    let clockInIso: string;
+    let clockOutIso: string | undefined;
+    let manualHoursOnly: boolean;
+    if (editForm.mode === 'hours') {
+      // Direct hours edit: anchor at the (possibly edited) clockIn and
+      // synthesize clockOut = clockIn + hours. Marks the entry hours-only
+      // so the row renders "X hrs (entered as hours)".
+      const hoursNum = Number(editForm.hours);
+      if (!Number.isFinite(hoursNum) || hoursNum <= 0) { showToastMsg('Hours must be greater than 0.'); return; }
+      if (hoursNum > 24) { showToastMsg('Hours must be 24 or less.'); return; }
+      const inDate = new Date(editForm.clockIn);
+      if (Number.isNaN(inDate.getTime())) { showToastMsg('Invalid clock-in date.'); return; }
+      clockInIso = inDate.toISOString();
+      clockOutIso = new Date(inDate.getTime() + hoursNum * 3600 * 1000).toISOString();
+      manualHoursOnly = true;
+    } else {
+      // Times mode: clock-in/out drive hours. Clear any stale
+      // manualHoursOnly flag (fixes the old sticky-flag mismatch where an
+      // hours-only entry edited via clock times kept "entered as hours").
+      const inDate = new Date(editForm.clockIn);
+      if (Number.isNaN(inDate.getTime())) { showToastMsg('Invalid clock-in date.'); return; }
+      clockInIso = inDate.toISOString();
+      if (editForm.clockOut) {
+        const outDate = new Date(editForm.clockOut);
+        if (Number.isNaN(outDate.getTime())) { showToastMsg('Invalid clock-out date.'); return; }
+        if (outDate.getTime() <= inDate.getTime()) { showToastMsg('Clock-out must be after clock-in.'); return; }
+        clockOutIso = outDate.toISOString();
+      } else {
+        clockOutIso = undefined;
+      }
+      manualHoursOnly = false;
+    }
+
     const newNote: TimeEntryNote = {
       author: userEmail,
       authorName: userName,
@@ -360,18 +474,88 @@ export default function TimeMaster({
     };
     const updated: TimeEntry = {
       ...editingEntry,
-      clockIn: new Date(editForm.clockIn).toISOString(),
-      clockOut: editForm.clockOut ? new Date(editForm.clockOut).toISOString() : undefined,
+      clockIn: clockInIso,
+      clockOut: clockOutIso,
+      manualHoursOnly,
       editedBy: userEmail,
       editedAt: new Date().toISOString(),
       notes: [...editingEntry.notes, newNote],
     };
-    syncToCloud({
-      ...appData,
-      timeEntries: appData.timeEntries.map(e => e.id === editingEntry.id ? updated : e),
+
+    const commit = () => {
+      syncToCloud({
+        ...appData,
+        timeEntries: appData.timeEntries.map(e => e.id === editingEntry.id ? updated : e),
+      });
+      setEditingEntry(null);
+      showToastMsg('Entry updated.');
+    };
+
+    // Pay-chunk warnings (heads-up, not a block). Check the paid overlap
+    // for BOTH the original and the new window (an edit can move an entry
+    // into or out of a paid period), plus the irreversible-close case.
+    const owner = editingEntry.userEmail;
+    const prospective = appData.timeEntries.map(e => e.id === editingEntry.id ? updated : e);
+    const warnings: string[] = [];
+    if (
+      overlapsPaidChunk(owner, editingEntry.clockIn, editingEntry.clockOut) ||
+      overlapsPaidChunk(owner, clockInIso, clockOutIso)
+    ) {
+      warnings.push('This entry falls in a PAID pay period (a closed pay chunk). Changing it rewrites settled pay records.');
+    }
+    if (wouldCloseOpenChunk(owner, prospective)) {
+      warnings.push('This change pushes the current pay period to its $1,000 threshold and will CLOSE it. The pay engine never re-opens a closed chunk — editing the hours back down afterward will NOT undo it.');
+    }
+    if (warnings.length > 0) {
+      setPendingAction({ title: 'Confirm pay-affecting edit', warnings, confirmLabel: 'Save anyway', onConfirm: () => { setPendingAction(null); commit(); } });
+      return;
+    }
+    commit();
+  };
+
+  // Hard-delete a time entry. Removes it from timeEntries (so the
+  // pay-chunk wrapper recomputes hours downward) AND writes a
+  // DeletionAuditEntry in the same atomic syncToCloud call — preserving a
+  // who/when/full-snapshot trace without the pay-miscount risk of a
+  // soft-delete. Paid-chunk overlap warns first.
+  const requestDelete = (entry: TimeEntry) => {
+    if (!canModify(entry)) { showToastMsg('You can only delete your own entries.'); return; }
+    const doDelete = () => {
+      const auditEntry: DeletionAuditEntry = {
+        id: `del-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        timestamp: Date.now(),
+        userEmail,
+        userName,
+        userRole: currentUserRole,
+        recordType: 'time_entry',
+        recordId: entry.id,
+        summary: {
+          title: `${formatHM(entryDurationHours(entry))} · ${entry.userName}`,
+          date: formatDate(new Date(entry.clockIn)),
+        },
+        snapshot: entry,
+      };
+      // Route through the TimeMaster syncToCloud WRAPPER (this very prop)
+      // so the pay-chunk state machine recomputes against the shortened
+      // timeEntries list. Atomic with the audit write.
+      syncToCloud({
+        ...appData,
+        timeEntries: appData.timeEntries.filter(e => e.id !== entry.id),
+        deletionAuditLog: [auditEntry, ...(appData.deletionAuditLog || [])],
+      });
+      setPendingAction(null);
+      showToastMsg('Entry deleted.');
+    };
+    const warnings: string[] = [];
+    if (overlapsPaidChunk(entry.userEmail, entry.clockIn, entry.clockOut)) {
+      warnings.push('This entry falls in a PAID pay period (a closed pay chunk). Deleting it rewrites settled pay records.');
+    }
+    setPendingAction({
+      title: 'Delete this time entry?',
+      warnings: warnings.length > 0 ? warnings : ['This permanently removes the entry. A deletion record (who/when) is kept in the log.'],
+      confirmLabel: 'Delete entry',
+      onConfirm: doDelete,
     });
-    setEditingEntry(null);
-    showToastMsg('Entry updated.');
   };
 
   // CSV export
@@ -460,8 +644,11 @@ export default function TimeMaster({
     const expanded = expandedEntryId === entry.id;
     const inMapsUrl = entry.inLocation ? `https://www.google.com/maps?q=${entry.inLocation.lat},${entry.inLocation.lng}` : null;
     const outMapsUrl = entry.outLocation ? `https://www.google.com/maps?q=${entry.outLocation.lat},${entry.outLocation.lng}` : null;
-    const canEdit = canEditAny;
+    const canEdit = canModify(entry);
     const canNote = canAddNoteToEntry(entry);
+    const editorName = entry.editedBy
+      ? (allUsers.find(u => u.email.toLowerCase() === (entry.editedBy || '').toLowerCase())?.name || entry.editedBy)
+      : null;
 
     return (
       <div key={entry.id} className={`bg-white rounded-xl border ${unclosed ? 'border-rose-200 ring-1 ring-rose-100' : 'border-gray-200'} shadow-sm overflow-hidden`}>
@@ -511,10 +698,23 @@ export default function TimeMaster({
                 Manual{entry.enteredBy ? ` · ${entry.enteredBy.name}` : ''}
               </span>
             )}
+            {editorName && (
+              <span
+                className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-sky-50 text-sky-700 border-sky-200"
+                title={`Edited by ${editorName}${entry.editedAt ? ` at ${new Date(entry.editedAt).toLocaleString()}` : ''}`}
+              >
+                Edited · {editorName}
+              </span>
+            )}
             <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusClass}`}>{status}</span>
             {canEdit && (
-              <button onClick={() => openEdit(entry)} title="Edit entry (admin)" className="p-1.5 bg-slate-50 border border-slate-200 rounded hover:bg-slate-100 text-slate-600">
+              <button onClick={() => openEdit(entry)} title="Edit entry" className="p-1.5 bg-slate-50 border border-slate-200 rounded hover:bg-slate-100 text-slate-600">
                 <Edit className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {canEdit && (
+              <button onClick={() => requestDelete(entry)} title="Delete entry" className="p-1.5 bg-rose-50 border border-rose-200 rounded hover:bg-rose-100 text-rose-600">
+                <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
@@ -573,10 +773,19 @@ export default function TimeMaster({
         <div className="col-span-1" />
       </div>
       <div className="space-y-2">
-        {filteredOwnerEntries.length === 0 ? (
+        {filteredOwnerEntries.length === 0 && deletedOwnerRows.length === 0 ? (
           <div className="text-center text-slate-400 italic py-10">No time entries in this range.</div>
         ) : (
-          filteredOwnerEntries.map(renderEntryRow)
+          <>
+            {filteredOwnerEntries.map(renderEntryRow)}
+            {deletedOwnerRows.map(({ audit, entry }) => (
+              <div key={audit.id} className="flex items-center gap-2 text-[11px] text-slate-400 bg-slate-50 border border-dashed border-slate-200 rounded-lg px-3 py-2">
+                <Trash2 className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                <span className="line-through">{formatDate(new Date(entry.clockIn))} · {formatHM(entryDurationHours(entry))}</span>
+                <span className="ml-auto font-bold text-slate-500">Deleted by {audit.userName || audit.userEmail} · {new Date(audit.timestamp).toLocaleString()}</span>
+              </div>
+            ))}
+          </>
         )}
       </div>
     </div>
@@ -958,8 +1167,27 @@ export default function TimeMaster({
                 <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">User</span>
                 <p className="font-bold text-slate-800 text-sm">{editingEntry.userName} ({editingEntry.userEmail})</p>
               </div>
+
+              {/* Edit mode toggle: adjust clock times OR set hours directly. */}
+              <div className="flex bg-slate-100 rounded-xl p-1">
+                <button
+                  type="button"
+                  onClick={() => setEditForm(p => ({ ...p, mode: 'times' }))}
+                  className={`flex-1 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest rounded-lg transition-colors ${editForm.mode === 'times' ? 'bg-white text-slate-800 shadow' : 'text-slate-500'}`}
+                >
+                  Clock Times
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditForm(p => ({ ...p, mode: 'hours' }))}
+                  className={`flex-1 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest rounded-lg transition-colors ${editForm.mode === 'hours' ? 'bg-white text-slate-800 shadow' : 'text-slate-500'}`}
+                >
+                  Hours
+                </button>
+              </div>
+
               <div className="space-y-1">
-                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Clock In</label>
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">{editForm.mode === 'hours' ? 'Date / Start' : 'Clock In'}</label>
                 <input
                   type="datetime-local"
                   value={editForm.clockIn}
@@ -967,15 +1195,31 @@ export default function TimeMaster({
                   className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
                 />
               </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Clock Out (leave empty for active)</label>
-                <input
-                  type="datetime-local"
-                  value={editForm.clockOut}
-                  onChange={e => setEditForm(p => ({ ...p, clockOut: e.target.value }))}
-                  className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
-                />
-              </div>
+              {editForm.mode === 'hours' ? (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Total Hours</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.25"
+                    value={editForm.hours}
+                    onChange={e => setEditForm(p => ({ ...p, hours: e.target.value }))}
+                    placeholder="e.g. 6.5"
+                    className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold font-mono outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                  <div className="text-[11px] text-slate-400">Clock-out is set to start + hours. The entry is marked “entered as hours”.</div>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Clock Out (leave empty for active)</label>
+                  <input
+                    type="datetime-local"
+                    value={editForm.clockOut}
+                    onChange={e => setEditForm(p => ({ ...p, clockOut: e.target.value }))}
+                    className="w-full border border-slate-300 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                </div>
+              )}
               <div className="space-y-1">
                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Reason for Edit *</label>
                 <textarea
@@ -990,6 +1234,32 @@ export default function TimeMaster({
             <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
               <button onClick={() => setEditingEntry(null)} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors">Cancel</button>
               <button onClick={saveEdit} className="px-6 py-2.5 font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow uppercase tracking-widest text-xs flex items-center gap-2"><Save className="w-4 h-4" /> Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WARN + CONFIRM — pay-chunk heads-up before edit/delete, and the
+          plain delete confirm. Warnings are advisory; the action proceeds
+          on confirm (never blocked). */}
+      {pendingAction && (
+        <div className="fixed inset-0 bg-black/60 z-[110] flex items-center justify-center p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setPendingAction(null); }}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95">
+            <div className="p-5 border-b border-gray-200 flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0" />
+              <h3 className="text-lg font-bold text-slate-800">{pendingAction.title}</h3>
+            </div>
+            <div className="p-6 space-y-3">
+              {pendingAction.warnings.map((w, i) => (
+                <div key={i} className="flex items-start gap-2 text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                  <span>{w}</span>
+                </div>
+              ))}
+            </div>
+            <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
+              <button onClick={() => setPendingAction(null)} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors">Cancel</button>
+              <button onClick={pendingAction.onConfirm} className="px-6 py-2.5 font-black text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow uppercase tracking-widest text-xs">{pendingAction.confirmLabel}</button>
             </div>
           </div>
         </div>
