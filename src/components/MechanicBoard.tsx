@@ -1043,7 +1043,14 @@ export default function MechanicBoard({
           timeEntries={appData.timeEntries || []}
         />
       ) : (
-        <div className="flex-1 lg:min-h-0 flex flex-col gap-4">
+        // Single scroll container for the whole Fleet List — header strip +
+        // summary banner + grouped list scroll together. Mirrors the kanban
+        // view's `flex-1 min-h-0 overflow-y-auto` (direct child of the root)
+        // so scrolling works on mobile + desktop regardless of banner
+        // height. The previous nested layout (outer flex-1 lg:min-h-0 +
+        // inner scroller) only constrained height on lg, so the banner's
+        // vertical space broke scroll on mobile.
+        <div className="flex flex-col gap-4 flex-1 min-h-0 overflow-y-auto pb-2">
           {/* Fleet-list header: CVOR expiry editor + Missing-Odo summary.
               These used to live above the view conditional (visible on
               every Mechanic tab) but they're Fleet-specific signals — a
@@ -1139,7 +1146,7 @@ export default function MechanicBoard({
             </div>
           )}
 
-        <div className="flex-1 min-h-0 overflow-y-auto pb-2">
+        <div>
           <FleetGroupedList
             fleet={fleet}
             subtypes={appData.equipmentSubtypes || []}
