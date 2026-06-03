@@ -586,7 +586,7 @@ export default function MechanicBoard({
                 : (task.waitingOnParts && task.partsStatus !== 'arrived') ? 'waiting'
                 : null;
               const partsPending = partsState !== null;
-              const stampLabel = partsState === 'ordered' ? 'On Order'
+              const stampLabel = partsState === 'ordered' ? 'Parts on Order'
                 : partsState === 'requested' ? 'Parts Requested'
                 : 'Parts Waiting';
               const stampColor: 'rose' | 'amber' = partsState === 'ordered' ? 'rose' : 'amber';
@@ -597,17 +597,20 @@ export default function MechanicBoard({
                 : 'border-amber-200 border-l-amber-400';
               return (
                 <li key={task.id} className="relative">
-                  {/* Corner "stamp" — sits in the <li> (outside the dimmed
-                      card) so it stays crisp while the card body recedes. */}
+                  {/* Centered "stamp" — sits in the <li> (outside the dimmed
+                      card) so it stays crisp while the card body recedes.
+                      Centered over the card so it can't be missed on mobile. */}
                   {partsPending && (
-                    <Stamp
-                      label={stampLabel}
-                      color={stampColor}
-                      rotate={-6}
-                      size="sm"
-                      title="Blocked on parts — not actionable yet"
-                      className="absolute top-1.5 right-1.5 z-10 bg-white/80 shadow-sm"
-                    />
+                    <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+                      <Stamp
+                        label={stampLabel}
+                        color={stampColor}
+                        rotate={-6}
+                        size="lg"
+                        title="Blocked on parts — not actionable yet"
+                        className="bg-white/80 shadow-sm"
+                      />
+                    </div>
                   )}
                   <div
                     role="button"

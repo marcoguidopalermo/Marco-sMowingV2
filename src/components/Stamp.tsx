@@ -9,9 +9,10 @@ interface StampProps {
   color?: StampColor;
   // Rotation in degrees (Performance Board uses -4).
   rotate?: number;
-  // 'md' matches the Performance Board approved stamp exactly; 'sm' is the
-  // compact variant for small cards (repair board corner).
-  size?: 'sm' | 'md';
+  // 'md' matches the Performance Board approved stamp exactly; 'sm' is a
+  // compact variant; 'lg' is the bigger, more prominent variant used for
+  // the centered repair-board parts stamp.
+  size?: 'sm' | 'md' | 'lg';
   title?: string;
   // Extra classes for positioning (e.g. absolute overlay on a relative card).
   className?: string;
@@ -34,7 +35,9 @@ export default function Stamp({
 }: StampProps) {
   const sizeCls = size === 'sm'
     ? 'px-1.5 py-0.5 text-[9px] tracking-[0.15em] border-2'
-    : 'px-3 py-1 text-sm tracking-[0.25em] border-[3px]';
+    : size === 'lg'
+      ? 'px-4 py-1.5 text-base sm:text-lg tracking-[0.2em] border-4'
+      : 'px-3 py-1 text-sm tracking-[0.25em] border-[3px]';
   return (
     <div
       className={`inline-block border-double font-black uppercase opacity-85 select-none ${sizeCls} ${COLOR_CLS[color]} ${className}`}
