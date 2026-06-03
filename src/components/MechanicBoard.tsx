@@ -8,6 +8,7 @@ import {
 import { AppData, FleetItem, MechanicTask, PartsOrder } from '../types';
 import { assigneesForTask, collaboratorNames, joinNames, shareForMechanic } from '../lib/workCredit';
 import FleetGroupedList from './FleetGroupedList';
+import { getUnitAttention } from '../lib/fleetGrouping';
 import { isExpiringSoon, isExpired, isOdoStale, formatTodayInToronto } from '../lib/dateUtils';
 import { fleetItemLabel, needsPlateRenewal, needsCommercialSafety, weightBandLabel } from '../lib/fleetUtils';
 import { isKmMaintenanceUnit, isHourMaintenanceUnit } from '../lib/maintenanceUtils';
@@ -240,6 +241,11 @@ export default function MechanicBoard({
     const odoStaleUnits: FleetItem[] = [];
     const regSoonUnits: FleetItem[] = [];
     const safetySoonUnits: FleetItem[] = [];
+    // Maintenance / oil-change summary — derived from the same
+    // getUnitAttention logic that drives the per-row Oil chip, so banner
+    // and rows always agree. Read-only; no spawn/data side effects.
+    const maintOverdueUnits: FleetItem[] = [];
+    const maintSoonUnits: FleetItem[] = [];
 
     const cvorIsExpired = isExpired(cvorExpiry);
     const cvorIsSoon = isExpiringSoon(cvorExpiry);
@@ -248,12 +254,17 @@ export default function MechanicBoard({
       if (f.isWinterized) return; // winterized units don't surface in alerts
       const plateGate = needsPlateRenewal(f);
       const safetyGate = needsCommercialSafety(f);
+      const att = getUnitAttention(f);
 
       // CRITICAL
       if (f.status === 'Out of Service') oosUnits.push(f);
       if (plateGate && isExpired(f.regExpiry)) regExpiredUnits.push(f);
       if (safetyGate && isExpired(f.safetyExpiry)) safetyExpiredUnits.push(f);
       if (f.cvorRequired && cvorIsExpired) cvorExpiredUnits.push(f);
+      if (att.maintStatus === 'overdue') maintOverdueUnits.push(f);
+
+      // WARNING (maintenance coming due)
+      if (att.maintStatus === 'soon') maintSoonUnits.push(f);
 
       // WARNING — odo-stale is truck-only (positive type gate via the
       // canonical helper). Equipment / tractor / trailer don't track
@@ -267,12 +278,14 @@ export default function MechanicBoard({
 
     const critical = [
       { key: 'oos', label: 'Out of Service', units: oosUnits },
+      { key: 'maint-overdue', label: 'Maintenance overdue (oil change)', units: maintOverdueUnits },
       { key: 'reg-expired', label: 'Plate registration expired', units: regExpiredUnits },
       { key: 'safety-expired', label: 'Commercial safety expired', units: safetyExpiredUnits },
       { key: 'cvor-expired', label: 'CVOR expired', units: cvorExpiredUnits },
     ].filter(g => g.units.length > 0);
 
     const warning = [
+      { key: 'maint-soon', label: 'Maintenance coming due (oil change)', units: maintSoonUnits },
       { key: 'odo-stale', label: 'Odometer not updated in 30+ days', units: odoStaleUnits },
       { key: 'reg-soon', label: 'Plate registration expiring within 30 days', units: regSoonUnits },
       { key: 'safety-soon', label: 'Commercial safety expiring within 30 days', units: safetySoonUnits },

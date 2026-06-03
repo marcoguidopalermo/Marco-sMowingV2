@@ -6,6 +6,27 @@ import { groupFleet, getUnitAttention, openRepairUnitIds, UnitAttention } from '
 // Shared status icons for a unit — alert (past due, red), warning
 // (coming due / open repair, amber), and a distinct missing-info icon
 // (slate/blue), shown alongside any severity icon. Pure presentation.
+// Color-coded oil-change / maintenance chip for a collapsed row.
+// green = good, yellow = within warn buffer, red = past due. Hidden when
+// the unit has no configured maintenance schedule (the missing-info icon
+// covers that instead of a misleading green tag).
+export function OilTag({ status }: { status: UnitAttention['maintStatus'] }) {
+  if (status === 'none') return null;
+  const cls =
+    status === 'overdue' ? 'bg-rose-100 text-rose-700 border-rose-200'
+      : status === 'soon' ? 'bg-yellow-100 text-yellow-800 border-yellow-200'
+        : 'bg-emerald-100 text-emerald-700 border-emerald-200';
+  const title =
+    status === 'overdue' ? 'Oil change past due'
+      : status === 'soon' ? 'Oil change coming due'
+        : 'Oil change up to date';
+  return (
+    <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border shrink-0 ${cls}`} title={title}>
+      Oil
+    </span>
+  );
+}
+
 export function UnitStatusIcons({ att }: { att: UnitAttention }) {
   if (att.level === 'none' && !att.missingInfo) return null;
   const reasons: string[] = [];
@@ -91,6 +112,7 @@ export default function FleetGroupedList({
           className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-50 transition-colors"
         >
           <span className="flex-1 min-w-0">{renderSummary(unit, att)}</span>
+          <OilTag status={att.maintStatus} />
           <UnitStatusIcons att={att} />
           {expanded ? <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />}
         </button>

@@ -71,6 +71,13 @@ export interface UnitAttention {
   openRepair: boolean;   // an open (non-done) repair exists for this unit
   missingInfo: boolean;  // any unfilled/stale required field
   missing: string[];     // human-readable list of what's missing/stale
+  // Oil-change / maintenance status for the per-row colour chip.
+  //   'overdue' (red) / 'soon' (yellow) / 'good' (green) when the unit has
+  //   at least one configured maintenance schedule for its metric;
+  //   'none' when it tracks no maintenance or has no configured schedule
+  //   (the missing-info icon covers that case instead of a misleading
+  //   green tag).
+  maintStatus: 'overdue' | 'soon' | 'good' | 'none';
 }
 
 // Compute the display status for one unit. Composes existing predicates;
@@ -82,7 +89,7 @@ export function getUnitAttention(
   opts?: { hasOpenRepair?: boolean },
 ): UnitAttention {
   if (unit.isWinterized) {
-    return { level: 'none', pastDue: false, comingDue: false, openRepair: false, missingInfo: false, missing: [] };
+    return { level: 'none', pastDue: false, comingDue: false, openRepair: false, missingInfo: false, missing: [], maintStatus: 'none' };
   }
 
   const isKm = isKmMaintenanceUnit(unit);
@@ -100,15 +107,25 @@ export function getUnitAttention(
   const items = unit.maintenanceItems || [];
   // Only evaluate items whose metric matches how this unit is tracked.
   const relevant = items.filter(mi => (mi.metric || 'hours') === metric);
+  let configuredCount = 0;
   for (const mi of relevant) {
     if (typeof mi.nextDueAt !== 'number' || mi.nextDueAt <= 0) {
       hasUnsetNextDue = true; // unconfigured schedule
       continue;
     }
+    configuredCount++;
     const buffer = typeof mi.warnBuffer === 'number' && mi.warnBuffer > 0 ? mi.warnBuffer : defaultBuffer;
     if (current >= mi.nextDueAt) pastDue = true;
     else if (current >= mi.nextDueAt - buffer) comingDue = true;
   }
+
+  // Oil-change / maintenance chip status. Only meaningful for units that
+  // track maintenance AND have at least one configured schedule — others
+  // get 'none' (no chip; the missing-info icon flags the unset case).
+  const maintStatus: UnitAttention['maintStatus'] =
+    (!(isKm || isHr) || configuredCount === 0)
+      ? 'none'
+      : pastDue ? 'overdue' : comingDue ? 'soon' : 'good';
 
   const missing: string[] = [];
   // A maintenance-tracked unit with NO matching schedules, or one with an
@@ -130,7 +147,7 @@ export function getUnitAttention(
       ? 'warning'
       : 'none';
 
-  return { level, pastDue, comingDue, openRepair, missingInfo, missing };
+  return { level, pastDue, comingDue, openRepair, missingInfo, missing, maintStatus };
 }
 
 // Set of unit ids with an open (non-done) repair — lets a list compute
