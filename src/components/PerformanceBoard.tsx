@@ -14,6 +14,7 @@ import CompletionReviewModal from './CompletionReviewModal';
 import AHSplitModal from './AHSplitModal';
 import SplitBHModal from './SplitBHModal';
 import PerformanceActivityLog from './PerformanceActivityLog';
+import Stamp from './Stamp';
 import { can } from '../lib/permissions';
 import { getCrewAllowance, adjustedEfficiency, allowanceTag } from '../lib/crewAllowance';
 import { accumulateEmployeeEff } from '../lib/efficiency';
@@ -1343,13 +1344,7 @@ export default function PerformanceBoard({
                       <div className="border-b border-emerald-200 bg-emerald-50/40 p-4 pl-5">
                         <div className="flex justify-between items-start gap-4">
                           <div className="flex-1 min-w-0">
-                            <div
-                              className="inline-block px-3 py-1 border-[3px] border-double border-emerald-700 text-emerald-700 font-black uppercase text-sm tracking-[0.25em] opacity-85 select-none"
-                              style={{ transform: 'rotate(-4deg)' }}
-                              title={lockTitle}
-                            >
-                              Approved
-                            </div>
+                            <Stamp label="Approved" color="emerald" rotate={-4} title={lockTitle} />
                             <div className="mt-3 max-w-[280px]">
                               <div
                                 className="text-3xl text-slate-800 leading-none pl-1"

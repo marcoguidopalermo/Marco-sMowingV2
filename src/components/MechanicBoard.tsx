@@ -9,6 +9,7 @@ import { AppData, FleetItem, MechanicTask, PartsOrder } from '../types';
 import { assigneesForTask, collaboratorNames, joinNames, shareForMechanic } from '../lib/workCredit';
 import FleetGroupedList from './FleetGroupedList';
 import { getUnitAttention } from '../lib/fleetGrouping';
+import Stamp from './Stamp';
 import { isExpiringSoon, isExpired, isOdoStale, formatTodayInToronto } from '../lib/dateUtils';
 import { fleetItemLabel, needsPlateRenewal, needsCommercialSafety, weightBandLabel } from '../lib/fleetUtils';
 import { isKmMaintenanceUnit, isHourMaintenanceUnit } from '../lib/maintenanceUtils';
@@ -576,8 +577,38 @@ export default function MechanicBoard({
                 : 'border-l-slate-200';
               const hasPartsRequest = !!task.partsStatus;
               const partsTag = hasPartsRequest ? partsTagFor(task.partsStatus) : null;
+              // Parts-waiting visual state. 'arrived' is actionable again so
+              // it is NOT pending (keeps its emerald pill, no stamp/dim). The
+              // manual waitingOnParts flag also stamps, unless parts arrived.
+              const partsState: 'ordered' | 'requested' | 'waiting' | null =
+                task.partsStatus === 'ordered' ? 'ordered'
+                : task.partsStatus === 'requested' ? 'requested'
+                : (task.waitingOnParts && task.partsStatus !== 'arrived') ? 'waiting'
+                : null;
+              const partsPending = partsState !== null;
+              const stampLabel = partsState === 'ordered' ? 'On Order'
+                : partsState === 'requested' ? 'Parts Requested'
+                : 'Parts Waiting';
+              const stampColor: 'rose' | 'amber' = partsState === 'ordered' ? 'rose' : 'amber';
+              // Distinct full-card border for pending cards (replaces the
+              // source-based left accent) so the card reads as blocked.
+              const pendingBorder = partsState === 'ordered'
+                ? 'border-rose-200 border-l-rose-400'
+                : 'border-amber-200 border-l-amber-400';
               return (
-                <li key={task.id}>
+                <li key={task.id} className="relative">
+                  {/* Corner "stamp" — sits in the <li> (outside the dimmed
+                      card) so it stays crisp while the card body recedes. */}
+                  {partsPending && (
+                    <Stamp
+                      label={stampLabel}
+                      color={stampColor}
+                      rotate={-6}
+                      size="sm"
+                      title="Blocked on parts — not actionable yet"
+                      className="absolute top-1.5 right-1.5 z-10 bg-white/80 shadow-sm"
+                    />
+                  )}
                   <div
                     role="button"
                     tabIndex={0}
@@ -589,7 +620,7 @@ export default function MechanicBoard({
                       }
                     }}
                     aria-label={`Open ${task.category} on ${unitName(task)}`}
-                    className={`relative bg-white border border-slate-200 border-l-4 rounded-lg shadow-sm hover:shadow-md hover:border-slate-300 transition-shadow cursor-pointer p-2 sm:p-3 ${sourceBorder}`}
+                    className={`relative border border-l-4 rounded-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer p-2 sm:p-3 ${partsPending ? `bg-slate-50 opacity-60 ${pendingBorder}` : `bg-white border-slate-200 hover:border-slate-300 ${sourceBorder}`}`}
                   >
                     {/* Top row — severity (left) + date + assignee (right). */}
                     <div className="flex items-start justify-between gap-2 flex-wrap">
