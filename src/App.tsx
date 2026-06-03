@@ -108,6 +108,13 @@ export default function App() {
   // --- STATE ---
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  // True once the FIRST appData snapshot for the signed-in user has been
+  // applied. Until then, role + employee are still derived from the seed
+  // (INITIAL_EMPLOYEES), so any role/record-dependent UI (and the one-shot
+  // landing redirect) must wait — otherwise an admin briefly renders as a
+  // worker / "no employee record" and the redirect locks the view to My
+  // Crew Today. Reset whenever `user` changes so a new sign-in re-waits.
+  const [dataLoaded, setDataLoaded] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [weather, setWeather] = useState<Record<string, any>>({});
   const [toast, setToast] = useState<string | null>(null);
@@ -557,7 +564,13 @@ export default function App() {
   // accessible view if the current view stops being permitted (e.g. View As).
   const initialLandingRedirectDone = useRef(false);
   useEffect(() => {
-    if (!initialLandingRedirectDone.current && effectiveRole && !loading && user) {
+    // Gate ALL role-based navigation on data-ready. While appData is still
+    // the seed, effectiveRole is the transient 'worker' default — firing
+    // either the one-shot landing redirect OR the access fallback here
+    // would lock an admin onto the worker view (My Crew Today). Waiting
+    // for `dataLoaded` means we redirect against the real role exactly once.
+    if (!user || loading || !dataLoaded) return;
+    if (!initialLandingRedirectDone.current && effectiveRole) {
       const target = defaultLandingView(effectiveRole);
       if (currentView !== target && canAccessView(target, effectiveRole)) {
         setCurrentView(target);
@@ -568,7 +581,7 @@ export default function App() {
     if (!canAccessView(currentView as AppView, effectiveRole)) {
       setCurrentView(firstAccessibleView(effectiveRole));
     }
-  }, [currentView, effectiveRole, loading, user]);
+  }, [currentView, effectiveRole, loading, user, dataLoaded]);
 
   // Pay-chunk safety net. Runs whenever timeEntries / employees /
   // mechanicPayChunks change in state. For each open chunk, calls
@@ -648,7 +661,15 @@ export default function App() {
   useEffect(() => {
     return onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      setLoading(false);
+      // Gate render on DATA-ready, not AUTH-ready. For a SIGNED-IN user we
+      // keep the loader up until the first appData snapshot is applied (the
+      // snapshot effect resets `dataLoaded` on (re)subscribe and the
+      // snapshot handler sets it true + clears loading). Only clear loading
+      // here when signed OUT, so the login screen shows promptly.
+      if (!currentUser) {
+        setLoading(false);
+        setDataLoaded(false);
+      }
     });
   }, []);
 
@@ -656,6 +677,11 @@ export default function App() {
     // New sign-in (or sign-out): the next authorization decision for this
     // user is a genuine first check, not a re-check of an active session.
     sessionAuthorizedRef.current = false;
+    // Re-wait for this user's first appData snapshot before rendering any
+    // role/employee-dependent UI (keeps the loader up; the snapshot handler
+    // sets dataLoaded=true). Reset here — not in onAuthStateChanged — so it
+    // only flips when `user` actually changes, never stranding the loader.
+    setDataLoaded(false);
     if (!user) return;
     const dataRef = doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main');
     return onSnapshot(dataRef, (snapshot) => {
@@ -768,7 +794,9 @@ export default function App() {
         console.warn("No remote data found, initializing with defaults.");
         setDoc(dataRef, appData).catch((err: any) => console.error("Init err:", err));
       }
-      setLoading(false); setErrorMsg(null);
+      // First snapshot applied — role/employee now derive from real data,
+      // so it's safe to drop the loader and let the landing redirect run.
+      setLoading(false); setDataLoaded(true); setErrorMsg(null);
     }, (error) => {
       console.error("Firestore Listen Error:", error);
       // Firestore rules reject snapshot reads for users not on the
@@ -782,7 +810,9 @@ export default function App() {
       } else {
         setErrorMsg(`Cloud connection lost: ${error.message}`);
       }
-      setLoading(false);
+      // Release the loader on error too (show the error / app rather than
+      // spinning forever); the permission-denied branch above signs out.
+      setLoading(false); setDataLoaded(true);
     });
   }, [user]);
 
@@ -2333,7 +2363,12 @@ export default function App() {
   );
 
   // --- MAIN APP (UNLOCKED PREVIEW MODE) ---
-  if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white"><Loader2 className="w-8 h-8 animate-spin text-lime-500" /></div>;
+  // Show the loader while auth resolves AND, for a signed-in user, until
+  // the first appData snapshot is applied (data-ready). This prevents
+  // rendering role/employee-dependent UI against the seed (admin flashing
+  // as worker / "no record"). Signed-out users fall through to the login
+  // screen immediately (loading cleared on null user; dataLoaded ignored).
+  if (loading || (user && !dataLoaded)) return <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white"><Loader2 className="w-8 h-8 animate-spin text-lime-500" /></div>;
   
   const handleGoogleLogin = async () => {
     const provider = new GoogleAuthProvider();
