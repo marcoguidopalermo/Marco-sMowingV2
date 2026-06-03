@@ -26,6 +26,7 @@ import {
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
+import { assigneesForTask } from './lib/workCredit';
 import { can, canForCrew, resolveRole, canAccessView, firstAccessibleView, defaultLandingView, AppView, setPermissionOverrides, ROLE_PERMISSIONS } from './lib/permissions';
 import { getResourceAvailability, describeUnavailability, ResourceType } from './lib/availability';
 import AIInsightModal from './components/AIInsightModal';
@@ -1592,6 +1593,15 @@ export default function App() {
         );
         syncToCloud({ ...appData, mechanicTasks: updated });
       }}
+      onSetAssignees={(taskId, assignees) => {
+        if (!can('canEditRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+        const updated = appData.mechanicTasks.map(t =>
+          t.id === taskId
+            ? { ...t, assignees, assignedTo: assignees[0] || undefined }
+            : t,
+        );
+        syncToCloud({ ...appData, mechanicTasks: updated });
+      }}
       onTogglePriority={(task) => {
         if (!can('canEditRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
         const existing = appData.mechanicTasks.find(t => t.id === task.id);
@@ -1671,6 +1681,7 @@ export default function App() {
             partCost: '',
             laborHours: '',
             fixNotes: task.description || '',
+            selectedWorkers: assigneesForTask(canonical),
             ...buildMaintCompletionPrefill(canonical),
           });
         } else {
@@ -1712,6 +1723,7 @@ export default function App() {
             partCost: '',
             laborHours: '',
             fixNotes: existing.description || '',
+            selectedWorkers: assigneesForTask(existing),
             ...buildMaintCompletionPrefill(existing),
           });
           return;
@@ -3776,6 +3788,7 @@ export default function App() {
             partCost: '',
             laborHours: '',
             fixNotes: existing.description || '',
+            selectedWorkers: assigneesForTask(existing),
             ...buildMaintCompletionPrefill(existing),
           });
         }}
@@ -3783,6 +3796,14 @@ export default function App() {
           if (!can('canEditRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
           const updated = (appData.mechanicTasks || []).map(t =>
             t.id === taskId ? { ...t, assignedTo: assignedTo === null ? undefined : assignedTo } : t);
+          syncToCloud({ ...appData, mechanicTasks: updated });
+        }}
+        onSetAssignees={(taskId, assignees) => {
+          if (!can('canEditRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+          const updated = (appData.mechanicTasks || []).map(t =>
+            t.id === taskId
+              ? { ...t, assignees, assignedTo: assignees[0] || undefined }
+              : t);
           syncToCloud({ ...appData, mechanicTasks: updated });
         }}
         onAddNote={(taskId, text) => {
@@ -4024,6 +4045,10 @@ export default function App() {
       <CompletionModal
         state={completionModal}
         setState={setCompletionModal}
+        mechanicRoster={(appData.employees || [])
+          .filter(e => e.status === 'Active' && e.systemRole === 'mechanic' && !!e.linkedUserEmail)
+          .map(e => ({ userEmail: e.linkedUserEmail as string, userName: e.name || (e.linkedUserEmail as string) }))
+          .sort((a, b) => a.userName.localeCompare(b.userName))}
         onSubmit={async () => {
           if (!can('canCompleteRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
           const { taskId, unitId, partCost, laborHours, fixNotes } = completionModal;
@@ -4040,10 +4065,23 @@ export default function App() {
             category: 'Repair',
             severity: 'minor' as const
           };
+          // Who worked on this repair → even-split work-credit. Priority:
+          // the explicit "Who worked on this?" selection, else the task's
+          // assignees, else whoever marked it complete. Shares are 1/N and
+          // sum to one repair. This is the WORK record only — pay stays on
+          // each mechanic's real clocked hours, untouched.
+          let workerList = (completionModal.selectedWorkers || [])
+            .filter(w => w && w.userEmail)
+            .map(w => ({ userEmail: w.userEmail, userName: w.userName || w.userEmail }));
+          if (workerList.length === 0) workerList = assigneesForTask(existing);
+          if (workerList.length === 0) workerList = [{ userEmail: displayEmail, userName: displayName }];
+          const share = 1 / workerList.length;
+          const workersPayload = workerList.map(w => ({ ...w, share }));
           const completedAct = makeActivity('completed', taskRef, {
             cost: Number(partCost) || 0,
             laborHours: Number(laborHours) || 0,
-            fixNotes
+            fixNotes,
+            workers: workersPayload,
           });
           const newTasks = appData.mechanicTasks.filter(t => t.id !== taskId);
           const hasOpenMajor = newTasks.some(t => t.unitId === unitId && t.severity === 'major' && t.status !== 'done');

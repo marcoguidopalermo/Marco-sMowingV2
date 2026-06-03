@@ -1,6 +1,28 @@
 import { useEffect, useState, useRef } from 'react';
-import { X, ArrowLeft, CheckCircle2, Send, UserCircle, UserPlus, UserX, Flame, Clock, MessageSquare, ChevronDown, Trash2 } from 'lucide-react';
+import { X, ArrowLeft, CheckCircle2, Send, Users, UserPlus, Flame, Clock, MessageSquare, ChevronDown, Trash2 } from 'lucide-react';
 import { MechanicTask, FleetItem } from '../types';
+import { assigneesForTask } from '../lib/workCredit';
+
+const ASSIGNEE_PALETTE = [
+  'bg-emerald-500', 'bg-sky-500', 'bg-amber-500', 'bg-rose-500',
+  'bg-violet-500', 'bg-cyan-500', 'bg-pink-500', 'bg-orange-500',
+];
+function assigneeColor(email: string): string {
+  if (!email) return 'bg-slate-400';
+  let h = 0;
+  for (let i = 0; i < email.length; i++) h = (h * 31 + email.charCodeAt(i)) | 0;
+  return ASSIGNEE_PALETTE[Math.abs(h) % ASSIGNEE_PALETTE.length];
+}
+function assigneeInitial(name: string, email: string): string {
+  const src = (name || '').trim() || (email || '').split('@')[0] || '';
+  return (src.charAt(0) || '?').toUpperCase();
+}
+function assigneeFirstName(name: string, email: string): string {
+  const src = (name || '').trim() || (email || '').split('@')[0] || '';
+  if (!src) return 'Unknown';
+  const first = src.split(/\s+/).filter(Boolean)[0] || src;
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
 
 interface UserOption {
   userEmail: string;
@@ -32,9 +54,12 @@ interface MyMechanicTaskModalProps {
   // entry — so we don't change status from here. Cancelling the
   // CompletionModal leaves the task unchanged.
   onRequestComplete: (taskId: string) => void;
-  // Same callback used by MechanicBoard / MyMechanic / AssigneeBadge —
-  // pass null to unassign.
+  // Legacy single-assignee callback — pass null to unassign. Retained
+  // for back-compat; multi-assignee writes go through onSetAssignees.
   onAssign: (taskId: string, assignedTo: { userEmail: string; userName: string } | null) => void;
+  // Multi-mechanic assignment (no cap). Replaces the task's full
+  // assignee list; an empty array unassigns.
+  onSetAssignees: (taskId: string, assignees: Array<{ userEmail: string; userName: string }>) => void;
   onAddNote: (taskId: string, text: string) => void;
   // Delete is gated by canDeleteMechanicTask at the App.tsx layer; if
   // canDelete is false the button isn't rendered. Tapping it triggers
@@ -78,7 +103,7 @@ export default function MyMechanicTaskModal({
   userOptions,
   onChangeStatus,
   onRequestComplete,
-  onAssign,
+  onSetAssignees,
   onAddNote,
   canDelete,
   onDelete,
@@ -105,7 +130,11 @@ export default function MyMechanicTaskModal({
   if (!task) return null;
 
   const me = (currentUserEmail || '').toLowerCase();
-  const assignedToMe = task.assignedTo?.userEmail?.toLowerCase() === me;
+  // Multi-mechanic assignment — prefer the assignees[] list, falling back
+  // to the legacy single assignedTo (handled in assigneesForTask).
+  const assignees = assigneesForTask(task);
+  const assignedEmails = new Set(assignees.map(a => a.userEmail.toLowerCase()));
+  const assignedToMe = assignedEmails.has(me);
   const isMajor = task.severity === 'major';
   const status: MechanicTask['status'] = task.status;
 
@@ -139,13 +168,24 @@ export default function MyMechanicTaskModal({
     .slice()
     .sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
 
-  // Filter the assignee dropdown to candidates other than the current
-  // mechanic (Assign to me is its own button) and the currently-assigned
-  // user (no point reassigning to the same person).
-  const otherOptions = userOptions.filter(o =>
-    o.userEmail.toLowerCase() !== me &&
-    o.userEmail.toLowerCase() !== (task.assignedTo?.userEmail || '').toLowerCase(),
+  // Roster candidates not already assigned (the "add another mechanic"
+  // picker). "Assign to me" is its own button.
+  const addableOptions = userOptions.filter(o =>
+    !assignedEmails.has(o.userEmail.toLowerCase()) && o.userEmail.toLowerCase() !== me,
   );
+
+  const toggleAssignee = (o: { userEmail: string; userName: string }) => {
+    const lc = o.userEmail.toLowerCase();
+    if (assignedEmails.has(lc)) {
+      onSetAssignees(task.id, assignees.filter(a => a.userEmail.toLowerCase() !== lc));
+    } else {
+      onSetAssignees(task.id, [...assignees, { userEmail: o.userEmail, userName: o.userName }]);
+    }
+  };
+  const assignSelf = () => {
+    if (assignedToMe) return;
+    onSetAssignees(task.id, [...assignees, { userEmail: currentUserEmail, userName: currentUserName }]);
+  };
 
   return (
     <div
@@ -199,56 +239,76 @@ export default function MyMechanicTaskModal({
             </div>
           )}
 
-          {/* Assignee */}
+          {/* Assignees — multi-mechanic, no cap. Each assigned mechanic
+              shows as a removable chip; "Assign to me" and "Add mechanic"
+              extend the list. */}
           <section className="space-y-2">
-            <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Assignee</div>
-            <div className="flex items-center justify-between gap-3 bg-white border border-slate-200 rounded-xl p-3">
-              <div className="flex items-center gap-2 min-w-0">
-                <UserCircle className="w-5 h-5 text-slate-400 shrink-0" />
-                <span className="text-sm font-bold text-slate-800 truncate">
-                  {task.assignedTo ? (task.assignedTo.userName || task.assignedTo.userEmail) : 'Unassigned'}
-                </span>
-                {assignedToMe && <span className="text-[9px] font-black uppercase tracking-widest text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">You</span>}
-              </div>
+            <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 inline-flex items-center gap-1.5">
+              <Users className="w-3.5 h-3.5" /> Assignees
+              {assignees.length > 0 && <span className="text-slate-400 font-bold normal-case tracking-normal">({assignees.length})</span>}
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl p-3">
+              {assignees.length === 0 ? (
+                <span className="text-sm font-bold text-slate-400">Unassigned</span>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {assignees.map(a => {
+                    const isMe = a.userEmail.toLowerCase() === me;
+                    return (
+                      <span
+                        key={a.userEmail}
+                        className="inline-flex items-center gap-1.5 pl-1 pr-1.5 py-1 rounded-full bg-slate-50 border border-slate-200"
+                        title={a.userName || a.userEmail}
+                      >
+                        <span className={`w-6 h-6 rounded-full ${assigneeColor(a.userEmail)} text-white text-[10px] font-black flex items-center justify-center shrink-0 ring-1 ring-white`}>
+                          {assigneeInitial(a.userName, a.userEmail)}
+                        </span>
+                        <span className="text-[11px] font-bold text-slate-700 truncate max-w-[90px]">
+                          {assigneeFirstName(a.userName, a.userEmail)}{isMe ? ' (You)' : ''}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => toggleAssignee(a)}
+                          className="text-slate-400 hover:text-rose-600 p-0.5 rounded"
+                          aria-label={`Remove ${a.userName || a.userEmail}`}
+                          title="Remove from this task"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
             </div>
             <div className="flex flex-wrap gap-2">
               {!assignedToMe && (
                 <button
                   type="button"
-                  onClick={() => onAssign(task.id, { userEmail: currentUserEmail, userName: currentUserName })}
+                  onClick={assignSelf}
                   className="min-h-[44px] px-3 py-2 text-[11px] font-black uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow inline-flex items-center gap-1.5"
                 >
                   <UserPlus className="w-3.5 h-3.5" /> Assign to me
                 </button>
               )}
-              {task.assignedTo && (
-                <button
-                  type="button"
-                  onClick={() => onAssign(task.id, null)}
-                  className="min-h-[44px] px-3 py-2 text-[11px] font-black uppercase tracking-widest bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg inline-flex items-center gap-1.5"
-                  title="Clear the assignee so anyone can pick this up"
-                >
-                  <UserX className="w-3.5 h-3.5" /> Unassign
-                </button>
-              )}
-              {otherOptions.length > 0 && (
+              {addableOptions.length > 0 && (
                 <div className="relative">
                   <button
                     type="button"
                     onClick={() => setShowReassign(v => !v)}
                     className="min-h-[44px] px-3 py-2 text-[11px] font-black uppercase tracking-widest bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg inline-flex items-center gap-1.5"
                   >
-                    Assign to other <ChevronDown className="w-3.5 h-3.5" />
+                    <UserPlus className="w-3.5 h-3.5" /> Add mechanic <ChevronDown className="w-3.5 h-3.5" />
                   </button>
                   {showReassign && (
                     <>
                       <button type="button" className="fixed inset-0 z-40 cursor-default" onClick={() => setShowReassign(false)} aria-label="Close picker" />
                       <div className="absolute z-50 mt-1 left-0 bg-white border border-slate-200 rounded-lg shadow-xl py-1 min-w-[200px] max-h-56 overflow-y-auto">
-                        {otherOptions.map(o => (
+                        {addableOptions.map(o => (
                           <button
                             key={o.userEmail}
                             type="button"
-                            onClick={() => { onAssign(task.id, o); setShowReassign(false); }}
+                            onClick={() => { toggleAssignee(o); }}
                             className="block w-full text-left px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 truncate"
                             title={o.userEmail}
                           >

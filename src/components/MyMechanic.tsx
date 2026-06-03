@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Wrench, DollarSign, Clock, ChevronDown, ChevronUp } from 'lucide-react';
 import { Employee, MechanicPayChunk, MechanicTask, TaskActivity, TimeEntry } from '../types';
 import { chunksForMechanic, computeOpenChunkHours } from '../lib/payChunkUtils';
+import { shareForMechanic, collaboratorNames, joinNames, formatCredit } from '../lib/workCredit';
 
 interface MyMechanicProps {
   currentUserEmail: string;
@@ -50,16 +51,18 @@ export default function MyMechanic({
 
   const hoursPer1000 = currentUserEmployee?.hoursPer1000;
 
-  // Completed repairs this mechanic finished. Sourced from
-  // activityLog because the completion handler removes the task
-  // from `mechanicTasks` after writing the 'completed' entry — so
-  // mechanicTasks itself never carries a status==='done' row.
+  // Completed repairs this mechanic worked on. Sourced from activityLog
+  // because the completion handler removes the task from `mechanicTasks`
+  // after writing the 'completed' entry. Multi-mechanic aware: a repair
+  // counts for me if I'm one of the credited workers (payload.workers),
+  // and `share` is my fraction of it (even split among collaborators).
+  // Legacy rows with no workers credit the completer fully (share 1).
   const myCompletions = useMemo(() => {
     return activityLog
       .filter(a => a.type === 'completed')
-      .filter(a => (a.userEmail || '').toLowerCase() === me)
-      .map(a => ({ activity: a, completedTs: Date.parse(a.timestamp) }))
-      .filter((x): x is { activity: TaskActivity; completedTs: number } => Number.isFinite(x.completedTs));
+      .map(a => ({ activity: a, completedTs: Date.parse(a.timestamp), share: shareForMechanic(a, me) }))
+      .filter((x): x is { activity: TaskActivity; completedTs: number; share: number } =>
+        x.share > 0 && Number.isFinite(x.completedTs));
   }, [activityLog, me]);
 
   // Live task-id index — lets us decide whether each historical row
@@ -198,8 +201,9 @@ export default function MyMechanic({
               }
               return (
                 <ul className="divide-y divide-slate-100">
-                  {rows.map(({ activity, completedTs }) => {
+                  {rows.map(({ activity, completedTs, share }) => {
                     const liveTask = liveTaskIds.has(activity.taskId);
+                    const others = share < 1 ? collaboratorNames(activity, me) : [];
                     const Inner = (
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0 flex-1">
@@ -209,6 +213,9 @@ export default function MyMechanic({
                           </div>
                           {activity.payload?.fixNotes && (
                             <div className="text-[11px] text-slate-500 truncate">{String(activity.payload.fixNotes)}</div>
+                          )}
+                          {others.length > 0 && (
+                            <div className="text-[10px] font-bold text-violet-600 truncate">Collaborated with {joinNames(others)}</div>
                           )}
                         </div>
                         <span className="text-[10px] font-medium text-emerald-700 whitespace-nowrap shrink-0">
@@ -247,7 +254,10 @@ export default function MyMechanic({
               {visibleClosed.map(chunk => {
                 const isOpen = !!pastOpen[chunk.id];
                 const rows = completionsInChunk(chunk);
-                const taskCount = rows.length;
+                // Weighted work-credit: sum of my shares (a collaboration
+                // counts as a fraction of a repair). NOT pay — pay is the
+                // clocked-hours figure shown separately.
+                const taskCount = rows.reduce((s, r) => s + r.share, 0);
                 return (
                   <li key={chunk.id} className="bg-white border border-slate-200 rounded-lg shadow-sm">
                     <button
@@ -260,7 +270,7 @@ export default function MyMechanic({
                           {formatDateShort(chunk.startTimestamp)}{chunk.endTimestamp ? ` – ${formatDateShort(chunk.endTimestamp)}` : ''}
                         </div>
                         <div className="text-[11px] text-slate-500">
-                          {chunk.hoursWorked.toFixed(1)} hrs · $1,000 · {taskCount} repair{taskCount === 1 ? '' : 's'}
+                          {chunk.hoursWorked.toFixed(1)} hrs · $1,000 · {formatCredit(taskCount)} repair{taskCount === 1 ? '' : 's'}
                         </div>
                       </div>
                       {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />}
@@ -271,12 +281,14 @@ export default function MyMechanic({
                           <div className="text-xs text-slate-400 italic">No repairs completed in this chunk.</div>
                         ) : (
                           <ul className="divide-y divide-slate-100">
-                            {rows.map(({ activity, completedTs }) => {
+                            {rows.map(({ activity, completedTs, share }) => {
                               const liveTask = liveTaskIds.has(activity.taskId);
+                              const others = share < 1 ? collaboratorNames(activity, me) : [];
                               const Inner = (
                                 <div className="flex items-center justify-between gap-2">
                                   <span className="text-xs font-bold text-slate-700 truncate">
                                     {activity.taskCategory || 'Repair'}{activity.unitName ? ` · ${activity.unitName}` : ''}
+                                    {others.length > 0 && <span className="ml-1 text-[10px] font-bold text-violet-600">· with {joinNames(others)}</span>}
                                   </span>
                                   <span className="text-[10px] text-emerald-700 whitespace-nowrap shrink-0">{formatDateShort(completedTs)}</span>
                                 </div>

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { TrendingUp, Filter, Award, Flame, AlertCircle, DollarSign, ChevronDown, ChevronUp } from 'lucide-react';
 import { TaskActivity, Employee, MechanicPayChunk, MechanicTask, TimeEntry } from '../types';
 import { chunksForMechanic, computeOpenChunkHours } from '../lib/payChunkUtils';
+import { workersForCompletion, shareForMechanic, formatCredit } from '../lib/workCredit';
 
 interface MechanicPerformanceProps {
   activityLog: TaskActivity[];
@@ -66,22 +67,30 @@ export default function MechanicPerformance({
         return true;
       })
       .forEach(a => {
-        const key = a.userEmail || 'unknown';
-        const row = map.get(key) || {
-          email: key,
-          name: a.userName || a.userEmail || 'Unknown',
-          total: 0,
-          minor: 0,
-          major: 0,
-          laborHours: 0,
-          cost: 0
-        };
-        row.total += 1;
+        // Split every metric among the workers credited on the
+        // completion (even split, share-weighted). Legacy rows credit the
+        // completer fully (single worker, share 1). Grand totals are
+        // preserved because each completion's shares sum to 1.
         const sev = a.taskSeverity || 'minor';
-        if (sev === 'major') row.major += 1; else row.minor += 1;
-        row.laborHours += Number(a.payload?.laborHours) || 0;
-        row.cost += Number(a.payload?.cost) || 0;
-        map.set(key, row);
+        const labor = Number(a.payload?.laborHours) || 0;
+        const cost = Number(a.payload?.cost) || 0;
+        for (const w of workersForCompletion(a)) {
+          const key = w.userEmail || 'unknown';
+          const row = map.get(key) || {
+            email: key,
+            name: w.userName || w.userEmail || 'Unknown',
+            total: 0,
+            minor: 0,
+            major: 0,
+            laborHours: 0,
+            cost: 0
+          };
+          row.total += w.share;
+          if (sev === 'major') row.major += w.share; else row.minor += w.share;
+          row.laborHours += labor * w.share;
+          row.cost += cost * w.share;
+          map.set(key, row);
+        }
       });
 
     return Array.from(map.values()).sort((a, b) => b.total - a.total);
@@ -134,9 +143,9 @@ export default function MechanicPerformance({
 
       {/* SUMMARY CARDS */}
       <div className="p-4 grid grid-cols-2 md:grid-cols-5 gap-3 border-b border-gray-200 bg-white">
-        <SummaryCard label="Tasks Completed" value={totals.total.toString()} tone="emerald" icon={<Award className="w-4 h-4" />} />
-        <SummaryCard label="Minor Repairs" value={totals.minor.toString()} tone="amber" icon={<AlertCircle className="w-4 h-4" />} />
-        <SummaryCard label="Major Repairs" value={totals.major.toString()} tone="rose" icon={<Flame className="w-4 h-4" />} />
+        <SummaryCard label="Tasks Completed" value={formatCredit(totals.total)} tone="emerald" icon={<Award className="w-4 h-4" />} />
+        <SummaryCard label="Minor Repairs" value={formatCredit(totals.minor)} tone="amber" icon={<AlertCircle className="w-4 h-4" />} />
+        <SummaryCard label="Major Repairs" value={formatCredit(totals.major)} tone="rose" icon={<Flame className="w-4 h-4" />} />
         <SummaryCard label="Total Labor Hours" value={totals.laborHours.toFixed(1)} tone="slate" icon={<TrendingUp className="w-4 h-4" />} />
         <SummaryCard label="Total Cost Handled" value={`$${totals.cost.toFixed(2)}`} tone="slate" icon={<TrendingUp className="w-4 h-4" />} />
       </div>
@@ -168,9 +177,9 @@ export default function MechanicPerformance({
                     </div>
                   </div>
                 </td>
-                <td className="p-3 align-top text-right font-mono text-lg font-black text-emerald-600">{r.total}</td>
-                <td className="p-3 align-top text-right font-mono text-sm font-bold text-amber-700">{r.minor}</td>
-                <td className="p-3 align-top text-right font-mono text-sm font-bold text-rose-600">{r.major}</td>
+                <td className="p-3 align-top text-right font-mono text-lg font-black text-emerald-600">{formatCredit(r.total)}</td>
+                <td className="p-3 align-top text-right font-mono text-sm font-bold text-amber-700">{formatCredit(r.minor)}</td>
+                <td className="p-3 align-top text-right font-mono text-sm font-bold text-rose-600">{formatCredit(r.major)}</td>
                 <td className="p-3 align-top text-right font-mono text-sm font-bold text-slate-700">{r.laborHours.toFixed(1)}</td>
                 <td className="p-3 align-top text-right font-mono text-sm font-bold text-slate-700">${r.cost.toFixed(2)}</td>
               </tr>
@@ -193,13 +202,15 @@ export default function MechanicPerformance({
         // and emits the 'completed' entry here). Counting completions
         // per chunk just needs the timestamp + actor email — both live
         // on the activity entry.
+        // Multi-mechanic aware: a completion counts for this mechanic if
+        // they're one of the credited workers, weighted by their share
+        // (even split among collaborators). Legacy rows → completer, 1.
         const completedByMechanic = (email: string) => {
           const me = email.toLowerCase();
           return activityLog
             .filter(a => a.type === 'completed')
-            .filter(a => (a.userEmail || '').toLowerCase() === me)
-            .map(a => ({ completedTs: Date.parse(a.timestamp) }))
-            .filter((x): x is { completedTs: number } => Number.isFinite(x.completedTs));
+            .map(a => ({ completedTs: Date.parse(a.timestamp), share: shareForMechanic(a, me) }))
+            .filter((x): x is { completedTs: number; share: number } => x.share > 0 && Number.isFinite(x.completedTs));
         };
         return (
           <div className="border-t border-gray-200 bg-slate-50 p-4">
@@ -216,7 +227,11 @@ export default function MechanicPerformance({
                 const tasksInChunk = (chunk: MechanicPayChunk) => {
                   const startMs = chunk.startTimestamp;
                   const endMs = chunk.endTimestamp ?? Number.MAX_SAFE_INTEGER;
-                  return allCompleted.filter(x => x.completedTs >= startMs && x.completedTs < endMs).length;
+                  // Sum of share-weighted credit (work record), not a raw
+                  // row count — collaborations count fractionally.
+                  return allCompleted
+                    .filter(x => x.completedTs >= startMs && x.completedTs < endMs)
+                    .reduce((s, x) => s + x.share, 0);
                 };
                 const openHours = open ? computeOpenChunkHours(open, timeEntries) : 0;
                 const openPct = open ? Math.min(100, Math.round((openHours / open.hoursThreshold) * 100)) : 0;
@@ -253,7 +268,7 @@ export default function MechanicPerformance({
                             <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden mt-2">
                               <div className="h-full bg-emerald-500" style={{ width: `${openPct}%` }} />
                             </div>
-                            <div className="text-[11px] text-slate-500 mt-1">{tasksInChunk(open)} repair{tasksInChunk(open) === 1 ? '' : 's'} completed</div>
+                            <div className="text-[11px] text-slate-500 mt-1">{formatCredit(tasksInChunk(open))} repair{tasksInChunk(open) === 1 ? '' : 's'} completed</div>
                           </div>
                         ) : (
                           <div className="text-[11px] italic text-slate-400">No open chunk for this mechanic.</div>
@@ -268,7 +283,7 @@ export default function MechanicPerformance({
                                     {new Date(c.startTimestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                     {c.endTimestamp ? ` – ${new Date(c.endTimestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}
                                   </span>
-                                  <span className="text-slate-500 font-mono">{c.hoursWorked.toFixed(1)} hrs · {tasksInChunk(c)} repairs</span>
+                                  <span className="text-slate-500 font-mono">{c.hoursWorked.toFixed(1)} hrs · {formatCredit(tasksInChunk(c))} repairs</span>
                                   <span className="font-bold text-emerald-700">$1,000</span>
                                 </li>
                               ))}

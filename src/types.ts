@@ -363,7 +363,14 @@ export interface MechanicTask {
   isMaintenance?: boolean;
   inspectionId?: string;
   activity?: TaskActivity[];
+  // Legacy single assignee. Kept for back-compat — readers prefer
+  // `assignees` when it's present and fall back to this otherwise (see
+  // assigneesForTask in lib/workCredit). Assignment writers keep this in
+  // sync with assignees[0] so surfaces not yet multi-aware still render.
   assignedTo?: { userEmail: string; userName: string };
+  // Multi-mechanic assignment (no cap). When non-empty this is the
+  // source of truth for who the task is assigned to.
+  assignees?: Array<{ userEmail: string; userName: string }>;
   priority?: boolean;
   waitingOnParts?: boolean;
   // Mirror of the earliest-stage open partsOrder linked to this repair

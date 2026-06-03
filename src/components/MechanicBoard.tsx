@@ -6,6 +6,7 @@ import {
   BookOpen, UserPlus, Package
 } from 'lucide-react';
 import { AppData, FleetItem, MechanicTask, PartsOrder } from '../types';
+import { assigneesForTask, collaboratorNames, joinNames, shareForMechanic } from '../lib/workCredit';
 import { isExpiringSoon, isExpired, isOdoStale, formatTodayInToronto } from '../lib/dateUtils';
 import { fleetItemLabel, needsPlateRenewal, needsCommercialSafety, weightBandLabel } from '../lib/fleetUtils';
 import { isKmMaintenanceUnit, isHourMaintenanceUnit } from '../lib/maintenanceUtils';
@@ -80,6 +81,9 @@ interface MechanicBoardProps {
   ) => void;
   onViewInspection: (inspectionId: string) => void;
   onAssignTask: (taskId: string, assignedTo: { userEmail: string; userName: string } | null) => void;
+  // Multi-mechanic assignment (no cap) — replaces the task's assignee
+  // list. Used by the inline "Assign to me" affordance on each card.
+  onSetAssignees: (taskId: string, assignees: Array<{ userEmail: string; userName: string }>) => void;
   currentUserEmail: string;
   currentUserName: string;
   isAdmin: boolean;
@@ -152,6 +156,7 @@ export default function MechanicBoard({
   onManualResetMaintenance,
   onViewInspection,
   onAssignTask,
+  onSetAssignees,
   currentUserEmail,
   currentUserName,
   isAdmin,
@@ -416,13 +421,16 @@ export default function MechanicBoard({
             // Complete list narrows to tasks whose 'completed' activity
             // entry is mine (preserves the old MyMechanic attribution).
             const me = (currentUserEmail || '').toLowerCase();
-            const inMineActive = (t: MechanicTask) => {
-              const a = t.assignedTo?.userEmail?.toLowerCase();
-              return !!a && a === me;
-            };
+            // Multi-assignee aware: "mine" includes any task where I'm one
+            // of the assignees (not just the sole legacy assignedTo).
+            const inMineActive = (t: MechanicTask) =>
+              assigneesForTask(t).some(a => a.userEmail.toLowerCase() === me);
+            // Completed-by-me includes collaborations: I'm one of the
+            // workers credited on the 'completed' activity.
             const inMineCompleted = (t: MechanicTask) => {
               const ca = (t.activity || []).find(a => a.type === 'completed');
-              return ca?.userEmail?.toLowerCase() === me;
+              if (!ca) return false;
+              return shareForMechanic(ca, me) > 0;
             };
             // Active = todo + doing combined visually (one list, sorted by
             // severity then oldest). `doing` is preserved in the schema —
@@ -490,9 +498,15 @@ export default function MechanicBoard({
               );
             };
 
+            // Append the current mechanic to the task's assignee list
+            // (multi-assignee, no cap) rather than replacing it.
             const assignSelf = (taskId: string) => {
-              onAssignTask(taskId, { userEmail: currentUserEmail, userName: currentUserName });
+              const t = all.find(x => x.id === taskId);
+              const current = assigneesForTask(t);
+              if (current.some(a => a.userEmail.toLowerCase() === currentUserEmail.toLowerCase())) return;
+              onSetAssignees(taskId, [...current, { userEmail: currentUserEmail, userName: currentUserName }]);
             };
+            const meLc = (currentUserEmail || '').toLowerCase();
 
             // Assignee avatar — palette + initial derived from the
             // assignee's email so the badge color stays stable across
@@ -570,20 +584,35 @@ export default function MechanicBoard({
                         <span className="text-[10px] font-medium text-slate-500 whitespace-nowrap" title={task.dateReported}>
                           {formatReportedDate(task.dateReported)}
                         </span>
-                        {task.assignedTo ? (
-                          <div className="inline-flex items-center gap-1.5" title={task.assignedTo.userName || task.assignedTo.userEmail}>
-                            <span className={`w-5 h-5 sm:w-6 sm:h-6 rounded-full ${hashColorFor(task.assignedTo.userEmail)} text-white text-[10px] font-black flex items-center justify-center shrink-0 ring-1 ring-white`}>
-                              {firstInitial(task.assignedTo.userName || '', task.assignedTo.userEmail || '')}
-                            </span>
-                            <span className="text-[10px] font-bold text-slate-600 truncate max-w-[72px] hidden sm:inline">
-                              {firstNameOnly(task.assignedTo.userName || '', task.assignedTo.userEmail || '')}
-                            </span>
-                          </div>
-                        ) : (
-                          <span className="text-[9px] font-black uppercase tracking-widest bg-slate-100 text-slate-600 border border-slate-300 px-1.5 py-0.5 rounded whitespace-nowrap">
-                            Unassigned
-                          </span>
-                        )}
+                        {(() => {
+                          const asg = assigneesForTask(task);
+                          if (asg.length === 0) {
+                            return (
+                              <span className="text-[9px] font-black uppercase tracking-widest bg-slate-100 text-slate-600 border border-slate-300 px-1.5 py-0.5 rounded whitespace-nowrap">
+                                Unassigned
+                              </span>
+                            );
+                          }
+                          // Overlapping avatar stack for the crew, with the
+                          // first mechanic's name inline on wide viewports
+                          // and a "+N" when more than one is assigned.
+                          const shown = asg.slice(0, 4);
+                          return (
+                            <div className="inline-flex items-center gap-1.5" title={asg.map(a => a.userName || a.userEmail).join(', ')}>
+                              <div className="flex -space-x-1.5">
+                                {shown.map(a => (
+                                  <span key={a.userEmail} className={`w-5 h-5 sm:w-6 sm:h-6 rounded-full ${hashColorFor(a.userEmail)} text-white text-[10px] font-black flex items-center justify-center shrink-0 ring-1 ring-white`}>
+                                    {firstInitial(a.userName || '', a.userEmail || '')}
+                                  </span>
+                                ))}
+                              </div>
+                              <span className="text-[10px] font-bold text-slate-600 truncate max-w-[72px] hidden sm:inline">
+                                {firstNameOnly(asg[0].userName || '', asg[0].userEmail || '')}
+                                {asg.length > 1 ? ` +${asg.length - 1}` : ''}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
 
@@ -649,12 +678,12 @@ export default function MechanicBoard({
                           <Package className="w-3 h-3" /> Request Parts
                         </button>
                       )}
-                      {!task.assignedTo && (
+                      {!assigneesForTask(task).some(a => a.userEmail.toLowerCase() === meLc) && (
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); assignSelf(task.id); }}
                           onMouseDown={e => e.stopPropagation()}
-                          title="Assign this repair to me"
+                          title="Add me to this repair"
                           className="min-h-[28px] sm:min-h-[32px] inline-flex items-center gap-1 px-2 py-0.5 sm:py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
                         >
                           <UserPlus className="w-3 h-3" /> Assign to me
@@ -688,6 +717,21 @@ export default function MechanicBoard({
                   {task.description && task.description !== 'Unit marked Out of Service' && (
                     <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1 sm:line-clamp-2">{task.description}</div>
                   )}
+                  {(() => {
+                    // "Collaborated with X" — every mechanic credited on
+                    // the completion except the one who marked it complete.
+                    // Admin/all-repairs context shows the full crew minus
+                    // the completer.
+                    const completedAct = (task.activity || []).find(a => a.type === 'completed');
+                    if (!completedAct) return null;
+                    const others = collaboratorNames(completedAct, completedAct.userEmail || '');
+                    if (others.length === 0) return null;
+                    return (
+                      <div className="text-[10px] font-bold text-violet-600 mt-1 inline-flex items-center gap-1">
+                        <UserPlus className="w-3 h-3" /> Collaborated with {joinNames(others)}
+                      </div>
+                    );
+                  })()}
                 </button>
               </li>
             );

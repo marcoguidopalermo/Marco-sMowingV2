@@ -1,5 +1,28 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { CheckCircle, X, Wrench } from 'lucide-react';
+import { CheckCircle, X, Wrench, Users, Check } from 'lucide-react';
+
+interface Worker { userEmail: string; userName: string; }
+
+const WORKER_PALETTE = [
+  'bg-emerald-500', 'bg-sky-500', 'bg-amber-500', 'bg-rose-500',
+  'bg-violet-500', 'bg-cyan-500', 'bg-pink-500', 'bg-orange-500',
+];
+function workerColor(email: string): string {
+  if (!email) return 'bg-slate-400';
+  let h = 0;
+  for (let i = 0; i < email.length; i++) h = (h * 31 + email.charCodeAt(i)) | 0;
+  return WORKER_PALETTE[Math.abs(h) % WORKER_PALETTE.length];
+}
+function workerInitial(name: string, email: string): string {
+  const src = (name || '').trim() || (email || '').split('@')[0] || '';
+  return (src.charAt(0) || '?').toUpperCase();
+}
+function workerFirstName(name: string, email: string): string {
+  const src = (name || '').trim() || (email || '').split('@')[0] || '';
+  if (!src) return 'Unknown';
+  const first = src.split(/\s+/).filter(Boolean)[0] || src;
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
 
 export interface CompletionModalState {
   isOpen: boolean;
@@ -9,6 +32,12 @@ export interface CompletionModalState {
   partCost: string;
   laborHours: string;
   fixNotes: string;
+  // "Who worked on this task?" — pre-seeded with the task's assignees
+  // when the modal opens, the mechanic can add more helpers (no cap) or
+  // deselect. On submit App.tsx splits work-credit evenly among these
+  // workers (1/N each). If left empty it falls back to the task's
+  // assignees, then to whoever completed it.
+  selectedWorkers?: Worker[];
   // Maintenance-only inputs. Set when the task being completed has
   // source==='maintenance' so the modal can prompt for the reading at
   // service time and advance the unit's schedule.
@@ -40,10 +69,35 @@ interface CompletionModalProps {
   state: CompletionModalState;
   setState: Dispatch<SetStateAction<CompletionModalState>>;
   onSubmit: () => void | Promise<void>;
+  // Active mechanics available to credit on this repair. The selector
+  // also always shows anyone already selected (e.g. a legacy assignee no
+  // longer in the active roster) so pre-seeded picks never vanish.
+  mechanicRoster?: Worker[];
 }
 
-export default function CompletionModal({ state, setState, onSubmit }: CompletionModalProps) {
+export default function CompletionModal({ state, setState, onSubmit, mechanicRoster = [] }: CompletionModalProps) {
   if (!state.isOpen) return null;
+  const selected = state.selectedWorkers || [];
+  const isSelected = (email: string) => selected.some(w => w.userEmail.toLowerCase() === email.toLowerCase());
+  const toggleWorker = (w: Worker) => {
+    setState(s => {
+      const cur = s.selectedWorkers || [];
+      const has = cur.some(x => x.userEmail.toLowerCase() === w.userEmail.toLowerCase());
+      return {
+        ...s,
+        selectedWorkers: has
+          ? cur.filter(x => x.userEmail.toLowerCase() !== w.userEmail.toLowerCase())
+          : [...cur, w],
+      };
+    });
+  };
+  // Roster to display = active mechanics ∪ anyone already selected, deduped.
+  const pickList: Worker[] = (() => {
+    const byEmail = new Map<string, Worker>();
+    for (const w of mechanicRoster) byEmail.set(w.userEmail.toLowerCase(), w);
+    for (const w of selected) if (!byEmail.has(w.userEmail.toLowerCase())) byEmail.set(w.userEmail.toLowerCase(), w);
+    return Array.from(byEmail.values()).sort((a, b) => (a.userName || '').localeCompare(b.userName || ''));
+  })();
   const isKm = state.isMaintenance && state.maintenanceMetric === 'km';
   const unitLabel = isKm ? 'km' : 'hrs';
   const readingLabel = isKm
@@ -80,6 +134,59 @@ export default function CompletionModal({ state, setState, onSubmit }: Completio
           <div className="space-y-1">
             <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Mechanic Fix Notes</label>
             <textarea value={state.fixNotes} onChange={e => setState({ ...state, fixNotes: e.target.value })} className="w-full border border-slate-300 rounded-xl p-3 text-sm font-medium outline-none focus:ring-2 focus:ring-green-500 resize-none" rows={3} placeholder="What was fixed?" />
+          </div>
+
+          {/* WHO WORKED ON THIS TASK? — multi-select, no cap. Pre-seeded
+              with the task's assignees; helpers can be added or removed.
+              Work-credit is split evenly (1/N) among the selected workers
+              on submit. This is the WORK record only — it does not touch
+              anyone's clocked-hours pay. */}
+          <div className="space-y-2">
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest inline-flex items-center gap-1.5">
+              <Users className="w-3.5 h-3.5" /> Who worked on this task?
+            </label>
+            {pickList.length === 0 ? (
+              <div className="text-[11px] text-slate-400 italic border border-dashed border-slate-200 rounded-xl p-3">
+                No mechanics on the roster — credit will go to whoever completes the task.
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {pickList.map(w => {
+                  const on = isSelected(w.userEmail);
+                  return (
+                    <button
+                      key={w.userEmail}
+                      type="button"
+                      onClick={() => toggleWorker(w)}
+                      aria-pressed={on}
+                      title={w.userName || w.userEmail}
+                      className={`relative inline-flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full border transition-colors ${
+                        on
+                          ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className={`relative w-6 h-6 rounded-full ${workerColor(w.userEmail)} text-white text-[10px] font-black flex items-center justify-center shrink-0 ring-1 ring-white`}>
+                        {workerInitial(w.userName, w.userEmail)}
+                        {on && (
+                          <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-600 border border-white flex items-center justify-center">
+                            <Check className="w-2 h-2 text-white" />
+                          </span>
+                        )}
+                      </span>
+                      <span className="text-[11px] font-bold truncate max-w-[80px]">{workerFirstName(w.userName, w.userEmail)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div className="text-[11px] text-slate-400">
+              {selected.length === 0
+                ? 'None selected — credit defaults to the assignee(s), or you if unassigned.'
+                : selected.length === 1
+                  ? 'Solo — full credit to 1 mechanic.'
+                  : `Split evenly — ${(1 / selected.length).toFixed(2)} of the repair each (${selected.length} mechanics).`}
+            </div>
           </div>
 
           {state.isMaintenance && (() => {
