@@ -9,7 +9,8 @@ import {
   AlertTriangle, CheckSquare, UserCircle, Clock, Sliders, Link2, Mail
 } from 'lucide-react';
 import { Employee, FleetItem, InventoryItem, Job, AppSettings, RolePermissionsOverride, UserRole, JobberUser, PRIMARY_CREWS, EquipmentSubtypeDefinition, PartialTimeOff } from '../types';
-import { makeSubtypeId } from '../lib/fleetUtils';
+import { makeSubtypeId, fleetItemLabel } from '../lib/fleetUtils';
+import FleetGroupedList from './FleetGroupedList';
 import { DIVISIONS, CREW_NUMBERS, ROUTE_FREQUENCIES, DAYS_OF_WEEK, DEFAULT_EOD_REMINDER, DEFAULT_CREW_SIZE_ALLOWANCE } from '../constants';
 import { resolveWeightBand, weightBandLabel, hasLegacyWeightClassOnly, needsPlateRenewal, needsCommercialSafety } from '../lib/fleetUtils';
 import { ROLE_PERMISSIONS, Permission, can } from '../lib/permissions';
@@ -565,17 +566,32 @@ export default function ManageResourcesModal({
 
           {manageTab === 'fleet' && (
             <div className="space-y-4">
-              {/* Fleet Filters */}
-              <div className="flex bg-white rounded-lg border border-gray-300 overflow-hidden w-fit shadow-sm">
-                {['truck', 'trailer', 'tractor', 'equipment'].map(type => (
-                  <button key={type} onClick={() => setFleetFilter(type)} className={`px-4 py-2 text-sm font-bold capitalize transition-colors ${fleetFilter === type ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{type}</button>
-                ))}
+              {/* New-unit type selector — the grouped list below shows all
+                  units; these buttons choose what the Add button creates. */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Add new:</span>
+                <div className="flex bg-white rounded-lg border border-gray-300 overflow-hidden w-fit shadow-sm">
+                  {['truck', 'trailer', 'tractor', 'equipment'].map(type => (
+                    <button key={type} onClick={() => setFleetFilter(type)} className={`px-4 py-2 text-sm font-bold capitalize transition-colors ${fleetFilter === type ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{type}</button>
+                  ))}
+                </div>
               </div>
 
-              {localFleet.filter(f => f.type === fleetFilter).map((f) => {
-                const realIdx = localFleet.findIndex(lf => lf.id === f.id);
-                return (
-                  <div key={f.id} className="flex flex-col gap-3 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+              <FleetGroupedList
+                fleet={localFleet}
+                subtypes={localEquipmentSubtypes}
+                renderSummary={(f) => (
+                  <span className="font-bold text-slate-800 flex items-center gap-2 flex-wrap">
+                    {f.color && <span className={`w-3 h-3 rounded-full ${f.color} shadow-sm border border-gray-200 inline-block`} />}
+                    {fleetItemLabel(f)}
+                    {f.status !== 'Active' && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded">{f.status}</span>}
+                  </span>
+                )}
+                renderDetails={(f) => {
+                  const realIdx = localFleet.findIndex(lf => lf.id === f.id);
+                  if (realIdx < 0) return null;
+                  return (
+                  <div className="flex flex-col gap-3">
                     <div className="flex flex-wrap gap-3 items-center">
                       <div className="flex flex-col">
                         <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-0.5">Unit #</label>
@@ -1277,8 +1293,9 @@ export default function ManageResourcesModal({
                       </div>
                     </div>
                   </div>
-                )
-              })}
+                  );
+                }}
+              />
               <button onClick={() => {
                 const newType: FleetItem['type'] = (fleetFilter === 'truck' || fleetFilter === 'trailer' || fleetFilter === 'tractor' || fleetFilter === 'equipment') ? fleetFilter : 'equipment';
                 // Suggest the next available unit # within the category.

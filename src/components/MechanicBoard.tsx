@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { AppData, FleetItem, MechanicTask, PartsOrder } from '../types';
 import { assigneesForTask, collaboratorNames, joinNames, shareForMechanic } from '../lib/workCredit';
+import FleetGroupedList from './FleetGroupedList';
 import { isExpiringSoon, isExpired, isOdoStale, formatTodayInToronto } from '../lib/dateUtils';
 import { fleetItemLabel, needsPlateRenewal, needsCommercialSafety, weightBandLabel } from '../lib/fleetUtils';
 import { isKmMaintenanceUnit, isHourMaintenanceUnit } from '../lib/maintenanceUtils';
@@ -1125,57 +1126,48 @@ export default function MechanicBoard({
             </div>
           )}
 
-        <div className="flex-1 flex flex-col bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="flex-1 min-h-0 overflow-auto">
-            <table className="w-full text-left border-collapse">
-              <thead><tr className="bg-gray-50 border-b border-gray-200 text-xs text-gray-500 uppercase"><th className="p-4">Vehicle</th><th className="p-4">Odometer/Hours</th><th className="p-4">Registration</th><th className="p-4 w-16"><span className="sr-only">Actions</span></th></tr></thead>
-              <tbody className="divide-y divide-gray-100">
-                {[...fleet]
-                  .sort((a, b) => {
-                    // Winterized units pinned to the bottom (Fix 8).
-                    const aw = a.isWinterized ? 1 : 0;
-                    const bw = b.isWinterized ? 1 : 0;
-                    if (aw !== bw) return aw - bw;
-                    return 0;
-                  })
-                  .map(f => {
-                  const isOdoOutdated = isKmMaintenanceUnit(f) && !f.isWinterized && isOdoStale(f.lastOdometerUpdate);
-                  const isHrsStale = isHourMaintenanceUnit(f) && !f.isWinterized && (!f.lastHourUpdateAt || (Date.now() - f.lastHourUpdateAt) > 7 * 24 * 60 * 60 * 1000);
-                  const isHighlighted = highlightedFleetId === f.id;
-                  return (
-                    <tr key={f.id} id={`fleet-row-${f.id}`} className={`hover:bg-gray-50 transition-colors ${isHighlighted ? 'bg-yellow-50 ring-2 ring-yellow-300 ring-inset' : ''} ${f.isWinterized ? 'opacity-60' : ''}`}>
-                      <td className="p-4">
-                        <div className="font-bold text-gray-800 flex items-center gap-2 flex-wrap">
-                          {f.color && <div className={`w-3 h-3 rounded-full ${f.color} shadow-sm border border-gray-200`} />}
-                          {fleetItemLabel(f)}
-                          {f.status !== 'Active' && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded">{f.status}</span>}
-                          {f.isRental && <span className="bg-purple-100 text-purple-800 text-[10px] px-1.5 py-0.5 rounded">Rental</span>}
-                          {f.isWinterized && <span className="bg-sky-100 text-sky-800 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">Winterized</span>}
-                          {(() => {
-                            // Equipment Time Off chip — mirrors the
-                            // Winterized chip style in the orange palette
-                            // that the Personnel awayDates editor uses.
-                            // Surfaces current AND upcoming ranges.
-                            const today = formatTodayInToronto();
-                            const ranges = (f.awayDates || []).filter(r => r.start && r.end);
-                            const current = ranges.find(r => today >= r.start && today <= r.end);
-                            if (current) {
-                              return <span className="bg-orange-100 text-orange-800 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider" title={`Booked off through ${current.end}`}>Booked off</span>;
-                            }
-                            const upcoming = ranges
-                              .filter(r => r.start > today)
-                              .sort((a, b) => a.start.localeCompare(b.start))[0];
-                            if (upcoming) {
-                              return <span className="bg-orange-50 text-orange-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider border border-orange-200" title={`Scheduled off ${upcoming.start} → ${upcoming.end}`}>Booked off {upcoming.start}</span>;
-                            }
-                            return null;
-                          })()}
-                        </div>
-                        <div className="text-xs text-gray-500 mt-1 flex items-center gap-1.5">
-                          {f.type.toUpperCase()} <span className={f.color ? f.color.replace('bg-', 'text-') : 'text-gray-300'}>•</span> {weightBandLabel(f) || f.weightClass}
-                        </div>
-                      </td>
-                      <td className="p-4 align-top">
+        <div className="flex-1 flex flex-col">
+          <FleetGroupedList
+            fleet={fleet}
+            subtypes={appData.equipmentSubtypes || []}
+            mechanicTasks={mechanicTasks}
+            highlightId={highlightedFleetId}
+            renderSummary={(f) => (
+              <span className="block">
+                <span className="font-bold text-gray-800 flex items-center gap-2 flex-wrap">
+                  {f.color && <span className={`w-3 h-3 rounded-full ${f.color} shadow-sm border border-gray-200 inline-block`} />}
+                  {fleetItemLabel(f)}
+                  {f.status !== 'Active' && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded">{f.status}</span>}
+                  {f.isRental && <span className="bg-purple-100 text-purple-800 text-[10px] px-1.5 py-0.5 rounded">Rental</span>}
+                  {f.isWinterized && <span className="bg-sky-100 text-sky-800 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">Winterized</span>}
+                  {(() => {
+                    // Equipment Time Off chip — current AND upcoming ranges.
+                    const today = formatTodayInToronto();
+                    const ranges = (f.awayDates || []).filter(r => r.start && r.end);
+                    const current = ranges.find(r => today >= r.start && today <= r.end);
+                    if (current) {
+                      return <span className="bg-orange-100 text-orange-800 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider" title={`Booked off through ${current.end}`}>Booked off</span>;
+                    }
+                    const upcoming = ranges
+                      .filter(r => r.start > today)
+                      .sort((a, b) => a.start.localeCompare(b.start))[0];
+                    if (upcoming) {
+                      return <span className="bg-orange-50 text-orange-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider border border-orange-200" title={`Scheduled off ${upcoming.start} → ${upcoming.end}`}>Booked off {upcoming.start}</span>;
+                    }
+                    return null;
+                  })()}
+                </span>
+                <span className="text-xs text-gray-500 mt-0.5 flex items-center gap-1.5">
+                  {f.type.toUpperCase()} <span className={f.color ? f.color.replace('bg-', 'text-') : 'text-gray-300'}>•</span> {weightBandLabel(f) || f.weightClass}
+                </span>
+              </span>
+            )}
+            renderDetails={(f) => {
+              const isOdoOutdated = isKmMaintenanceUnit(f) && !f.isWinterized && isOdoStale(f.lastOdometerUpdate);
+              const isHrsStale = isHourMaintenanceUnit(f) && !f.isWinterized && (!f.lastHourUpdateAt || (Date.now() - f.lastHourUpdateAt) > 7 * 24 * 60 * 60 * 1000);
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-4">
+                  <div className="align-top">
                         {/* Legacy odometer cell — hidden for trailers
                             (N/A) AND for hour-tracked equipment (whose
                             currentEngineHours field below is the canonical
@@ -1426,8 +1418,8 @@ export default function MechanicBoard({
                             </div>
                           );
                         })()}
-                      </td>
-                      <td className="p-4 align-top">
+                  </div>
+                  <div className="align-top">
                         <div className="space-y-1.5 text-xs">
                           {f.type !== 'equipment' && (() => {
                             const plateGate = needsPlateRenewal(f);
@@ -1457,8 +1449,8 @@ export default function MechanicBoard({
                           })()}
                           {f.isRental && <div className="flex justify-between items-center bg-purple-50 text-purple-800 px-2 py-1 rounded font-bold"><span>Return:</span><span>{f.rentalEnd || 'Not set'}</span></div>}
                         </div>
-                      </td>
-                      <td className="p-4 align-middle border-l border-gray-100 text-center">
+                  </div>
+                  <div className="md:border-l md:border-gray-100 md:pl-4 flex items-start">
                         <div className="inline-flex items-center gap-2">
                           <button
                             onClick={() => onOpenUnitHistory(f)}
@@ -1497,13 +1489,11 @@ export default function MechanicBoard({
                             {f.isWinterized ? 'Reactivate' : 'Winterize'}
                           </button>
                         </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                  </div>
+                </div>
+              );
+            }}
+          />
         </div>
         </div>
       )}
