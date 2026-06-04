@@ -360,14 +360,22 @@ export default function App() {
   const isManager = effectiveRole === 'admin' || effectiveRole === 'manager';
   const isRealAdmin = realCurrentUserRole === 'admin';
 
-  // Active real employees an admin can impersonate (Test User has its own
-  // menu entry, so it's excluded here). Sorted by name for the dropdown.
-  const impersonatableEmployees = useMemo(
-    () => (appData.employees || [])
-      .filter(e => !e.isTestUser && e.status === 'Active')
-      .sort((a, b) => (a.name || '').localeCompare(b.name || '')),
-    [appData.employees],
-  );
+  // Real CrewMaster employees an admin can impersonate — sourced from
+  // appData.employees (the actual personnel roster), NOT Jobber users.
+  // Includes EVERY role (workers, foremen, managers, mechanics). Mechanics
+  // aren't on Jobber, so a Jobber-derived list would miss them. We exclude
+  // only the Test User (its own menu entry) and explicitly inactive/away/
+  // archived records — anything else (incl. employees whose status field
+  // was never set to the exact string 'Active') still shows.
+  const impersonatableEmployees = useMemo(() => {
+    const isInactive = (s: string | undefined) => {
+      const v = (s || '').toLowerCase();
+      return v.includes('away') || v.includes('inactive') || v.includes('archive') || v.includes('terminat');
+    };
+    return (appData.employees || [])
+      .filter(e => !e.isTestUser && !isInactive(e.status) && !!(e.name || e.linkedUserEmail || e.email))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  }, [appData.employees]);
   // Current View-As target label for the dropdown button.
   const viewAsLabel = isImpersonatingTestUser ? 'Test User'
     : viewAsEmployee ? (viewAsEmployee.name || viewAsEmployee.linkedUserEmail || 'Employee')
@@ -2793,6 +2801,7 @@ export default function App() {
               </button>
               {viewAsMenuOpen && (
                 <div role="menu" className="absolute left-0 right-0 bottom-full mb-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden z-30 max-h-[70vh] overflow-y-auto">
+                  <div className="px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">View as a Role</div>
                   {([
                     { v: 'admin' as UserRole, label: 'Admin', sub: 'your real role — reset' },
                     { v: 'manager' as UserRole, label: 'Manager', sub: '' },
@@ -2819,6 +2828,11 @@ export default function App() {
                       </button>
                     );
                   })}
+                  {/* View as a Person — real CrewMaster employees (every
+                      role incl. mechanics) + the Test User sentinel. Each
+                      adopts that person's identity / populated dashboard
+                      (view-only). */}
+                  <div className="border-t border-slate-200 px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">View as a Person</div>
                   {testUserEmployee && (
                     <button
                       type="button"
@@ -2830,7 +2844,7 @@ export default function App() {
                         setViewAsMenuOpen(false);
                         goToImpersonatedHome(testUserEmployee.systemRole || 'mechanic');
                       }}
-                      className={`w-full text-left px-3 py-2 text-xs font-bold flex flex-col gap-0.5 border-t border-slate-100 transition-colors ${isImpersonatingTestUser ? 'bg-fuchsia-50 text-fuchsia-700' : 'text-slate-700 hover:bg-slate-50'}`}
+                      className={`w-full text-left px-3 py-2 text-xs font-bold flex flex-col gap-0.5 transition-colors ${isImpersonatingTestUser ? 'bg-fuchsia-50 text-fuchsia-700' : 'text-slate-700 hover:bg-slate-50'}`}
                     >
                       <span className="flex items-center gap-1.5">
                         Test User
@@ -2838,11 +2852,6 @@ export default function App() {
                       </span>
                       <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">full identity — {testUserEmployee.systemRole || 'mechanic'}</span>
                     </button>
-                  )}
-                  {/* Per-employee impersonation — see a specific real
-                      person's populated dashboard (view-only). */}
-                  {impersonatableEmployees.length > 0 && (
-                    <div className="border-t border-slate-200 px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">Employees</div>
                   )}
                   {impersonatableEmployees.map(emp => {
                     const selected = viewAsEmployeeId === emp.id;
@@ -2903,6 +2912,7 @@ export default function App() {
                 </button>
                 {viewAsMenuOpen && (
                   <div role="menu" className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden z-50 min-w-[180px] max-h-[70vh] overflow-y-auto">
+                    <div className="px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">View as a Role</div>
                     {(['admin','manager','foreman','worker','mechanic'] as UserRole[]).map(v => {
                       const selected = !isImpersonatingIdentity && (viewAsRole || 'admin') === v;
                       return (
@@ -2922,6 +2932,7 @@ export default function App() {
                         </button>
                       );
                     })}
+                    <div className="border-t border-slate-200 px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">View as a Person</div>
                     {testUserEmployee && (
                       <button
                         type="button"
@@ -2933,14 +2944,11 @@ export default function App() {
                           setViewAsMenuOpen(false);
                           goToImpersonatedHome(testUserEmployee.systemRole || 'mechanic');
                         }}
-                        className={`w-full text-left px-3 py-2.5 text-xs font-bold border-t border-slate-100 flex items-center gap-1.5 ${isImpersonatingTestUser ? 'bg-fuchsia-50 text-fuchsia-700' : 'text-slate-700 hover:bg-slate-50'}`}
+                        className={`w-full text-left px-3 py-2.5 text-xs font-bold flex items-center gap-1.5 ${isImpersonatingTestUser ? 'bg-fuchsia-50 text-fuchsia-700' : 'text-slate-700 hover:bg-slate-50'}`}
                       >
                         Test User
                         <span className="text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-fuchsia-100 text-fuchsia-700 border border-fuchsia-200">TEST</span>
                       </button>
-                    )}
-                    {impersonatableEmployees.length > 0 && (
-                      <div className="border-t border-slate-200 px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">Employees</div>
                     )}
                     {impersonatableEmployees.map(emp => {
                       const selected = viewAsEmployeeId === emp.id;
