@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { CheckSquare, Plus, ChevronDown, ChevronUp, MessageSquare, Flame } from 'lucide-react';
+import { CheckSquare, Plus, ChevronDown, ChevronUp, MessageSquare, Flame, Check } from 'lucide-react';
 import { TaskMasterTask, Employee } from '../types';
 import { personColor } from '../lib/personColor';
 import Stamp from './Stamp';
@@ -11,6 +11,8 @@ interface TaskMasterProps {
   currentUserEmail: string;
   onOpenCreate: () => void;
   onOpenTask: (taskId: string) => void;
+  // One-tap complete from an open task card → status 'done' + completedAt.
+  onComplete: (taskId: string) => void;
 }
 
 type SortKey = 'due' | 'created' | 'priority';
@@ -35,28 +37,16 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-function statusLabel(s: TaskMasterTask['status']): string {
-  if (s === 'not_started') return 'Not Started';
-  if (s === 'in_progress') return 'In Progress';
-  return 'Done';
-}
-
-function statusToneChip(s: TaskMasterTask['status']): string {
-  if (s === 'not_started') return 'bg-slate-100 text-slate-700 border-slate-200';
-  if (s === 'in_progress') return 'bg-blue-100 text-blue-700 border-blue-200';
-  return 'bg-emerald-100 text-emerald-700 border-emerald-200';
-}
-
 export default function TaskMaster({
   tasks,
   canCreate,
   currentUserEmail,
   onOpenCreate,
   onOpenTask,
+  onComplete,
 }: TaskMasterProps) {
   const [sortKey, setSortKey] = useState<SortKey>('due');
   const [notStartedOpen, setNotStartedOpen] = useState(true);
-  const [inProgressOpen, setInProgressOpen] = useState(true);
   const [doneOpen, setDoneOpen] = useState(false);
 
   const me = (currentUserEmail || '').toLowerCase();
@@ -80,23 +70,25 @@ export default function TaskMaster({
     return (b.createdAt || 0) - (a.createdAt || 0);
   };
 
-  const { notStarted, inProgress, done } = useMemo(() => {
+  const { notStarted, done } = useMemo(() => {
     const all = Object.values(tasks || {});
     const ns: TaskMasterTask[] = [];
-    const ip: TaskMasterTask[] = [];
     const dn: TaskMasterTask[] = [];
     const cutoff = Date.now() - 30 * DAY_MS;
     for (const t of all) {
-      if (t.status === 'not_started') ns.push(t);
-      else if (t.status === 'in_progress') ip.push(t);
-      else if (t.status === 'done' && (t.completedAt || 0) >= cutoff) dn.push(t);
+      // Two states: done (recent) vs open. Any non-'done' status —
+      // including legacy 'in_progress' — counts as open.
+      if (t.status === 'done') {
+        if ((t.completedAt || 0) >= cutoff) dn.push(t);
+      } else {
+        ns.push(t);
+      }
     }
     ns.sort(sortFn);
-    ip.sort(sortFn);
     // Done always sorted newest-completed first regardless of sortKey —
     // it's a recent-completions ledger, not a planning queue.
     dn.sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
-    return { notStarted: ns, inProgress: ip, done: dn };
+    return { notStarted: ns, done: dn };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, sortKey]);
 
@@ -117,11 +109,13 @@ export default function TaskMaster({
     const assignColor = personColor(t.assignedTo?.email);
     const done = t.status === 'done';
     return (
-      <button
+      <div
         key={t.id}
-        type="button"
+        role="button"
+        tabIndex={0}
         onClick={() => onOpenTask(t.id)}
-        className={`relative w-full text-left p-3 rounded-lg border shadow-sm hover:shadow transition-all ${isUnack ? 'bg-fuchsia-50/60 border-fuchsia-200' : 'bg-white border-slate-200'}`}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenTask(t.id); } }}
+        className={`relative w-full text-left p-3 rounded-lg border shadow-sm hover:shadow transition-all cursor-pointer ${isUnack ? 'bg-fuchsia-50/60 border-fuchsia-200' : 'bg-white border-slate-200'}`}
       >
         {/* COMPLETED stamp — centered overlay on done tasks. pointer-events-
             none keeps the card clickable; the body dims beneath it. */}
@@ -150,9 +144,20 @@ export default function TaskMaster({
               )}
             </div>
           </div>
-          <span className={`shrink-0 text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded border ${statusToneChip(t.status)}`}>{statusLabel(t.status)}</span>
+          {/* Primary action on an open task — one-tap Complete. Done tasks
+              carry the Completed stamp instead. */}
+          {!done && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onComplete(t.id); }}
+              className="shrink-0 inline-flex items-center gap-1.5 min-h-[40px] px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-widest shadow-sm transition-colors"
+              title="Mark this task complete"
+            >
+              <Check className="w-4 h-4" /> Complete
+            </button>
+          )}
         </div>
-      </button>
+      </div>
     );
   };
 
@@ -221,8 +226,7 @@ export default function TaskMaster({
           </div>
         </div>
 
-        <Section title="Not Started" items={notStarted} isOpen={notStartedOpen} setOpen={setNotStartedOpen} emptyMsg="Nothing waiting." />
-        <Section title="In Progress" items={inProgress} isOpen={inProgressOpen} setOpen={setInProgressOpen} emptyMsg="Nothing in progress." />
+        <Section title="Open" items={notStarted} isOpen={notStartedOpen} setOpen={setNotStartedOpen} emptyMsg="Nothing open." />
         <Section title="Done · last 30 days" items={done} isOpen={doneOpen} setOpen={setDoneOpen} emptyMsg="No completed tasks in the past 30 days." />
       </div>
     </div>

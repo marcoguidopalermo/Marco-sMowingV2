@@ -779,7 +779,10 @@ export interface TaskMasterTask {
   createdAt: number;
   dueDate?: number;
   priority: 'high' | 'normal';
-  status: 'not_started' | 'in_progress' | 'done';
+  // Two states only: 'not_started' (open) → 'done'. The legacy
+  // 'in_progress' value was removed; readers treat any non-'done' status
+  // as open (see TaskMaster grouping) so old data degrades gracefully.
+  status: 'not_started' | 'done';
   completedAt?: number;
   notes?: TaskMasterNote[];
   // Per-user "last seen" timestamps for the assignment badge. Keyed

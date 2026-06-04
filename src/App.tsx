@@ -3140,6 +3140,15 @@ export default function App() {
           currentUserEmail={displayEmail}
           onOpenCreate={() => setIsCreateTaskOpen(true)}
           onOpenTask={(taskId) => setTaskMasterDetailId(taskId)}
+          onComplete={(taskId) => {
+            const existing = (appData.tasks || {})[taskId];
+            if (!existing) return;
+            const me = (displayEmail || '').toLowerCase();
+            const isAssignee = (existing.assignedTo?.email || '').toLowerCase() === me;
+            if (!can('canCreateTasks', effectiveRole) && !isAssignee) { showToastMsg(PERMISSION_DENIED); return; }
+            const next: TaskMasterTask = { ...existing, status: 'done', completedAt: Date.now() };
+            syncToCloud({ ...appData, tasks: { ...(appData.tasks || {}), [taskId]: next } });
+          }}
         />
       ) : (
         <ScheduleBoard

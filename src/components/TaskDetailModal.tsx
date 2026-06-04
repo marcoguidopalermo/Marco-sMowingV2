@@ -173,12 +173,11 @@ export default function TaskDetailModal({
                   onChange={e => onStatusChange(task.id, e.target.value as TaskMasterTask['status'])}
                   className="w-full border border-slate-300 rounded-lg p-2 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-lime-400 bg-white"
                 >
-                  <option value="not_started">Not Started</option>
-                  <option value="in_progress">In Progress</option>
+                  <option value="not_started">Open</option>
                   <option value="done">Done</option>
                 </select>
               ) : (
-                <div className="text-sm font-bold text-slate-700">{task.status === 'not_started' ? 'Not Started' : task.status === 'in_progress' ? 'In Progress' : 'Done'}</div>
+                <div className="text-sm font-bold text-slate-700">{task.status === 'done' ? 'Done' : 'Open'}</div>
               )}
             </div>
 
