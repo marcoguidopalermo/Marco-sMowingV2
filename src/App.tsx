@@ -13,7 +13,7 @@ import {
   Target, Award, CalendarDays, FileSignature, Map, CheckSquare, Info, Sparkles, Loader2,
   MessageSquareText, Leaf, Download, LogOut, ShieldCheck, UserPlus, Megaphone, Lock,
   Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown, Hammer,
-  ChevronUp, Layers
+  ChevronUp, Layers, Eye
 } from 'lucide-react';
 
 import {
@@ -236,6 +236,10 @@ export default function App() {
   // views and audit attributions flow through Test User without
   // per-call-site changes.
   const [viewAsTestUser, setViewAsTestUser] = useState(false);
+  // Per-employee impersonation. When set (admin only), the app adopts that
+  // employee's full identity (email/name/employee record/role) so their
+  // personal views populate. Mutually exclusive with viewAsRole/viewAsTestUser.
+  const [viewAsEmployeeId, setViewAsEmployeeId] = useState<string | null>(null);
   const [viewAsMenuOpen, setViewAsMenuOpen] = useState(false);
   const viewAsMenuRefDesktop = useRef<HTMLDivElement | null>(null);
   const viewAsMenuRefMobile = useRef<HTMLDivElement | null>(null);
@@ -309,38 +313,67 @@ export default function App() {
   const testUserEmployee = (appData.employees || []).find(e => e.isTestUser) || null;
   const isImpersonatingTestUser = realCurrentUserRole === 'admin' && viewAsTestUser && !!testUserEmployee;
 
-  // Effective identity. When impersonating Test User these all
-  // resolve to Test User's record so downstream consumers
-  // (TimeMaster, MyMechanic, activity attribution, pay chunks)
-  // behave as if Test User is signed in.
-  const currentEmail = isImpersonatingTestUser
-    ? normalizeEmail(testUserEmployee!.linkedUserEmail || testUserEmployee!.email || TEST_USER_EMAIL)
-    : realCurrentEmail;
-  const currentUserEmployee: Employee | null = isImpersonatingTestUser
+  // Per-employee impersonation target (admin only). Resolved from the
+  // chosen id against the live roster.
+  const viewAsEmployee: Employee | null = (realCurrentUserRole === 'admin' && viewAsEmployeeId)
+    ? ((appData.employees || []).find(e => e.id === viewAsEmployeeId) || null)
+    : null;
+
+  // The employee whose identity we adopt: the Test User sentinel OR a
+  // chosen real employee. Both swap the FULL identity (email/name/record/
+  // role); they're mutually exclusive in the UI.
+  const impersonatedEmployee: Employee | null = isImpersonatingTestUser
     ? testUserEmployee
+    : viewAsEmployee;
+  const isImpersonatingIdentity = !!impersonatedEmployee;
+
+  // Effective identity. When impersonating an employee (Test User or a
+  // real person) these all resolve to that employee's record so downstream
+  // consumers (TimeMaster, MyMechanic, My Crew Today, activity attribution,
+  // pay chunks) behave as if that person is signed in.
+  const currentEmail = isImpersonatingIdentity
+    ? normalizeEmail(impersonatedEmployee!.linkedUserEmail || impersonatedEmployee!.email || '')
+    : realCurrentEmail;
+  const currentUserEmployee: Employee | null = isImpersonatingIdentity
+    ? impersonatedEmployee
     : realCurrentUserEmployee;
-  const currentUserRole: UserRole = isImpersonatingTestUser
-    ? (testUserEmployee!.systemRole || 'mechanic')
+  const currentUserRole: UserRole = isImpersonatingIdentity
+    ? (impersonatedEmployee!.systemRole || 'mechanic')
     : realCurrentUserRole;
-  const displayEmail = isImpersonatingTestUser
-    ? (testUserEmployee!.linkedUserEmail || testUserEmployee!.email || TEST_USER_EMAIL)
+  const displayEmail = isImpersonatingIdentity
+    ? (impersonatedEmployee!.linkedUserEmail || impersonatedEmployee!.email || realDisplayEmail)
     : realDisplayEmail;
-  const displayName = isImpersonatingTestUser
-    ? (testUserEmployee!.name || TEST_USER_NAME)
+  const displayName = isImpersonatingIdentity
+    ? (impersonatedEmployee!.name || (isImpersonatingTestUser ? TEST_USER_NAME : realDisplayName))
     : realDisplayName;
 
-  // VIEW PERMISSIONS (admin's role switcher). Test User
+  // VIEW PERMISSIONS (admin's role/employee switcher). Identity
   // impersonation supersedes the simple role switcher.
-  const effectiveRole: UserRole = isImpersonatingTestUser
-    ? (testUserEmployee!.systemRole || 'mechanic')
+  const effectiveRole: UserRole = isImpersonatingIdentity
+    ? (impersonatedEmployee!.systemRole || 'mechanic')
     : ((realCurrentUserRole === 'admin' && viewAsRole) ? viewAsRole : realCurrentUserRole);
   const isViewingAs =
-    isImpersonatingTestUser ||
+    isImpersonatingIdentity ||
     (realCurrentUserRole === 'admin' && viewAsRole !== null && viewAsRole !== 'admin');
 
   const isAdmin = effectiveRole === 'admin';
   const isManager = effectiveRole === 'admin' || effectiveRole === 'manager';
   const isRealAdmin = realCurrentUserRole === 'admin';
+
+  // Active real employees an admin can impersonate (Test User has its own
+  // menu entry, so it's excluded here). Sorted by name for the dropdown.
+  const impersonatableEmployees = useMemo(
+    () => (appData.employees || [])
+      .filter(e => !e.isTestUser && e.status === 'Active')
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '')),
+    [appData.employees],
+  );
+  // Current View-As target label for the dropdown button.
+  const viewAsLabel = isImpersonatingTestUser ? 'Test User'
+    : viewAsEmployee ? (viewAsEmployee.name || viewAsEmployee.linkedUserEmail || 'Employee')
+    : (viewAsRole || 'admin');
+  // Navigate straight to an impersonated identity's home dashboard.
+  const goToImpersonatedHome = (role: UserRole) => setCurrentView(defaultLandingView(role));
 
   // Top-level permission gates (used by sidebar navigation, top-level renders)
   const canEditSchedule = can('canCreateCrews', effectiveRole) || can('canEditAnyCrew', effectiveRole) || can('canEditOwnCrew', effectiveRole);
@@ -594,6 +627,7 @@ export default function App() {
   // overdue chunk, etc.).
   useEffect(() => {
     if (!user || loading) return;
+    if (isViewingAs) return; // view-only: no background writes while impersonating
     const chunks = appData.mechanicPayChunks || {};
     const openEmails = new Set<string>();
     for (const c of Object.values(chunks)) {
@@ -626,6 +660,7 @@ export default function App() {
   // circuits forever after.
   useEffect(() => {
     if (loading || !user) return;
+    if (isViewingAs) return; // view-only: don't seed while impersonating
     if (!Array.isArray(appData.employees)) return;
     const exists = appData.employees.some(e => e.isTestUser);
     if (exists) return;
@@ -1148,6 +1183,15 @@ export default function App() {
 
 
   const syncToCloud = async (newData: AppData) => {
+    // VIEW-ONLY GUARD. While impersonating (any View-As: role, Test User,
+    // or a specific employee) the session is a pure preview — block every
+    // write so clicking around can't mutate real data. Returns false so
+    // callers treat it as a failed save (no optimistic local mutation,
+    // no "saved" toast). Exiting View-As re-enables writes.
+    if (isViewingAs) {
+      showToastMsg('View Only — exit "View As" to make changes.');
+      return false;
+    }
     // Defensive normalize-on-save for authorizedEmails. Firestore rules
     // compare the request token's lowercased email against the stored
     // array AS-IS, so any uppercase/whitespace entry silently denies
@@ -2159,6 +2203,7 @@ export default function App() {
   };
 
   const handleDeletePerfEntry = async (crewId: string) => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
     console.info('[perf-delete] click', { date: perfDate, crewId });
     const allowed = canDeletePerfEntry(crewId);
     console.info('[perf-delete] permission', { crewId, allowed });
@@ -2263,6 +2308,7 @@ export default function App() {
       onSaveDaily={async () => { await syncToCloud({ ...appData, performance: { ...appData.performance, [perfDate]: dailyLogs } }); showToastMsg("Saved!"); }}
       isManager={isManager}
       onApprove={(crewId, log) => {
+        if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
         if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
         const approvedLog: PerformanceLog = {
           ...log,
@@ -2288,6 +2334,7 @@ export default function App() {
         showToastMsg("Approved & locked.");
       }}
       onUnapprove={(crewId) => {
+        if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
         if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
         const log = dailyLogs[crewId];
         if (!log) return;
@@ -2315,7 +2362,7 @@ export default function App() {
         showToastMsg("Unapproved — fields are editable.");
       }}
       jobberConnected={jobberConnected}
-      canSyncJobber={can('canTriggerJobberSync', effectiveRole)}
+      canSyncJobber={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
       showToastMsg={showToastMsg}
       canDeleteEntry={canDeletePerfEntry}
       onDeleteEntry={handleDeletePerfEntry}
@@ -2523,15 +2570,16 @@ export default function App() {
 
       {isViewingAs && (
         <div className="fixed top-0 inset-x-0 bg-amber-500 text-slate-900 px-4 py-2 flex items-center justify-center gap-3 z-[150] shadow-md no-print">
-          <AlertTriangle className="w-4 h-4" />
+          <Eye className="w-4 h-4" />
           <span className="text-xs font-black uppercase tracking-widest">
-            Viewing as {viewAsRole}
+            View Only · Viewing as {isImpersonatingIdentity ? displayName : viewAsRole}
+            {isImpersonatingIdentity && <span className="ml-1 normal-case font-bold opacity-80">({effectiveRole})</span>}
           </span>
           <button
-            onClick={() => setViewAsRole(null)}
+            onClick={() => { setViewAsRole(null); setViewAsTestUser(false); setViewAsEmployeeId(null); }}
             className="text-[10px] font-black uppercase tracking-widest bg-slate-900 text-amber-300 hover:bg-slate-800 px-3 py-1 rounded"
           >
-            Reset to Admin
+            Exit to Admin
           </button>
         </div>
       )}
@@ -2739,12 +2787,12 @@ export default function App() {
               >
                 <span className="flex items-center gap-1.5">
                   <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">View As:</span>
-                  <span className="capitalize">{isImpersonatingTestUser ? 'Test User' : (viewAsRole || 'admin')}</span>
+                  <span className="capitalize truncate max-w-[120px]">{viewAsLabel}</span>
                 </span>
                 <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${viewAsMenuOpen ? 'rotate-180' : ''}`} />
               </button>
               {viewAsMenuOpen && (
-                <div role="menu" className="absolute left-0 right-0 bottom-full mb-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden z-30">
+                <div role="menu" className="absolute left-0 right-0 bottom-full mb-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden z-30 max-h-[70vh] overflow-y-auto">
                   {([
                     { v: 'admin' as UserRole, label: 'Admin', sub: 'your real role — reset' },
                     { v: 'manager' as UserRole, label: 'Manager', sub: '' },
@@ -2752,7 +2800,7 @@ export default function App() {
                     { v: 'worker' as UserRole, label: 'Worker', sub: '' },
                     { v: 'mechanic' as UserRole, label: 'Mechanic', sub: '' },
                   ]).map(opt => {
-                    const selected = !isImpersonatingTestUser && (viewAsRole || 'admin') === opt.v;
+                    const selected = !isImpersonatingIdentity && (viewAsRole || 'admin') === opt.v;
                     return (
                       <button
                         key={opt.v}
@@ -2760,6 +2808,7 @@ export default function App() {
                         role="menuitem"
                         onClick={() => {
                           setViewAsTestUser(false);
+                          setViewAsEmployeeId(null);
                           setViewAsRole(opt.v === 'admin' ? null : opt.v);
                           setViewAsMenuOpen(false);
                         }}
@@ -2776,8 +2825,10 @@ export default function App() {
                       role="menuitem"
                       onClick={() => {
                         setViewAsRole(null);
+                        setViewAsEmployeeId(null);
                         setViewAsTestUser(true);
                         setViewAsMenuOpen(false);
+                        goToImpersonatedHome(testUserEmployee.systemRole || 'mechanic');
                       }}
                       className={`w-full text-left px-3 py-2 text-xs font-bold flex flex-col gap-0.5 border-t border-slate-100 transition-colors ${isImpersonatingTestUser ? 'bg-fuchsia-50 text-fuchsia-700' : 'text-slate-700 hover:bg-slate-50'}`}
                     >
@@ -2788,6 +2839,32 @@ export default function App() {
                       <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">full identity — {testUserEmployee.systemRole || 'mechanic'}</span>
                     </button>
                   )}
+                  {/* Per-employee impersonation — see a specific real
+                      person's populated dashboard (view-only). */}
+                  {impersonatableEmployees.length > 0 && (
+                    <div className="border-t border-slate-200 px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">Employees</div>
+                  )}
+                  {impersonatableEmployees.map(emp => {
+                    const selected = viewAsEmployeeId === emp.id;
+                    return (
+                      <button
+                        key={emp.id}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setViewAsRole(null);
+                          setViewAsTestUser(false);
+                          setViewAsEmployeeId(emp.id);
+                          setViewAsMenuOpen(false);
+                          goToImpersonatedHome(emp.systemRole || 'mechanic');
+                        }}
+                        className={`w-full text-left px-3 py-2 text-xs font-bold flex flex-col gap-0.5 transition-colors ${selected ? 'bg-sky-50 text-sky-700' : 'text-slate-700 hover:bg-slate-50'}`}
+                      >
+                        <span className="truncate">{emp.name || emp.linkedUserEmail || 'Unnamed'}</span>
+                        <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">{emp.systemRole || 'worker'}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -2819,15 +2896,15 @@ export default function App() {
                   type="button"
                   onClick={() => setViewAsMenuOpen(o => !o)}
                   aria-label="View As"
-                  title={`View As: ${isImpersonatingTestUser ? 'Test User' : (viewAsRole || 'admin')}`}
+                  title={`View As: ${viewAsLabel}`}
                   className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center text-slate-500 hover:bg-slate-100 rounded-lg"
                 >
                   <ShieldCheck className="w-5 h-5" />
                 </button>
                 {viewAsMenuOpen && (
-                  <div role="menu" className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden z-50 min-w-[160px]">
+                  <div role="menu" className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden z-50 min-w-[180px] max-h-[70vh] overflow-y-auto">
                     {(['admin','manager','foreman','worker','mechanic'] as UserRole[]).map(v => {
-                      const selected = !isImpersonatingTestUser && (viewAsRole || 'admin') === v;
+                      const selected = !isImpersonatingIdentity && (viewAsRole || 'admin') === v;
                       return (
                         <button
                           key={v}
@@ -2835,6 +2912,7 @@ export default function App() {
                           role="menuitem"
                           onClick={() => {
                             setViewAsTestUser(false);
+                            setViewAsEmployeeId(null);
                             setViewAsRole(v === 'admin' ? null : v);
                             setViewAsMenuOpen(false);
                           }}
@@ -2850,8 +2928,10 @@ export default function App() {
                         role="menuitem"
                         onClick={() => {
                           setViewAsRole(null);
+                          setViewAsEmployeeId(null);
                           setViewAsTestUser(true);
                           setViewAsMenuOpen(false);
+                          goToImpersonatedHome(testUserEmployee.systemRole || 'mechanic');
                         }}
                         className={`w-full text-left px-3 py-2.5 text-xs font-bold border-t border-slate-100 flex items-center gap-1.5 ${isImpersonatingTestUser ? 'bg-fuchsia-50 text-fuchsia-700' : 'text-slate-700 hover:bg-slate-50'}`}
                       >
@@ -2859,6 +2939,30 @@ export default function App() {
                         <span className="text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-fuchsia-100 text-fuchsia-700 border border-fuchsia-200">TEST</span>
                       </button>
                     )}
+                    {impersonatableEmployees.length > 0 && (
+                      <div className="border-t border-slate-200 px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">Employees</div>
+                    )}
+                    {impersonatableEmployees.map(emp => {
+                      const selected = viewAsEmployeeId === emp.id;
+                      return (
+                        <button
+                          key={emp.id}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setViewAsRole(null);
+                            setViewAsTestUser(false);
+                            setViewAsEmployeeId(emp.id);
+                            setViewAsMenuOpen(false);
+                            goToImpersonatedHome(emp.systemRole || 'mechanic');
+                          }}
+                          className={`w-full text-left px-3 py-2.5 text-xs font-bold ${selected ? 'bg-sky-50 text-sky-700' : 'text-slate-700 hover:bg-slate-50'}`}
+                        >
+                          <span className="truncate block">{emp.name || emp.linkedUserEmail || 'Unnamed'}</span>
+                          <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">{emp.systemRole || 'worker'}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
