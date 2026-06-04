@@ -2794,14 +2794,14 @@ export default function App() {
                 aria-expanded={viewAsMenuOpen}
               >
                 <span className="flex items-center gap-1.5">
-                  <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">View As:</span>
+                  <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">System View:</span>
                   <span className="capitalize truncate max-w-[120px]">{viewAsLabel}</span>
                 </span>
                 <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${viewAsMenuOpen ? 'rotate-180' : ''}`} />
               </button>
               {viewAsMenuOpen && (
                 <div role="menu" className="absolute left-0 right-0 bottom-full mb-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden z-30 max-h-[70vh] overflow-y-auto">
-                  <div className="px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">View as a Role</div>
+                  <div className="px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">Roles</div>
                   {([
                     { v: 'admin' as UserRole, label: 'Admin', sub: 'your real role — reset' },
                     { v: 'manager' as UserRole, label: 'Manager', sub: '' },
@@ -2828,11 +2828,7 @@ export default function App() {
                       </button>
                     );
                   })}
-                  {/* View as a Person — real CrewMaster employees (every
-                      role incl. mechanics) + the Test User sentinel. Each
-                      adopts that person's identity / populated dashboard
-                      (view-only). */}
-                  <div className="border-t border-slate-200 px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">View as a Person</div>
+                  {/* Test User sentinel grouped with the roles. */}
                   {testUserEmployee && (
                     <button
                       type="button"
@@ -2852,6 +2848,12 @@ export default function App() {
                       </span>
                       <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">full identity — {testUserEmployee.systemRole || 'mechanic'}</span>
                     </button>
+                  )}
+                  {/* Users — real CrewMaster employees (every role incl.
+                      mechanics) from appData.employees. Each adopts that
+                      person's identity / populated dashboard (view-only). */}
+                  {impersonatableEmployees.length > 0 && (
+                    <div className="border-t border-slate-200 px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">Users</div>
                   )}
                   {impersonatableEmployees.map(emp => {
                     const selected = viewAsEmployeeId === emp.id;
@@ -2905,14 +2907,14 @@ export default function App() {
                   type="button"
                   onClick={() => setViewAsMenuOpen(o => !o)}
                   aria-label="View As"
-                  title={`View As: ${viewAsLabel}`}
+                  title={`System View: ${viewAsLabel}`}
                   className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center text-slate-500 hover:bg-slate-100 rounded-lg"
                 >
                   <ShieldCheck className="w-5 h-5" />
                 </button>
                 {viewAsMenuOpen && (
                   <div role="menu" className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden z-50 min-w-[180px] max-h-[70vh] overflow-y-auto">
-                    <div className="px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">View as a Role</div>
+                    <div className="px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">Roles</div>
                     {(['admin','manager','foreman','worker','mechanic'] as UserRole[]).map(v => {
                       const selected = !isImpersonatingIdentity && (viewAsRole || 'admin') === v;
                       return (
@@ -2932,7 +2934,6 @@ export default function App() {
                         </button>
                       );
                     })}
-                    <div className="border-t border-slate-200 px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">View as a Person</div>
                     {testUserEmployee && (
                       <button
                         type="button"
@@ -2949,6 +2950,9 @@ export default function App() {
                         Test User
                         <span className="text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-fuchsia-100 text-fuchsia-700 border border-fuchsia-200">TEST</span>
                       </button>
+                    )}
+                    {impersonatableEmployees.length > 0 && (
+                      <div className="border-t border-slate-200 px-3 py-1.5 bg-slate-50 text-[8px] font-black uppercase tracking-widest text-slate-400">Users</div>
                     )}
                     {impersonatableEmployees.map(emp => {
                       const selected = viewAsEmployeeId === emp.id;
