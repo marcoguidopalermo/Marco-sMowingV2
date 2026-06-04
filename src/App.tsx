@@ -840,6 +840,11 @@ export default function App() {
     const savedLogs = appData.performance?.[perfDate] || {};
     const initialLogs: Record<string, PerformanceLog> = {};
     const schedules = appData.schedules[perfDate] || [];
+    // Test users are ghosts to performance — they must never sit in a
+    // log's employeeAH (an empty test-user entry silently blocks approval
+    // since the row is hidden from display). Drop them on render and never
+    // seed them below.
+    const testUserIds = new Set((appData.employees || []).filter(e => e.isTestUser).map(e => e.id));
 
     Object.keys(savedLogs).forEach(cId => {
       if (savedLogs[cId].isAdHoc) initialLogs[cId] = { ...savedLogs[cId] };
@@ -868,6 +873,14 @@ export default function App() {
       if (!isApprovedDay) {
         const rosterIds = new Set(crew.employees || []);
         for (const empId of Object.keys(nextAH)) {
+          // Test users never belong in performance AH — drop them on any
+          // non-approved day regardless of roster / jobber-link, so they
+          // can't sit in the stored log and silently block approval.
+          if (testUserIds.has(empId)) {
+            delete nextAH[empId];
+            delete nextDeduc[empId];
+            continue;
+          }
           if (rosterIds.has(empId)) continue;          // still scheduled — keep
           if (removed.has(empId)) continue;            // already manually removed — keep
           const emp = appData.employees.find(e => e.id === empId);
@@ -887,6 +900,7 @@ export default function App() {
       };
       crew.employees.forEach(eId => {
         if (removed.has(eId)) return;
+        if (testUserIds.has(eId)) return;   // never seed a test user into AH
         if (initialLogs[crew.id].employeeAH[eId] === undefined) initialLogs[crew.id].employeeAH[eId] = '';
         if (initialLogs[crew.id].deductions[eId] === undefined) initialLogs[crew.id].deductions[eId] = '';
       });

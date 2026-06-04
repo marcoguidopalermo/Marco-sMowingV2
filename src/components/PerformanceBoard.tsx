@@ -1423,6 +1423,12 @@ export default function PerformanceBoard({
                           </button>
                         ) : (() => {
                           const missingAH = Object.entries(log.employeeAH)
+                            // Test users are ghosts to performance math — they're
+                            // already excluded from display and every BH/AH/
+                            // allowance calc, so a test user's empty AH must NOT
+                            // block approval (it would, invisibly, since the row
+                            // is hidden). Real employees with missing AH still gate.
+                            .filter(([eId]) => !testUserIds.has(eId))
                             .filter(([, v]) => v === '' || v == null || Number.isNaN(Number(v)))
                             .map(([eId]) => getEmpName(eId));
                           // Item 2: an incomplete row never blocks approval — partial
