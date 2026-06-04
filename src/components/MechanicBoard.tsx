@@ -10,6 +10,7 @@ import { assigneesForTask, collaboratorNames, joinNames, shareForMechanic } from
 import FleetGroupedList from './FleetGroupedList';
 import { getUnitAttention } from '../lib/fleetGrouping';
 import Stamp from './Stamp';
+import { personColor } from '../lib/personColor';
 import { isExpiringSoon, isExpired, isOdoStale, formatTodayInToronto } from '../lib/dateUtils';
 import { fleetItemLabel, needsPlateRenewal, needsCommercialSafety, weightBandLabel } from '../lib/fleetUtils';
 import { isKmMaintenanceUnit, isHourMaintenanceUnit } from '../lib/maintenanceUtils';
@@ -526,16 +527,9 @@ export default function MechanicBoard({
             // Assignee avatar — palette + initial derived from the
             // assignee's email so the badge color stays stable across
             // sessions (same approach AssigneeBadge uses elsewhere).
-            const AVATAR_PALETTE = [
-              'bg-emerald-500', 'bg-sky-500', 'bg-amber-500', 'bg-rose-500',
-              'bg-violet-500', 'bg-cyan-500', 'bg-pink-500', 'bg-orange-500',
-            ];
-            const hashColorFor = (s: string): string => {
-              if (!s) return 'bg-slate-400';
-              let h = 0;
-              for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-              return AVATAR_PALETTE[Math.abs(h) % AVATAR_PALETTE.length];
-            };
+            // Consistent per-person avatar color — shared util (same hash
+            // + palette as before, so colors are unchanged).
+            const hashColorFor = personColor;
             const firstInitial = (name: string, email: string): string => {
               const src = (name || '').trim() || (email || '').split('@')[0] || '';
               return (src.charAt(0) || '?').toUpperCase();

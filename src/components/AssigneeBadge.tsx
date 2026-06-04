@@ -1,26 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { UserCircle, Check, RotateCcw, X } from 'lucide-react';
 import { MechanicTask } from '../types';
-
-const PALETTE = [
-  'bg-emerald-500',
-  'bg-sky-500',
-  'bg-amber-500',
-  'bg-rose-500',
-  'bg-violet-500',
-  'bg-cyan-500',
-  'bg-pink-500',
-  'bg-orange-500'
-];
-
-function hashColor(email: string): string {
-  if (!email) return 'bg-slate-400';
-  let h = 0;
-  for (let i = 0; i < email.length; i++) {
-    h = (h * 31 + email.charCodeAt(i)) | 0;
-  }
-  return PALETTE[Math.abs(h) % PALETTE.length];
-}
+import { personColor as hashColor } from '../lib/personColor';
 
 function initialsOf(name: string, email: string): string {
   const source = name?.trim() || email?.split('@')[0] || '';

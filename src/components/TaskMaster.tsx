@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { CheckSquare, Plus, ChevronDown, ChevronUp, MessageSquare, Flame } from 'lucide-react';
 import { TaskMasterTask, Employee } from '../types';
+import { personColor } from '../lib/personColor';
+import Stamp from './Stamp';
 
 interface TaskMasterProps {
   tasks: Record<string, TaskMasterTask>;
@@ -110,15 +112,26 @@ export default function TaskMaster({
     const noteCount = (t.notes || []).length;
     const myAck = (t.acknowledgedBy || {})[me];
     const isUnack = (t.assignedTo?.email || '').toLowerCase() === me && (!myAck || myAck < t.createdAt);
+    // Consistent per-person color (same email → same color), for the
+    // assignee avatar + name chip so the board is scannable by assignee.
+    const assignColor = personColor(t.assignedTo?.email);
+    const done = t.status === 'done';
     return (
       <button
         key={t.id}
         type="button"
         onClick={() => onOpenTask(t.id)}
-        className={`w-full text-left p-3 rounded-lg border shadow-sm hover:shadow transition-all ${isUnack ? 'bg-fuchsia-50/60 border-fuchsia-200' : 'bg-white border-slate-200'}`}
+        className={`relative w-full text-left p-3 rounded-lg border shadow-sm hover:shadow transition-all ${isUnack ? 'bg-fuchsia-50/60 border-fuchsia-200' : 'bg-white border-slate-200'}`}
       >
-        <div className="flex items-start gap-3">
-          <div className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-xs font-black ${isUnack ? 'bg-fuchsia-200 text-fuchsia-800' : 'bg-slate-200 text-slate-700'}`}>{initial}</div>
+        {/* COMPLETED stamp — centered overlay on done tasks. pointer-events-
+            none keeps the card clickable; the body dims beneath it. */}
+        {done && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+            <Stamp label="Completed" color="emerald" size="lg" rotate={-6} />
+          </div>
+        )}
+        <div className={`flex items-start gap-3 ${done ? 'opacity-60' : ''}`}>
+          <div className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-xs font-black text-white ${assignColor}`}>{initial}</div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
               {t.priority === 'high' && (
@@ -130,7 +143,7 @@ export default function TaskMaster({
               <div className="text-[12px] text-slate-500 mt-0.5 line-clamp-2">{truncate(t.description, 120)}</div>
             )}
             <div className="text-[11px] font-medium text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
-              <span className="truncate">{firstName}</span>
+              <span className={`inline-flex items-center max-w-[140px] truncate text-white text-[10px] font-bold px-1.5 py-0.5 rounded ${assignColor}`}>{firstName}</span>
               {dueChip && <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${dueTone}`}>{dueChip.label}</span>}
               {noteCount > 0 && (
                 <span className="inline-flex items-center gap-0.5 text-slate-400"><MessageSquare className="w-3 h-3" />{noteCount}</span>
