@@ -338,7 +338,7 @@ export default function App() {
     ? impersonatedEmployee
     : realCurrentUserEmployee;
   const currentUserRole: UserRole = isImpersonatingIdentity
-    ? (impersonatedEmployee!.systemRole || 'mechanic')
+    ? resolveRole(impersonatedEmployee)
     : realCurrentUserRole;
   const displayEmail = isImpersonatingIdentity
     ? (impersonatedEmployee!.linkedUserEmail || impersonatedEmployee!.email || realDisplayEmail)
@@ -350,7 +350,7 @@ export default function App() {
   // VIEW PERMISSIONS (admin's role/employee switcher). Identity
   // impersonation supersedes the simple role switcher.
   const effectiveRole: UserRole = isImpersonatingIdentity
-    ? (impersonatedEmployee!.systemRole || 'mechanic')
+    ? resolveRole(impersonatedEmployee)
     : ((realCurrentUserRole === 'admin' && viewAsRole) ? viewAsRole : realCurrentUserRole);
   const isViewingAs =
     isImpersonatingIdentity ||
@@ -2838,7 +2838,7 @@ export default function App() {
                         setViewAsEmployeeId(null);
                         setViewAsTestUser(true);
                         setViewAsMenuOpen(false);
-                        goToImpersonatedHome(testUserEmployee.systemRole || 'mechanic');
+                        goToImpersonatedHome(resolveRole(testUserEmployee));
                       }}
                       className={`w-full text-left px-3 py-2 text-xs font-bold flex flex-col gap-0.5 transition-colors ${isImpersonatingTestUser ? 'bg-fuchsia-50 text-fuchsia-700' : 'text-slate-700 hover:bg-slate-50'}`}
                     >
@@ -2846,7 +2846,7 @@ export default function App() {
                         Test User
                         <span className="text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-fuchsia-100 text-fuchsia-700 border border-fuchsia-200">TEST</span>
                       </span>
-                      <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">full identity — {testUserEmployee.systemRole || 'mechanic'}</span>
+                      <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">full identity — {resolveRole(testUserEmployee)}</span>
                     </button>
                   )}
                   {/* Users — real CrewMaster employees (every role incl.
@@ -2867,12 +2867,12 @@ export default function App() {
                           setViewAsTestUser(false);
                           setViewAsEmployeeId(emp.id);
                           setViewAsMenuOpen(false);
-                          goToImpersonatedHome(emp.systemRole || 'mechanic');
+                          goToImpersonatedHome(resolveRole(emp));
                         }}
                         className={`w-full text-left px-3 py-2 text-xs font-bold flex flex-col gap-0.5 transition-colors ${selected ? 'bg-sky-50 text-sky-700' : 'text-slate-700 hover:bg-slate-50'}`}
                       >
                         <span className="truncate">{emp.name || emp.linkedUserEmail || 'Unnamed'}</span>
-                        <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">{emp.systemRole || 'worker'}</span>
+                        <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">{resolveRole(emp)}</span>
                       </button>
                     );
                   })}
@@ -2943,7 +2943,7 @@ export default function App() {
                           setViewAsEmployeeId(null);
                           setViewAsTestUser(true);
                           setViewAsMenuOpen(false);
-                          goToImpersonatedHome(testUserEmployee.systemRole || 'mechanic');
+                          goToImpersonatedHome(resolveRole(testUserEmployee));
                         }}
                         className={`w-full text-left px-3 py-2.5 text-xs font-bold flex items-center gap-1.5 ${isImpersonatingTestUser ? 'bg-fuchsia-50 text-fuchsia-700' : 'text-slate-700 hover:bg-slate-50'}`}
                       >
@@ -2966,12 +2966,12 @@ export default function App() {
                             setViewAsTestUser(false);
                             setViewAsEmployeeId(emp.id);
                             setViewAsMenuOpen(false);
-                            goToImpersonatedHome(emp.systemRole || 'mechanic');
+                            goToImpersonatedHome(resolveRole(emp));
                           }}
                           className={`w-full text-left px-3 py-2.5 text-xs font-bold ${selected ? 'bg-sky-50 text-sky-700' : 'text-slate-700 hover:bg-slate-50'}`}
                         >
                           <span className="truncate block">{emp.name || emp.linkedUserEmail || 'Unnamed'}</span>
-                          <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">{emp.systemRole || 'worker'}</span>
+                          <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">{resolveRole(emp)}</span>
                         </button>
                       );
                     })}
