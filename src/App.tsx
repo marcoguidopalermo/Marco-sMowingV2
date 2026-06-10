@@ -248,6 +248,15 @@ export default function App() {
   // MechanicMaster State
   const [mechanicView, setMechanicView] = useState('kanban');
   const [repairModal, setRepairModal] = useState({ isOpen: false, fleetId: null, fixNotes: '', cost: '' });
+  // Submit guards for the two repair-creation paths. The refs are the hard
+  // re-entrancy lock (synchronous — blocks a double-tap before React can
+  // re-render); the state flags drive the disabled/"Saving…" button UI.
+  const repairSubmitRef = useRef(false);
+  const [isLoggingRepair, setIsLoggingRepair] = useState(false);
+  const completionSubmitRef = useRef(false);
+  const [isCompletingRepair, setIsCompletingRepair] = useState(false);
+  // Duplicate-repair cleanup (super-admin maintenance tool) preview state.
+  const [repairCleanupCtx, setRepairCleanupCtx] = useState<{ removeIds: string[]; groups: number } | null>(null);
   const [activeInspection, setActiveInspection] = useState<{ unitId: string | null, targetDate: string, defects: DefectDetail[], expandedCategory: string | null, draftSeverity: 'minor' | 'major', draftNotes: string }>({ unitId: null, targetDate: '', defects: [], expandedCategory: null, draftSeverity: 'minor', draftNotes: '' });
   const [viewingInspectionId, setViewingInspectionId] = useState<string | null>(null);
   const [editingOdoId, setEditingOdoId] = useState(null);
@@ -1167,6 +1176,77 @@ export default function App() {
     });
   };
 
+  // --- DUPLICATE-REPAIR CLEANUP (super-admin maintenance) ----------------
+  // Groups repairLog by equipmentId|date|fixNotes|cost. Any group with >1
+  // entry is a double-submit; we keep the earliest-created (smallest
+  // rep-<ts>) and mark the rest for removal. Pure — no side effects.
+  const findDuplicateRepairs = (
+    repairLog: any[],
+  ): { removeIds: string[]; groups: number } => {
+    // Plain object as the map — `Map` is shadowed by a lucide-react icon
+    // import in this file, so the global Map constructor isn't usable here.
+    const groups: Record<string, any[]> = {};
+    for (const r of repairLog || []) {
+      const key = `${r.equipmentId}|${r.date}|${r.fixNotes || ''}|${Number(r.cost) || 0}`;
+      (groups[key] = groups[key] || []).push(r);
+    }
+    const removeIds: string[] = [];
+    let dupGroups = 0;
+    for (const arr of Object.values(groups)) {
+      if (arr.length <= 1) continue;
+      dupGroups++;
+      const sorted = [...arr].sort((a, b) => {
+        const ta = Number(String(a.id || '').match(/^rep-(\d+)/)?.[1]) || 0;
+        const tb = Number(String(b.id || '').match(/^rep-(\d+)/)?.[1]) || 0;
+        return ta - tb;
+      });
+      for (let i = 1; i < sorted.length; i++) removeIds.push(sorted[i].id);
+    }
+    return { removeIds, groups: dupGroups };
+  };
+
+  // Step 1: back up the whole appData doc, compute the preview, and open the
+  // confirm modal. Nothing is written here — bulk delete waits for confirm.
+  const handleCleanupDuplicateRepairs = () => {
+    if (!isSuperAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    const { removeIds, groups } = findDuplicateRepairs(appData.repairLog || []);
+    if (removeIds.length === 0) { showToastMsg('No duplicate repairs found.'); return; }
+    // Back up appData to a downloaded JSON file before any bulk deletion.
+    try {
+      const blob = new Blob([JSON.stringify(appData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `appData-backup-${formatDate(new Date())}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      // Backup is best-effort; the preview/confirm gate still protects data.
+    }
+    setIsSettingsModalOpen(false);
+    setRepairCleanupCtx({ removeIds, groups });
+  };
+
+  // Step 2: actually remove the duplicates. The same syncToCloud that caps
+  // the audit log runs here, so this write also shrinks the doc — the
+  // un-sticking write when the doc was previously too big to save.
+  const confirmCleanupDuplicateRepairs = async () => {
+    if (!repairCleanupCtx) return;
+    const removeSet = new Set(repairCleanupCtx.removeIds);
+    const ok = await syncToCloud({
+      ...appData,
+      repairLog: (appData.repairLog || []).filter((r: any) => !removeSet.has(r.id)),
+    });
+    if (ok) {
+      showToastMsg(`Removed ${repairCleanupCtx.removeIds.length} duplicate repair${repairCleanupCtx.removeIds.length === 1 ? '' : 's'}.`);
+      setRepairCleanupCtx(null);
+    } else {
+      showToastMsg('Cleanup failed — try again. Your backup was downloaded.');
+    }
+  };
+
   const handlePrevWeek = () => setCurrentDate(addDays(currentDate, -7));
   const handleNextWeek = () => setCurrentDate(addDays(currentDate, 7));
   const handleToday = () => setCurrentDate(new Date());
@@ -1213,9 +1293,32 @@ export default function App() {
         .map(e => normalizeEmail(e))
         .filter(Boolean)),
     ).sort();
+    // Bound the in-document deletion audit log so a delete (which appends a
+    // record snapshot) can never push the single appData doc past
+    // Firestore's 1 MiB limit. Two non-destructive levers — neither touches
+    // the who/when/what summary that the audit trail relies on:
+    //   1. Keep only the most recent MAX_AUDIT_ENTRIES.
+    //   2. Strip oversized snapshots from heavy record types. `time_entry`
+    //      snapshots are EXEMPT — TimeMaster reconstructs the deleted entry
+    //      from them — but those are tiny TimeEntry objects, never the bloat.
+    // Runs on every save against the in-memory object before the write, so
+    // it self-heals existing bloat on the next successful sync (and lets the
+    // duplicate-repair cleanup write get the doc back under the cap).
+    const MAX_AUDIT_ENTRIES = 500;
+    const MAX_SNAPSHOT_BYTES = 4000;
+    const normalizedAuditLog = (newData.deletionAuditLog || [])
+      .slice(0, MAX_AUDIT_ENTRIES)
+      .map((e: any) => {
+        if (!e || e.recordType === 'time_entry' || e.snapshot == null) return e;
+        let tooBig = false;
+        try { tooBig = JSON.stringify(e.snapshot).length > MAX_SNAPSHOT_BYTES; }
+        catch { tooBig = true; }
+        return tooBig ? { ...e, snapshot: { trimmed: true } } : e;
+      });
     const safeData: AppData = {
       ...newData,
       authorizedEmails: normalizedAuthEmails,
+      deletionAuditLog: normalizedAuditLog,
     };
     // Optimistic update
     setAppData(safeData);
@@ -1578,21 +1681,65 @@ export default function App() {
     showToastMsg('Approved time-off reverted.');
   };
 
-  const handleRepairComplete = () => {
+  // Idempotency guard for repair creation: true if a repair with the same
+  // unit + date + notes + cost was logged within the last ~12s (the
+  // optimistic-update race window). Repair ids are `rep-<ts>[-rand]`, so we
+  // recover the creation time from the id. Backstops the in-flight ref guard
+  // against re-render races and cross-device double-submits.
+  const recentDuplicateRepairExists = (
+    equipmentId: string,
+    date: string,
+    fixNotes: string,
+    cost: number,
+  ): boolean => {
+    const now = Date.now();
+    return (appData.repairLog || []).some((r: any) => {
+      if (r.equipmentId !== equipmentId) return false;
+      if (r.date !== date) return false;
+      if ((r.fixNotes || '') !== (fixNotes || '')) return false;
+      if ((Number(r.cost) || 0) !== cost) return false;
+      const ts = Number(String(r.id || '').match(/^rep-(\d+)/)?.[1]);
+      return Number.isFinite(ts) && now - ts < 12000;
+    });
+  };
+
+  const handleRepairComplete = async () => {
     if (!can('canCompleteRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+    // Hard re-entrancy guard — a second tap while the first is in flight is
+    // a no-op (synchronous, beats the React re-render).
+    if (repairSubmitRef.current) return;
     const { fleetId, fixNotes, cost } = repairModal;
     if (!fleetId) return;
-    const fItem = appData.fleet.find(f => f.id === fleetId);
-
-    const newLogEntry = {
-      id: `rep-${Date.now()}`, equipmentId: fleetId, equipmentName: fItem?.name || 'Unknown',
-      date: formatDate(new Date()), fixNotes, cost: Number(cost) || 0
-    };
-
-    const newFleet = appData.fleet.map(f => f.id === fleetId ? { ...f, status: 'Active', repairTags: [] } : f);
-    syncToCloud({ ...appData, fleet: newFleet, repairLog: [newLogEntry, ...appData.repairLog] });
-    setRepairModal({ isOpen: false, fleetId: null, fixNotes: '', cost: '' });
-    showToastMsg("Repair logged successfully.");
+    const costNum = Number(cost) || 0;
+    const today = formatDate(new Date());
+    // Content idempotency: if an identical repair was just logged, treat the
+    // tap as a duplicate submit and just close the modal.
+    if (recentDuplicateRepairExists(fleetId, today, fixNotes, costNum)) {
+      setRepairModal({ isOpen: false, fleetId: null, fixNotes: '', cost: '' });
+      showToastMsg("Repair already logged.");
+      return;
+    }
+    repairSubmitRef.current = true;
+    setIsLoggingRepair(true);
+    try {
+      const fItem = appData.fleet.find(f => f.id === fleetId);
+      const newLogEntry = {
+        id: `rep-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        equipmentId: fleetId, equipmentName: fItem?.name || 'Unknown',
+        date: today, fixNotes, cost: costNum,
+      };
+      const newFleet = appData.fleet.map(f => f.id === fleetId ? { ...f, status: 'Active', repairTags: [] } : f);
+      const ok = await syncToCloud({ ...appData, fleet: newFleet, repairLog: [newLogEntry, ...appData.repairLog] });
+      if (ok) {
+        setRepairModal({ isOpen: false, fleetId: null, fixNotes: '', cost: '' });
+        showToastMsg("Repair logged successfully.");
+      } else {
+        showToastMsg("Save failed — try again.");
+      }
+    } finally {
+      repairSubmitRef.current = false;
+      setIsLoggingRepair(false);
+    }
   };
 
   const toggleRepairTag = (fleetId: string, tag: string) => {
@@ -3302,7 +3449,39 @@ export default function App() {
         effectiveRole={effectiveRole}
         onOpenManageTab={openManageTab}
         onSignOut={() => { setIsSettingsModalOpen(false); signOut(auth); }}
+        isSuperAdmin={isSuperAdmin}
+        onCleanupDuplicateRepairs={handleCleanupDuplicateRepairs}
       />
+
+      {/* DUPLICATE-REPAIR CLEANUP — preview + confirm. A backup of appData
+          was already downloaded when this opened. Nothing is removed until
+          the user confirms here. */}
+      {repairCleanupCtx && (
+        <div className="fixed inset-0 bg-black/60 z-[95] flex md:items-center md:justify-center md:p-4">
+          <div className="bg-white md:rounded-2xl shadow-2xl w-full md:max-w-md h-full md:h-auto flex flex-col overflow-hidden">
+            <div className="p-5 border-b border-slate-200 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-800">Clean Up Duplicate Repairs</h2>
+              <button onClick={() => setRepairCleanupCtx(null)} aria-label="Close" className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center text-slate-400 hover:text-slate-700"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-6 space-y-4 text-sm text-slate-700">
+              <p>
+                Found <span className="font-black">{repairCleanupCtx.removeIds.length}</span> duplicate
+                repair {repairCleanupCtx.removeIds.length === 1 ? 'entry' : 'entries'} across{' '}
+                <span className="font-black">{repairCleanupCtx.groups}</span> {repairCleanupCtx.groups === 1 ? 'repair' : 'repairs'} (same unit, date, notes and cost).
+              </p>
+              <p className="text-slate-600">
+                The earliest entry in each group is kept; the later duplicates are removed.
+                A full backup of your data was just downloaded to your device.
+              </p>
+              <p className="text-[12px] text-rose-600 font-semibold">This cannot be undone (restore from the backup if needed).</p>
+            </div>
+            <div className="p-5 border-t border-slate-200 bg-slate-50 flex justify-end gap-3">
+              <button onClick={() => setRepairCleanupCtx(null)} className="px-5 py-2.5 font-bold text-slate-600 hover:bg-slate-200 rounded-lg">Cancel</button>
+              <button onClick={confirmCleanupDuplicateRepairs} className="px-6 py-2.5 font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow">Remove {repairCleanupCtx.removeIds.length} duplicate{repairCleanupCtx.removeIds.length === 1 ? '' : 's'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* PARTIAL TIME-OFF MODAL — manager/admin entry for a partial-day absence */}
       <PartialTimeOffModal
@@ -3551,6 +3730,7 @@ export default function App() {
         state={repairModal}
         setState={setRepairModal}
         onConfirm={handleRepairComplete}
+        isSubmitting={isLoggingRepair}
       />
 
       {/* MANUAL TASK MODAL */}
@@ -4299,10 +4479,23 @@ export default function App() {
           .sort((a, b) => a.userName.localeCompare(b.userName))}
         onSubmit={async () => {
           if (!can('canCompleteRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+          // Hard re-entrancy guard against double-submit while in flight.
+          if (completionSubmitRef.current) return;
           const { taskId, unitId, partCost, laborHours, fixNotes } = completionModal;
+          const costNum = Number(partCost) || 0;
+          const repairDate = formatDate(new Date());
+          // Content idempotency: identical repair just logged → treat as dup.
+          if (unitId && recentDuplicateRepairExists(unitId, repairDate, fixNotes, costNum)) {
+            setCompletionModal({ ...completionModal, isOpen: false });
+            showToastMsg("Repair already logged.");
+            return;
+          }
+          completionSubmitRef.current = true;
+          setIsCompletingRepair(true);
+          try {
           const newLogEntry = {
-            id: `rep-${Date.now()}`, equipmentId: unitId, equipmentName: completionModal.unitName,
-            date: formatDate(new Date()), fixNotes, cost: Number(partCost) || 0, laborHours: Number(laborHours) || 0
+            id: `rep-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, equipmentId: unitId, equipmentName: completionModal.unitName,
+            date: repairDate, fixNotes, cost: costNum, laborHours: Number(laborHours) || 0
           };
           // Build the 'completed' activity. If the task isn't in mechanicTasks (synthetic), use modal data.
           const existing = appData.mechanicTasks.find(t => t.id === taskId);
@@ -4427,8 +4620,15 @@ export default function App() {
           if (success) {
             setCompletionModal({ ...completionModal, isOpen: false });
             showToastMsg("Repair completed and logged.");
+          } else {
+            showToastMsg("Save failed — try again.");
+          }
+          } finally {
+            completionSubmitRef.current = false;
+            setIsCompletingRepair(false);
           }
         }}
+        isSubmitting={isCompletingRepair}
       />
     </div>
   );

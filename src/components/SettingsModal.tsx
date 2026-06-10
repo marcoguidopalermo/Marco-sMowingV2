@@ -1,4 +1,4 @@
-import { X, Users, Truck, Package, Hammer, Sliders, ShieldCheck, Link as LinkIcon, HelpCircle, LogOut, ChevronRight, UserCircle, Mail } from 'lucide-react';
+import { X, Users, Truck, Package, Hammer, Sliders, ShieldCheck, Link as LinkIcon, HelpCircle, LogOut, ChevronRight, UserCircle, Mail, Eraser } from 'lucide-react';
 import { UserRole } from '../types';
 import { can } from '../lib/permissions';
 
@@ -11,6 +11,10 @@ interface SettingsModalProps {
   effectiveRole: UserRole;
   onOpenManageTab: (tab: ManageTab) => void;
   onSignOut: () => void;
+  // Super-admin maintenance: remove duplicate repair-log entries created by
+  // double-submits. Optional so non-super-admin callers can omit it.
+  isSuperAdmin?: boolean;
+  onCleanupDuplicateRepairs?: () => void;
 }
 
 interface Row {
@@ -28,6 +32,7 @@ interface Section {
 
 export default function SettingsModal({
   isOpen, onClose, currentUserEmail, effectiveRole, onOpenManageTab, onSignOut,
+  isSuperAdmin = false, onCleanupDuplicateRepairs,
 }: SettingsModalProps) {
   if (!isOpen) return null;
 
@@ -58,6 +63,12 @@ export default function SettingsModal({
         { key: 'permissions', label: 'Role Permissions', Icon: ShieldCheck, onClick: () => onOpenManageTab('permissions'), visible: isAdmin },
         { key: 'authorized', label: 'Authorized Emails', Icon: Mail, onClick: () => onOpenManageTab('authorized'), visible: isAdmin },
         { key: 'jobber', label: 'Jobber Integration', Icon: LinkIcon, onClick: () => onOpenManageTab('settings'), visible: canManageJobber },
+      ],
+    },
+    {
+      title: 'Maintenance',
+      rows: [
+        { key: 'dedupeRepairs', label: 'Clean Up Duplicate Repairs', Icon: Eraser, onClick: () => onCleanupDuplicateRepairs?.(), visible: isSuperAdmin && !!onCleanupDuplicateRepairs },
       ],
     },
     {

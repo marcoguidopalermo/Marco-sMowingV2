@@ -12,9 +12,12 @@ interface RepairModalProps {
   state: RepairModalState;
   setState: Dispatch<SetStateAction<RepairModalState>>;
   onConfirm: () => void;
+  // True while the save is in flight — disables the button and shows
+  // "Saving…" so a second tap on a slow connection can't double-submit.
+  isSubmitting?: boolean;
 }
 
-export default function RepairModal({ state, setState, onConfirm }: RepairModalProps) {
+export default function RepairModal({ state, setState, onConfirm, isSubmitting = false }: RepairModalProps) {
   if (!state.isOpen) return null;
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex md:items-center md:justify-center md:p-4">
@@ -34,8 +37,8 @@ export default function RepairModal({ state, setState, onConfirm }: RepairModalP
           </div>
         </div>
         <div className="p-5 border-t border-gray-200 bg-gray-50 flex justify-end gap-3">
-          <button onClick={() => setState({ isOpen: false, fleetId: null, fixNotes: '', cost: '' })} className="px-5 py-2.5 font-bold text-gray-600 hover:bg-gray-200 rounded-lg">Cancel</button>
-          <button onClick={onConfirm} className="px-6 py-2.5 font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow">Save to Repair Log</button>
+          <button onClick={() => setState({ isOpen: false, fleetId: null, fixNotes: '', cost: '' })} disabled={isSubmitting} className="px-5 py-2.5 font-bold text-gray-600 hover:bg-gray-200 rounded-lg disabled:opacity-50">Cancel</button>
+          <button onClick={onConfirm} disabled={isSubmitting} className="px-6 py-2.5 font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg shadow disabled:opacity-60 disabled:cursor-not-allowed">{isSubmitting ? 'Saving…' : 'Save to Repair Log'}</button>
         </div>
       </div>
     </div>

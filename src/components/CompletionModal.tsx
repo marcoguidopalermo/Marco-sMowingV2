@@ -73,9 +73,13 @@ interface CompletionModalProps {
   // also always shows anyone already selected (e.g. a legacy assignee no
   // longer in the active roster) so pre-seeded picks never vanish.
   mechanicRoster?: Worker[];
+  // True while the save awaits the cloud write — disables the button and
+  // shows "Saving…". The modal only closes on success, so without this a
+  // slow connection invites a re-tap and a duplicate repair entry.
+  isSubmitting?: boolean;
 }
 
-export default function CompletionModal({ state, setState, onSubmit, mechanicRoster = [] }: CompletionModalProps) {
+export default function CompletionModal({ state, setState, onSubmit, mechanicRoster = [], isSubmitting = false }: CompletionModalProps) {
   if (!state.isOpen) return null;
   const selected = state.selectedWorkers || [];
   const isSelected = (email: string) => selected.some(w => w.userEmail.toLowerCase() === email.toLowerCase());
@@ -256,8 +260,8 @@ export default function CompletionModal({ state, setState, onSubmit, mechanicRos
         </div>
 
         <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
-          <button onClick={() => setState({ ...state, isOpen: false })} className="px-6 py-2.5 font-bold text-slate-500">Cancel</button>
-          <button onClick={onSubmit} className="px-8 py-2.5 font-black text-white bg-green-600 rounded-xl shadow-lg shadow-green-600/20 uppercase tracking-widest text-xs">Save & Close Task</button>
+          <button onClick={() => setState({ ...state, isOpen: false })} disabled={isSubmitting} className="px-6 py-2.5 font-bold text-slate-500 disabled:opacity-50">Cancel</button>
+          <button onClick={onSubmit} disabled={isSubmitting} className="px-8 py-2.5 font-black text-white bg-green-600 rounded-xl shadow-lg shadow-green-600/20 uppercase tracking-widest text-xs disabled:opacity-60 disabled:cursor-not-allowed">{isSubmitting ? 'Saving…' : 'Save & Close Task'}</button>
         </div>
       </div>
     </div>
