@@ -1903,7 +1903,41 @@ async function runPerformanceSync(args: {
           // job's cumulative % is < 100 — if so, overwrite today's
           // entry to 100% with the remaining BH.
           if (histEntry && histEntry.percentComplete >= 100) {
-            creditedBH = histEntry.creditedBH;
+            // FROZEN-CREDIT FIX. On a MULTI-CREW visit the per-crew credit
+            // used to be frozen at the headcount split from first
+            // completion: this short-circuit reused histEntry.creditedBH
+            // verbatim, so when the roster later changed (a crew gains/loses
+            // a member, or a crew is added) the live auto split
+            // (visitBHSplits / row.totalBH) recomputed but row.bh did not —
+            // and the crews' credits stopped summing to the job total
+            // (e.g. 19.8/13.2 frozen vs a live 16.5/16.5, or 13.2/19.8/11=44
+            // on a 33 BH job after a 3rd crew joined). We now RE-DERIVE the
+            // credit from THIS crew's CURRENT share (myCrewShare). For AUTO
+            // splits we restamp the ledger entry so it self-heals on this
+            // and every future sync (the mutated mdJob is written back to
+            // the multiDayJobs subcollection by the diff-based write below).
+            // MANUAL splits (manager override) are left untouched. Single-
+            // crew visits have no split record → unaffected.
+            const split = visitBHSplits[visit.id];
+            const isMultiCrew = !!split;
+            const isManualSplit =
+              !!mdJob.manualOverride || split?.splitMethod === "manual";
+            const frozen = histEntry.creditedBH;
+            const expected = Math.round(
+              (histEntry.percentComplete / 100) * myCrewShare * 10,
+            ) / 10;
+            if (isMultiCrew && !isManualSplit && expected !== frozen) {
+              summary.warnings.push(
+                `multiday_credit_rederived visit=${visit.id} ` +
+                `crew=${crew.id} from=${frozen} to=${expected} ` +
+                `share=${myCrewShare}`,
+              );
+              // restamp ledger → persists to subcollection via diff-write
+              histEntry.creditedBH = expected;
+              creditedBH = expected;
+            } else {
+              creditedBH = frozen;
+            }
             awaitingReview = false;
             summary.visitsAutoCredited++;
           } else {
