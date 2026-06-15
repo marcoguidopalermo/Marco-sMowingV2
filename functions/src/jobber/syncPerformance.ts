@@ -19,6 +19,13 @@ const db = admin.firestore();
 const REGION = "us-central1";
 const APP_ID = "crewmaster";
 const APP_DATA_DOC = `artifacts/${APP_ID}/public/data/appData/main`;
+// Phase 1: multi-day ledgers live in their own subcollection (one doc per
+// jobberVisitId) so they no longer count against the appData doc's 1 MiB
+// cap. jobberVisitId is base64 and can contain "/", which Firestore forbids
+// in doc IDs, so the id is percent-encoded for the doc path (the raw id is
+// still stored in the doc's jobberVisitId field and used as the map key).
+const MULTIDAY_COLLECTION = `artifacts/${APP_ID}/public/data/multiDayJobs`;
+const mdjDocId = (visitId: string): string => encodeURIComponent(visitId);
 const SYNC_LOG_COLLECTION = `artifacts/${APP_ID}/private/data/syncLog`;
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 const MIN_TIMESHEET_SECONDS = 60;
@@ -961,6 +968,49 @@ async function runPerformanceSync(args: {
       }
     }
 
+    // --- Phase 1: load the multi-day ledger working set ---
+    // Ledgers now live in the multiDayJobs subcollection, not the appData
+    // doc. We load exactly what this run needs:
+    //   (a) EVERY in-progress ledger — carry-forward must see all of them,
+    //       even those with no visit in today's window;
+    //   (b) the ledgers for visits in this sync window — these may be
+    //       COMPLETE and are needed by the auto-move guard and the re-sync
+    //       short-circuit below.
+    // During the one-time migration we also fold in any ledgers still on
+    // the appData doc (doc-base), overlaid by the subcollection so fresh
+    // writes win. After the removal pass strips the doc field, that base is
+    // just {} and the subcollection is the sole source.
+    const mdjCollection = db.collection(MULTIDAY_COLLECTION);
+    const multiDayJobs: Record<string, MultiDayJob> = {
+      ...((appDataEarly.multiDayJobs as
+        Record<string, MultiDayJob> | undefined) || {}),
+    };
+    const inProgSnap = await mdjCollection
+      .where("status", "==", "in_progress")
+      .get();
+    for (const docSnap of inProgSnap.docs) {
+      const v = docSnap.data() as MultiDayJob;
+      if (v && v.jobberVisitId) multiDayJobs[v.jobberVisitId] = v;
+    }
+    const windowVisitIds = Array.from(new Set(rawVisits.map((v) => v.id)));
+    for (let i = 0; i < windowVisitIds.length; i += 300) {
+      const chunk = windowVisitIds.slice(i, i + 300);
+      if (chunk.length === 0) continue;
+      const refs = chunk.map((id) => mdjCollection.doc(mdjDocId(id)));
+      const snaps = await db.getAll(...refs);
+      for (const s of snaps) {
+        if (!s.exists) continue;
+        const v = s.data() as MultiDayJob;
+        if (v && v.jobberVisitId) multiDayJobs[v.jobberVisitId] = v;
+      }
+    }
+    // Snapshot for the diff-based write-back: only ledgers created or
+    // mutated this run are persisted (see the subcollection write below).
+    const mdjBefore = new Map<string, string>();
+    for (const [k, v] of Object.entries(multiDayJobs)) {
+      mdjBefore.set(k, JSON.stringify(v));
+    }
+
     // Auto-move detection: for each completed visit, scan the last 7 days
     // of performance entries (excluding targetDate) for a stale row with
     // this same visitId. If found on a non-approved source day, remove
@@ -992,8 +1042,9 @@ async function runPerformanceSync(args: {
       if (!isCompleteVisit(v)) continue;
       const visitJobId = v.job?.id;
       // Per-visit ledger lookup — Visit 1's history no longer blocks
-      // Visit 2's auto-move when both share a parent job.
-      const earlyMdj = (appDataEarly.multiDayJobs || {})[v.id];
+      // Visit 2's auto-move when both share a parent job. Reads from the
+      // Phase 1 working set loaded above (subcollection + doc-base).
+      const earlyMdj = multiDayJobs[v.id];
       if (earlyMdj && earlyMdj.completionHistory.length > 0) continue;
 
       for (const sourceDate of scanDates) {
@@ -1085,11 +1136,14 @@ async function runPerformanceSync(args: {
     // is test data only — the spec explicitly authorizes the nuke.
     const currentKeyVersion = appDataEarly.__multiDayKeyVersion || 0;
     const needsMultiDayMigration = currentKeyVersion < 2;
-    const multiDayJobs: Record<string, MultiDayJob> = needsMultiDayMigration ?
-      {} :
-      {...(appData.multiDayJobs || {})};
+    // Dead path on v2+ tenants (the live tenant is v2). Kept for safety:
+    // if a legacy jobId-keyed schema is ever observed, clear the working
+    // set so it rebuilds visit-keyed. The `multiDayJobs` map is now loaded
+    // earlier (Phase 1 subcollection load), so this only resets it.
     if (needsMultiDayMigration) {
-      const legacyCount = Object.keys(appData.multiDayJobs || {}).length;
+      const legacyCount = Object.keys(multiDayJobs).length;
+      for (const k of Object.keys(multiDayJobs)) delete multiDayJobs[k];
+      mdjBefore.clear();
       summary.warnings.push(
         `multiday_key_migration_v2 cleared=${legacyCount} ` +
         "legacy jobId-keyed entries; rebuilding under visit-keyed ledger",
@@ -2150,13 +2204,13 @@ async function runPerformanceSync(args: {
       });
     }
 
-    // Write performance for this date + the full multiDayJobs map.
-    // Auto-move cleanups touch prior days' performance maps via dot-path
-    // updates so the source-day rows get ghosted or removed in the same
-    // round-trip. Other top-level fields are untouched.
+    // Write performance for this date. Auto-move cleanups touch prior days'
+    // performance maps via dot-path updates so the source-day rows get
+    // ghosted or removed in the same round-trip. Phase 1: multiDayJobs is
+    // NO LONGER written into this doc — it lives in its own subcollection
+    // (written below). Other top-level fields are untouched.
     const writeUpdates: Record<string, unknown> = {
       [`performance.${targetDate}`]: newPerformanceDay,
-      multiDayJobs,
       visitBHSplits,
     };
     // Stamp the schema version so the migration runs exactly once.
@@ -2167,6 +2221,26 @@ async function runPerformanceSync(args: {
       writeUpdates[`performance.${d}`] = dayMap;
     }
     await appDataRef.update(writeUpdates);
+
+    // Phase 1: persist ONLY the ledgers created or mutated this run to the
+    // multiDayJobs subcollection (one doc per encoded jobberVisitId). The
+    // diff against mdjBefore keeps this to the touched working set rather
+    // than rewriting every ledger. The sync never deletes ledgers, so no
+    // delete pass is needed here.
+    const mdjTouched: string[] = [];
+    for (const [k, v] of Object.entries(multiDayJobs)) {
+      if (mdjBefore.get(k) !== JSON.stringify(v)) mdjTouched.push(k);
+    }
+    for (let i = 0; i < mdjTouched.length; i += 400) {
+      const batch = db.batch();
+      for (const k of mdjTouched.slice(i, i + 400)) {
+        batch.set(mdjCollection.doc(mdjDocId(k)), multiDayJobs[k]);
+      }
+      await batch.commit();
+    }
+    summary.warnings.push(
+      `multiday_subcollection_write touched=${mdjTouched.length}`,
+    );
 
     // Write audit entries for auto-credit events. Fire-and-forget; an
     // audit failure must not block the sync result.

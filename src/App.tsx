@@ -4,7 +4,7 @@ import logoBlack from '@/assets/logo/LOGOBLACK.png';
 import { LoginDemo } from './components/blocks/LoginDemo';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, sendPasswordResetEmail } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteField } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteField, collection, deleteDoc } from 'firebase/firestore';
 import {
   Calendar as CalendarIcon, ChevronLeft, ChevronRight, Users, Truck, Plus, Trash2, GripVertical,
   UserCircle, Wrench, Settings, Printer, AlertTriangle, Sun, Cloud, CloudRain, CloudLightning,
@@ -22,7 +22,7 @@ import {
   TaskActivity, TaskActivityType, BulletinAudienceRole, TaskNote, UnitNote, AppSettings, UserRole, RolePermissionsOverride, JobberUser, PrimaryCrew, PRIMARY_CREWS,
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
-  TaskMasterTask, TaskMasterNote, TimeOffRequest
+  TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
@@ -158,6 +158,14 @@ export default function App() {
   // a genuine check. A ref (not state) so updating it never re-renders or
   // re-runs the snapshot effect.
   const sessionAuthorizedRef = useRef(false);
+  // Phase 1: multiDayJobs lives in its own subcollection, not the appData
+  // doc. We keep the doc's (legacy, pre-removal) copy and the live
+  // subcollection copy in refs and merge them into appData.multiDayJobs —
+  // the subcollection OVERLAYS the doc-base so fresh writes always win and
+  // the cutover is safe regardless of migration order. After the one-time
+  // removal pass strips the doc field, the doc-base is just {}.
+  const docMultiDayJobsRef = useRef<Record<string, MultiDayJob>>({});
+  const subMultiDayJobsRef = useRef<Record<string, MultiDayJob>>({});
 
   // Modals & Forms State
   const [isManageModalOpen, setIsManageModalOpen] = useState(false);
@@ -740,6 +748,12 @@ export default function App() {
       if (snapshot.exists()) {
         const data = snapshot.data();
 
+        // Phase 1: remember the doc's (legacy) multiDayJobs copy; the live
+        // value is the subcollection overlaid on top (see the subcollection
+        // listener effect). Pre-removal the doc still carries a frozen copy;
+        // post-removal this is {}.
+        docMultiDayJobsRef.current = (data.multiDayJobs || {}) as Record<string, MultiDayJob>;
+
         const newAppData = {
           schedules: data.schedules || {},
           employees: data.employees || INITIAL_EMPLOYEES,
@@ -781,7 +795,8 @@ export default function App() {
             ? (data.rolePermissions as RolePermissionsOverride)
             : {},
           settings: data.settings || { endOfDayReminder: DEFAULT_EOD_REMINDER },
-          multiDayJobs: data.multiDayJobs || {},
+          // Doc-base overlaid by the live subcollection (Phase 1).
+          multiDayJobs: { ...docMultiDayJobsRef.current, ...subMultiDayJobsRef.current },
           partsOrders: data.partsOrders || {},
           mechanicPayChunks: data.mechanicPayChunks || {},
           tasks: data.tasks || {},
@@ -886,6 +901,32 @@ export default function App() {
       () => setJobberUsers([]),
     );
     return () => { unsubAuth(); unsubUsers(); };
+  }, [user]);
+
+  // Phase 1: live multiDayJobs subcollection listener. Rebuilds the
+  // Record<jobberVisitId, MultiDayJob> map from one-doc-per-ledger and
+  // merges it OVER the appData doc's (legacy) copy so every existing
+  // keyed reader (appData.multiDayJobs[visitId]) works unchanged. Keyed
+  // by the stored jobberVisitId field, so no doc-id decoding is needed.
+  useEffect(() => {
+    if (!user) return;
+    const mdjCol = collection(db, 'artifacts', appId, 'public', 'data', 'multiDayJobs');
+    return onSnapshot(
+      mdjCol,
+      (snap) => {
+        const map: Record<string, MultiDayJob> = {};
+        snap.forEach((d) => {
+          const v = d.data() as MultiDayJob;
+          if (v && v.jobberVisitId) map[v.jobberVisitId] = v;
+        });
+        subMultiDayJobsRef.current = map;
+        setAppData((prev) => ({
+          ...prev,
+          multiDayJobs: { ...docMultiDayJobsRef.current, ...map },
+        }));
+      },
+      (err) => { console.error('multiDayJobs subcollection listen error:', err); },
+    );
   }, [user]);
 
   useEffect(() => {
@@ -1354,33 +1395,71 @@ export default function App() {
     // history for carry-forward. We do NOT collapse multi-entry histories
     // or drop ledgers (that would break the per-crew re-sync match / need
     // reader changes — out of Phase 0 scope). Idempotent + self-healing.
-    const mdjSource = newData.multiDayJobs || {};
-    const normalizedMultiDayJobs: typeof mdjSource = {};
-    for (const [k, j] of Object.entries(mdjSource)) {
-      if (!j || j.status !== 'complete') { normalizedMultiDayJobs[k] = j; continue; }
+    const slimLedger = (j: any) => {
+      if (!j || j.status !== 'complete') return j;
       const { firstSeenAt: _drop, ...rest } = j;
-      normalizedMultiDayJobs[k] = {
+      return {
         ...rest,
-        completionHistory: (j.completionHistory || []).map((e) => {
+        completionHistory: (j.completionHistory || []).map((e: any) => {
           const { reasonNote: _r, markedBy: _mb, markedByName: _mn, ...keep } = e;
-          return keep as typeof e;
+          return keep;
         }),
       };
-    }
+    };
+    const slimMdjMap = (m: Record<string, any>) => {
+      const out: Record<string, any> = {};
+      for (const [k, j] of Object.entries(m || {})) out[k] = slimLedger(j);
+      return out;
+    };
+    // Slimmed new (the live merged map with this save's change) + slimmed
+    // current, used both for the optimistic local state and the
+    // subcollection diff below.
+    const nextMdj = slimMdjMap(newData.multiDayJobs || {});
+    const prevMdj = slimMdjMap(appData.multiDayJobs || {});
 
     const safeData: AppData = {
       ...newData,
       authorizedEmails: normalizedAuthEmails,
       deletionAuditLog: normalizedAuditLog,
       activityLog: normalizedActivityLog,
-      multiDayJobs: normalizedMultiDayJobs,
+      // Optimistic LOCAL state shows the live merged map (with the change).
+      // The DOC write below substitutes the frozen doc-base instead.
+      multiDayJobs: nextMdj,
     };
     // Optimistic update
     setAppData(safeData);
     if (!user) return;
 
+    // PHASE 1 — route multiDayJobs changes to the subcollection (one doc per
+    // percent-encoded jobberVisitId). Diff slimmed-new vs slimmed-current so
+    // we write ONLY the ledgers this save changed; untouched ledgers (incl.
+    // not-yet-migrated doc-base ones) are left to the migration script, not
+    // mass-rewritten here. A subcollection failure is non-fatal — the
+    // appData doc write below still runs.
+    const mdjColRef = collection(db, 'artifacts', appId, 'public', 'data', 'multiDayJobs');
+    const mdjEncId = (visitId: string) => encodeURIComponent(visitId);
+    try {
+      for (const [k, v] of Object.entries(nextMdj)) {
+        if (JSON.stringify(prevMdj[k]) !== JSON.stringify(v)) {
+          const cleanLedger = JSON.parse(JSON.stringify(v, (_key, val) => val === undefined ? null : val));
+          await setDoc(doc(mdjColRef, mdjEncId(k)), cleanLedger);
+        }
+      }
+      for (const k of Object.keys(prevMdj)) {
+        if (!(k in nextMdj)) await deleteDoc(doc(mdjColRef, mdjEncId(k)));
+      }
+    } catch (err: any) {
+      console.error('multiDayJobs subcollection write error:', err);
+    }
+
+    // DOC write — multiDayJobs is substituted with the FROZEN doc-base
+    // (docMultiDayJobsRef): pre-migration this preserves the legacy in-doc
+    // copy so nothing is lost; after the one-time removal pass empties that
+    // base, this writes {} and the doc shrinks ~half. No second code change
+    // is needed for the cutover.
+    const docPayload = { ...safeData, multiDayJobs: docMultiDayJobsRef.current };
     // Scrubber: Firestore does not allow 'undefined'. Convert to null or remove.
-    const cleanData = JSON.parse(JSON.stringify(safeData, (key, value) =>
+    const cleanData = JSON.parse(JSON.stringify(docPayload, (key, value) =>
       value === undefined ? null : value
     ));
 
