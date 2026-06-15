@@ -1315,10 +1315,65 @@ export default function App() {
         catch { tooBig = true; }
         return tooBig ? { ...e, snapshot: { trimmed: true } } : e;
       });
+    // PHASE 0 STORAGE STOPGAP — bound activityLog the same way as the
+    // deletion audit log. MechanicPerformance / MyMechanic aggregate
+    // mechanic stats from this list, so we use a GENEROUS bound, not the
+    // audit log's hard 500: keep everything from the last 90 days, PLUS a
+    // floor of the most-recent ACTIVITY_LOG_FLOOR entries. An entry is
+    // dropped only when it is BOTH older than 90 days AND beyond the floor,
+    // so a quiet quarter can never shorten mechanic history. The list is
+    // newest-first (entries are prepended on every write). Unparseable
+    // timestamps are kept (never silently delete on a bad date). Idempotent
+    // and self-heals existing bloat on the next sync, like the audit cap.
+    const ACTIVITY_LOG_FLOOR = 1500;
+    const ACTIVITY_LOG_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+    const activityCutoffMs = Date.now() - ACTIVITY_LOG_MAX_AGE_MS;
+    const normalizedActivityLog = (newData.activityLog || [])
+      .filter((e: any, i: number) => {
+        if (i < ACTIVITY_LOG_FLOOR) return true;
+        const t = e?.timestamp ? Date.parse(e.timestamp) : NaN;
+        return Number.isNaN(t) ? true : t >= activityCutoffMs;
+      });
+
+    // PHASE 0 STORAGE STOPGAP — slim COMPLETED multi-day ledgers. Once a
+    // ledger is complete its credited BH already lives in
+    // performance[date][crew].jobs[].bh (the bonus source of truth); the
+    // ledger is just tracking metadata. We strip the write-only / display-
+    // only strings (reasonNote, markedBy, markedByName) from each
+    // completionHistory entry and drop the dead `firstSeenAt` field. We
+    // DELIBERATELY keep every entry and every STRUCTURAL field
+    // (targetDate, crewKey, crewId, percentComplete, creditedBH, markedAt,
+    // isRetroactive) plus isLawnJob, so nothing that is read regresses:
+    //   - auto-move guard reads completionHistory.length > 0            ✓ (all entries kept)
+    //   - re-sync short-circuit finds the entry by targetDate+crewKey
+    //     then reads percentComplete + creditedBH                       ✓ (all kept)
+    //   - carry-forward skips completed ledgers entirely                ✓
+    //   - CompletionReviewModal save logic reads targetDate/pct/
+    //     creditedBH/markedAt; job-type toggle reads isLawnJob          ✓ (all kept)
+    // In-progress ledgers are left FULLY intact — they still need full
+    // history for carry-forward. We do NOT collapse multi-entry histories
+    // or drop ledgers (that would break the per-crew re-sync match / need
+    // reader changes — out of Phase 0 scope). Idempotent + self-healing.
+    const mdjSource = newData.multiDayJobs || {};
+    const normalizedMultiDayJobs: typeof mdjSource = {};
+    for (const [k, j] of Object.entries(mdjSource)) {
+      if (!j || j.status !== 'complete') { normalizedMultiDayJobs[k] = j; continue; }
+      const { firstSeenAt: _drop, ...rest } = j;
+      normalizedMultiDayJobs[k] = {
+        ...rest,
+        completionHistory: (j.completionHistory || []).map((e) => {
+          const { reasonNote: _r, markedBy: _mb, markedByName: _mn, ...keep } = e;
+          return keep as typeof e;
+        }),
+      };
+    }
+
     const safeData: AppData = {
       ...newData,
       authorizedEmails: normalizedAuthEmails,
       deletionAuditLog: normalizedAuditLog,
+      activityLog: normalizedActivityLog,
+      multiDayJobs: normalizedMultiDayJobs,
     };
     // Optimistic update
     setAppData(safeData);

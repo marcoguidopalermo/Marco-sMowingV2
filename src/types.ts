@@ -661,7 +661,10 @@ export interface MultiDayJob {
   manualOverride: boolean;
   completionHistory: CompletionEntry[];
   status: 'in_progress' | 'complete';
-  firstSeenAt: number;
+  // Set when the ledger is first created; never read anywhere. The Phase 0
+  // storage stopgap (syncToCloud) strips it from COMPLETED ledgers to save
+  // space, so it is optional on already-slimmed records.
+  firstSeenAt?: number;
   // Manager-driven escape hatch. When true, the carry-forward
   // prompt no longer surfaces this visit and the cloud sync's
   // auto-credit / candidate emission both skip it. The existing
