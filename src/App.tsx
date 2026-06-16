@@ -166,6 +166,20 @@ export default function App() {
   // removal pass strips the doc field, the doc-base is just {}.
   const docMultiDayJobsRef = useRef<Record<string, MultiDayJob>>({});
   const subMultiDayJobsRef = useRef<Record<string, MultiDayJob>>({});
+  // Phase 3: inspections live in their own subcollection. Same overlay model
+  // as multiDayJobs — doc-base copy + live subcollection, merged by id
+  // (subcollection wins), newest-first to match the prepend convention.
+  const docInspectionsRef = useRef<Inspection[]>([]);
+  const subInspectionsRef = useRef<Inspection[]>([]);
+  const mergeInspections = (base: Inspection[], sub: Inspection[]): Inspection[] => {
+    // NB: `Map` is the lucide icon import in this file — use a plain object.
+    const byId: Record<string, Inspection> = {};
+    for (const i of base) if (i && i.id) byId[i.id] = i;
+    for (const i of sub) if (i && i.id) byId[i.id] = i; // subcollection wins
+    return Object.values(byId).sort(
+      (a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')),
+    );
+  };
 
   // Modals & Forms State
   const [isManageModalOpen, setIsManageModalOpen] = useState(false);
@@ -753,6 +767,10 @@ export default function App() {
         // listener effect). Pre-removal the doc still carries a frozen copy;
         // post-removal this is {}.
         docMultiDayJobsRef.current = (data.multiDayJobs || {}) as Record<string, MultiDayJob>;
+        // Phase 3: same — remember the doc's legacy inspections copy; live
+        // value is the subcollection overlaid on top (pre-removal this is
+        // the frozen doc copy, post-removal []).
+        docInspectionsRef.current = (data.inspections || []) as Inspection[];
 
         const newAppData = {
           schedules: data.schedules || {},
@@ -785,7 +803,8 @@ export default function App() {
           performance: data.performance || {},
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
-          inspections: data.inspections || [],
+          // Doc-base overlaid by the live subcollection (Phase 3).
+          inspections: mergeInspections(docInspectionsRef.current, subInspectionsRef.current),
           cvorExpiry: data.cvorExpiry,
           mechanicTasks: data.mechanicTasks || [],
           activityLog: data.activityLog || [],
@@ -926,6 +945,31 @@ export default function App() {
         }));
       },
       (err) => { console.error('multiDayJobs subcollection listen error:', err); },
+    );
+  }, [user]);
+
+  // Phase 3: live inspections subcollection listener. Rebuilds the
+  // Inspection[] from one-doc-per-inspection and merges it OVER the appData
+  // doc's legacy copy so every existing reader (UnitHistoryModal,
+  // InspectionLog, MyCrewToday, etc.) works unchanged.
+  useEffect(() => {
+    if (!user) return;
+    const inspCol = collection(db, 'artifacts', appId, 'public', 'data', 'inspections');
+    return onSnapshot(
+      inspCol,
+      (snap) => {
+        const list: Inspection[] = [];
+        snap.forEach((d) => {
+          const v = d.data() as Inspection;
+          if (v && v.id) list.push(v);
+        });
+        subInspectionsRef.current = list;
+        setAppData((prev) => ({
+          ...prev,
+          inspections: mergeInspections(docInspectionsRef.current, list),
+        }));
+      },
+      (err) => { console.error('inspections subcollection listen error:', err); },
     );
   }, [user]);
 
@@ -1452,12 +1496,42 @@ export default function App() {
       console.error('multiDayJobs subcollection write error:', err);
     }
 
-    // DOC write — multiDayJobs is substituted with the FROZEN doc-base
-    // (docMultiDayJobsRef): pre-migration this preserves the legacy in-doc
-    // copy so nothing is lost; after the one-time removal pass empties that
-    // base, this writes {} and the doc shrinks ~half. No second code change
-    // is needed for the cutover.
-    const docPayload = { ...safeData, multiDayJobs: docMultiDayJobsRef.current };
+    // PHASE 3 — route inspections changes to the subcollection (one doc per
+    // inspection id). Diff by id: write created/changed, delete removed.
+    // Every inspection is kept (DOT retention) — just relocated. Untouched
+    // doc-base inspections are left to the migration script. Non-fatal.
+    const inspColRef = collection(db, 'artifacts', appId, 'public', 'data', 'inspections');
+    const nextInsp = newData.inspections || [];
+    // Plain objects (Map is the lucide icon import here).
+    const prevInspById: Record<string, Inspection> = {};
+    for (const i of (appData.inspections || [])) if (i && i.id) prevInspById[i.id] = i;
+    const nextInspIds: Record<string, true> = {};
+    for (const i of nextInsp) if (i && i.id) nextInspIds[i.id] = true;
+    try {
+      for (const i of nextInsp) {
+        if (!i || !i.id) continue;
+        if (JSON.stringify(prevInspById[i.id]) !== JSON.stringify(i)) {
+          const cleanInsp = JSON.parse(JSON.stringify(i, (_k, val) => val === undefined ? null : val));
+          await setDoc(doc(inspColRef, encodeURIComponent(i.id)), cleanInsp);
+        }
+      }
+      for (const id of Object.keys(prevInspById)) {
+        if (!nextInspIds[id]) await deleteDoc(doc(inspColRef, encodeURIComponent(id)));
+      }
+    } catch (err: any) {
+      console.error('inspections subcollection write error:', err);
+    }
+
+    // DOC write — multiDayJobs (Phase 1) and inspections (Phase 3) are
+    // substituted with their FROZEN doc-base refs: pre-migration this
+    // preserves the legacy in-doc copies so nothing is lost; after each
+    // one-time removal pass empties that base, this writes the empty value
+    // and the doc shrinks. No second code change is needed for the cutover.
+    const docPayload = {
+      ...safeData,
+      multiDayJobs: docMultiDayJobsRef.current,
+      inspections: docInspectionsRef.current,
+    };
     // Scrubber: Firestore does not allow 'undefined'. Convert to null or remove.
     const cleanData = JSON.parse(JSON.stringify(docPayload, (key, value) =>
       value === undefined ? null : value
