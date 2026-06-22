@@ -1911,6 +1911,37 @@ export default function App() {
     });
   };
 
+  // SOFT pre-submit guards for repair creation (used by BOTH creation
+  // paths). Returns true to proceed, false to abort (modal left open so the
+  // user can edit or cancel). These catch the near-blank RESUBMIT dupes the
+  // 12s/exact-content checks miss — without ever HARD-blocking, since a unit
+  // legitimately can have several different repairs in one day.
+  //   1. Day-level: a repair for this unit already exists today (any
+  //      content / any time) → warn + confirm. Matches on equipmentId+date
+  //      only — the only key that fires on the observed junk. Confirm lets
+  //      genuine multiple same-day repairs through.
+  //   2. Blank-submit: no notes AND $0 cost → warn + confirm (every observed
+  //      resubmit was near-blank).
+  const confirmRepairSubmit = (
+    equipmentId: string,
+    date: string,
+    fixNotes: string,
+    cost: number,
+  ): boolean => {
+    const alreadyToday = (appData.repairLog || []).some(
+      (r: any) => r.equipmentId === equipmentId && r.date === date,
+    );
+    if (alreadyToday && !window.confirm(
+      'This unit already has a repair logged today.\n\nThis may be a duplicate ' +
+      'resubmit. Add another repair for it anyway?',
+    )) return false;
+    const isBlank = (!fixNotes || !fixNotes.trim()) && (Number(cost) || 0) === 0;
+    if (isBlank && !window.confirm(
+      'This repair has no notes and $0 cost.\n\nLog it anyway?',
+    )) return false;
+    return true;
+  };
+
   const handleRepairComplete = async () => {
     if (!can('canCompleteRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
     // Hard re-entrancy guard — a second tap while the first is in flight is
@@ -1927,6 +1958,9 @@ export default function App() {
       showToastMsg("Repair already logged.");
       return;
     }
+    // Soft day-level + blank-submit guards. Abort (modal stays open) if the
+    // user declines either confirm.
+    if (!confirmRepairSubmit(fleetId, today, fixNotes, costNum)) return;
     repairSubmitRef.current = true;
     setIsLoggingRepair(true);
     try {
@@ -4698,6 +4732,9 @@ export default function App() {
             showToastMsg("Repair already logged.");
             return;
           }
+          // Soft day-level + blank-submit guards. Abort (modal stays open) if
+          // the user declines either confirm.
+          if (unitId && !confirmRepairSubmit(unitId, repairDate, fixNotes, costNum)) return;
           completionSubmitRef.current = true;
           setIsCompletingRepair(true);
           try {
