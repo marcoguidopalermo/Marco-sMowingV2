@@ -255,6 +255,12 @@ interface CrewSchedule {
 interface EmployeeDoc {
   id: string;
   jobberUserId?: string;
+  // Login / clock email. Used to source TimeMaster hours for a
+  // non-Jobber (call-in) crew member: their TimeEntry rows are keyed
+  // by this email. linkedUserEmail is authoritative (matches the
+  // frontend's resolution), email is the fallback.
+  linkedUserEmail?: string;
+  email?: string;
   // Sentinel record auto-bootstrapped for the "View As: Test User"
   // impersonation flow. Test users are ghosts to performance math:
   // excluded from crew-size brackets, BH splits, AH totals, and the
@@ -272,9 +278,20 @@ interface VisitBHSplit {
   lastUpdatedAt: number;
 }
 
+// TimeMaster clock record. Only the fields the sync needs to source
+// hours for a non-Jobber crew member. userEmail keys to an employee's
+// linkedUserEmail/email; clockOut is absent on an open (unclosed)
+// shift, in which case duration runs to "now".
+interface TimeEntryDoc {
+  userEmail: string;
+  clockIn: string;
+  clockOut?: string;
+}
+
 interface AppDataShape {
   schedules?: Record<string, CrewSchedule[]>;
   employees?: EmployeeDoc[];
+  timeEntries?: TimeEntryDoc[];
   performance?: Record<string, Record<string, PerformanceLog>>;
   multiDayJobs?: Record<string, MultiDayJob>;
   visitBHSplits?: Record<string, VisitBHSplit>;
@@ -1530,6 +1547,47 @@ async function runPerformanceSync(args: {
       usersWithSeconds: secondsByJobberUser.size,
     });
 
+    // Email-keyed hours for non-Jobber (call-in) crew members. Their
+    // hours live in TimeMaster (appData.timeEntries), keyed by login
+    // email, not in Jobber. We attribute each entry to the TORONTO
+    // calendar day of its clock-in — matching how the whole sync
+    // anchors everything to Toronto, not device-local — and reuse the
+    // same (clockOut − clockIn) duration the pay chunks use, so a
+    // call-in worker's crew AH equals what TimeMaster/pay shows. Open
+    // shifts (no clockOut) run to "now" and persist endAt: null so the
+    // frontend recomputes at read time, exactly like Jobber ticking
+    // shifts. Below-noise entries are dropped from both maps, mirroring
+    // the Jobber attribution above.
+    const {after: dayAfterIso, before: dayBeforeIso} =
+      torontoBoundariesIso(targetDate);
+    const dayAfterMs = Date.parse(dayAfterIso);
+    const dayBeforeMs = Date.parse(dayBeforeIso);
+    const secondsByEmail = new Map<string, number>();
+    const intervalsByEmail = new Map<
+      string,
+      Array<{ startAt: string; endAt: string | null }>
+    >();
+    for (const te of appData.timeEntries || []) {
+      const email = (te.userEmail || "").toLowerCase();
+      if (!email) continue;
+      const inMs = Date.parse(te.clockIn);
+      if (!Number.isFinite(inMs)) continue;
+      // Bucket by the Toronto date of clock-in (full duration attributed
+      // to that day, same as the Jobber finalDuration treatment above).
+      if (inMs < dayAfterMs || inMs >= dayBeforeMs) continue;
+      const outMs = te.clockOut ? Date.parse(te.clockOut) : nowMs;
+      if (!Number.isFinite(outMs) || outMs <= inMs) continue;
+      const sec = (outMs - inMs) / 1000;
+      if (sec < MIN_TIMESHEET_SECONDS) continue;
+      secondsByEmail.set(email, (secondsByEmail.get(email) || 0) + sec);
+      const list = intervalsByEmail.get(email) || [];
+      list.push({startAt: te.clockIn, endAt: te.clockOut ?? null});
+      intervalsByEmail.set(email, list);
+    }
+    logger.info("ah_attribution_email", {
+      emailsWithSeconds: secondsByEmail.size,
+    });
+
     // Visit ID set used to reconcile existing rows against this sync.
     // Anything in this set is "still known to Jobber" (whether complete
     // or not); anything outside it is truly removed.
@@ -2113,19 +2171,50 @@ async function runPerformanceSync(args: {
       let anyTimesheetWritten = false;
       for (const empId of crew.employees || []) {
         const emp = employees.find((e) => e.id === empId);
-        if (!emp || !emp.jobberUserId) continue;
-        matchedJobberUsers.add(emp.jobberUserId);
-        const sec = secondsByJobberUser.get(emp.jobberUserId) ?? null;
-        if (sec != null && sec >= MIN_TIMESHEET_SECONDS) {
-          base.employeeAH[empId] = Math.round((sec / 3600) * 10) / 10;
-          const intervals = intervalsByJobberUser.get(emp.jobberUserId);
-          if (intervals && intervals.length > 0) {
-            timesheetsByEmp[empId] = intervals;
-            anyTimesheetWritten = true;
+        if (!emp) continue;
+        if (emp.jobberUserId) {
+          // Jobber-linked crew member. Jobber is the PRIMARY hours
+          // source and wins over any TimeMaster entry for the same
+          // person (double-count guard: we never reach the email
+          // branch below for them, so their hours are counted once).
+          matchedJobberUsers.add(emp.jobberUserId);
+          const sec = secondsByJobberUser.get(emp.jobberUserId) ?? null;
+          if (sec != null && sec >= MIN_TIMESHEET_SECONDS) {
+            base.employeeAH[empId] = Math.round((sec / 3600) * 10) / 10;
+            const intervals = intervalsByJobberUser.get(emp.jobberUserId);
+            if (intervals && intervals.length > 0) {
+              timesheetsByEmp[empId] = intervals;
+              anyTimesheetWritten = true;
+            }
           }
+          // else: linked worker but no timesheet for this date — leave
+          //       base.employeeAH[empId] untouched (could be manual entry).
+          continue;
         }
-        // else: linked worker but no timesheet for this date — leave
-        //       base.employeeAH[empId] untouched (could be manual entry).
+        // Non-Jobber (call-in) crew member: source hours from TimeMaster
+        // by login email, treated exactly like a Jobber crew member.
+        // Test users stay ghosts to performance math — never given
+        // email-sourced hours (preserves the by-id test-user exclusion).
+        if (testUserIds.has(empId)) continue;
+        const email = (emp.linkedUserEmail || emp.email || "").toLowerCase();
+        if (!email) continue;
+        const sec = secondsByEmail.get(email) ?? null;
+        const intervals = intervalsByEmail.get(email);
+        // CRITICAL: only write AH together with its intervals. Writing
+        // AH without intervals makes the concurrency-weighted BH split
+        // fall back to FLAT for the WHOLE crew-day (efficiency.ts
+        // allCovered check), corrupting every member's share. Present +
+        // complete, or absent — never AH alone. When there's no usable
+        // TimeMaster data, leave any manual base.employeeAH[empId] be,
+        // mirroring the Jobber branch.
+        if (
+          sec != null && sec >= MIN_TIMESHEET_SECONDS &&
+          intervals && intervals.length > 0
+        ) {
+          base.employeeAH[empId] = Math.round((sec / 3600) * 10) / 10;
+          timesheetsByEmp[empId] = intervals;
+          anyTimesheetWritten = true;
+        }
       }
       if (anyTimesheetWritten) {
         base.employeeTimesheets = timesheetsByEmp;
