@@ -252,6 +252,206 @@ export function buildMtd(
   };
 }
 
+// ---------------------------------------------------------------
+// DIVISION-SCOPED MTD (the bonus number)
+// ---------------------------------------------------------------
+// buildDivisionMtd is a strict clone of buildMtd's virtual-BH
+// adjusted logic, restricted to ONE division. It is the single
+// source of truth for a division's monthly adjusted efficiency —
+// the display in My Crew Today AND the eventual bonus payout must
+// both read this function so they can never drift. It reuses the
+// exact same allowance resolution (getCrewAllowance → stamped
+// effectivePct honoured, tolerance-gated), the same isBonusEligible
+// gate, the same test-user exclusion, and the same
+// accumulate-unrounded / round-once discipline as the company
+// path. The ONLY differences from buildMtd are (a) the per-crew-day
+// division gate and (b) a PER-DIVISION cutoff (the division runs
+// through ITS OWN latest approved day, not the company-wide one).
+
+// Resolve a crew-day's division, preferring the live schedule crew
+// object and falling back to the stamped log.division. Both the
+// cutoff scan and the accumulation gate route through this so they
+// agree crew-day for crew-day.
+function resolveCrewDayDivision(
+  crewObj: Crew | undefined,
+  log: Pick<PerformanceLog, 'division'>,
+): string {
+  return crewObj?.division ?? log.division ?? '';
+}
+
+// Stable cross-day crew identity: "<division-lower>-<crewNumber>".
+// crewId is regenerated per day (types.ts CompletionEntry note), so
+// the per-crew MTD breakdown is keyed by this instead to roll a
+// crew across the whole month.
+function stableCrewKey(division: string, crewNumber: number): string {
+  return `${(division || '').toLowerCase()}-${crewNumber}`;
+}
+
+// Latest date with a bonus-eligible crew-day IN THIS DIVISION that
+// is (a) strictly before today and (b) inside the current month.
+// null when the division has no settled day yet this month. This is
+// the per-division analogue of getMtdCutoff — deliberately separate
+// so a division whose latest approved day lags the company-wide
+// latest still reports through its own real cutoff.
+export function getDivisionMtdCutoff(
+  today: string,
+  performance: Record<string, Record<string, PerformanceLog>>,
+  schedules: Record<string, Crew[]>,
+  monthStart: string,
+  division: string,
+): string | null {
+  let latest: string | null = null;
+  for (const [date, dayLogs] of Object.entries(performance || {})) {
+    if (date >= today) continue;
+    if (date < monthStart) continue;
+    const daySchedule = schedules[date] || [];
+    const hasApproved = Object.entries(dayLogs || {}).some(([crewId, l]) => {
+      if (!isBonusEligible(l)) return false;
+      const crewObj = daySchedule.find(c => c.id === crewId);
+      return resolveCrewDayDivision(crewObj, l) === division;
+    });
+    if (!hasApproved) continue;
+    if (latest === null || date > latest) latest = date;
+  }
+  return latest;
+}
+
+// One crew's month-to-date adjusted figures within a division.
+export interface DivisionCrewStat {
+  crewKey: string;          // "<division-lower>-<crewNumber>"
+  crewLabel: string;        // "Lawn Division #3"
+  crewNumber: number;
+  bh: number;
+  ah: number;
+  // Virtual-BH adjusted efficiency for the crew across the month.
+  // null when ah === 0.
+  adjustedEfficiency: number | null;
+}
+
+export interface DivisionMtdResult {
+  division: string;
+  monthStart: string;
+  cutoff: string | null;
+  monthLabel: string;
+  monthName: string;
+  divisionBH: number;
+  divisionAH: number;
+  // Division monthly adjusted efficiency (virtual-BH). THIS is the
+  // bonus-relevant headline number. null when divisionAH === 0.
+  divisionAdjustedEfficiency: number | null;
+  // Per-crew MTD adjusted breakdown, sorted by adjusted efficiency
+  // desc (crews with no AH fall to the bottom). Keyed by stable
+  // crew key so a crew rolls across every day it worked this month.
+  perCrew: DivisionCrewStat[];
+}
+
+export function buildDivisionMtd(
+  today: string,
+  division: string,
+  performance: Record<string, Record<string, PerformanceLog>>,
+  schedules: Record<string, Crew[]>,
+  employees: Employee[],
+  settings?: AppSettings | null,
+): DivisionMtdResult {
+  const { start, monthName } = getMonthRange(today);
+  const cutoff = getDivisionMtdCutoff(today, performance, schedules, start, division);
+  const testUserIds = new Set(
+    employees.filter(e => e.isTestUser).map(e => e.id),
+  );
+
+  let divisionBH = 0;
+  let divisionAH = 0;
+  let divisionAdjustedNumerator = 0;
+  // Per-crew accumulators (unrounded). Keyed by stable crew key.
+  const crewAcc: Record<string, {
+    crewLabel: string;
+    crewNumber: number;
+    bh: number;
+    ah: number;
+    adjNumerator: number;
+  }> = {};
+
+  if (cutoff !== null) {
+    for (const [date, dayLogs] of Object.entries(performance || {})) {
+      if (date < start || date > cutoff) continue;
+      const daySchedule = schedules[date] || [];
+      for (const [crewId, log] of Object.entries(dayLogs || {})) {
+        // Same bonus gate as company.
+        if (!isBonusEligible(log)) continue;
+        const crewObj = daySchedule.find(c => c.id === crewId);
+        // Division gate — the only structural difference from buildMtd.
+        if (resolveCrewDayDivision(crewObj, log) !== division) continue;
+
+        const { cBH, cAH } = crewTotals(log, testUserIds);
+        // Identical allowance resolution to company: stamped
+        // effectivePct honoured, tolerance-gated, live fallback.
+        const allowance = getCrewAllowance(
+          crewObj, log, settings || null, testUserIds,
+        );
+
+        divisionBH += cBH;
+        divisionAH += cAH;
+        // Identical virtual-BH numerator to company (mtd.ts buildMtd).
+        divisionAdjustedNumerator += cBH + (cAH * allowance.pct) / 100;
+
+        const crewNumber = crewObj?.crewNumber ?? log.crewNumber ?? 0;
+        const key = stableCrewKey(division, crewNumber);
+        if (!crewAcc[key]) {
+          crewAcc[key] = {
+            crewLabel: `${division} #${crewNumber}`,
+            crewNumber,
+            bh: 0,
+            ah: 0,
+            adjNumerator: 0,
+          };
+        }
+        crewAcc[key].bh += cBH;
+        crewAcc[key].ah += cAH;
+        crewAcc[key].adjNumerator += cBH + (cAH * allowance.pct) / 100;
+      }
+    }
+  }
+
+  // Round ONCE at the end — same discipline as company.
+  const divisionAdjustedEfficiency = divisionAH > 0
+    ? Number(((divisionAdjustedNumerator / divisionAH) * 100).toFixed(1))
+    : null;
+
+  const perCrew: DivisionCrewStat[] = Object.entries(crewAcc)
+    .map(([crewKey, s]) => ({
+      crewKey,
+      crewLabel: s.crewLabel,
+      crewNumber: s.crewNumber,
+      bh: Number(s.bh.toFixed(1)),
+      ah: Number(s.ah.toFixed(1)),
+      adjustedEfficiency: s.ah > 0
+        ? Number(((s.adjNumerator / s.ah) * 100).toFixed(1))
+        : null,
+    }))
+    .sort((a, b) => {
+      const ea = a.adjustedEfficiency ?? -Infinity;
+      const eb = b.adjustedEfficiency ?? -Infinity;
+      if (eb !== ea) return eb - ea;
+      return a.crewNumber - b.crewNumber;
+    });
+
+  const monthLabel = cutoff
+    ? `${monthName} — through ${formatCutoffSuffix(cutoff)}`
+    : `${monthName} — no completed days yet`;
+
+  return {
+    division,
+    monthStart: start,
+    cutoff,
+    monthLabel,
+    monthName,
+    divisionBH: Number(divisionBH.toFixed(1)),
+    divisionAH: Number(divisionAH.toFixed(1)),
+    divisionAdjustedEfficiency,
+    perCrew,
+  };
+}
+
 // Convenience: per-employee MTD BH for the logged-in user.
 // Returns 0 when there's no signed-in Employee record or no MTD
 // contribution this month.

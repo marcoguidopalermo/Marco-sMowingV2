@@ -9,6 +9,7 @@ import { isHourMaintenanceUnit } from '../lib/maintenanceUtils';
 import type { ActiveInspectionState } from './InspectionModal';
 import TopCrewSpotlight from './TopCrewSpotlight';
 import MtdSelfWidget from './MtdSelfWidget';
+import DivisionStandings from './DivisionStandings';
 
 interface MyCrewTodayProps {
   today: string;
@@ -83,6 +84,39 @@ export default function MyCrewToday({
     if (!currentUserEmployee) return false;
     return (schedules[tomorrowStr] || []).some(c => (c.employees || []).includes(currentUserEmployee.id));
   }, [currentUserEmployee, schedules, tomorrowStr]);
+
+  // The viewer's DIVISION for the day. When on more than one crew,
+  // pick the crew where they worked the MOST hours (highest net AH
+  // today); ties fall to the first crew (myCrews preserves schedule
+  // order). That crew's division scopes every division widget below.
+  // Also expose the stable crew key ("<division-lower>-<crewNumber>")
+  // so the standings board can highlight the viewer's own crew.
+  const { targetDivision, myCrewKey } = useMemo<{
+    targetDivision: string | null;
+    myCrewKey: string | null;
+  }>(() => {
+    if (myCrews.length === 0) return { targetDivision: null, myCrewKey: null };
+    const crewAH = (crew: Crew): number => {
+      const log = performance[today]?.[crew.id];
+      const rawAH = Object.values(log?.employeeAH || {}).reduce<number>(
+        (s, v) => s + numericOr(v), 0,
+      );
+      const deducAH = Object.values(log?.deductions || {}).reduce<number>(
+        (s, v) => s + deductHours(v), 0,
+      );
+      return Math.max(0, rawAH - deducAH);
+    };
+    let best = myCrews[0];
+    let bestAH = crewAH(best);
+    for (let i = 1; i < myCrews.length; i++) {
+      const ah = crewAH(myCrews[i]);
+      if (ah > bestAH) { best = myCrews[i]; bestAH = ah; }
+    }
+    return {
+      targetDivision: best.division,
+      myCrewKey: `${(best.division || '').toLowerCase()}-${best.crewNumber}`,
+    };
+  }, [myCrews, performance, today]);
 
   // ---- Tabs + Yesterday data --------------------------------------------
   // ALL HOOKS LIVE ABOVE THE EARLY RETURN. The previous build crashed
@@ -183,9 +217,11 @@ export default function MyCrewToday({
           </button>
         )}
 
-        {/* TOP CREW SPOTLIGHT — surfaces the company leader for the
-            selected day. Live dot pulses while activeTab === 'today';
-            yesterday view shows the final standing with no dot. */}
+        {/* TOP CREW SPOTLIGHT — the viewer's DIVISION leader for the
+            selected day (division-wide bonus structure). Falls back to
+            company-wide only if the viewer isn't on a crew today (no
+            division to scope to). Live dot pulses while activeTab ===
+            'today'; yesterday view shows the final standing with no dot. */}
         <TopCrewSpotlight
           date={activeTab === 'today' ? today : yesterdayDate}
           live={activeTab === 'today'}
@@ -193,12 +229,14 @@ export default function MyCrewToday({
           performance={performance}
           employees={employees}
           settings={settings}
+          division={targetDivision || undefined}
         />
 
-        {/* Month-to-date — company totals + the signed-in user's own
-            BH share. Visible to every role that has My Crew Today;
-            never surfaces other individuals' numbers (that's a
-            manager-only Dashboard widget). */}
+        {/* Month-to-date — the viewer's DIVISION totals (division BH +
+            division adjusted efficiency, the bonus-relevant number) +
+            the signed-in user's own BH share. Never surfaces other
+            individuals' numbers. Falls back to company-wide when the
+            viewer has no division today. */}
         <MtdSelfWidget
           today={today}
           currentUserEmployee={currentUserEmployee}
@@ -206,7 +244,23 @@ export default function MyCrewToday({
           performance={performance}
           employees={employees}
           settings={settings}
+          division={targetDivision || undefined}
         />
+
+        {/* DIVISION STANDINGS — every crew in the viewer's division
+            ranked by MTD adjusted efficiency (the bonus number). Only
+            shown when the viewer has a division today. */}
+        {targetDivision && (
+          <DivisionStandings
+            today={today}
+            division={targetDivision}
+            schedules={schedules}
+            performance={performance}
+            employees={employees}
+            settings={settings}
+            highlightCrewKey={myCrewKey}
+          />
+        )}
 
         {/* TAB TOGGLE — Today (existing content) / Yesterday (individual perf) */}
         <div className="flex bg-white rounded-lg p-1 border border-slate-200 shadow-sm mb-4" role="tablist">

@@ -22,6 +22,11 @@ interface TopCrewSpotlightProps {
   // resolve crewSizeAllowance — either from each crew-day's stamped
   // snapshot or from this current table as a live fallback.
   settings?: AppSettings | null;
+  // When set, restrict the spotlight to this division only (the
+  // viewer's division). buildCrewLeaderboard stays company-wide;
+  // we filter its entries by entry.crew.division here so the shared
+  // lib is untouched. Undefined → company-wide (legacy behavior).
+  division?: string;
 }
 
 export default function TopCrewSpotlight({
@@ -31,10 +36,14 @@ export default function TopCrewSpotlight({
   performance,
   employees,
   settings,
+  division,
 }: TopCrewSpotlightProps) {
   const entries = useMemo(
-    () => buildCrewLeaderboard(date, schedules, performance, employees, settings || undefined),
-    [date, schedules, performance, employees, settings],
+    () => {
+      const all = buildCrewLeaderboard(date, schedules, performance, employees, settings || undefined);
+      return division ? all.filter(e => e.crew.division === division) : all;
+    },
+    [date, schedules, performance, employees, settings, division],
   );
   const winner = topCrew(entries);
 
@@ -43,7 +52,9 @@ export default function TopCrewSpotlight({
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Crown className="w-4 h-4 text-amber-600" />
-          <h3 className="text-[11px] font-black uppercase tracking-widest text-amber-800">Top Crew</h3>
+          <h3 className="text-[11px] font-black uppercase tracking-widest text-amber-800">
+            {division ? `Top Crew — ${division}` : 'Top Crew'}
+          </h3>
         </div>
         {live && (
           <div className="flex items-center gap-1.5">
