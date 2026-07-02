@@ -1015,8 +1015,8 @@ export default function PerformanceBoard({
   };
 
   const calcReports = () => {
-    let totals = { bh: 0, ah: 0, jobs: 0 };
-    let divStats: Record<string, any> = {}; DIVISIONS.forEach(d => divStats[d] = { bh: 0, ah: 0, jobs: 0 });
+    let totals = { bh: 0, ah: 0, jobs: 0, adjBH: 0 };
+    let divStats: Record<string, any> = {}; DIVISIONS.forEach(d => divStats[d] = { bh: 0, ah: 0, jobs: 0, adjBH: 0 });
     let crewStats: Record<string, any> = {}; let empStats: Record<string, any> = {};
 
     Object.entries(performance || {}).forEach(([date, dayLogs]) => {
@@ -1052,7 +1052,7 @@ export default function PerformanceBoard({
           totals.bh += cBH; totals.ah += cAH; totals.jobs += jCount;
           if (divStats[div]) { divStats[div].bh += cBH; divStats[div].ah += cAH; divStats[div].jobs += jCount; }
 
-          if (!crewStats[cName]) crewStats[cName] = { div, bh: 0, ah: 0, jobs: 0 };
+          if (!crewStats[cName]) crewStats[cName] = { div, bh: 0, ah: 0, jobs: 0, adjBH: 0 };
           crewStats[cName].bh += cBH; crewStats[cName].ah += cAH; crewStats[cName].jobs += jCount;
 
           // Routes through the shared accumulator so the
@@ -1074,6 +1074,21 @@ export default function PerformanceBoard({
           const allowanceForDay = getCrewAllowance(
             crewObj, log, appData.settings, testUserIds,
           );
+          // Adjusted (virtual-BH) numerator for THIS crew-day, using
+          // the SAME stamped/tolerance-gated allowance pct the crew
+          // display + employee adjBH + buildMtd/buildDivisionMtd use:
+          //   adjNumerator = cBH + cAH × pct/100
+          // Rolling this into totals/divStats/crewStats (unrounded)
+          // and dividing by ΣAH at render yields the AH-weighted
+          // average of per-day adjusted efficiencies — the same bonus
+          // basis every other surface reads. Equivalent to summing the
+          // per-employee adjBH deltas (Σ eBH = cBH, Σ eAH = cAH), so
+          // the division/crew adjusted numbers agree with the employee
+          // table by construction.
+          const adjNumeratorForDay = cBH + (cAH * allowanceForDay.pct) / 100;
+          totals.adjBH += adjNumeratorForDay;
+          if (divStats[div]) divStats[div].adjBH += adjNumeratorForDay;
+          crewStats[cName].adjBH += adjNumeratorForDay;
           const accBefore: Record<string, { bh: number; ah: number }> = {};
           Object.keys(empStats).forEach(k => {
             accBefore[k] = { bh: empStats[k].bh, ah: empStats[k].ah };
@@ -1105,6 +1120,9 @@ export default function PerformanceBoard({
 
   const r = calcReports();
   const overallEff = r.totals.ah > 0 ? Number(((r.totals.bh / r.totals.ah) * 100).toFixed(1)) : 0;
+  // Adjusted (crew-size) overall efficiency — bonus basis, virtual-BH
+  // over the selected report range. Admin-gated at render.
+  const overallAdjEff = r.totals.ah > 0 ? Number(((r.totals.adjBH / r.totals.ah) * 100).toFixed(1)) : 0;
 
   const getCompletedRouteIdsForWeek = () => {
     const perfWeekStart = getStartOfWeek(perfDate);
@@ -2432,19 +2450,29 @@ export default function PerformanceBoard({
             <div className="bg-gray-800 rounded-xl shadow-sm p-4 flex flex-col items-center relative overflow-hidden">
               <Target className="absolute -right-4 -bottom-4 w-20 h-20 text-gray-700 opacity-50" /><div className="text-gray-300 font-bold uppercase text-[10px] mb-1 z-10">Overall Efficiency</div>
               <div className={`text-4xl font-black z-10 ${overallEff >= 90 ? 'text-purple-400' : (overallEff >= 80 ? 'text-emerald-400' : (overallEff >= 70 ? 'text-yellow-400' : 'text-red-400'))}`}>{overallEff}%</div>
+              {isAdmin && (
+                <div className="text-sm font-black z-10 text-amber-300 mt-0.5" title="Crew-size adjusted efficiency (bonus basis)">*{r.totals.ah > 0 ? `${overallAdjEff}%` : '--'}</div>
+              )}
             </div>
           </div>
+
+          {isAdmin && (
+            <div className="text-[11px] text-gray-500 italic -mb-2">
+              *EFF% = crew-size adjusted efficiency (bonus basis)
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* DIVISION TABLE */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
               <div className="bg-gray-50 border-b border-gray-200 p-3"><h3 className="font-bold text-gray-800 flex items-center gap-2"><Award className="w-4 h-4 text-gray-500" /> Divisions</h3></div>
               <table className="w-full text-left">
-                <thead><tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase"><th className="p-3">Name</th><th className="p-3 text-center">Jobs</th><th className="p-3 text-right">BH</th><th className="p-3 text-right">AH</th><th className="p-3 text-right">Eff %</th></tr></thead>
+                <thead><tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase"><th className="p-3">Name</th><th className="p-3 text-center">Jobs</th><th className="p-3 text-right">BH</th><th className="p-3 text-right">AH</th><th className="p-3 text-right">Eff %</th>{isAdmin && <th className="p-3 text-right" title="Crew-size adjusted efficiency (bonus basis)">*Eff %</th>}</tr></thead>
                 <tbody className="divide-y divide-gray-100">
                   {DIVISIONS.map(d => {
                     const s = r.divStats[d]; const score = s.ah > 0 ? Number(((s.bh / s.ah) * 100).toFixed(1)) : 0;
-                    return <tr key={d}><td className="p-3 font-bold text-gray-800 text-sm">{d}</td><td className="p-3 text-center font-bold text-teal-600 text-sm">{s.jobs}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className="p-3 text-right font-bold text-sm">{s.ah > 0 ? `${score}%` : '--'}</td></tr>
+                    const adjScore = s.ah > 0 ? Number(((s.adjBH / s.ah) * 100).toFixed(1)) : 0;
+                    return <tr key={d}><td className="p-3 font-bold text-gray-800 text-sm">{d}</td><td className="p-3 text-center font-bold text-teal-600 text-sm">{s.jobs}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className="p-3 text-right font-bold text-sm">{s.ah > 0 ? `${score}%` : '--'}</td>{isAdmin && <td className="p-3 text-right font-black text-sm text-amber-600">{s.ah > 0 ? `${adjScore}%` : '--'}</td>}</tr>
                   })}
                 </tbody>
               </table>
@@ -2455,13 +2483,14 @@ export default function PerformanceBoard({
               <div className="bg-gray-50 border-b border-gray-200 p-3"><h3 className="font-bold text-gray-800 flex items-center gap-2"><Truck className="w-4 h-4 text-gray-500" /> Crews</h3></div>
               <div className="max-h-64 overflow-y-auto">
                 <table className="w-full text-left">
-                  <thead className="sticky top-0 bg-white"><tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase"><th className="p-3">Crew</th><th className="p-3 text-center">Jobs</th><th className="p-3 text-right">BH</th><th className="p-3 text-right">AH</th><th className="p-3 text-right">Eff %</th></tr></thead>
+                  <thead className="sticky top-0 bg-white"><tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase"><th className="p-3">Crew</th><th className="p-3 text-center">Jobs</th><th className="p-3 text-right">BH</th><th className="p-3 text-right">AH</th><th className="p-3 text-right">Eff %</th>{isAdmin && <th className="p-3 text-right" title="Crew-size adjusted efficiency (bonus basis)">*Eff %</th>}</tr></thead>
                   <tbody className="divide-y divide-gray-100">
                     {Object.entries(r.crewStats).sort((a, b) => (b[1] as any).bh - (a[1] as any).bh).map(([name, s]) => {
                       const score = s.ah > 0 ? Number(((s.bh / s.ah) * 100).toFixed(1)) : 0;
-                      return <tr key={name}><td className="p-3 font-bold text-gray-800 text-sm">{name} <div className="text-[10px] text-gray-400 font-normal">{s.div}</div></td><td className="p-3 text-center font-bold text-teal-600 text-sm">{s.jobs}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className="p-3 text-right font-bold text-sm">{s.ah > 0 ? `${score}%` : '--'}</td></tr>
+                      const adjScore = s.ah > 0 ? Number(((s.adjBH / s.ah) * 100).toFixed(1)) : 0;
+                      return <tr key={name}><td className="p-3 font-bold text-gray-800 text-sm">{name} <div className="text-[10px] text-gray-400 font-normal">{s.div}</div></td><td className="p-3 text-center font-bold text-teal-600 text-sm">{s.jobs}</td><td className="p-3 text-right text-emerald-600 font-medium text-sm">{s.bh.toFixed(1)}</td><td className="p-3 text-right text-green-600 font-medium text-sm">{s.ah.toFixed(1)}</td><td className="p-3 text-right font-bold text-sm">{s.ah > 0 ? `${score}%` : '--'}</td>{isAdmin && <td className="p-3 text-right font-black text-sm text-amber-600">{s.ah > 0 ? `${adjScore}%` : '--'}</td>}</tr>
                     })}
-                    {Object.keys(r.crewStats).length === 0 ? <tr><td colSpan={5} className="p-4 text-center text-gray-400 text-sm">No crew data in this range.</td></tr> : null}
+                    {Object.keys(r.crewStats).length === 0 ? <tr><td colSpan={isAdmin ? 6 : 5} className="p-4 text-center text-gray-400 text-sm">No crew data in this range.</td></tr> : null}
                   </tbody>
                 </table>
               </div>
