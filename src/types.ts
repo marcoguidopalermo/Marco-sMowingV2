@@ -602,7 +602,8 @@ export type PerfActivityType =
   | 'dispatch_issue_reported'
   | 'bh_shifted_day'
   | 'visit_auto_moved_on_completion'
-  | 'bh_filled_in_manually';
+  | 'bh_filled_in_manually'
+  | 'approval_waived';
 
 export interface PerfActivityEntry {
   id: string;
@@ -682,10 +683,21 @@ export interface PerformanceLog {
   jobs: PerformanceJobRow[];
   employeeAH: Record<string, any>;
   deductions: Record<string, DeductionValue>;
-  approvalStatus?: 'pending' | 'approved';
+  // 'waived' is a terminal, manager-set state meaning "this crew-day
+  // does not require approval" (e.g. a shop / odd-jobs day). It is
+  // locked like 'approved' (editing disabled, sync skips it) and,
+  // because isBonusEligible is strict === 'approved', it is excluded
+  // from bonus/MTD by construction — a waived day never counts.
+  approvalStatus?: 'pending' | 'approved' | 'waived';
   approvedAt?: string;
   approvedBy?: string;
   approvedByName?: string;
+  // Waiver metadata — set together when approvalStatus === 'waived'.
+  // waivedReason is REQUIRED at the point of waiving (empty rejected).
+  waivedReason?: string;
+  waivedBy?: string;
+  waivedByName?: string;
+  waivedAt?: string;
   lastJobberSyncAt?: number;
   removedEmployees?: string[];
   // Snapshot of the crew-size efficiency allowance applied to this

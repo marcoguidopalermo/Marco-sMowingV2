@@ -198,7 +198,7 @@ interface PerformanceLog {
   jobs: PerformanceJobRow[];
   employeeAH: Record<string, unknown>;
   deductions: Record<string, unknown>;
-  approvalStatus?: "pending" | "approved";
+  approvalStatus?: "pending" | "approved" | "waived";
   approvedAt?: string;
   approvedBy?: string;
   approvedByName?: string;
@@ -1620,13 +1620,20 @@ async function runPerformanceSync(args: {
       const matched = visitsByCrew.get(crew.id) || [];
       const existing = newPerformanceDay[crew.id];
 
-      if (existing && existing.approvalStatus === "approved") {
+      // Approved AND waived crew-days are terminal/locked: the sync
+      // skips them wholesale so it can't re-populate frozen data.
+      // Waived is treated exactly like approved here (un-waive +
+      // re-sync to take new hours), same recovery path as approval.
+      if (existing && (existing.approvalStatus === "approved" ||
+        existing.approvalStatus === "waived")) {
         if (matched.length > 0) {
           summary.entriesSkippedApproved++;
           const label =
             `${crew.division} #${crew.crewNumber}`;
+          const lockWord = existing.approvalStatus === "waived" ?
+            "waived" : "approved";
           summary.warnings.push(
-            `skipped_approved crew=${crew.id} (${label})`,
+            `skipped_${lockWord} crew=${crew.id} (${label})`,
           );
           // Flag any visits that would have been auto-credited but
           // couldn't be because today's crew is already approved. Lookup

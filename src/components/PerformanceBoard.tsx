@@ -3,13 +3,14 @@ import type { Dispatch, SetStateAction } from 'react';
 import {
   TrendingUp, CalendarDays, BarChart, Save, Calendar as CalendarIcon,
   Target, FileSignature, Map, Plus, Clock, X,
-  Filter, Award, Truck, Users, CheckCircle, Unlock, Link2, AlertTriangle, RefreshCw, Trash2, MoreVertical, Split as SplitIcon, ChevronLeft, ChevronRight, X as XIcon
+  Filter, Award, Truck, Users, CheckCircle, Unlock, Link2, AlertTriangle, RefreshCw, Trash2, MoreVertical, Split as SplitIcon, ChevronLeft, ChevronRight, X as XIcon, Ban
 } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { functions, db, appId } from '../lib/firebase';
 import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole } from '../types';
 import { logPerfActivity } from '../lib/perfAudit';
+import { scanOutstandingCrewDays, groupOutstandingByDivision } from '../lib/approvalOversight';
 import CompletionReviewModal from './CompletionReviewModal';
 import AHSplitModal from './AHSplitModal';
 import SplitBHModal from './SplitBHModal';
@@ -75,6 +76,11 @@ interface PerformanceBoardProps {
   isManager: boolean;
   onApprove: (crewId: string, log: PerformanceLog) => void;
   onUnapprove: (crewId: string) => void;
+  // Waive: mark a crew-day as "doesn't require approval" with a
+  // required reason. Terminal/locked like approve. onUnwaive reopens
+  // it to a pending draft (mirrors onUnapprove).
+  onWaive: (crewId: string, log: PerformanceLog, reason: string) => void;
+  onUnwaive: (crewId: string) => void;
 
   jobberConnected: boolean;
   canSyncJobber: boolean;
@@ -119,6 +125,8 @@ export default function PerformanceBoard({
   isManager,
   onApprove,
   onUnapprove,
+  onWaive,
+  onUnwaive,
   jobberConnected,
   canSyncJobber,
   showToastMsg,
@@ -1223,10 +1231,16 @@ export default function PerformanceBoard({
                 {(() => {
                   const total = Object.keys(dailyLogs).length;
                   if (total === 0) return null;
-                  const approved = Object.values(dailyLogs).filter(l => l.approvalStatus === 'approved').length;
+                  const logs = Object.values(dailyLogs);
+                  const approved = logs.filter(l => l.approvalStatus === 'approved').length;
+                  const waived = logs.filter(l => l.approvalStatus === 'waived').length;
+                  const outstanding = total - approved - waived;
+                  // Every crew-day is approved, waived, or outstanding —
+                  // none in limbo. Green only when nothing outstanding.
+                  const settled = outstanding === 0;
                   return (
-                    <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded ${approved === total ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                      {approved} of {total} approved
+                    <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded ${settled ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {approved} approved{waived > 0 ? ` · ${waived} waived` : ''}{outstanding > 0 ? ` · ${outstanding} outstanding` : ''} / {total}
                     </span>
                   );
                 })()}
@@ -1261,6 +1275,32 @@ export default function PerformanceBoard({
               </div>
             )}
           </div>
+
+          {/* ADMIN OVERSIGHT — cross-date outstanding crew-days (neither
+              approved nor waived), grouped by division. Excludes today.
+              Read-derived from the performance map; no new storage. */}
+          {isAdmin && (() => {
+            const outstanding = scanOutstandingCrewDays(performance, formatTodayInToronto());
+            if (outstanding.length === 0) return null;
+            const byDiv = groupOutstandingByDivision(outstanding);
+            const dayCount = new Set(outstanding.map(o => o.date)).size;
+            return (
+              <div className="mb-4 bg-rose-50 border border-rose-300 rounded-xl px-4 py-3">
+                <div className="flex items-center gap-2 text-sm text-rose-900 mb-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span className="font-bold">{outstanding.length} crew-day{outstanding.length === 1 ? '' : 's'} outstanding</span>
+                  <span className="text-rose-700">across {dayCount} day{dayCount === 1 ? '' : 's'} — not yet approved or waived.</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {byDiv.map(d => (
+                    <span key={d.division} className="text-[11px] font-bold bg-white border border-rose-200 text-rose-800 px-2.5 py-1 rounded-full">
+                      {d.division}: {d.count} outstanding across {d.dates.length} day{d.dates.length === 1 ? '' : 's'}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
           {pendingCarryForward.length > 0 && (
             <div className="mb-4 bg-amber-50 border border-amber-300 rounded-xl px-4 py-3 flex items-center justify-between flex-wrap gap-3">
@@ -1337,15 +1377,32 @@ export default function PerformanceBoard({
                 }
 
                 const isApproved = log.approvalStatus === 'approved';
-                const lockTitle = isApproved ? 'Approved — unapprove to edit' : undefined;
-                const approvedDate = log.approvedAt ? new Date(log.approvedAt) : null;
-                const approvedDateStr = approvedDate ? approvedDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : '';
-                const approvedTimeStr = approvedDate ? approvedDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
-                const approverName = log.approvedByName || log.approvedBy || 'Unknown';
+                const isWaived = log.approvalStatus === 'waived';
+                // Both approved and waived are terminal/locked states.
+                const isLocked = isApproved || isWaived;
+                const lockTitle = isApproved
+                  ? 'Approved — unapprove to edit'
+                  : isWaived
+                    ? 'Waived — un-waive to edit'
+                    : undefined;
+                // Signed stamp works for either terminal state; the
+                // waived branch reads the waived* fields, approved reads
+                // the approved* fields.
+                const stampSourceDate = isWaived
+                  ? (log.waivedAt ? new Date(log.waivedAt) : null)
+                  : (log.approvedAt ? new Date(log.approvedAt) : null);
+                const approvedDateStr = stampSourceDate ? stampSourceDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : '';
+                const approvedTimeStr = stampSourceDate ? stampSourceDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : '';
+                const approverName = isWaived
+                  ? (log.waivedByName || log.waivedBy || 'Unknown')
+                  : (log.approvedByName || log.approvedBy || 'Unknown');
+                const stampLabel = isWaived ? 'Waived' : 'Approved';
+                const stampColor: 'emerald' | 'slate' = isWaived ? 'slate' : 'emerald';
+                const stampVerb = isWaived ? 'Waived' : 'Approved';
                 return (
-                  <div key={cId} className={`bg-white rounded-xl shadow-sm border overflow-hidden relative ${isApproved ? 'border-emerald-300' : 'border-gray-200'}`}>
+                  <div key={cId} className={`bg-white rounded-xl shadow-sm border overflow-hidden relative ${isApproved ? 'border-emerald-300' : isWaived ? 'border-slate-300' : 'border-gray-200'}`}>
                     {log.isAdHoc && <div className="absolute top-0 left-0 w-1 h-full bg-orange-400"></div>}
-                    {!isApproved && canDeleteEntry(cId) && (
+                    {!isLocked && canDeleteEntry(cId) && (
                       <button
                         type="button"
                         onClick={() => handleDeleteClick(cId)}
@@ -1358,11 +1415,11 @@ export default function PerformanceBoard({
                       </button>
                     )}
 
-                    {isApproved ? (
-                      <div className="border-b border-emerald-200 bg-emerald-50/40 p-4 pl-5">
+                    {isLocked ? (
+                      <div className={`border-b p-4 pl-5 ${isWaived ? 'border-slate-200 bg-slate-50/60' : 'border-emerald-200 bg-emerald-50/40'}`}>
                         <div className="flex justify-between items-start gap-4">
                           <div className="flex-1 min-w-0">
-                            <Stamp label="Approved" color="emerald" rotate={-4} title={lockTitle} />
+                            <Stamp label={stampLabel} color={stampColor} rotate={-4} title={lockTitle} />
                             <div className="mt-3 max-w-[280px]">
                               <div
                                 className="text-3xl text-slate-800 leading-none pl-1"
@@ -1372,8 +1429,13 @@ export default function PerformanceBoard({
                               </div>
                               <div className="border-b border-slate-300 mt-1" />
                               <div className="text-[10px] text-slate-500 mt-1.5 font-medium tracking-wide uppercase">
-                                Approved {approvedDateStr}{approvedTimeStr && <span className="text-slate-400"> · {approvedTimeStr}</span>}
+                                {stampVerb} {approvedDateStr}{approvedTimeStr && <span className="text-slate-400"> · {approvedTimeStr}</span>}
                               </div>
+                              {isWaived && log.waivedReason && (
+                                <div className="text-[11px] text-slate-600 mt-1.5 italic">
+                                  Reason: {log.waivedReason}
+                                </div>
+                              )}
                             </div>
                             <div className="mt-3 flex gap-2 items-center flex-wrap">
                               {log.isAdHoc ? <span className="text-[10px] bg-orange-100 text-orange-800 uppercase px-1.5 py-0.5 rounded font-bold">Ad-Hoc</span> : null}
@@ -1419,9 +1481,11 @@ export default function PerformanceBoard({
                       </div>
                     )}
 
-                    <div className={`px-4 py-2.5 border-b flex flex-wrap items-center justify-between gap-2 ${isApproved ? 'bg-white border-emerald-100' : 'bg-amber-50 border-amber-200'}`}>
+                    <div className={`px-4 py-2.5 border-b flex flex-wrap items-center justify-between gap-2 ${isApproved ? 'bg-white border-emerald-100' : isWaived ? 'bg-white border-slate-200' : 'bg-amber-50 border-amber-200'}`}>
                       {isApproved ? (
                         <span className="text-[10px] font-medium tracking-wide text-slate-400 italic">Locked by approval — unapprove to edit BH / AH / deductions.</span>
+                      ) : isWaived ? (
+                        <span className="text-[10px] font-medium tracking-wide text-slate-500 italic">Waived — no approval required. Un-waive to edit.</span>
                       ) : (
                         <span className="text-[11px] font-black uppercase tracking-widest text-amber-800 flex items-center gap-1.5">
                           <Clock className="w-3.5 h-3.5" /> Pending Review
@@ -1438,6 +1502,17 @@ export default function PerformanceBoard({
                             className="text-[10px] font-black uppercase tracking-widest bg-white border border-amber-300 text-amber-800 hover:bg-amber-100 px-3 py-1.5 rounded-lg flex items-center gap-1.5"
                           >
                             <Unlock className="w-3.5 h-3.5" /> Unapprove
+                          </button>
+                        ) : isWaived ? (
+                          <button
+                            onClick={() => {
+                              if (confirm("Un-waive this crew-day? It returns to a pending draft and will take new hours on the next sync.")) {
+                                onUnwaive(cId);
+                              }
+                            }}
+                            className="text-[10px] font-black uppercase tracking-widest bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 px-3 py-1.5 rounded-lg flex items-center gap-1.5"
+                          >
+                            <Unlock className="w-3.5 h-3.5" /> Un-waive
                           </button>
                         ) : (() => {
                           const missingAH = Object.entries(log.employeeAH)
@@ -1461,20 +1536,43 @@ export default function PerformanceBoard({
                           if (awaitingBhTagCount > 0) reasons.push(`${awaitingBhTagCount} visit${awaitingBhTagCount === 1 ? '' : 's'} need a BH tag — enter manually`);
                           if (missingAH.length > 0) reasons.push(`missing clock-out for ${missingAH.join(', ')}`);
                           const tip = reasons.length > 0 ? `Cannot approve — ${reasons.join('; ')}` : undefined;
+                          // Open-shift detection (Concern 1): any worker with a
+                          // timesheet interval still open (endAt null) at last
+                          // sync may still be clocked in. WARN ONLY — never blocks.
+                          const hasOpenShift = Object.values(log.employeeTimesheets || {})
+                            .some(list => (list || []).some(iv => iv?.endAt == null));
                           return (
-                            <button
-                              onClick={() => {
-                                if (blocked) return;
-                                if (confirm(`Approve this crew's performance for ${perfDate}? This will lock the BH/AH data.`)) {
-                                  onApprove(cId, log);
-                                }
-                              }}
-                              disabled={blocked}
-                              title={tip}
-                              className={`min-h-[40px] text-[11px] font-black uppercase tracking-widest px-4 py-2 rounded-lg flex items-center gap-1.5 shadow ${blocked ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 text-white'}`}
-                            >
-                              <CheckCircle className="w-3.5 h-3.5" /> Approve & Sign Off
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => {
+                                  const reason = prompt('Waive this crew-day (does not require approval).\n\nEnter a reason (required):', '');
+                                  if (reason == null) return; // cancelled
+                                  const trimmed = reason.trim();
+                                  if (!trimmed) { showToastMsg('A reason is required to waive.'); return; }
+                                  onWaive(cId, log, trimmed);
+                                }}
+                                title="Mark as not requiring approval (reason required). Excluded from bonus/efficiency."
+                                className="min-h-[40px] text-[11px] font-black uppercase tracking-widest px-3 py-2 rounded-lg flex items-center gap-1.5 bg-white border border-slate-300 text-slate-700 hover:bg-slate-100"
+                              >
+                                <Ban className="w-3.5 h-3.5" /> Waive
+                              </button>
+                              <button
+                                onClick={() => {
+                                  if (blocked) return;
+                                  const openWarn = hasOpenShift
+                                    ? '⚠️ One or more workers may still be clocked in (open shift). Approving now locks out their remaining hours.\n\n'
+                                    : '';
+                                  if (confirm(`${openWarn}Approve this crew's performance for ${perfDate}? This will lock the BH/AH data.`)) {
+                                    onApprove(cId, log);
+                                  }
+                                }}
+                                disabled={blocked}
+                                title={tip}
+                                className={`min-h-[40px] text-[11px] font-black uppercase tracking-widest px-4 py-2 rounded-lg flex items-center gap-1.5 shadow ${blocked ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 text-white'}`}
+                              >
+                                <CheckCircle className="w-3.5 h-3.5" /> Approve & Sign Off
+                              </button>
+                            </div>
                           );
                         })()
                       )}
@@ -1632,7 +1730,7 @@ export default function PerformanceBoard({
                                     type="text"
                                     placeholder="Job Desc"
                                     value={job.desc}
-                                    disabled={isApproved || isIncomplete || isGhost}
+                                    disabled={isLocked || isIncomplete || isGhost}
                                     title={isGhost ? `Credit moved to ${job.movedToDate} — kept here as audit ghost on locked day` : isIncomplete ? 'Visit not complete in Jobber — read-only' : isRemoved ? 'No longer in Jobber — remove or keep manually?' : lockTitle}
                                     onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: n[cId].jobs.map((j, i) => i === jIdx ? { ...j, desc: e.target.value } : j) }; return n; })}
                                     className={`flex-1 min-w-0 border border-gray-300 rounded p-1.5 text-sm outline-none bg-white font-medium disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed ${isRemoved ? 'line-through text-amber-700' : ''} ${isIncomplete ? 'italic text-slate-400' : ''} ${isGhost ? 'italic text-slate-400 line-through' : ''}`}
@@ -1643,7 +1741,7 @@ export default function PerformanceBoard({
                                   // Incomplete non-hourly rows: BH is read-only (credit comes
                                   // from the optional partial-completion flow in the kebab,
                                   // not typing). Incomplete hourly rows: BH input is editable.
-                                  const inputDisabled = isApproved || isGhost || (isIncomplete && !isHourlyIncomplete);
+                                  const inputDisabled = isLocked || isGhost || (isIncomplete && !isHourlyIncomplete);
                                   return (
                                 <>
                                 <input
@@ -1652,7 +1750,7 @@ export default function PerformanceBoard({
                                   placeholder={isHourlyIncomplete ? 'Hrs' : 'BH'}
                                   value={inputValue(bhKey, job.bh)}
                                   disabled={inputDisabled}
-                                  readOnly={isBHLocked && !isApproved}
+                                  readOnly={isBHLocked && !isLocked}
                                   title={
                                     isHourlyIncomplete ? 'Hours worked today on this hourly job (1 hr = 1 BH)'
                                     : isIncomplete ? 'Not counted until partially marked or completed'
@@ -1704,7 +1802,7 @@ export default function PerformanceBoard({
                                 {isBHUnlocked && (
                                   <span title="Manually edited — click ⋯ to revert" className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
                                 )}
-                                {hasConflict && !isApproved && (
+                                {hasConflict && !isLocked && (
                                   <div className="flex items-center gap-1 shrink-0">
                                     <button
                                       type="button"
@@ -1724,7 +1822,7 @@ export default function PerformanceBoard({
                                     </button>
                                   </div>
                                 )}
-                                {canShowMenu && !isApproved && !isGhost && (
+                                {canShowMenu && !isLocked && !isGhost && (
                                   <div className="relative shrink-0">
                                     <button
                                       type="button"
@@ -1832,7 +1930,7 @@ export default function PerformanceBoard({
                                     )}
                                   </div>
                                 )}
-                                {isManager && isJobber && !awaitingHourly && !isApproved && !isGhost && (isIncomplete || !isMultiDay) && (
+                                {isManager && isJobber && !awaitingHourly && !isLocked && !isGhost && (isIncomplete || !isMultiDay) && (
                                   <>
                                     <button
                                       type="button"
@@ -1854,7 +1952,7 @@ export default function PerformanceBoard({
                                     </button>
                                   </>
                                 )}
-                                <button disabled={isApproved || isGhost} title={isGhost ? 'Audit ghost — cannot remove from locked day' : isRemoved ? 'Remove this row' : lockTitle} onClick={() => {
+                                <button disabled={isLocked || isGhost} title={isGhost ? 'Audit ghost — cannot remove from locked day' : isRemoved ? 'Remove this row' : lockTitle} onClick={() => {
                                   if (isGhost) return;
                                   logPerfActivity({
                                     type: 'manual_job_removed',
@@ -1920,7 +2018,7 @@ export default function PerformanceBoard({
                                   <span className="text-emerald-600 font-bold">✓</span> {Number(job.bh)} BH credited
                                 </div>
                               )}
-                              {isMultiDay && !awaitingHourly && job.jobberTagType !== 'hourly' && job.jobberVisitId && mdJob && !isApproved && !isGhost && !(isIncomplete && (Number(job.bh) || 0) === 0) && (() => {
+                              {isMultiDay && !awaitingHourly && job.jobberTagType !== 'hourly' && job.jobberVisitId && mdJob && !isLocked && !isGhost && !(isIncomplete && (Number(job.bh) || 0) === 0) && (() => {
                                 // Status-only block — the manager action lives in the
                                 // ⋯ menu ("Mark partial %" / "Adjust partial %"). This
                                 // surfaces the current credited state so an in-progress
@@ -1955,7 +2053,7 @@ export default function PerformanceBoard({
                           })}
                           <div className="flex gap-2 mt-2">
                             {/* "+ Route Database" button removed — superseded by Jobber sync. */}
-                            <button disabled={isApproved} title={lockTitle} onClick={() => {
+                            <button disabled={isLocked} title={lockTitle} onClick={() => {
                               setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: [...n[cId].jobs, { desc: '', bh: '', source: 'manual' }] }; return n; });
                               logPerfActivity({
                                 type: 'manual_job_added',
@@ -2005,8 +2103,8 @@ export default function PerformanceBoard({
                             const hrsNum = Number(hrs);
                             const showLongDayWarn = Number.isFinite(hrsNum) && hrsNum >= 12;
                             const removeOpen = removeWorkerCtx?.cId === cId && removeWorkerCtx?.empId === empId;
-                            const canRemove = !isApproved && canDeleteEntry(cId);
-                            const canSplit = !isApproved && canDeleteEntry(cId) && hrsNum > 0;
+                            const canRemove = !isLocked && canDeleteEntry(cId);
+                            const canSplit = !isLocked && canDeleteEntry(cId) && hrsNum > 0;
                             return (
                             <div key={empId} className="flex flex-col bg-gray-50 border border-gray-200 rounded p-1.5 pl-3">
                               <div className="flex items-center justify-between">
@@ -2032,7 +2130,7 @@ export default function PerformanceBoard({
                                     step="0.1"
                                     placeholder="Hrs"
                                     value={inputValue(ahKey, hrs as string | number | null)}
-                                    disabled={isApproved}
+                                    disabled={isLocked}
                                     title={lockTitle}
                                     onChange={e => setDraft(ahKey, e.target.value)}
                                     onBlur={() => {
@@ -2129,7 +2227,7 @@ export default function PerformanceBoard({
                                     type="number"
                                     step="0.1"
                                     placeholder="0"
-                                    disabled={isApproved}
+                                    disabled={isLocked}
                                     value={inputValue(dedKey, deductHoursRaw(log.deductions?.[empId]))}
                                     onChange={e => setDraft(dedKey, e.target.value)}
                                     onBlur={() => {
@@ -2145,14 +2243,14 @@ export default function PerformanceBoard({
                                       clearDraft(dedKey);
                                     }}
                                     className="w-12 border border-rose-200 rounded p-1 text-xs text-center bg-rose-50 outline-none text-rose-700 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
-                                    title={isApproved ? lockTitle : "Subtract hours for breakdowns, meetings, etc."}
+                                    title={isLocked ? lockTitle : "Subtract hours for breakdowns, meetings, etc."}
                                   />
                                     );
                                   })()}
                                   <input
                                     type="text"
                                     placeholder="Reason (optional)"
-                                    disabled={isApproved}
+                                    disabled={isLocked}
                                     value={deductReason(log.deductions?.[empId])}
                                     onChange={e => setDailyLogs(p => {
                                       const n = { ...p };
@@ -2162,11 +2260,11 @@ export default function PerformanceBoard({
                                       return n;
                                     })}
                                     className="w-32 border border-rose-200 rounded p-1 text-xs bg-rose-50 outline-none text-rose-700 font-medium placeholder:text-rose-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    title={isApproved ? lockTitle : "Why hours were deducted (breakdown, meeting, etc.)"}
+                                    title={isLocked ? lockTitle : "Why hours were deducted (breakdown, meeting, etc.)"}
                                   />
                                   {(deductHoursRaw(log.deductions?.[empId]) !== '' || deductReason(log.deductions?.[empId])) && (
                                     <button
-                                      disabled={isApproved}
+                                      disabled={isLocked}
                                       onClick={() => {
                                         const prevDeduc = log.deductions?.[empId];
                                         const prevHours = prevDeduc != null ? deductHoursRaw(prevDeduc) : '';
@@ -2188,7 +2286,7 @@ export default function PerformanceBoard({
                                         });
                                       }}
                                       className="text-rose-300 hover:text-rose-600 p-0.5 disabled:opacity-30 disabled:cursor-not-allowed"
-                                      title={isApproved ? lockTitle : "Clear deduction"}
+                                      title={isLocked ? lockTitle : "Clear deduction"}
                                     >
                                       <X className="w-3.5 h-3.5" />
                                     </button>
@@ -2220,7 +2318,7 @@ export default function PerformanceBoard({
                             </>
                           );
                           })()}
-                          <select disabled={isApproved} title={lockTitle} onChange={e => {
+                          <select disabled={isLocked} title={lockTitle} onChange={e => {
                             const v = e.target.value;
                             if (!v) return;
                             setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], employeeAH: { ...n[cId].employeeAH, [v]: '' } }; return n; });

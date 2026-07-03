@@ -2758,6 +2758,70 @@ export default function App() {
         });
         showToastMsg("Unapproved — fields are editable.");
       }}
+      onWaive={(crewId, log, reason) => {
+        if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
+        if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+        const trimmed = (reason || '').trim();
+        if (!trimmed) { showToastMsg('A reason is required to waive.'); return; }
+        const waivedLog: PerformanceLog = {
+          ...log,
+          approvalStatus: 'waived',
+          waivedReason: trimmed,
+          waivedAt: new Date().toISOString(),
+          waivedBy: displayEmail,
+          waivedByName: displayName,
+          // Clear any prior approval signature so the two states never mix.
+          approvedAt: undefined,
+          approvedBy: undefined,
+          approvedByName: undefined,
+        };
+        const newDailyLogs = { ...dailyLogs, [crewId]: waivedLog };
+        setDailyLogs(newDailyLogs);
+        const newPerf = { ...appData.performance };
+        newPerf[perfDate] = { ...(newPerf[perfDate] || {}), [crewId]: waivedLog };
+        syncToCloud({ ...appData, performance: newPerf });
+        logPerfActivity({
+          type: 'approval_waived',
+          targetDate: perfDate,
+          crewId,
+          crewLabel: `${log.division} #${log.crewNumber}`,
+          userId: user?.uid || displayEmail,
+          userName: displayName,
+          userRole: effectiveRole,
+          reasonNote: trimmed,
+        });
+        showToastMsg("Waived — no approval required, excluded from bonus.");
+      }}
+      onUnwaive={(crewId) => {
+        if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
+        if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+        const log = dailyLogs[crewId];
+        if (!log) return;
+        const reopenedLog: PerformanceLog = {
+          ...log,
+          approvalStatus: 'pending',
+          waivedReason: undefined,
+          waivedAt: undefined,
+          waivedBy: undefined,
+          waivedByName: undefined,
+        };
+        const newDailyLogs = { ...dailyLogs, [crewId]: reopenedLog };
+        setDailyLogs(newDailyLogs);
+        const newPerf = { ...appData.performance };
+        newPerf[perfDate] = { ...(newPerf[perfDate] || {}), [crewId]: reopenedLog };
+        syncToCloud({ ...appData, performance: newPerf });
+        logPerfActivity({
+          type: 'approval_revoked',
+          targetDate: perfDate,
+          crewId,
+          crewLabel: `${log.division} #${log.crewNumber}`,
+          userId: user?.uid || displayEmail,
+          userName: displayName,
+          userRole: effectiveRole,
+          reasonNote: 'un-waived',
+        });
+        showToastMsg("Un-waived — fields are editable.");
+      }}
       jobberConnected={jobberConnected}
       canSyncJobber={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
       showToastMsg={showToastMsg}

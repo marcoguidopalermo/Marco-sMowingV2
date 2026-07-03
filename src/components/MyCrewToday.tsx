@@ -10,6 +10,7 @@ import type { ActiveInspectionState } from './InspectionModal';
 import TopCrewSpotlight from './TopCrewSpotlight';
 import MtdSelfWidget from './MtdSelfWidget';
 import DivisionStandings from './DivisionStandings';
+import { scanOutstandingCrewDays, managerCoversDivision } from '../lib/approvalOversight';
 
 interface MyCrewTodayProps {
   today: string;
@@ -200,6 +201,26 @@ export default function MyCrewToday({
           </h2>
           <span className="text-xs text-slate-500 font-medium">{today}</span>
         </div>
+
+        {/* MANAGER REMINDER — division managers see a nudge when their
+            division has crew-days from the past week still neither
+            approved nor waived. Read-derived; only renders for a user
+            with a managedDivision (i.e. a division manager). */}
+        {currentUserEmployee.managedDivision && (() => {
+          const recent = scanOutstandingCrewDays(performance, today, 7)
+            .filter(o => managerCoversDivision(currentUserEmployee.managedDivision, o.division));
+          if (recent.length === 0) return null;
+          const dayCount = new Set(recent.map(o => o.date)).size;
+          return (
+            <div className="w-full mb-4 bg-amber-50 border border-amber-300 rounded-xl px-4 py-3 flex items-center gap-2 text-sm text-amber-900">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                <span className="font-bold">You have {recent.length} unapproved crew-day{recent.length === 1 ? '' : 's'}</span>
+                {' '}from the past week (across {dayCount} day{dayCount === 1 ? '' : 's'}). Approve or waive them in Performance.
+              </span>
+            </div>
+          );
+        })()}
 
         {/* Report-a-Repair launcher — only rendered for worker/foreman
             (App.tsx controls visibility by passing onReportRepair). The

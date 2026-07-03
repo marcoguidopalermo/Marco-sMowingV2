@@ -58,6 +58,7 @@ export const ACTIVITY_TYPE_LABELS: Record<PerfActivityEntry['type'], string> = {
   bh_shifted_day: 'BH shifted to different day',
   visit_auto_moved_on_completion: 'Visit moved on completion',
   bh_filled_in_manually: 'BH filled in manually',
+  approval_waived: 'Approval waived (no approval needed)',
 };
 
 export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amber' | 'rose' | 'slate'> = {
@@ -93,4 +94,5 @@ export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amb
   bh_shifted_day: 'amber',
   visit_auto_moved_on_completion: 'amber',
   bh_filled_in_manually: 'amber',
+  approval_waived: 'slate',
 };
