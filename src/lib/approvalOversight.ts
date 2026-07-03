@@ -8,9 +8,15 @@ import { PerformanceLog, ManagedDivision } from '../types';
 export interface OutstandingCrewDay {
   date: string;
   crewId: string;
-  division: string;   // PerformanceLog.division (e.g. "Lawn Division")
+  // PerformanceLog.division (e.g. "Lawn Division"). Logs with no
+  // division are surfaced as "Unassigned" — they must not masquerade
+  // under a real division's filter.
+  division: string;
   crewNumber: number;
   crewLabel: string;  // "Lawn Division #3"
+  // Mirrors PerformanceLog.isAdHoc — keys the 'adhoc' division filter
+  // the same way the crew-card list does.
+  isAdHoc: boolean;
 }
 
 // A crew-day counts as outstanding when its approvalStatus is neither
@@ -49,7 +55,7 @@ export function scanOutstandingCrewDays(
     if (earliest && date < earliest) continue; // window floor
     for (const [crewId, log] of Object.entries(dayLogs || {})) {
       if (!log || !isOutstanding(log)) continue;
-      const division = log.division || 'Large Projects';
+      const division = log.division || 'Unassigned';
       const crewNumber = log.crewNumber ?? 0;
       out.push({
         date,
@@ -57,6 +63,7 @@ export function scanOutstandingCrewDays(
         division,
         crewNumber,
         crewLabel: `${division} #${crewNumber}`,
+        isAdHoc: !!log.isAdHoc,
       });
     }
   }

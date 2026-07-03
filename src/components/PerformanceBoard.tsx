@@ -163,6 +163,20 @@ export default function PerformanceBoard({
   const [divisionFilter, setDivisionFilter] = useState<'all' | 'lawn' | 'small' | 'large' | 'adhoc'>(
     defaultDivisionFilter === 'all' ? 'all' : defaultDivisionFilter,
   );
+  // Division-scope predicate shared by the crew-card list, the
+  // carry-forward review surface (banner, modal list, crew picker),
+  // and the outstanding rollup. Accepts a missing log and FAILS OPEN
+  // (visible) — a data gap must never hide work a manager needs to see.
+  const matchesDivisionFilter = (log: PerformanceLog | undefined | null): boolean => {
+    if (!log) return true;
+    if (divisionFilter === 'all') return true;
+    if (divisionFilter === 'adhoc') return !!log.isAdHoc;
+    const d = log.division || '';
+    if (divisionFilter === 'lawn') return /lawn/i.test(d);
+    if (divisionFilter === 'small') return /small/i.test(d);
+    if (divisionFilter === 'large') return /large/i.test(d);
+    return true;
+  };
   // Click-through target from the outstanding-days rollup: after the
   // date switch loads the day's logs, scroll to and briefly highlight
   // the crew card. Navigation only — never touches log data.
@@ -246,12 +260,16 @@ export default function PerformanceBoard({
       // Permanently dismissed via the Delete button — never surface
       // this candidate again, regardless of what the sync emitted.
       if (multiDayJobs?.[c.jobberVisitId]?.dismissedCarryForward) return false;
+      // Division scope: a multi-day ledger carries no division, so
+      // derive it from the prior crew-day log the candidate points at.
+      // A missing prior log passes the predicate (fail open).
+      if (!matchesDivisionFilter(performance[c.priorDate]?.[c.priorCrewId])) return false;
       const existsToday = Object.values(dailyLogs).some(log =>
         log.jobs.some(j => j.jobberVisitId && j.jobberVisitId === c.jobberVisitId),
       );
       return !existsToday;
     });
-  }, [lastSync, carryForwardSkipped, dailyLogs, multiDayJobs]);
+  }, [lastSync, carryForwardSkipped, dailyLogs, multiDayJobs, performance, divisionFilter]);
 
   const handleCarryForwardContinue = async (
     candidate: NonNullable<SyncLogEntry['carryForwardCandidates']>[number],
@@ -924,15 +942,6 @@ export default function PerformanceBoard({
     }
   };
 
-  const matchesDivisionFilter = (log: PerformanceLog): boolean => {
-    if (divisionFilter === 'all') return true;
-    if (divisionFilter === 'adhoc') return !!log.isAdHoc;
-    const d = log.division || '';
-    if (divisionFilter === 'lawn') return /lawn/i.test(d);
-    if (divisionFilter === 'small') return /small/i.test(d);
-    if (divisionFilter === 'large') return /large/i.test(d);
-    return true;
-  };
   const [removeWorkerCtx, setRemoveWorkerCtx] = useState<
     { cId: string; empId: string } | null
   >(null);
@@ -1308,7 +1317,11 @@ export default function PerformanceBoard({
               Each crew-day chip navigates to that date and highlights
               the crew card so it can be approved or waived directly. */}
           {isAdmin && (() => {
-            const outstanding = scanOutstandingCrewDays(performance, formatTodayInToronto());
+            // Scoped to the active division filter — 'all' passes
+            // everything (admin cross-division oversight unchanged).
+            const outstanding = scanOutstandingCrewDays(performance, formatTodayInToronto())
+              .filter(o => divisionFilter === 'all'
+                || (divisionFilter === 'adhoc' ? o.isAdHoc : divisionNameToCode(o.division) === divisionFilter));
             if (outstanding.length === 0) return null;
             const byDiv = groupOutstandingByDivision(outstanding);
             const dayCount = new Set(outstanding.map(o => o.date)).size;
@@ -2494,7 +2507,9 @@ export default function PerformanceBoard({
                     // Visit-keyed: a recurring job may have multiple visits
                     // in flight, each with its own row in this list.
                     const choice = carryForwardChoices[c.jobberVisitId] || '';
-                    const crewOptions = Object.entries(dailyLogs).map(([cid, log]) => ({
+                    // Same division scope as the crew-card list — don't
+                    // offer out-of-division crews as continuation targets.
+                    const crewOptions = Object.entries(dailyLogs).filter(([, log]) => matchesDivisionFilter(log)).map(([cid, log]) => ({
                       id: cid,
                       label: `${log.division} #${log.crewNumber}`,
                       approved: log.approvalStatus === 'approved',
