@@ -20,9 +20,17 @@ function isOutstanding(log: Pick<PerformanceLog, 'approvalStatus'>): boolean {
   return s !== 'approved' && s !== 'waived';
 }
 
+// Outstanding-tracking start date. The approval workflow launched
+// 2026-07-01, so every June-and-earlier crew-day would read as
+// "outstanding" forever. Days before this floor are suppressed from
+// the outstanding scan — DISPLAY ONLY. Their approvalStatus is never
+// touched (no mass-approve/waive), and they stay excluded from
+// bonus/MTD exactly as before (isBonusEligible requires 'approved').
+export const OUTSTANDING_TRACKING_START = '2026-07-01';
+
 // Scan the whole performance map for outstanding crew-days strictly
-// before `today`, optionally only within the last `withinDays` days.
-// Sorted newest-date first.
+// before `today` (and on/after OUTSTANDING_TRACKING_START), optionally
+// only within the last `withinDays` days. Sorted newest-date first.
 export function scanOutstandingCrewDays(
   performance: Record<string, Record<string, PerformanceLog>>,
   today: string,
@@ -37,6 +45,7 @@ export function scanOutstandingCrewDays(
   }
   for (const [date, dayLogs] of Object.entries(performance || {})) {
     if (date >= today) continue;              // exclude today + future
+    if (date < OUTSTANDING_TRACKING_START) continue; // pre-launch backlog suppressed (view only)
     if (earliest && date < earliest) continue; // window floor
     for (const [crewId, log] of Object.entries(dayLogs || {})) {
       if (!log || !isOutstanding(log)) continue;

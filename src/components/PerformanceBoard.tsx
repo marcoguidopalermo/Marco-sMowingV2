@@ -10,7 +10,7 @@ import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { functions, db, appId } from '../lib/firebase';
 import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole } from '../types';
 import { logPerfActivity } from '../lib/perfAudit';
-import { scanOutstandingCrewDays, groupOutstandingByDivision } from '../lib/approvalOversight';
+import { scanOutstandingCrewDays, groupOutstandingByDivision, divisionNameToCode, OutstandingCrewDay } from '../lib/approvalOversight';
 import CompletionReviewModal from './CompletionReviewModal';
 import AHSplitModal from './AHSplitModal';
 import SplitBHModal from './SplitBHModal';
@@ -163,6 +163,30 @@ export default function PerformanceBoard({
   const [divisionFilter, setDivisionFilter] = useState<'all' | 'lawn' | 'small' | 'large' | 'adhoc'>(
     defaultDivisionFilter === 'all' ? 'all' : defaultDivisionFilter,
   );
+  // Click-through target from the outstanding-days rollup: after the
+  // date switch loads the day's logs, scroll to and briefly highlight
+  // the crew card. Navigation only — never touches log data.
+  const [focusCrewTarget, setFocusCrewTarget] = useState<{ date: string; crewId: string } | null>(null);
+  const goToOutstanding = (o: OutstandingCrewDay) => {
+    setPerfDate(o.date);
+    // Widen the division filter if it would hide the target card.
+    const code = divisionNameToCode(o.division);
+    setDivisionFilter(prev => (prev === 'all' || prev === code ? prev : 'all'));
+    setFocusCrewTarget({ date: o.date, crewId: o.crewId });
+  };
+  useEffect(() => {
+    if (!focusCrewTarget || perfDate !== focusCrewTarget.date) return;
+    if (!dailyLogs[focusCrewTarget.crewId]) return;
+    const el = document.getElementById(`perf-crew-card-${focusCrewTarget.crewId}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.classList.add('ring-4', 'ring-rose-300');
+    const t = setTimeout(() => {
+      el.classList.remove('ring-4', 'ring-rose-300');
+      setFocusCrewTarget(null);
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [focusCrewTarget, perfDate, dailyLogs]);
   // Per-visit review state. The multi-day ledger is keyed by jobberVisitId,
   // so the modal opens against a specific visit's history — never the
   // parent job's. Recurring/multi-visit jobs no longer collide.
@@ -1277,8 +1301,12 @@ export default function PerformanceBoard({
           </div>
 
           {/* ADMIN OVERSIGHT — cross-date outstanding crew-days (neither
-              approved nor waived), grouped by division. Excludes today.
-              Read-derived from the performance map; no new storage. */}
+              approved nor waived), grouped by division. Excludes today
+              and anything before OUTSTANDING_TRACKING_START (pre-launch
+              backlog — suppressed from view only, data untouched).
+              Read-derived from the performance map; no new storage.
+              Each crew-day chip navigates to that date and highlights
+              the crew card so it can be approved or waived directly. */}
           {isAdmin && (() => {
             const outstanding = scanOutstandingCrewDays(performance, formatTodayInToronto());
             if (outstanding.length === 0) return null;
@@ -1289,13 +1317,28 @@ export default function PerformanceBoard({
                 <div className="flex items-center gap-2 text-sm text-rose-900 mb-2">
                   <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
                   <span className="font-bold">{outstanding.length} crew-day{outstanding.length === 1 ? '' : 's'} outstanding</span>
-                  <span className="text-rose-700">across {dayCount} day{dayCount === 1 ? '' : 's'} — not yet approved or waived.</span>
+                  <span className="text-rose-700">across {dayCount} day{dayCount === 1 ? '' : 's'} — not yet approved or waived. Click one to open it.</span>
                 </div>
+                {byDiv.length > 1 && (
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {byDiv.map(d => (
+                      <span key={d.division} className="text-[10px] font-bold uppercase tracking-wide text-rose-600">
+                        {d.division}: {d.count} across {d.dates.length} day{d.dates.length === 1 ? '' : 's'}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="flex flex-wrap gap-2">
-                  {byDiv.map(d => (
-                    <span key={d.division} className="text-[11px] font-bold bg-white border border-rose-200 text-rose-800 px-2.5 py-1 rounded-full">
-                      {d.division}: {d.count} outstanding across {d.dates.length} day{d.dates.length === 1 ? '' : 's'}
-                    </span>
+                  {outstanding.map(o => (
+                    <button
+                      key={`${o.date}|${o.crewId}`}
+                      type="button"
+                      onClick={() => goToOutstanding(o)}
+                      title={`Open ${o.crewLabel} on ${o.date} to approve or waive`}
+                      className="text-[11px] font-bold bg-white border border-rose-200 text-rose-800 px-2.5 py-1 rounded-full hover:bg-rose-100 hover:border-rose-400 cursor-pointer"
+                    >
+                      {new Date(`${o.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · {o.crewLabel}
+                    </button>
                   ))}
                 </div>
               </div>
@@ -1400,7 +1443,7 @@ export default function PerformanceBoard({
                 const stampColor: 'emerald' | 'slate' = isWaived ? 'slate' : 'emerald';
                 const stampVerb = isWaived ? 'Waived' : 'Approved';
                 return (
-                  <div key={cId} className={`bg-white rounded-xl shadow-sm border overflow-hidden relative ${isApproved ? 'border-emerald-300' : isWaived ? 'border-slate-300' : 'border-gray-200'}`}>
+                  <div key={cId} id={`perf-crew-card-${cId}`} className={`bg-white rounded-xl shadow-sm border overflow-hidden relative ${isApproved ? 'border-emerald-300' : isWaived ? 'border-slate-300' : 'border-gray-200'}`}>
                     {log.isAdHoc && <div className="absolute top-0 left-0 w-1 h-full bg-orange-400"></div>}
                     {!isLocked && canDeleteEntry(cId) && (
                       <button
