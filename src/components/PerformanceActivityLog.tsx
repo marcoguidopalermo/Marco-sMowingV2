@@ -5,24 +5,27 @@ import { db, appId } from '../lib/firebase';
 import { PerfActivityEntry } from '../types';
 import { ACTIVITY_TYPE_LABELS, ACTIVITY_CATEGORY } from '../lib/perfAudit';
 
-// "Audit essentials" — the pay/efficiency movers plus waivers. These
-// are shown by default; the Show-all toggle reveals every other event
-// type (un-approvals, hours deletions/clears, shift/carry-forward
-// changes, job-type conversions, approvals, dispatch reports, etc.).
-// NOTHING is ever removed from the underlying data — this only filters
-// the view. When a specific Action is chosen, the preset is bypassed.
+// "Audit essentials" — only EFFICIENCY-INFLATING events: changes that
+// can push BH÷AH (and therefore the bonus) artificially UP. Deflating
+// counterparts are deliberately NOT in the preset — 'manual_job_removed'
+// lowers BH and 'worker_unscheduled_added' raises AH, so there's no
+// gaming incentive to audit by default. They (and un-approvals,
+// shift/carry-forward changes, job-type conversions, approvals,
+// dispatch reports, etc.) remain via the Show-all toggle. NOTHING is
+// ever removed from the underlying data — this only filters the view.
+// When a specific Action is chosen, the preset is bypassed.
 const ESSENTIAL_TYPES: ReadonlySet<PerfActivityEntry['type']> = new Set([
   // BH adjustments / edits
-  'manual_job_added', 'manual_job_edited', 'manual_job_removed',
+  'manual_job_added', 'manual_job_edited',
   'jobber_bh_edited', 'jobber_bh_reverted',
   'hourly_bh_entered', 'hourly_bh_edited',
   'bh_filled_in_manually',
-  // Deductions
+  // Deductions (subtract AH → inflate)
   'deduction_added', 'deduction_edited', 'deduction_removed',
   // Waivers / non-approvals
   'approval_waived',
-  // Worker add / remove
-  'worker_removed', 'worker_unscheduled_added',
+  // Worker removed (drops AH from the denominator → inflates)
+  'worker_removed',
   // BH / AH split overrides
   'ah_split', 'ah_manually_edited', 'multiday_split_added', 'multiday_percent_overridden',
 ]);
@@ -260,7 +263,7 @@ export default function PerformanceActivityLog({ setPerfTab, setPerfDate, showTo
       <p className="text-[11px] text-slate-500 italic px-1">
         {showAll
           ? 'Showing every recorded event. All records are always retained — nothing is deleted.'
-          : 'Audit essentials: BH adjustments/edits, deductions, waivers, worker add/remove, and BH/AH split overrides. Toggle “Show: All events” for un-approvals, deletions, shift changes, job-type conversions, and the rest.'}
+          : 'Audit essentials: efficiency-inflating events only — BH adjustments/edits, jobs added, deductions, waivers, worker removals, and BH/AH split overrides. Toggle “Show: All events” for jobs removed, workers added, un-approvals, shift changes, job-type conversions, and the rest.'}
       </p>
 
       {loadError && (
