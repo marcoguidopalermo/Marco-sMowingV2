@@ -104,6 +104,13 @@ export default function MyMechanic({
     return dollars;
   }, [closed.length, open, openHoursWorked]);
 
+  // Paid / owed — display-only, mechanics never mark anything.
+  // Counts CLOSED chunks only ($1,000 each). The open chunk is
+  // partial/accruing and never part of owed. Both null and undefined
+  // count as unpaid (!c.paidAt).
+  const totalPaid = useMemo(() => closed.filter(c => !!c.paidAt).length * 1000, [closed]);
+  const totalOwed = useMemo(() => closed.filter(c => !c.paidAt).length * 1000, [closed]);
+
   // Visible closed chunks — first 10 unless "show all" is toggled.
   const visibleClosed = showAllClosed ? closed : closed.slice(0, 10);
 
@@ -339,6 +346,14 @@ export default function MyMechanic({
             <div>
               <div className="text-[10px] font-black uppercase tracking-widest text-amber-700">Pay Rate</div>
               <div className="text-xl font-mono font-black text-amber-700 mt-1">$1,000 / {hoursPer1000}h</div>
+            </div>
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Paid</div>
+              <div className="text-xl font-mono font-black text-slate-600 mt-1">${totalPaid.toLocaleString()}</div>
+            </div>
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-widest text-amber-700">Owed</div>
+              <div className={`text-xl font-mono font-black mt-1 ${totalOwed > 0 ? 'text-amber-700' : 'text-slate-400'}`}>${totalOwed.toLocaleString()}</div>
             </div>
           </div>
         </section>

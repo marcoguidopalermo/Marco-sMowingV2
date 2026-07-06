@@ -135,6 +135,10 @@ interface MechanicBoardProps {
   // dropdown. Admin/manager/mechanic only — workers/foremen see the
   // chip as a read-only badge.
   canChangePartsStatus: boolean;
+  // Mark-paid bookkeeping (Pay Chunks panel). Forwarded straight to
+  // MechanicPerformance; App.tsx owns the write + audit + admin gate.
+  onMarkChunksPaid: (mechanicId: string, chunkIds: string[]) => void;
+  onUnmarkChunkPaid: (mechanicId: string, chunkId: string) => void;
 }
 
 export default function MechanicBoard({
@@ -185,6 +189,8 @@ export default function MechanicBoard({
   onDeletePartsOrder,
   canViewPartsOrders,
   canChangePartsStatus,
+  onMarkChunksPaid,
+  onUnmarkChunkPaid,
 }: MechanicBoardProps) {
   // Repair Board scope. Initialized from the caller-supplied default —
   // App.tsx sets 'mine' for mechanic role, 'all' otherwise. The user can
@@ -1069,6 +1075,9 @@ export default function MechanicBoard({
           mechanicPayChunks={appData.mechanicPayChunks || {}}
           mechanicTasks={mechanicTasks}
           timeEntries={appData.timeEntries || []}
+          isAdmin={isAdmin}
+          onMarkChunksPaid={onMarkChunksPaid}
+          onUnmarkChunkPaid={onUnmarkChunkPaid}
         />
       ) : (
         // Single scroll container for the whole Fleet List — header strip +

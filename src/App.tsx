@@ -2595,6 +2595,80 @@ export default function App() {
       }}
       canViewPartsOrders={effectiveRole === 'admin' || effectiveRole === 'manager'}
       canChangePartsStatus={effectiveRole === 'admin' || effectiveRole === 'manager' || effectiveRole === 'mechanic'}
+      onMarkChunksPaid={(mechanicId, chunkIds) => {
+        if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
+        // Money-out bookkeeping — admin ONLY (stricter than chunk creation,
+        // which allows manager too).
+        if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+        const chunks = appData.mechanicPayChunks || {};
+        const now = Date.now();
+        // Idempotent: only stamp CLOSED, currently-UNPAID chunks. Skips
+        // the open chunk (never in the id list, but guarded anyway),
+        // already-paid chunks (preserve original payer/timestamp), and
+        // unknown ids.
+        const toStamp = chunkIds.filter(id => {
+          const c = chunks[id];
+          return !!c && c.status === 'closed' && !c.paidAt;
+        });
+        if (toStamp.length === 0) { showToastMsg('Nothing to mark — those chunks are already paid.'); return; }
+        const nextChunks = { ...chunks };
+        for (const id of toStamp) {
+          nextChunks[id] = { ...nextChunks[id], paidAt: now, paidBy: displayEmail, paidByName: displayName };
+        }
+        syncToCloud({ ...appData, mechanicPayChunks: nextChunks });
+        const emp = appData.employees.find(e => e.id === mechanicId);
+        const stamped = toStamp.map(id => nextChunks[id]);
+        const starts = stamped.map(c => c.startTimestamp).filter(Boolean) as number[];
+        const ends = stamped.map(c => c.endTimestamp ?? c.startTimestamp).filter(Boolean) as number[];
+        const range = starts.length
+          ? `${new Date(Math.min(...starts)).toLocaleDateString()} – ${new Date(Math.max(...ends)).toLocaleDateString()}`
+          : '';
+        logPerfActivity({
+          type: 'chunk_marked_paid',
+          targetDate: formatTodayInToronto(),
+          crewId: 'mechanic-pay',
+          crewLabel: emp?.name || mechanicId,
+          userId: user?.uid || displayEmail,
+          userName: displayName,
+          userRole: effectiveRole,
+          workerId: mechanicId,
+          workerName: emp?.name,
+          valueLabel: 'chunks paid',
+          valueAfter: toStamp.length,
+          reasonNote: `${toStamp.length} chunk${toStamp.length === 1 ? '' : 's'} · $${(toStamp.length * 1000).toLocaleString()}${range ? ` · ${range}` : ''}`,
+        });
+        showToastMsg(`Marked ${toStamp.length} chunk${toStamp.length === 1 ? '' : 's'} paid ($${(toStamp.length * 1000).toLocaleString()}).`);
+      }}
+      onUnmarkChunkPaid={(mechanicId, chunkId) => {
+        if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
+        if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+        const chunks = appData.mechanicPayChunks || {};
+        const c = chunks[chunkId];
+        if (!c || !c.paidAt) { showToastMsg('That chunk is not marked paid.'); return; }
+        // Reversal: DELETE the three stamp keys (never set undefined —
+        // the syncToCloud scrubber would persist null and the "!paidAt"
+        // readers already treat null as unpaid, but deleting keeps the
+        // record clean).
+        const { paidAt: _pa, paidBy: _pb, paidByName: _pn, ...rest } = c;
+        const nextChunks = { ...chunks, [chunkId]: rest };
+        syncToCloud({ ...appData, mechanicPayChunks: nextChunks });
+        const emp = appData.employees.find(e => e.id === mechanicId);
+        logPerfActivity({
+          type: 'chunk_payment_reversed',
+          targetDate: formatTodayInToronto(),
+          crewId: 'mechanic-pay',
+          crewLabel: emp?.name || mechanicId,
+          userId: user?.uid || displayEmail,
+          userName: displayName,
+          userRole: effectiveRole,
+          workerId: mechanicId,
+          workerName: emp?.name,
+          valueLabel: 'chunks paid',
+          valueAfter: -1,
+          reasonNote: `Reversed 1 chunk · $1,000${c.startTimestamp ? ` · ${new Date(c.startTimestamp).toLocaleDateString()}` : ''}`,
+        });
+        showToastMsg('Payment reversed — chunk is owed again.');
+      }}
     />
   );
 

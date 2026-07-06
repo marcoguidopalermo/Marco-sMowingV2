@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { TrendingUp, Filter, Award, Flame, AlertCircle, DollarSign, ChevronDown, ChevronUp } from 'lucide-react';
+import { TrendingUp, Filter, Award, Flame, AlertCircle, DollarSign, ChevronDown, ChevronUp, Check, Undo2 } from 'lucide-react';
 import { TaskActivity, Employee, MechanicPayChunk, MechanicTask, TimeEntry } from '../types';
 import { chunksForMechanic, computeOpenChunkHours } from '../lib/payChunkUtils';
 import { workersForCompletion, shareForMechanic, formatCredit } from '../lib/workCredit';
@@ -13,6 +13,13 @@ interface MechanicPerformanceProps {
   mechanicPayChunks?: Record<string, MechanicPayChunk>;
   mechanicTasks?: MechanicTask[];
   timeEntries?: TimeEntry[];
+  // Mark-paid bookkeeping. Admin-only: when isAdmin is false the
+  // actions don't render. The write + permission gate + audit live in
+  // App.tsx (these are intent callbacks, same pattern as chunk
+  // creation). Optional for back-compat.
+  isAdmin?: boolean;
+  onMarkChunksPaid?: (mechanicId: string, chunkIds: string[]) => void;
+  onUnmarkChunkPaid?: (mechanicId: string, chunkId: string) => void;
 }
 
 type DateRange = 'today' | 'week' | 'month' | 'year' | 'all' | 'custom';
@@ -38,6 +45,9 @@ export default function MechanicPerformance({
   mechanicPayChunks,
   mechanicTasks,
   timeEntries,
+  isAdmin,
+  onMarkChunksPaid,
+  onUnmarkChunkPaid,
 }: MechanicPerformanceProps) {
   const [expandedMech, setExpandedMech] = useState<Record<string, boolean>>({});
   const [dateRange, setDateRange] = useState<DateRange>('month');
@@ -236,6 +246,14 @@ export default function MechanicPerformance({
                 const openHours = open ? computeOpenChunkHours(open, timeEntries) : 0;
                 const openPct = open ? Math.min(100, Math.round((openHours / open.hoursThreshold) * 100)) : 0;
                 const totalEarned = closed.length * 1000 + (open && open.hoursThreshold > 0 ? Math.min(1000, (openHours / open.hoursThreshold) * 1000) : 0);
+                // Paid/owed count CLOSED chunks only ($1,000 each). The
+                // open chunk is partial/accruing — never part of owed.
+                // Treat both null and undefined as unpaid (!c.paidAt).
+                const paidClosed = closed.filter(c => !!c.paidAt);
+                const unpaidClosed = closed.filter(c => !c.paidAt);
+                const totalPaid = paidClosed.length * 1000;
+                const totalOwed = unpaidClosed.length * 1000;
+                const canMark = !!isAdmin && !!onMarkChunksPaid;
                 return (
                   <div key={emp.id} className="bg-white border border-slate-200 rounded-lg shadow-sm">
                     <button
@@ -250,11 +268,21 @@ export default function MechanicPerformance({
                           {open && ` · current ${openHours.toFixed(1)}/${open.hoursThreshold} hrs`}
                         </div>
                       </div>
-                      <div className="text-right shrink-0">
-                        <div className="text-lg font-mono font-black text-emerald-700">${Math.round(totalEarned).toLocaleString()}</div>
-                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">earned</div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <div className="text-right">
+                          <div className="text-lg font-mono font-black text-emerald-700">${Math.round(totalEarned).toLocaleString()}</div>
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">earned</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-lg font-mono font-black text-slate-600">${totalPaid.toLocaleString()}</div>
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">paid</div>
+                        </div>
+                        <div className="text-right">
+                          <div className={`text-lg font-mono font-black ${totalOwed > 0 ? 'text-amber-700' : 'text-slate-400'}`}>${totalOwed.toLocaleString()}</div>
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">owed</div>
+                        </div>
+                        {expanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
                       </div>
-                      {expanded ? <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />}
                     </button>
                     {expanded && (
                       <div className="border-t border-slate-100 p-3 space-y-3">
@@ -275,18 +303,63 @@ export default function MechanicPerformance({
                         )}
                         {closed.length > 0 && (
                           <div>
-                            <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Past chunks ({closed.length})</div>
+                            <div className="flex items-center justify-between gap-2 mb-1.5">
+                              <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Past chunks ({closed.length})</div>
+                              {canMark && unpaidClosed.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => onMarkChunksPaid!(emp.id, unpaidClosed.map(c => c.id))}
+                                  className="text-[10px] font-black uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded flex items-center gap-1"
+                                >
+                                  <Check className="w-3 h-3" /> Mark all owed paid (${totalOwed.toLocaleString()})
+                                </button>
+                              )}
+                            </div>
                             <ul className="space-y-1">
-                              {closed.slice(0, 10).map(c => (
+                              {closed.slice(0, 10).map(c => {
+                                const isPaid = !!c.paidAt;
+                                return (
                                 <li key={c.id} className="flex items-center justify-between gap-2 text-[11px] bg-white border border-slate-100 rounded px-2 py-1">
-                                  <span className="font-bold text-slate-700">
+                                  <span className="font-bold text-slate-700 shrink-0">
                                     {new Date(c.startTimestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                     {c.endTimestamp ? ` – ${new Date(c.endTimestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}
                                   </span>
-                                  <span className="text-slate-500 font-mono">{c.hoursWorked.toFixed(1)} hrs · {formatCredit(tasksInChunk(c))} repairs</span>
-                                  <span className="font-bold text-emerald-700">$1,000</span>
+                                  <span className="text-slate-500 font-mono truncate">{c.hoursWorked.toFixed(1)} hrs · {formatCredit(tasksInChunk(c))} repairs</span>
+                                  <span className="flex items-center gap-1.5 shrink-0">
+                                    {isPaid ? (
+                                      <>
+                                        <span className="font-bold text-slate-400 line-through">$1,000</span>
+                                        <span
+                                          className="text-[9px] font-black uppercase tracking-widest text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded"
+                                          title={`Paid${c.paidByName ? ` by ${c.paidByName}` : ''}${c.paidAt ? ` on ${new Date(c.paidAt).toLocaleDateString()}` : ''}`}
+                                        >Paid</span>
+                                        {canMark && onUnmarkChunkPaid && (
+                                          <button
+                                            type="button"
+                                            onClick={() => onUnmarkChunkPaid(emp.id, c.id)}
+                                            title="Reverse this payment (paid in error)"
+                                            className="text-slate-400 hover:text-rose-600 p-0.5 rounded"
+                                          >
+                                            <Undo2 className="w-3 h-3" />
+                                          </button>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <>
+                                        <span className="font-bold text-amber-700">$1,000</span>
+                                        {canMark && (
+                                          <button
+                                            type="button"
+                                            onClick={() => onMarkChunksPaid!(emp.id, [c.id])}
+                                            className="text-[9px] font-black uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700 text-white px-1.5 py-0.5 rounded"
+                                          >Mark paid</button>
+                                        )}
+                                      </>
+                                    )}
+                                  </span>
                                 </li>
-                              ))}
+                                );
+                              })}
                               {closed.length > 10 && (
                                 <li className="text-[10px] italic text-slate-400 text-center pt-1">+ {closed.length - 10} older chunks</li>
                               )}

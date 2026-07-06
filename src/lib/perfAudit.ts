@@ -59,6 +59,8 @@ export const ACTIVITY_TYPE_LABELS: Record<PerfActivityEntry['type'], string> = {
   visit_auto_moved_on_completion: 'Visit moved on completion',
   bh_filled_in_manually: 'BH filled in manually',
   approval_waived: 'Approval waived (no approval needed)',
+  chunk_marked_paid: 'Pay chunk marked paid',
+  chunk_payment_reversed: 'Pay chunk payment reversed',
 };
 
 export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amber' | 'rose' | 'slate'> = {
@@ -95,4 +97,6 @@ export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amb
   visit_auto_moved_on_completion: 'amber',
   bh_filled_in_manually: 'amber',
   approval_waived: 'slate',
+  chunk_marked_paid: 'green',
+  chunk_payment_reversed: 'rose',
 };

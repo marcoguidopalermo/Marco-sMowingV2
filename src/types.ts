@@ -52,6 +52,16 @@ export interface MechanicPayChunk {
   // computed sum since `startTimestamp`.
   manualBackfill?: boolean;
   manualHoursOffset?: number;
+  // Mark-paid bookkeeping (additive, closed chunks only). A closed
+  // chunk with paidAt set is settled; without it, it's owed. NOTE:
+  // syncToCloud's scrubber converts undefined → null, so readers must
+  // treat BOTH null and undefined as unpaid — always test
+  // `!chunk.paidAt`. Un-marking DELETES these three keys (never sets
+  // them to undefined). The earning state machine never reads or
+  // writes these; they're pure bookkeeping on top of it.
+  paidAt?: number;
+  paidBy?: string;
+  paidByName?: string;
 }
 
 export interface TimeEntryNote {
@@ -603,7 +613,9 @@ export type PerfActivityType =
   | 'bh_shifted_day'
   | 'visit_auto_moved_on_completion'
   | 'bh_filled_in_manually'
-  | 'approval_waived';
+  | 'approval_waived'
+  | 'chunk_marked_paid'
+  | 'chunk_payment_reversed';
 
 export interface PerfActivityEntry {
   id: string;
