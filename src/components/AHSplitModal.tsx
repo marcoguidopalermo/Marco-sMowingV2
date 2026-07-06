@@ -14,6 +14,7 @@ interface AHSplitModalProps {
   appData: AppData;
   dailyLogs: Record<string, PerformanceLog>;
   setDailyLogs: Dispatch<SetStateAction<Record<string, PerformanceLog>>>;
+  syncToCloud: (data: AppData) => Promise<boolean | undefined>;
   showToastMsg: (msg: string) => void;
   currentUserName: string;
   currentUserId: string;
@@ -24,7 +25,7 @@ const REASONS = ['Switched crews', 'Helping out', 'Other'];
 
 export default function AHSplitModal({
   isOpen, onClose, date, sourceCrewId, empId, workerName,
-  appData, dailyLogs, setDailyLogs, showToastMsg, currentUserName,
+  appData, dailyLogs, setDailyLogs, syncToCloud, showToastMsg, currentUserName,
   currentUserId, currentUserRole,
 }: AHSplitModalProps) {
   const sourceLog = dailyLogs[sourceCrewId];
@@ -34,11 +35,14 @@ export default function AHSplitModal({
   const [targetCrewId, setTargetCrewId] = useState<string>('');
   const [reason, setReason] = useState<string>('');
   const [reasonOther, setReasonOther] = useState<string>('');
+  const [saving, setSaving] = useState(false);
 
   if (!isOpen) return null;
 
-  // Candidate target crews: other crews on today's schedule that have a
-  // PerformanceLog entry (so the rebuild useEffect will preserve them).
+  // Candidate target crews: other crews on today's day that have a
+  // PerformanceLog entry. Both sides of the split are persisted
+  // atomically on submit (with a manualAH marker), so the split
+  // survives the dailyLogs rebuild, the ghost-AH prune, and re-syncs.
   const candidates = Object.entries(dailyLogs)
     .filter(([cid, log]) => cid !== sourceCrewId && !!log)
     .map(([cid, log]) => ({
@@ -53,32 +57,56 @@ export default function AHSplitModal({
   const targetApproved = !!targetLog && targetLog.approvalStatus === 'approved';
   const reasonValid = !!reason && (reason !== 'Other' || reasonOther.trim().length > 0);
 
-  const canSubmit = hoursValid && !!targetCrewId && !targetApproved && reasonValid;
+  const canSubmit = hoursValid && !!targetCrewId && !targetApproved && reasonValid && !saving;
 
-  const submit = () => {
+  const submit = async () => {
     if (!canSubmit) return;
+    const sLog = dailyLogs[sourceCrewId];
+    const tLog = dailyLogs[targetCrewId];
+    if (!sLog || !tLog) return;
+    setSaving(true);
     const movedHours = hoursNum;
     const finalReason = reason === 'Other' ? reasonOther.trim() : reason;
-    setDailyLogs(prev => {
-      const next = { ...prev };
-      // Subtract from source.
-      const sLog = next[sourceCrewId];
-      if (sLog) {
-        const newAH = { ...sLog.employeeAH };
-        const remaining = currentAH - movedHours;
-        newAH[empId] = remaining;
-        next[sourceCrewId] = { ...sLog, employeeAH: newAH };
-      }
-      // Add to target.
-      const tLog = next[targetCrewId];
-      if (tLog) {
-        const newAH = { ...tLog.employeeAH };
-        const existingTargetHours = Number(newAH[empId] ?? 0) || 0;
-        newAH[empId] = existingTargetHours + movedHours;
-        next[targetCrewId] = { ...tLog, employeeAH: newAH };
-      }
-      return next;
+
+    // Build both sides from the live board state, stamping the manualAH
+    // marker on each so every writer (Jobber sync, ghost-AH prune)
+    // treats these values as authoritative manager-set pay data.
+    const nextSource: PerformanceLog = {
+      ...sLog,
+      employeeAH: { ...sLog.employeeAH, [empId]: currentAH - movedHours },
+      manualAH: { ...(sLog.manualAH || {}), [empId]: true },
+    };
+    const existingTargetHours = Number(tLog.employeeAH?.[empId] ?? 0) || 0;
+    const nextTarget: PerformanceLog = {
+      ...tLog,
+      employeeAH: { ...tLog.employeeAH, [empId]: existingTargetHours + movedHours },
+      manualAH: { ...(tLog.manualAH || {}), [empId]: true },
+    };
+
+    // Persist BOTH crew-days together in ONE write, immediately — the
+    // split must never depend on the manager clicking "Save Daily Data".
+    // Without this, approving one crew rebuilds dailyLogs from saved
+    // state and silently deletes the other crew's (unsaved) half.
+    const perfDayAfter: Record<string, PerformanceLog> = {
+      ...(appData.performance?.[date] || {}),
+      [sourceCrewId]: nextSource,
+      [targetCrewId]: nextTarget,
+    };
+    const ok = await syncToCloud({
+      ...appData,
+      performance: { ...(appData.performance || {}), [date]: perfDayAfter },
     });
+    if (ok === false) {
+      // View-only session or failed write (syncToCloud already toasted).
+      setSaving(false);
+      return;
+    }
+
+    setDailyLogs(prev => ({
+      ...prev,
+      [sourceCrewId]: nextSource,
+      [targetCrewId]: nextTarget,
+    }));
     const sourceLabel = sourceLog ? `${sourceLog.division} #${sourceLog.crewNumber}` : sourceCrewId;
     const targetLabel = targetLog ? `${targetLog.division} #${targetLog.crewNumber}` : targetCrewId;
     logPerfActivity({
@@ -97,7 +125,8 @@ export default function AHSplitModal({
       reason: finalReason,
       reasonNote: `Moved ${movedHours} hrs → ${targetLabel}`,
     });
-    showToastMsg(`Moved ${movedHours} hrs from ${workerName} → ${targetLabel}. Save Daily Data to persist.`);
+    showToastMsg(`Moved ${movedHours} hrs from ${workerName} → ${targetLabel}. Saved.`);
+    setSaving(false);
     onClose();
   };
 
@@ -201,7 +230,7 @@ export default function AHSplitModal({
             disabled={!canSubmit}
             className="min-h-[44px] px-5 py-2.5 text-sm font-black uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow disabled:bg-slate-300 disabled:cursor-not-allowed"
           >
-            Move {hoursValid ? hoursNum : ''} hrs
+            {saving ? 'Saving…' : `Move ${hoursValid ? hoursNum : ''} hrs`}
           </button>
         </div>
       </div>

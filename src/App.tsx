@@ -998,17 +998,22 @@ export default function App() {
 
       // Ghost-AH prune (Step 1 of the AH-reconciliation fix). Drop AH
       // entries for workers auto-attributed by a prior sync who have since
-      // been removed from this crew's schedule. ALL FOUR guards must hold,
-      // so it never touches Split-AH-in workers, manually-added unscheduled
-      // workers, approved days, or already manually-removed entries:
+      // been removed from this crew's schedule. ALL guards must hold, so it
+      // never touches manually-added unscheduled workers, approved days,
+      // already manually-removed entries, or manualAH-flagged entries
+      // (AH-split workers — flagged explicitly, because a split-in worker
+      // is off-roster + jobber-linked, the exact ghost signature; without
+      // the flag the prune would delete their pay hours on every rebuild):
       //   1. an Employee record exists for the key
       //   2. that employee is jobber-linked (hours came from auto-attribution)
       //   3. the day is NOT approved (approved days are immutable)
       //   4. the key is NOT already in removedEmployees
+      //   5. the key is NOT flagged in manualAH (deliberate manual pay data)
       // plus the trigger: the key is NOT on the current crew roster.
       const isApprovedDay = savedLogs[crew.id]?.approvalStatus === 'approved';
       if (!isApprovedDay) {
         const rosterIds = new Set(crew.employees || []);
+        const manualFlags = savedLogs[crew.id]?.manualAH || {};
         for (const empId of Object.keys(nextAH)) {
           // Test users never belong in performance AH — drop them on any
           // non-approved day regardless of roster / jobber-link, so they
@@ -1018,6 +1023,7 @@ export default function App() {
             delete nextDeduc[empId];
             continue;
           }
+          if (manualFlags[empId]) continue;            // manual split/attribution — authoritative, keep
           if (rosterIds.has(empId)) continue;          // still scheduled — keep
           if (removed.has(empId)) continue;            // already manually removed — keep
           const emp = appData.employees.find(e => e.id === empId);

@@ -198,6 +198,12 @@ interface PerformanceLog {
   jobs: PerformanceJobRow[];
   employeeAH: Record<string, unknown>;
   deductions: Record<string, unknown>;
+  // Manual-AH marker, stamped by the frontend AH Split modal on BOTH
+  // the source and target crew-days. A flagged employeeAH entry is
+  // authoritative manager-set pay data: the sync must NEVER overwrite
+  // it with the whole-day timesheet total (that would silently undo
+  // the split's subtraction on the source crew).
+  manualAH?: Record<string, boolean>;
   approvalStatus?: "pending" | "approved" | "waived";
   approvedAt?: string;
   approvedBy?: string;
@@ -2185,6 +2191,14 @@ async function runPerformanceSync(args: {
           // person (double-count guard: we never reach the email
           // branch below for them, so their hours are counted once).
           matchedJobberUsers.add(emp.jobberUserId);
+          // manualAH-flagged entry (AH split): the manager deliberately
+          // set this member's hours — writing the whole-day Jobber
+          // total would silently undo the split's subtraction. Skip
+          // the AH write AND the interval write: manual hours follow
+          // the "present + complete, or absent" timesheet contract,
+          // so the crew-day falls back to flat math exactly like any
+          // other manual entry (same as the split's target side).
+          if (base.manualAH?.[empId]) continue;
           const sec = secondsByJobberUser.get(emp.jobberUserId) ?? null;
           if (sec != null && sec >= MIN_TIMESHEET_SECONDS) {
             base.employeeAH[empId] = Math.round((sec / 3600) * 10) / 10;
@@ -2203,6 +2217,9 @@ async function runPerformanceSync(args: {
         // Test users stay ghosts to performance math — never given
         // email-sourced hours (preserves the by-id test-user exclusion).
         if (testUserIds.has(empId)) continue;
+        // manualAH-flagged entry (AH split): manager-set hours are
+        // authoritative — never overwritten by TimeMaster totals.
+        if (base.manualAH?.[empId]) continue;
         const email = (emp.linkedUserEmail || emp.email || "").toLowerCase();
         if (!email) continue;
         const sec = secondsByEmail.get(email) ?? null;

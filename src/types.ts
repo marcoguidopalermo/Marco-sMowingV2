@@ -683,6 +683,14 @@ export interface PerformanceLog {
   jobs: PerformanceJobRow[];
   employeeAH: Record<string, any>;
   deductions: Record<string, DeductionValue>;
+  // Manual-AH marker. Keys are employee ids whose employeeAH value was
+  // deliberately set by a manager (currently: the AH Split modal, on
+  // BOTH the source and target crew-days). A flagged entry is
+  // authoritative pay data: the Jobber sync must never overwrite it
+  // with the whole-day timesheet total, and the ghost-AH prune must
+  // never strip it (a split-in worker is off-roster + jobber-linked —
+  // the exact signature the prune otherwise treats as sync garbage).
+  manualAH?: Record<string, boolean>;
   // 'waived' is a terminal, manager-set state meaning "this crew-day
   // does not require approval" (e.g. a shop / odd-jobs day). It is
   // locked like 'approved' (editing disabled, sync skips it) and,

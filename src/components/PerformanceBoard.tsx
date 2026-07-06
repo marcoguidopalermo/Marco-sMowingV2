@@ -2459,6 +2459,7 @@ export default function PerformanceBoard({
               appData={appData}
               dailyLogs={dailyLogs}
               setDailyLogs={setDailyLogs}
+              syncToCloud={syncToCloud}
               showToastMsg={showToastMsg}
               currentUserName={currentUserName}
               currentUserId={currentUserId}
