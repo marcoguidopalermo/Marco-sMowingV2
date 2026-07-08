@@ -302,6 +302,12 @@ interface AppDataShape {
   multiDayJobs?: Record<string, MultiDayJob>;
   visitBHSplits?: Record<string, VisitBHSplit>;
   dailyAbsences?: Record<string, string[]>;
+  // Push Month: completed months relocated to performanceMonths/{YYYY-MM}
+  // sheets. Format 'YYYY-MM'. These months are LOCKED — the sync must
+  // never write a pushed month back into the appData doc (it would both
+  // re-bloat the doc and clobber the sheet), so we skip a targetDate in a
+  // pushed month wholesale and drop any pushed-month cleanup write.
+  pushedMonths?: string[];
   settings?: AppSettingsDoc;
   // Schema sentinel. < 2 (or missing) triggers a one-time wipe of
   // multiDayJobs so legacy jobId-keyed entries don't cohabit with new
@@ -2356,15 +2362,32 @@ async function runPerformanceSync(args: {
     // ghosted or removed in the same round-trip. Phase 1: multiDayJobs is
     // NO LONGER written into this doc — it lives in its own subcollection
     // (written below). Other top-level fields are untouched.
+    // Push Month: a pushed month lives on its own performanceMonths sheet
+    // and is LOCKED. Never write a pushed month's date back into the
+    // appData doc — that would re-bloat the doc AND clobber the sheet. We
+    // drop the main write if targetDate is in a pushed month, and skip any
+    // pushed-month cleanup write, warning on each.
+    const pushedMonthsSet = new Set(appData.pushedMonths || []);
     const writeUpdates: Record<string, unknown> = {
-      [`performance.${targetDate}`]: newPerformanceDay,
       visitBHSplits,
     };
+    if (pushedMonthsSet.has(targetDate.slice(0, 7))) {
+      summary.warnings.push(
+        `skipped_pushed_month targetDate=${targetDate} ` +
+        "(locked — lives on its own month sheet)",
+      );
+    } else {
+      writeUpdates[`performance.${targetDate}`] = newPerformanceDay;
+    }
     // Stamp the schema version so the migration runs exactly once.
     if (needsMultiDayMigration) {
       writeUpdates["__multiDayKeyVersion"] = 2;
     }
     for (const [d, dayMap] of Object.entries(cleanupPerformanceByDate)) {
+      if (pushedMonthsSet.has(d.slice(0, 7))) {
+        summary.warnings.push(`skipped_pushed_cleanup date=${d} (locked)`);
+        continue;
+      }
       writeUpdates[`performance.${d}`] = dayMap;
     }
     await appDataRef.update(writeUpdates);

@@ -55,7 +55,11 @@ const firebaseConfig = {
 };
 
 const DOC_PATH = ['artifacts', 'crewmaster', 'public', 'data', 'appData', 'main'];
-const CUTOFF = '2026-06-01';                 // keep >= this date; drop test era
+// keep >= this date; drop older. Env-overridable so a re-run can drop a
+// newer closed period (e.g. CUTOFF=2026-07-01 to also shed June) without
+// editing the file. Always dry-run first — the projection shows exactly
+// what each cutoff frees, and a full backup is written before any --apply.
+const CUTOFF = process.env.CUTOFF || '2026-06-01';
 const MAX_AUDIT_ENTRIES = 500;
 const APPLY = process.argv.includes('--apply');
 const MDJ_MODE = process.env.MDJ_MODE === 'allCompleted' ? 'allCompleted' : 'preJune';

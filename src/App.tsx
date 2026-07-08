@@ -4,7 +4,7 @@ import logoBlack from '@/assets/logo/LOGOBLACK.png';
 import { LoginDemo } from './components/blocks/LoginDemo';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, sendPasswordResetEmail } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteField, collection, deleteDoc } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, deleteField, collection, deleteDoc } from 'firebase/firestore';
 import {
   Calendar as CalendarIcon, ChevronLeft, ChevronRight, Users, Truck, Plus, Trash2, GripVertical,
   UserCircle, Wrench, Settings, Printer, AlertTriangle, Sun, Cloud, CloudRain, CloudLightning,
@@ -83,6 +83,7 @@ const SkidSteerIcon = ({ className, title }: { className?: string; title?: strin
 import { auth, db, appId, functions } from './lib/firebase';
 import { httpsCallable } from 'firebase/functions';
 import { logPerfActivity } from './lib/perfAudit';
+import { monthOfDate, extractMonth, monthSettlementStatus } from './lib/performanceMonths';
 import { callGeminiWithRetry } from './lib/gemini';
 
 import {
@@ -171,6 +172,20 @@ export default function App() {
   // (subcollection wins), newest-first to match the prepend convention.
   const docInspectionsRef = useRef<Inspection[]>([]);
   const subInspectionsRef = useRef<Inspection[]>([]);
+  // "Push Month": completed months live in performanceMonths/{YYYY-MM}
+  // sheets, not the appData doc. docPerformanceRef holds the doc's own
+  // (current-month) performance; subPerformanceMonthsRef holds the
+  // flattened date→crew map overlaid from every loaded month sheet. The
+  // live appData.performance is the sheets overlaid UNDER the doc copy
+  // (doc wins for the current month; by invariant a month is only ever
+  // in ONE place, so there is no real overlap). Mirrors the multiDayJobs
+  // overlay so every performance reader (board, MTD, reports) is unchanged.
+  const docPerformanceRef = useRef<Record<string, Record<string, PerformanceLog>>>({});
+  const subPerformanceMonthsRef = useRef<Record<string, Record<string, PerformanceLog>>>({});
+  const mergePerformance = (
+    docPerf: Record<string, Record<string, PerformanceLog>>,
+    monthOverlay: Record<string, Record<string, PerformanceLog>>,
+  ): Record<string, Record<string, PerformanceLog>> => ({ ...monthOverlay, ...docPerf });
   const mergeInspections = (base: Inspection[], sub: Inspection[]): Inspection[] => {
     // NB: `Map` is the lucide icon import in this file — use a plain object.
     const byId: Record<string, Inspection> = {};
@@ -771,6 +786,11 @@ export default function App() {
         // value is the subcollection overlaid on top (pre-removal this is
         // the frozen doc copy, post-removal []).
         docInspectionsRef.current = (data.inspections || []) as Inspection[];
+        // Push Month: remember the doc's own performance (current month)
+        // so the syncToCloud DOC write can substitute it (stripping any
+        // pushed month), and overlay the loaded month sheets on top for
+        // readers.
+        docPerformanceRef.current = (data.performance || {}) as Record<string, Record<string, PerformanceLog>>;
 
         const newAppData = {
           schedules: data.schedules || {},
@@ -800,7 +820,9 @@ export default function App() {
           bulletins: data.bulletins || [],
           dailyAbsences: data.dailyAbsences || {},
           partialTimeOff: data.partialTimeOff || {},
-          performance: data.performance || {},
+          // Doc-base (current month) overlaid by the live month sheets.
+          performance: mergePerformance(docPerformanceRef.current, subPerformanceMonthsRef.current),
+          pushedMonths: data.pushedMonths || [],
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -970,6 +992,38 @@ export default function App() {
         }));
       },
       (err) => { console.error('inspections subcollection listen error:', err); },
+    );
+  }, [user]);
+
+  // Push Month: live performanceMonths subcollection listener. Each doc is
+  // one completed month (id = YYYY-MM) holding that month's FULL data under
+  // `days: { [date]: { [crewId]: PerformanceLog } }`. We flatten every
+  // month's days into one date→crew map and merge it UNDER the doc's
+  // current-month performance, so every reader (PerformanceBoard, MTD,
+  // Advanced Reports, MyCrewToday) sees pushed months exactly as if they
+  // were still in the doc — byte-for-byte identical, just relocated. No
+  // reader changes; bonus/MTD parity is preserved by construction.
+  useEffect(() => {
+    if (!user) return;
+    const monthsCol = collection(db, 'artifacts', appId, 'public', 'data', 'performanceMonths');
+    return onSnapshot(
+      monthsCol,
+      (snap) => {
+        const overlay: Record<string, Record<string, PerformanceLog>> = {};
+        snap.forEach((d) => {
+          const v = d.data() as { days?: Record<string, Record<string, PerformanceLog>> };
+          const days = v?.days || {};
+          for (const [date, dayMap] of Object.entries(days)) {
+            overlay[date] = dayMap;
+          }
+        });
+        subPerformanceMonthsRef.current = overlay;
+        setAppData((prev) => ({
+          ...prev,
+          performance: mergePerformance(docPerformanceRef.current, overlay),
+        }));
+      },
+      (err) => { console.error('performanceMonths subcollection listen error:', err); },
     );
   }, [user]);
 
@@ -1533,8 +1587,22 @@ export default function App() {
     // preserves the legacy in-doc copies so nothing is lost; after each
     // one-time removal pass empties that base, this writes the empty value
     // and the doc shrinks. No second code change is needed for the cutover.
+    // Push Month: the DOC only ever stores the CURRENT (unpushed) month's
+    // performance. Strip any date belonging to a pushed month from the doc
+    // write — those live on their performanceMonths/{YYYY-MM} sheet. This
+    // is idempotent and self-healing: even if a pushed month leaked into
+    // the in-memory map, it can never be written back into the doc (which
+    // is what kept the doc under the 1 MiB cap). Pushed months are locked,
+    // so there are no legitimate edits to them to preserve here.
+    const pushedSet = new Set(safeData.pushedMonths || []);
+    const docPerformance: Record<string, Record<string, PerformanceLog>> = {};
+    for (const [date, dayMap] of Object.entries(safeData.performance || {})) {
+      if (pushedSet.has(date.slice(0, 7))) continue;
+      docPerformance[date] = dayMap;
+    }
     const docPayload = {
       ...safeData,
+      performance: docPerformance,
       multiDayJobs: docMultiDayJobsRef.current,
       inspections: docInspectionsRef.current,
     };
@@ -1553,6 +1621,137 @@ export default function App() {
       return false;
     }
   };
+
+  // ── Push Month ──────────────────────────────────────────────────────
+  // MOVE a completed month out of the 1 MiB-capped appData doc into its own
+  // performanceMonths/{YYYY-MM} sheet. Gated copy → verify → backup →
+  // remove, so NO DATA IS EVER DELETED: the remove (via syncToCloud's
+  // write-strip) only runs after the sheet is written AND re-read to
+  // confirm it landed. Returns true on success. Admin-only. Refuses the
+  // current month and any month with unsettled (non-approved/waived)
+  // crew-days.
+  const pushMonth = async (ym: string, opts?: { auto?: boolean }): Promise<boolean> => {
+    if (isViewingAs) { if (!opts?.auto) showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!isAdmin) { if (!opts?.auto) showToastMsg(PERMISSION_DENIED); return false; }
+    if ((appData.pushedMonths || []).includes(ym)) {
+      if (!opts?.auto) showToastMsg(`${ym} is already on its own sheet.`);
+      return false;
+    }
+    // Never push the current (in-progress) month — it must stay in the doc.
+    if (ym >= monthOfDate(formatTodayInToronto())) {
+      if (!opts?.auto) showToastMsg('Cannot push the current month — it is still in progress.');
+      return false;
+    }
+    // Settlement guard: every crew-day must be approved or waived.
+    const settle = monthSettlementStatus(appData.performance || {}, ym);
+    if (settle.dayCount === 0) {
+      if (!opts?.auto) showToastMsg(`No performance data for ${ym}.`);
+      return false;
+    }
+    if (!settle.settled) {
+      if (!opts?.auto) {
+        const sample = settle.blocking.slice(0, 3).map(b => `${b.date} ${b.crewLabel} (${b.status})`).join(', ');
+        showToastMsg(`Can't push ${ym}: ${settle.blocking.length} unsettled crew-day${settle.blocking.length === 1 ? '' : 's'} — ${sample}${settle.blocking.length > 3 ? '…' : ''}. Approve or waive them first.`);
+      }
+      return false;
+    }
+
+    const days = extractMonth(appData.performance || {}, ym);
+    const dayCount = Object.keys(days).length;
+    const payload = {
+      month: ym,
+      days,
+      dayCount,
+      pushedAt: Date.now(),
+      pushedBy: displayEmail,
+      pushedByName: displayName,
+    };
+    const clean = (obj: any) => JSON.parse(JSON.stringify(obj, (_k, v) => v === undefined ? null : v));
+    try {
+      // 1. COPY — write the month sheet (a separate doc, not doc-cap-bound).
+      const sheetRef = doc(db, 'artifacts', appId, 'public', 'data', 'performanceMonths', ym);
+      await setDoc(sheetRef, clean(payload));
+      // 2. VERIFY — re-read and confirm the day count matches before any remove.
+      const check = await getDoc(sheetRef);
+      const got = check.exists() ? Object.keys((check.data() as any)?.days || {}).length : -1;
+      if (got !== dayCount) {
+        showToastMsg(`Push aborted — sheet verify failed for ${ym} (${got}/${dayCount} days). No data removed.`);
+        return false;
+      }
+      // 3. BACKUP — belt-and-suspenders copy in a separate collection the
+      //    reader never overlays, written BEFORE the remove step.
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'performanceMonthsBackup', `${ym}-${payload.pushedAt}`), clean(payload));
+    } catch (err: any) {
+      console.error('[push-month] sheet/verify/backup write failed:', err);
+      showToastMsg(`Push failed for ${ym}: ${err?.message || String(err)}. No data removed.`);
+      return false;
+    }
+    // 4. REMOVE — mark the month pushed and syncToCloud. The write-strip in
+    //    syncToCloud drops this month's dates from the doc automatically
+    //    (net-reducing), so the doc shrinks; the sheet is the live copy.
+    const nextPushed = [...(appData.pushedMonths || []), ym].sort();
+    const ok = await syncToCloud({ ...appData, pushedMonths: nextPushed });
+    if (ok === false) {
+      // Roll back the marker locally; the sheet + backup remain (harmless,
+      // idempotent — a retry overwrites them). Nothing was removed.
+      showToastMsg(`Push wrote the ${ym} sheet but the doc update failed — nothing removed, safe to retry.`);
+      return false;
+    }
+    logPerfActivity({
+      type: 'performance_month_pushed',
+      targetDate: formatTodayInToronto(),
+      crewId: 'performance-month',
+      crewLabel: ym,
+      userId: user?.uid || displayEmail,
+      userName: displayName,
+      userRole: effectiveRole,
+      valueLabel: 'crew-days',
+      valueAfter: settle.crewDayCount,
+      reasonNote: `${opts?.auto ? 'Auto-pushed' : 'Pushed'} ${ym} → sheet (${dayCount} day${dayCount === 1 ? '' : 's'}, ${settle.crewDayCount} crew-days). Locked; full detail preserved on performanceMonths/${ym}.`,
+    });
+    if (!opts?.auto) showToastMsg(`Pushed ${ym} to its own sheet — ${dayCount} days preserved, doc shrunk.`);
+    return true;
+  };
+
+  // AUTO-PUSH fallback: 7 days after a month ends, if it's still in the doc
+  // and fully settled, push it automatically. Admin sessions only (the push
+  // is an admin write); best-effort and idempotent — pushMonth re-guards
+  // everything, so a race between tabs is safe. Never forces an unsettled
+  // month (it just skips and waits for approvals).
+  const autoPushRanRef = useRef(false);
+  useEffect(() => {
+    if (!user || loading || isViewingAs || !isAdmin) return;
+    if (autoPushRanRef.current) return;
+    if (!dataLoaded) return;
+    autoPushRanRef.current = true;
+    const today = formatTodayInToronto();
+    const thisMonth = monthOfDate(today);
+    const pushed = new Set(appData.pushedMonths || []);
+    // Candidate completed months still living in the doc.
+    const docMonths = new Set<string>();
+    for (const d of Object.keys(docPerformanceRef.current || {})) {
+      const m = monthOfDate(d);
+      if (m < thisMonth && !pushed.has(m)) docMonths.add(m);
+    }
+    const dayOfMonth = Number(today.slice(8, 10));
+    (async () => {
+      for (const ym of [...docMonths].sort()) {
+        // "7 days after the month ends" — the month before the current one
+        // is eligible once we're at least 7 days into the new month; older
+        // months are always past their +7 window.
+        const [y, m] = ym.split('-').map(Number);
+        const monthsBack = (Number(thisMonth.slice(0, 4)) - y) * 12 + (Number(thisMonth.slice(5, 7)) - m);
+        const eligible = monthsBack > 1 || (monthsBack === 1 && dayOfMonth >= 8);
+        if (!eligible) continue;
+        const settle = monthSettlementStatus(appData.performance || {}, ym);
+        if (!settle.settled) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await pushMonth(ym, { auto: true });
+      }
+    })();
+    // Run once per session after data loads; pushMonth re-reads live state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, loading, dataLoaded, isViewingAs, isAdmin]);
 
   const handleCopyDay = (dateString: string) => {
     if (!can('canCopyDay', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
@@ -2763,6 +2962,8 @@ export default function App() {
   const renderPerformanceBoard = () => (
     <PerformanceBoard
       performance={appData.performance}
+      pushedMonths={appData.pushedMonths || []}
+      onPushMonth={pushMonth}
       routes={appData.routes}
       employees={appData.employees}
       startOfWeek={startOfWeek}

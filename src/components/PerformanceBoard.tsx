@@ -3,13 +3,14 @@ import type { Dispatch, SetStateAction } from 'react';
 import {
   TrendingUp, CalendarDays, BarChart, Save, Calendar as CalendarIcon,
   Target, FileSignature, Map, Plus, Clock, X,
-  Filter, Award, Truck, Users, CheckCircle, Unlock, Link2, AlertTriangle, RefreshCw, Trash2, MoreVertical, Split as SplitIcon, ChevronLeft, ChevronRight, X as XIcon, Ban
+  Filter, Award, Truck, Users, CheckCircle, Unlock, Link2, AlertTriangle, RefreshCw, Trash2, MoreVertical, Split as SplitIcon, ChevronLeft, ChevronRight, X as XIcon, Ban, Archive
 } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { functions, db, appId } from '../lib/firebase';
 import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole } from '../types';
 import { logPerfActivity } from '../lib/perfAudit';
+import { monthsPresent, monthOfDate, monthSettlementStatus } from '../lib/performanceMonths';
 import { scanOutstandingCrewDays, groupOutstandingByDivision, divisionNameToCode, OutstandingCrewDay } from '../lib/approvalOversight';
 import CompletionReviewModal from './CompletionReviewModal';
 import AHSplitModal from './AHSplitModal';
@@ -51,6 +52,10 @@ interface RouteFilters {
 
 interface PerformanceBoardProps {
   performance: Record<string, Record<string, PerformanceLog>>;
+  // Months already moved to their own performanceMonths/{YYYY-MM} sheet
+  // (locked). onPushMonth moves a completed, fully-settled month there.
+  pushedMonths: string[];
+  onPushMonth: (ym: string) => Promise<boolean>;
   routes: Job[];
   employees: Employee[];
   startOfWeek: Date;
@@ -102,6 +107,8 @@ interface PerformanceBoardProps {
 
 export default function PerformanceBoard({
   performance,
+  pushedMonths,
+  onPushMonth,
   routes,
   employees,
   startOfWeek,
@@ -158,6 +165,7 @@ export default function PerformanceBoard({
   const getEmpName = (id: string) => employees.find(e => e.id === id)?.name || 'Unknown';
 
   const [syncing, setSyncing] = useState(false);
+  const [pushingMonth, setPushingMonth] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<SyncLogEntry | null>(null);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [divisionFilter, setDivisionFilter] = useState<'all' | 'lawn' | 'small' | 'large' | 'adhoc'>(
@@ -2599,6 +2607,70 @@ export default function PerformanceBoard({
               <button onClick={() => { const today = formatTodayInToronto(); const [yy, mm] = today.split('-'); const firstOfMonth = `${yy}-${mm}-01`; const lastDay = new Date(Number(yy), Number(mm), 0).getDate(); const lastOfMonth = `${yy}-${mm}-${String(lastDay).padStart(2, '0')}`; setReportStartDate(firstOfMonth); setReportEndDate(lastOfMonth); }} className="text-xs font-bold bg-gray-100 px-3 py-1.5 rounded hover:bg-gray-200">This Month</button>
             </div>
           </div>
+
+          {/* PUSH MONTH (admin) — move completed months onto their own
+              sheets so the main doc stays under the 1 MiB cap. Data is
+              MOVED, not deleted: pushed months stay fully viewable here
+              via the overlay. */}
+          {isAdmin && (() => {
+            const thisMonth = monthOfDate(formatTodayInToronto());
+            const pushedSet = new Set(pushedMonths || []);
+            // Completed months still sitting in the main doc (candidates),
+            // i.e. present in the map, older than the current month, and
+            // not already on a sheet.
+            const candidates = monthsPresent(performance).filter(m => m < thisMonth && !pushedSet.has(m));
+            const pushedList = [...pushedSet].sort().reverse();
+            if (candidates.length === 0 && pushedList.length === 0) return null;
+            const fmtMonth = (ym: string) => { const [y, m] = ym.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }); };
+            return (
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <Archive className="w-4 h-4 text-slate-500" />
+                  <span className="font-bold text-gray-700 text-sm">Month Sheets</span>
+                  <span className="text-[11px] text-slate-400">— completed months are moved to their own sheet (full detail kept, still shown in reports) to keep the data file small.</span>
+                </div>
+                {candidates.length > 0 && (
+                  <div className="space-y-2 mb-3">
+                    {candidates.map(ym => {
+                      const settle = monthSettlementStatus(performance, ym);
+                      const busy = pushingMonth === ym;
+                      return (
+                        <div key={ym} className="flex items-center justify-between gap-3 border border-slate-200 rounded-lg px-3 py-2">
+                          <div className="min-w-0">
+                            <div className="text-sm font-bold text-slate-800">{fmtMonth(ym)}</div>
+                            <div className="text-[11px] text-slate-500">
+                              {settle.dayCount} day{settle.dayCount === 1 ? '' : 's'} · {settle.crewDayCount} crew-days ·{' '}
+                              {settle.settled
+                                ? <span className="text-emerald-600 font-bold">all settled</span>
+                                : <span className="text-amber-600 font-bold">{settle.blocking.length} unsettled — approve/waive first</span>}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={!settle.settled || busy || pushingMonth !== null}
+                            onClick={async () => {
+                              if (!confirm(`Push ${fmtMonth(ym)} to its own sheet?\n\nThe month's full data is MOVED to a separate sheet (nothing deleted) and stays viewable in reports. The month becomes locked — no more edits or approvals.`)) return;
+                              setPushingMonth(ym);
+                              try { await onPushMonth(ym); } finally { setPushingMonth(null); }
+                            }}
+                            className={`shrink-0 text-[11px] font-black uppercase tracking-widest px-3 py-2 rounded-lg flex items-center gap-1.5 ${(!settle.settled || pushingMonth !== null) ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-700 hover:bg-slate-800 text-white'}`}
+                          >
+                            <Archive className="w-3.5 h-3.5" /> {busy ? 'Pushing…' : 'Push Month'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {pushedList.length > 0 && (
+                  <div className="text-[11px] text-slate-500">
+                    <span className="font-bold uppercase tracking-widest text-[10px] text-slate-400">On sheets (locked):</span>{' '}
+                    {pushedList.map(fmtMonth).join(' · ')}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex flex-col items-center"><div className="text-gray-500 font-bold uppercase tracking-wider text-[10px] mb-1">Total Budgeted Hrs</div><div className="text-3xl font-black text-emerald-600">{r.totals.bh.toFixed(1)}</div></div>

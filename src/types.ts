@@ -615,7 +615,8 @@ export type PerfActivityType =
   | 'bh_filled_in_manually'
   | 'approval_waived'
   | 'chunk_marked_paid'
-  | 'chunk_payment_reversed';
+  | 'chunk_payment_reversed'
+  | 'performance_month_pushed';
 
 export interface PerfActivityEntry {
   id: string;
@@ -848,6 +849,15 @@ export interface AppData {
   dailyAbsences: Record<string, any>;
   partialTimeOff?: Record<string, PartialTimeOff[]>;
   performance: Record<string, Record<string, PerformanceLog>>;
+  // "Push Month" — completed months are MOVED out of this single 1 MiB-
+  // capped doc into their own performanceMonths/{YYYY-MM} sheets (one doc
+  // per month, full detail). This array lists the months that now live on
+  // sheets: they are (a) stripped from the appData-doc write so the doc
+  // stays small, (b) overlaid back into the in-memory `performance` map on
+  // read so every reader/bonus calc is unchanged, and (c) terminal/locked
+  // (no re-edit/re-approve, and the sync refuses to touch them). NO DATA
+  // IS DELETED — the month's full data lives on its sheet. Format: 'YYYY-MM'.
+  pushedMonths?: string[];
   authorizedEmails: string[];
   supplies: string[];
   inspections: Inspection[];

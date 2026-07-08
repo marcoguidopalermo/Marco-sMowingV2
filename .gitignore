@@ -42,3 +42,7 @@ scratch/
 src/*.backup.tsx
 src/App.tsx.backup
 src/App.tsx.before-refactor
+
+# Firestore appData dumps written by recovery / push-month scripts.
+# Full pay-data snapshots — keep them local, never commit.
+appData-backup-*.json
