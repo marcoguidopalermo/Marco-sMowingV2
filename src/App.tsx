@@ -85,7 +85,6 @@ import { httpsCallable } from 'firebase/functions';
 import { logPerfActivity } from './lib/perfAudit';
 import {
   monthOfDate, extractMonth, monthSettlementStatus,
-  scanArchivableDays, groupDatesByMonth, ARCHIVE_WINDOW_DAYS,
   SHEET_SIZE_WARN_BYTES,
 } from './lib/performanceMonths';
 import { buildMonthlySummary } from './lib/monthlySummary';
@@ -1726,57 +1725,11 @@ export default function App() {
     }
   };
 
-  // ── Rolling partial push + catch-up scan ──────────────────────────────
-  // Archive a set of settled, aged DAYS to their month sheets, then remove
-  // them from the main doc. Copy → verify → backup (per month sheet) →
-  // remove (via syncToCloud's per-day write-strip). NO DATA LOSS: removal
-  // only runs for months whose sheet verified. Cross-month safe (a
-  // straggler routes to its own month's sheet). Admin-only; idempotent.
-  const archiveDays = async (dates: string[], opts?: { auto?: boolean }): Promise<number> => {
-    if (isViewingAs || !isAdmin) return 0;
-    if (dates.length === 0) return 0;
-    const byMonth = groupDatesByMonth(dates);
-    const archivedOk: string[] = [];
-    const perMonthArchived: Array<{ ym: string; count: number }> = [];
-    for (const [ym, monthDates] of Object.entries(byMonth)) {
-      const addDays: Record<string, Record<string, PerformanceLog>> = {};
-      for (const d of monthDates) {
-        const dayMap = docPerformanceRef.current[d];
-        if (dayMap) addDays[d] = dayMap;
-      }
-      if (Object.keys(addDays).length === 0) continue;
-      // eslint-disable-next-line no-await-in-loop
-      const verified = await writeAndVerifySheet(ym, addDays, { terminal: false });
-      if (verified === null) continue;   // sheet failed — leave these days in the doc
-      archivedOk.push(...Object.keys(addDays));
-      perMonthArchived.push({ ym, count: Object.keys(addDays).length });
-    }
-    if (archivedOk.length === 0) return 0;
-    // REMOVE — mark days archived; the syncToCloud write-strip drops them
-    // from the doc. Also clear any stale unlock markers for these dates.
-    const nextArchived = { ...(appData.archivedDays || {}) };
-    const nextUnlocked = { ...(appData.unlockedDays || {}) };
-    const now = Date.now();
-    for (const d of archivedOk) { nextArchived[d] = now; delete nextUnlocked[d]; }
-    const ok = await syncToCloud({ ...appData, archivedDays: nextArchived, unlockedDays: nextUnlocked });
-    if (ok === false) return 0;   // sheets written (idempotent); doc unchanged — safe retry
-    for (const { ym, count } of perMonthArchived) {
-      logPerfActivity({
-        type: 'performance_day_archived',
-        targetDate: formatTodayInToronto(),
-        crewId: 'performance-day',
-        crewLabel: ym,
-        userId: user?.uid || displayEmail,
-        userName: displayName,
-        userRole: effectiveRole,
-        valueLabel: 'days',
-        valueAfter: count,
-        reasonNote: `${opts?.auto ? 'Auto-archived' : 'Archived'} ${count} settled day${count === 1 ? '' : 's'} of ${ym} → sheet (rolling, >${ARCHIVE_WINDOW_DAYS}d). Doc kept lean; full detail on performanceMonths/${ym}.`,
-      });
-    }
-    if (!opts?.auto) showToastMsg(`Archived ${archivedOk.length} settled day${archivedOk.length === 1 ? '' : 's'} to month sheets.`);
-    return archivedOk.length;
-  };
+  // NOTE: rolling/catch-up archiving + auto-finalize now run SERVER-SIDE in
+  // the scheduled sync (functions/src/jobber/archive.ts) so the doc is kept
+  // lean on the server clock without an admin opening the board. The manual
+  // "Push Month" button (pushMonth) and admin Unlock (unlockDay) below remain
+  // for on-demand control.
 
   // ── Unlock (reverse a day's archive) ──────────────────────────────────
   // Admin-only, per-day. Copies the day back from its month sheet into the
@@ -1955,65 +1908,42 @@ export default function App() {
     return true;
   };
 
-  // ROLLING ARCHIVE + CATCH-UP SCAN + AUTO-FINALIZE. Runs once per admin
-  // session after data loads (the sync cadence in practice — admins open the
-  // board ≈daily). Idempotent and best-effort; every step re-guards itself.
-  //   1. Rolling/catch-up: archive every settled day older than the window
-  //      (cross-month, no backward limit — catches late-approved stragglers)
-  //      so the doc stays lean continuously and never hits the cap mid-month.
-  //   2. Auto-finalize: a completed, fully-settled month whose end is >14d
-  //      past is pushed whole (merging any remaining in-doc days into its
-  //      already-partial sheet) so its per-day markers collapse to one.
-  const autoPushRanRef = useRef(false);
+  // TRENDS SUMMARY BACKFILL. Server-side auto-finalize (archive.ts) moves a
+  // completed month to pushedMonths but does NOT compute its Trends summary —
+  // that math (buildMtd/buildDivisionMtd) lives only here, so we never risk a
+  // server/client drift in pay numbers. This effect generates + writes the
+  // monthlySummaries doc for any pushed month that lacks one. Idempotent,
+  // once per session, non-viewing sessions only (needs write access). Not
+  // doc-size-critical (summaries are their own subcollection).
+  const summaryBackfillRanRef = useRef(false);
   useEffect(() => {
-    if (!user || loading || isViewingAs || !isAdmin) return;
-    if (autoPushRanRef.current) return;
+    if (!user || loading || isViewingAs) return;
+    if (summaryBackfillRanRef.current) return;
     if (!dataLoaded) return;
-    autoPushRanRef.current = true;
-    const today = formatTodayInToronto();
-    const thisMonth = monthOfDate(today);
+    summaryBackfillRanRef.current = true;
+    const existing = subMonthlySummariesRef.current || {};
+    const missing = (appData.pushedMonths || []).filter(ym => !existing[ym]);
+    if (missing.length === 0) return;
     (async () => {
-      // 1. Rolling partial push + catch-up scan.
-      const archivable = scanArchivableDays(docPerformanceRef.current || {}, today, {
-        windowDays: ARCHIVE_WINDOW_DAYS,
-        archivedDays: appData.archivedDays || {},
-        unlockedDays: appData.unlockedDays || {},
-        now: Date.now(),
-      });
-      if (archivable.length > 0) {
-        await archiveDays(archivable, { auto: true });
-      }
-      // 2. Auto-finalize completed, fully-settled months >14d past month-end.
-      //    docPerformanceRef reflects the pre-archive doc; recompute candidate
-      //    months from BOTH the doc and archivedDays so a fully-rolling-
-      //    archived month still finalizes.
-      const pushed = new Set(appData.pushedMonths || []);
-      const candidateMonths = new Set<string>();
-      for (const d of Object.keys(docPerformanceRef.current || {})) {
-        const m = monthOfDate(d);
-        if (m < thisMonth && !pushed.has(m)) candidateMonths.add(m);
-      }
-      for (const d of Object.keys(appData.archivedDays || {})) {
-        const m = monthOfDate(d);
-        if (m < thisMonth && !pushed.has(m)) candidateMonths.add(m);
-      }
-      const dayOfMonth = Number(today.slice(8, 10));
-      for (const ym of [...candidateMonths].sort()) {
-        // Finalize a prior month once we're >14 days past its end (i.e. at
-        // least 14 days into a later month), so late corrections have landed.
-        const [y, m] = ym.split('-').map(Number);
-        const monthsBack = (Number(thisMonth.slice(0, 4)) - y) * 12 + (Number(thisMonth.slice(5, 7)) - m);
-        const eligible = monthsBack > 1 || (monthsBack === 1 && dayOfMonth >= ARCHIVE_WINDOW_DAYS);
-        if (!eligible) continue;
-        const settle = monthSettlementStatus(appData.performance || {}, ym);
-        if (settle.dayCount === 0 || !settle.settled) continue;
-        // eslint-disable-next-line no-await-in-loop
-        await pushMonth(ym, { auto: true });
+      for (const ym of missing) {
+        try {
+          const summary = buildMonthlySummary(
+            ym, appData.performance || {}, appData.schedules || {}, appData.employees || [], appData.settings,
+            { generatedBy: `backfill:${displayEmail}`, finalized: true, now: Date.now() },
+          );
+          const clean = (obj: any) => JSON.parse(JSON.stringify(obj, (_k, v) => v === undefined ? null : v));
+          // eslint-disable-next-line no-await-in-loop
+          await setDoc(
+            doc(db, 'artifacts', appId, 'public', 'data', 'monthlySummaries', ym),
+            clean(summary),
+          );
+        } catch (err) {
+          console.error(`[trends] summary backfill failed for ${ym}:`, err);
+        }
       }
     })();
-    // Run once per session after data loads; each op re-reads live state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, loading, dataLoaded, isViewingAs, isAdmin]);
+  }, [user, loading, dataLoaded, isViewingAs, appData.pushedMonths]);
 
   const handleCopyDay = (dateString: string) => {
     if (!can('canCopyDay', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }

@@ -9,6 +9,7 @@ import {
   refreshJobberAccessToken,
 } from "./oauth.js";
 import {makeJobberClient, JobberClient, sleep} from "./client.js";
+import {runArchivePass} from "./archive.js";
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -2491,6 +2492,30 @@ async function runPerformanceSync(args: {
           });
         }
       }));
+    }
+
+    // SERVER-SIDE ARCHIVE. On the scheduled run (targetDate === Toronto
+    // today), keep the appData doc lean without an admin opening the board:
+    // roll settled aged days out to their month sheets + auto-finalize
+    // completed settled months. Same guards / copy-verify-backup-remove /
+    // audit as the frontend. Manual syncs skip it (they may target a past
+    // date, which would corrupt the age window). Non-fatal — an archive
+    // failure must never fail the sync itself.
+    if (triggeredBy === "scheduled") {
+      try {
+        const res = await runArchivePass(
+          db, APP_ID, formatTodayInToronto(), Date.now(), summary.warnings,
+        );
+        const fin = res.finalized.join(",") || "-";
+        summary.warnings.push(
+          `archive_pass archived=${res.archivedDays} finalized=${fin}`,
+        );
+      } catch (err) {
+        logger.warn("archive pass failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        summary.warnings.push("archive_pass_error");
+      }
     }
 
     logger.info("Jobber performance sync complete", {
