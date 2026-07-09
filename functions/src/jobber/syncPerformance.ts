@@ -237,7 +237,17 @@ interface PerformanceLog {
   // allowance on the frontend. endAt === null = open/ticking shift.
   employeeTimesheets?: Record<
     string,
-    { startAt: string; endAt: string | null }[]
+    {
+      startAt: string;
+      endAt: string | null;
+      // Write-side clamp marker: an open shift (endAt was null) on a PAST
+      // crew-day is auto-closed at sync time (end = latest crew clock-out,
+      // capped at start+16h) so the stored interval can't grow unbounded
+      // toward "now". Distinguishes an auto-close from a real Jobber
+      // clock-out. Today's open shifts are left open (endAt null).
+      autoClosed?: boolean;
+      clampedAt?: string;
+    }[]
   >;
 }
 
@@ -607,6 +617,68 @@ function formatTodayInToronto(): string {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
+}
+
+// Longest a single clocked shift may span. Mirrors efficiency.ts
+// MAX_SHIFT_MS used by the read-side openShiftClampMs.
+const MAX_SHIFT_MS = 16 * 60 * 60 * 1000;
+
+/**
+ * Write-side sanitize of open shifts for a PAST crew-day. Mirrors the
+ * read-side openShiftClampMs EXACTLY: any interval whose endAt is null is
+ * auto-closed at the latest clock-out on the crew-day, capped at
+ * (earliest start + 16h). Today's crew-days must NOT be passed here — a
+ * genuinely-still-clocked-in worker mid-day is legitimate. Only mutates the
+ * interval records (endAt + markers); employeeAH is untouched (it comes from
+ * Jobber's own hour totals, not from these intervals).
+ * @param {object} timesheetsByEmp Per-emp interval lists for one crew-day.
+ * @param {string} nowIso Sync timestamp (ISO) stamped on clamped intervals.
+ * @return {number} Count of intervals auto-closed.
+ */
+function clampOpenIntervalsForPastDay(
+  timesheetsByEmp: Record<
+    string,
+    Array<{
+      startAt: string;
+      endAt: string | null;
+      autoClosed?: boolean;
+      clampedAt?: string;
+    }>
+  >,
+  nowIso: string,
+): number {
+  let earliestStart = Infinity;
+  let latestClosed = 0;
+  for (const list of Object.values(timesheetsByEmp)) {
+    for (const iv of list) {
+      const s = new Date(iv.startAt).getTime();
+      if (Number.isFinite(s)) earliestStart = Math.min(earliestStart, s);
+      if (iv.endAt) {
+        const e = new Date(iv.endAt).getTime();
+        if (Number.isFinite(e)) latestClosed = Math.max(latestClosed, e);
+      }
+    }
+  }
+  if (!Number.isFinite(earliestStart)) return 0;
+  const cap = earliestStart + MAX_SHIFT_MS;
+  const clampMs = latestClosed > 0 ? Math.min(latestClosed, cap) : cap;
+  let clamped = 0;
+  for (const list of Object.values(timesheetsByEmp)) {
+    for (const iv of list) {
+      if (iv.endAt !== null) continue;
+      const sMs = new Date(iv.startAt).getTime();
+      // Never store an inverted interval: floor the clamp at the start
+      // (a shift that began after everyone else clocked out becomes
+      // zero-length, which the read side drops just as it would an
+      // out-of-range open shift).
+      const endMs = Number.isFinite(sMs) ? Math.max(clampMs, sMs) : clampMs;
+      iv.endAt = new Date(endMs).toISOString();
+      iv.autoClosed = true;
+      iv.clampedAt = nowIso;
+      clamped++;
+    }
+  }
+  return clamped;
 }
 
 /**
@@ -2191,7 +2263,12 @@ async function runPerformanceSync(args: {
       // today's flat math" for the whole crew-day.
       const timesheetsByEmp: Record<
         string,
-        Array<{ startAt: string; endAt: string | null }>
+        Array<{
+          startAt: string;
+          endAt: string | null;
+          autoClosed?: boolean;
+          clampedAt?: string;
+        }>
       > = {};
       let anyTimesheetWritten = false;
       for (const empId of crew.employees || []) {
@@ -2253,6 +2330,22 @@ async function runPerformanceSync(args: {
         }
       }
       if (anyTimesheetWritten) {
+        // Write-side sanitize: on a PAST crew-day, auto-close any open shift
+        // so the stored interval can't grow unbounded toward "now" (the
+        // root cause the read-side clamp also guards). Today's crew-days are
+        // left open — a worker still clocked in mid-day is legitimate and
+        // the open-shift approval warning depends on it.
+        if (targetDate !== formatTodayInToronto()) {
+          const clamped = clampOpenIntervalsForPastDay(
+            timesheetsByEmp, new Date(summary.triggeredAt).toISOString(),
+          );
+          if (clamped > 0) {
+            summary.warnings.push(
+              `open_intervals_clamped date=${targetDate} ` +
+              `crew=${crew.id} count=${clamped}`,
+            );
+          }
+        }
         base.employeeTimesheets = timesheetsByEmp;
       } else {
         // Sync produced no timesheet intervals for this crew-day
