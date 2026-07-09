@@ -1,7 +1,8 @@
 import { useMemo } from 'react';
-import { CalendarRange, Target } from 'lucide-react';
+import { CalendarRange, Target, Layers } from 'lucide-react';
 import { AppSettings, Crew, Employee, PerformanceLog } from '../types';
 import { buildMtd, buildDivisionMtd, selfMtdBH } from '../lib/mtd';
+import { DIVISIONS } from '../constants';
 
 interface MtdSelfWidgetProps {
   today: string;
@@ -45,6 +46,24 @@ export default function MtdSelfWidget({
     [today, division, performance, schedules, employees, settings],
   );
   const myBH = selfMtdBH(companyMtd, currentUserEmployee?.id);
+
+  // "Your Month" — every division the signed-in worker has BH/AH in this
+  // month, with that division's adjusted MTD % (the bonus-relevant number).
+  // Month-based, NOT day-based: independent of today's crew and the widget's
+  // `division` scope prop. All numbers come from buildDivisionMtd's
+  // per-employee accumulation — the same basis the bonus calculator reads.
+  const myDivisions = useMemo(() => {
+    if (!currentUserEmployee) return [];
+    const out: Array<{ division: string; myBH: number; myAH: number; divAdjEff: number | null }> = [];
+    for (const div of DIVISIONS) {
+      const dm = buildDivisionMtd(today, div, performance, schedules, employees, settings || null);
+      const mine = dm.perEmployee.find(e => e.empId === currentUserEmployee.id);
+      if (mine && (mine.bh > 0 || mine.ah > 0)) {
+        out.push({ division: div, myBH: mine.bh, myAH: mine.ah, divAdjEff: dm.divisionAdjustedEfficiency });
+      }
+    }
+    return out.sort((a, b) => b.myBH - a.myBH);
+  }, [currentUserEmployee, today, performance, schedules, employees, settings]);
 
   // Headline scope: division when a division is supplied, else company.
   const monthLabel = divisionMtd ? divisionMtd.monthLabel : companyMtd.monthLabel;
@@ -92,6 +111,32 @@ export default function MtdSelfWidget({
           </div>
         </div>
       </div>
+
+      {/* YOUR MONTH — per-division breakdown of the worker's own BH/hours,
+          with each division's adjusted MTD %. Only divisions they've
+          contributed to appear; month-based, so it shows even when the
+          worker isn't scheduled today. Display-only. */}
+      {currentUserEmployee && myDivisions.length > 0 && (
+        <div className="mt-3 bg-white border border-amber-100 rounded-xl p-3">
+          <div className="text-[10px] font-black uppercase tracking-widest text-amber-700 mb-2 flex items-center gap-1">
+            <Layers className="w-3 h-3" /> Your month by division
+          </div>
+          <div className="space-y-1.5">
+            {myDivisions.map(c => (
+              <div key={c.division} className="flex items-center justify-between gap-2 text-sm">
+                <span className="font-bold text-slate-700 truncate">{c.division}</span>
+                <span className="flex items-center gap-3 shrink-0">
+                  <span className="font-mono text-slate-700"><b>{formatNumber(c.myBH)}</b> BH</span>
+                  <span className="font-mono text-[11px] text-slate-400">{formatNumber(c.myAH)} hrs</span>
+                  <span className="font-mono text-[11px] text-emerald-600 font-bold" title="This division's adjusted month-to-date efficiency">
+                    {c.divAdjEff != null ? `${c.divAdjEff}%` : '—'} <span className="text-slate-400 font-normal">div adj</span>
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

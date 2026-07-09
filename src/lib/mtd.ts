@@ -358,6 +358,17 @@ export interface DivisionCrewStat {
   adjustedEfficiency: number | null;
 }
 
+// One employee's month-to-date BH/AH share WITHIN a division. Same
+// per-employee attribution buildMtd uses (accumulateEmployeeEff + the
+// cAH===0 even-split fallback), restricted to this division's approved
+// crew-days — so Σ perEmployee.bh === divisionBH by construction.
+export interface DivisionEmployeeStat {
+  empId: string;
+  name: string;
+  bh: number;
+  ah: number;
+}
+
 export interface DivisionMtdResult {
   division: string;
   monthStart: string;
@@ -373,6 +384,8 @@ export interface DivisionMtdResult {
   // desc (crews with no AH fall to the bottom). Keyed by stable
   // crew key so a crew rolls across every day it worked this month.
   perCrew: DivisionCrewStat[];
+  // Per-employee BH/AH shares within this division (bonus basis).
+  perEmployee: DivisionEmployeeStat[];
 }
 
 export function buildDivisionMtd(
@@ -389,6 +402,7 @@ export function buildDivisionMtd(
     employees.filter(e => e.isTestUser).map(e => e.id),
   );
 
+  const empById = new Map(employees.map(e => [e.id, e]));
   let divisionBH = 0;
   let divisionAH = 0;
   let divisionAdjustedNumerator = 0;
@@ -400,6 +414,8 @@ export function buildDivisionMtd(
     ah: number;
     adjNumerator: number;
   }> = {};
+  // Per-employee BH/AH within this division — same attribution as buildMtd.
+  const empStats: Record<string, EmpEffStat> = {};
 
   if (cutoff !== null) {
     for (const [date, dayLogs] of Object.entries(performance || {})) {
@@ -438,6 +454,34 @@ export function buildDivisionMtd(
         crewAcc[key].bh += cBH;
         crewAcc[key].ah += cAH;
         crewAcc[key].adjNumerator += cBH + (cAH * allowance.pct) / 100;
+
+        // Per-employee attribution WITHIN this division — identical logic
+        // to buildMtd so a worker's division BH share matches the bonus
+        // basis (Σ empStats.bh === divisionBH).
+        if (cAH > 0) {
+          accumulateEmployeeEff(log, empStats, testUserIds);
+        } else if (cBH > 0) {
+          const removed = new Set(log.removedEmployees || []);
+          let roster = (crewObj?.employees || []).filter(
+            id => !removed.has(id) && !testUserIds.has(id),
+          );
+          if (log.employeeTimesheets) {
+            const intervalIds = new Set(
+              flattenEmployeeIntervals(
+                log.employeeTimesheets, log.removedEmployees, testUserIds,
+              ).map(i => i.empId),
+            );
+            const narrowed = roster.filter(id => intervalIds.has(id));
+            if (narrowed.length > 0) roster = narrowed;
+          }
+          if (roster.length > 0) {
+            const shareBH = cBH / roster.length;
+            for (const empId of roster) {
+              if (!empStats[empId]) empStats[empId] = { bh: 0, ah: 0 };
+              empStats[empId].bh += shareBH;
+            }
+          }
+        }
       }
     }
   }
@@ -465,6 +509,15 @@ export function buildDivisionMtd(
       return a.crewNumber - b.crewNumber;
     });
 
+  const perEmployee: DivisionEmployeeStat[] = Object.entries(empStats)
+    .map(([empId, stat]) => ({
+      empId,
+      name: empById.get(empId)?.name || empId,
+      bh: Number(stat.bh.toFixed(1)),
+      ah: Number(stat.ah.toFixed(1)),
+    }))
+    .sort((a, b) => b.bh - a.bh);
+
   const monthLabel = cutoff
     ? `${monthName} — through ${formatCutoffSuffix(cutoff)}`
     : `${monthName} — no completed days yet`;
@@ -479,6 +532,7 @@ export function buildDivisionMtd(
     divisionAH: Number(divisionAH.toFixed(1)),
     divisionAdjustedEfficiency,
     perCrew,
+    perEmployee,
   };
 }
 
