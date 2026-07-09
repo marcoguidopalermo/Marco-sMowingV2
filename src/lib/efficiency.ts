@@ -30,25 +30,45 @@ export function flattenEmployeeIntervals(
   return out;
 }
 
-// Concurrency-weighted hours per employee. For each [t1, t2) slice
-// where the set of concurrently-clocked workers P is constant,
-// each worker in P earns (t2 - t1) / |P| hours. The sum across
-// workers equals the union time (each minute counted exactly once),
-// so Σ cwh = total clocked-union time — never the sum-with-
-// overcounting cAH. This is used ONLY for splitting cBH among
-// individuals (and for the allowance segments); it does NOT
-// replace cAH. When the entire crew clocked together for one
-// shared interval, cwh_i = totalTime / N for each worker and the
-// resulting eBH share collapses to today's eAH/cAH split exactly.
-export function concurrencyWeightedShares(
-  log: Pick<PerformanceLog, 'employeeTimesheets' | 'removedEmployees'>,
-  testUserIds?: Set<string> | null,
-  nowMs?: number,
-): Record<string, number> {
+// A single clocked shift longer than this is treated as corrupt — used as
+// the backstop cap when clamping open shifts and as the divergence bound in
+// the interval-consistency guard below.
+const MAX_SHIFT_MS = 16 * 3600000;
+
+// Clamp timestamp for OPEN shifts (endAt === null) in the BH-split path.
+// An open shift used to be clamped to Date.now(); for a PAST crew-day that
+// made the interval span from its start to "now" — hundreds of phantom hours
+// — which handed that worker almost the entire crew's BH in the concurrency
+// split (and drifted upward every day the page was reopened). We instead
+// clamp to the latest CLOSED clock-out on the SAME crew-day (a real
+// end-of-day), capped at earliestStart + MAX_SHIFT as a backstop for the
+// all-open case. Result: deterministic, bounded weights. NOTE: this is used
+// ONLY by the per-person BH split — the crew-size allowance path calls
+// flattenEmployeeIntervals directly and is untouched, so crew/division/
+// company adjusted % are unchanged.
+export function openShiftClampMs(
+  timesheets: Record<string, { startAt: string; endAt: string | null }[]> | undefined,
+): number {
+  let earliestStart = Infinity;
+  let latestClosed = 0;
+  for (const list of Object.values(timesheets || {})) {
+    for (const ts of list || []) {
+      const s = new Date(ts.startAt).getTime();
+      if (Number.isFinite(s)) earliestStart = Math.min(earliestStart, s);
+      if (ts.endAt) {
+        const e = new Date(ts.endAt).getTime();
+        if (Number.isFinite(e)) latestClosed = Math.max(latestClosed, e);
+      }
+    }
+  }
+  const cap = Number.isFinite(earliestStart) ? earliestStart + MAX_SHIFT_MS : Date.now();
+  return latestClosed > 0 ? Math.min(latestClosed, cap) : cap;
+}
+
+// Concurrency shares from an already-flattened interval list. Pure; shared by
+// concurrencyWeightedShares and accumulateEmployeeEff (which flattens once).
+function concurrencyFromIntervals(intervals: EmpIntervalMs[]): Record<string, number> {
   const result: Record<string, number> = {};
-  const intervals = flattenEmployeeIntervals(
-    log.employeeTimesheets, log.removedEmployees, testUserIds, nowMs,
-  );
   if (intervals.length === 0) return result;
   const breakpoints = new Set<number>();
   for (const iv of intervals) {
@@ -73,6 +93,30 @@ export function concurrencyWeightedShares(
     }
   }
   return result;
+}
+
+// Concurrency-weighted hours per employee. For each [t1, t2) slice
+// where the set of concurrently-clocked workers P is constant,
+// each worker in P earns (t2 - t1) / |P| hours. The sum across
+// workers equals the union time (each minute counted exactly once),
+// so Σ cwh = total clocked-union time — never the sum-with-
+// overcounting cAH. This is used ONLY for splitting cBH among
+// individuals (and for the allowance segments); it does NOT
+// replace cAH. When the entire crew clocked together for one
+// shared interval, cwh_i = totalTime / N for each worker and the
+// resulting eBH share collapses to today's eAH/cAH split exactly.
+// Open shifts are clamped to end-of-crew-day (openShiftClampMs), not
+// Date.now(), so a stale un-clocked-out shift can't dominate the split.
+export function concurrencyWeightedShares(
+  log: Pick<PerformanceLog, 'employeeTimesheets' | 'removedEmployees'>,
+  testUserIds?: Set<string> | null,
+  nowMs?: number,
+): Record<string, number> {
+  const clamp = nowMs ?? openShiftClampMs(log.employeeTimesheets);
+  const intervals = flattenEmployeeIntervals(
+    log.employeeTimesheets, log.removedEmployees, testUserIds, clamp,
+  );
+  return concurrencyFromIntervals(intervals);
 }
 
 // Hours to deduct from a worker's AH. Mirrors PerformanceBoard's local
@@ -168,25 +212,52 @@ export function accumulateEmployeeEff(
   if (eAHIds.length === 0) return into;
 
   // Phase 2: try concurrency-weighted BH split. Only engages when
-  // (a) timesheets persisted, (b) every eAH-bearing worker has a
-  // positive cwh (no missing intervals → no partial split), and
-  // (c) the scaled total > 0. Any miss → fall through to today's
-  // flat formula so legacy data + manual-entry days keep working.
+  // (a) timesheets persisted, (b) every eAH-bearing worker's clocked
+  // interval-sum is CONSISTENT with their recorded AH (guard against
+  // corrupt / missing clock-outs — otherwise a phantom interval would
+  // capture the crew's BH), (c) every eAH-bearing worker has a positive
+  // cwh, and (d) the scaled total > 0. Any miss → fall through to the
+  // flat formula, which gives every crew member the SAME (crew) efficiency
+  // — the safe, deterministic default.
   let scaledCwh: Record<string, number> | null = null;
   let scaledTotal = 0;
   if (log.employeeTimesheets) {
-    const cwhRaw = concurrencyWeightedShares(log, testUserIds || null);
-    const allCovered = eAHIds.every(id => (cwhRaw[id] || 0) > 0);
-    if (allCovered) {
-      scaledCwh = {};
-      for (const id of eAHIds) {
-        const { eAH, rawAH } = eAHByEmpId[id];
-        const scale = rawAH > 0 ? eAH / rawAH : 0;
-        const v = cwhRaw[id] * scale;
-        scaledCwh[id] = v;
-        scaledTotal += v;
+    // Flatten ONCE with open shifts clamped to end-of-crew-day.
+    const clamp = openShiftClampMs(log.employeeTimesheets);
+    const intervals = flattenEmployeeIntervals(
+      log.employeeTimesheets, log.removedEmployees, testUserIds || null, clamp,
+    );
+    const clockedByEmp: Record<string, number> = {};
+    for (const iv of intervals) {
+      clockedByEmp[iv.empId] = (clockedByEmp[iv.empId] || 0) + (iv.end - iv.start) / 3600000;
+    }
+    // Consistency guard: a worker's clamped clocked hours must be within
+    // tolerance of their recorded AH. Gross divergence in EITHER direction
+    // (a corrupt long interval, or intervals missing most of the shift)
+    // means the timesheet data is unreliable for weighting → flat.
+    const TOL_ABS_HRS = 4;
+    const consistent = eAHIds.every(id => {
+      const clocked = clockedByEmp[id] || 0;
+      const rawAH = eAHByEmpId[id].rawAH || 0;
+      if (Math.abs(clocked - rawAH) <= TOL_ABS_HRS) return true;
+      if (rawAH <= 0) return false;
+      const ratio = clocked / rawAH;
+      return ratio >= 0.5 && ratio <= 2;
+    });
+    if (consistent) {
+      const cwhRaw = concurrencyFromIntervals(intervals);
+      const allCovered = eAHIds.every(id => (cwhRaw[id] || 0) > 0);
+      if (allCovered) {
+        scaledCwh = {};
+        for (const id of eAHIds) {
+          const { eAH, rawAH } = eAHByEmpId[id];
+          const scale = rawAH > 0 ? eAH / rawAH : 0;
+          const v = cwhRaw[id] * scale;
+          scaledCwh[id] = v;
+          scaledTotal += v;
+        }
+        if (scaledTotal <= 0) scaledCwh = null;
       }
-      if (scaledTotal <= 0) scaledCwh = null;
     }
   }
 
