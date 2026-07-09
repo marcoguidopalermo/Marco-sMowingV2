@@ -193,6 +193,18 @@ export default function App() {
     docPerf: Record<string, Record<string, PerformanceLog>>,
     monthOverlay: Record<string, Record<string, PerformanceLog>>,
   ): Record<string, Record<string, PerformanceLog>> => ({ ...monthOverlay, ...docPerf });
+  // Schedules → per-month sheets (scheduleMonths/{YYYY-MM}). Same overlay as
+  // performance: the doc keeps the current + future months; PAST months live
+  // on their sheet. docSchedulesRef holds the doc's own copy; the sheets are
+  // overlaid UNDER it (doc wins; a month is only ever in one place). Keeps
+  // the crew-size-allowance FALLBACK (appData.schedules[date]) resolving for
+  // archived dates so Advanced Reports on old ranges are unchanged.
+  const docSchedulesRef = useRef<Record<string, Crew[]>>({});
+  const subScheduleMonthsRef = useRef<Record<string, Crew[]>>({});
+  const mergeSchedules = (
+    docSched: Record<string, Crew[]>,
+    monthOverlay: Record<string, Crew[]>,
+  ): Record<string, Crew[]> => ({ ...monthOverlay, ...docSched });
   const mergeInspections = (base: Inspection[], sub: Inspection[]): Inspection[] => {
     // NB: `Map` is the lucide icon import in this file — use a plain object.
     const byId: Record<string, Inspection> = {};
@@ -798,9 +810,12 @@ export default function App() {
         // pushed month), and overlay the loaded month sheets on top for
         // readers.
         docPerformanceRef.current = (data.performance || {}) as Record<string, Record<string, PerformanceLog>>;
+        // Schedules: doc-base (current + future) overlaid by past-month sheets.
+        docSchedulesRef.current = (data.schedules || {}) as Record<string, Crew[]>;
 
         const newAppData = {
-          schedules: data.schedules || {},
+          schedules: mergeSchedules(docSchedulesRef.current, subScheduleMonthsRef.current),
+          archivedScheduleMonths: data.archivedScheduleMonths || [],
           employees: data.employees || INITIAL_EMPLOYEES,
           // Lazy backfill: equipment that opted into hour tracking
           // before currentEngineHours existed has its hours in the
@@ -1056,6 +1071,31 @@ export default function App() {
         setAppData((prev) => ({ ...prev, monthlySummaries: map }));
       },
       (err) => { console.error('monthlySummaries subcollection listen error:', err); },
+    );
+  }, [user]);
+
+  // Schedules per-month sheet listener. One doc per past month (id = YYYY-MM)
+  // holding `days: { [date]: Crew[] }`. Flattened + overlaid UNDER the doc's
+  // current/future schedules, so every schedules reader (crew-size allowance
+  // fallback in Advanced Reports, etc.) resolves archived dates unchanged.
+  useEffect(() => {
+    if (!user) return;
+    const col = collection(db, 'artifacts', appId, 'public', 'data', 'scheduleMonths');
+    return onSnapshot(
+      col,
+      (snap) => {
+        const overlay: Record<string, Crew[]> = {};
+        snap.forEach((d) => {
+          const v = d.data() as { days?: Record<string, Crew[]> };
+          for (const [date, crews] of Object.entries(v?.days || {})) overlay[date] = crews;
+        });
+        subScheduleMonthsRef.current = overlay;
+        setAppData((prev) => ({
+          ...prev,
+          schedules: mergeSchedules(docSchedulesRef.current, overlay),
+        }));
+      },
+      (err) => { console.error('scheduleMonths subcollection listen error:', err); },
     );
   }, [user]);
 
@@ -1492,24 +1532,29 @@ export default function App() {
         catch { tooBig = true; }
         return tooBig ? { ...e, snapshot: { trimmed: true } } : e;
       });
-    // PHASE 0 STORAGE STOPGAP — bound activityLog the same way as the
-    // deletion audit log. MechanicPerformance / MyMechanic aggregate
-    // mechanic stats from this list, so we use a GENEROUS bound, not the
-    // audit log's hard 500: keep everything from the last 90 days, PLUS a
-    // floor of the most-recent ACTIVITY_LOG_FLOOR entries. An entry is
-    // dropped only when it is BOTH older than 90 days AND beyond the floor,
-    // so a quiet quarter can never shorten mechanic history. The list is
-    // newest-first (entries are prepended on every write). Unparseable
+    // PHASE 0 STORAGE STOPGAP — bound activityLog. TYPE-AWARE: 'completed'
+    // entries are the ONLY ones any stat reads (MechanicPerformance /
+    // MyMechanic labor+cost+counts, pay-chunk repair counts), so they are
+    // EXEMPT from both the floor and the age trim — completion history is
+    // never shortened. Non-completed types (created, status_changed, notes,
+    // priority/parts toggles, deleted) are display-only churn (~74% of the
+    // log): they keep a floor of the most-recent ACTIVITY_LOG_FLOOR plus
+    // anything from the last 90 days, and a non-completed entry is dropped
+    // only when it is BOTH beyond that floor AND older than 90 days. The
+    // list is newest-first (prepended on every write). Unparseable
     // timestamps are kept (never silently delete on a bad date). Idempotent
-    // and self-heals existing bloat on the next sync, like the audit cap.
-    const ACTIVITY_LOG_FLOOR = 1500;
+    // and self-heals existing bloat on the next sync.
+    const ACTIVITY_LOG_FLOOR = 300;
     const ACTIVITY_LOG_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
     const activityCutoffMs = Date.now() - ACTIVITY_LOG_MAX_AGE_MS;
+    let nonCompletedSeen = 0;
     const normalizedActivityLog = (newData.activityLog || [])
-      .filter((e: any, i: number) => {
-        if (i < ACTIVITY_LOG_FLOOR) return true;
+      .filter((e: any) => {
+        if (e?.type === 'completed') return true;   // stats source — never trim
+        nonCompletedSeen++;
+        if (nonCompletedSeen <= ACTIVITY_LOG_FLOOR) return true;  // within floor
         const t = e?.timestamp ? Date.parse(e.timestamp) : NaN;
-        return Number.isNaN(t) ? true : t >= activityCutoffMs;
+        return Number.isNaN(t) ? true : t >= activityCutoffMs;    // else 90-day age
       });
 
     // PHASE 0 STORAGE STOPGAP — slim COMPLETED multi-day ledgers. Once a
@@ -1636,9 +1681,20 @@ export default function App() {
       if (archivedSet[date]) continue;
       docPerformance[date] = dayMap;
     }
+    // Schedules: strip any date whose month was archived to a scheduleMonths
+    // sheet, so the overlaid (past-month) schedules never re-bloat the doc.
+    // Current/future months are never in archivedScheduleMonths, so live
+    // scheduling writes through unchanged.
+    const archivedSchedSet = new Set(safeData.archivedScheduleMonths || []);
+    const docSchedules: Record<string, Crew[]> = {};
+    for (const [date, crews] of Object.entries(safeData.schedules || {})) {
+      if (archivedSchedSet.has(date.slice(0, 7))) continue;
+      docSchedules[date] = crews;
+    }
     const docPayload = {
       ...safeData,
       performance: docPerformance,
+      schedules: docSchedules,
       multiDayJobs: docMultiDayJobsRef.current,
       inspections: docInspectionsRef.current,
     };

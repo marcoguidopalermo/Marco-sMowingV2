@@ -159,6 +159,59 @@ async function writeAndVerifySheet(
   }
 }
 
+// Merge past-month schedule dates into scheduleMonths/{ym} (copy → verify →
+// backup). Mirrors writeAndVerifySheet but for the schedules shape
+// (days: { [date]: Crew[] }). Returns merged day count, or null on failure.
+async function writeAndVerifyScheduleSheet(
+  db: firestore.Firestore,
+  appId: string,
+  ym: string,
+  addDays: Record<string, unknown[]>,
+  meta: { by: string; now: number },
+  warnings: string[],
+): Promise<number | null> {
+  try {
+    const ref = db.doc(`artifacts/${appId}/public/data/scheduleMonths/${ym}`);
+    const snap = await ref.get();
+    const existing = snap.exists ? (snap.data() as Record<string, unknown>) || {} : {};
+    const existingDays = (existing.days as Record<string, unknown[]>) || {};
+    const mergedDays = {...existingDays, ...addDays};
+    const mergedCount = Object.keys(mergedDays).length;
+    const expected =
+      Object.keys(existingDays).length +
+      Object.keys(addDays).filter((d) => !(d in existingDays)).length;
+    const payload = {
+      ...existing,
+      month: ym,
+      days: mergedDays,
+      dayCount: mergedCount,
+      archivedAt: meta.now,
+      archivedBy: meta.by,
+    };
+    const cleaned = clean(payload);
+    const bytes = JSON.stringify(cleaned).length;
+    if (bytes > SHEET_SIZE_WARN_BYTES) {
+      warnings.push(`schedule_sheet_large ym=${ym} bytes=${bytes}`);
+    }
+    await ref.set(cleaned as admin.firestore.DocumentData);
+    const check = await ref.get();
+    const got = check.exists ?
+      Object.keys(((check.data() as Record<string, unknown>)?.days as object) || {}).length :
+      -1;
+    if (got !== expected) {
+      warnings.push(`schedule_verify_failed ym=${ym} got=${got} expected=${expected}`);
+      return null;
+    }
+    await db
+      .doc(`artifacts/${appId}/public/data/scheduleMonthsBackup/${ym}-${meta.now}`)
+      .set(cleaned as admin.firestore.DocumentData);
+    return got;
+  } catch (err) {
+    warnings.push(`schedule_sheet_error ym=${ym} ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
 interface AuditEntry {
   type: string;
   crewLabel: string;
@@ -193,6 +246,8 @@ export async function runArchivePass(
   const pushedMonths = ((data.pushedMonths as string[]) || []).slice();
   const archivedDays = {...((data.archivedDays as Record<string, number>) || {})};
   const unlockedDays = {...((data.unlockedDays as Record<string, number>) || {})};
+  const schedules = (data.schedules as Record<string, unknown[]>) || {};
+  const archivedScheduleMonths = ((data.archivedScheduleMonths as string[]) || []).slice();
 
   const by = "scheduled sync";
   const audits: AuditEntry[] = [];
@@ -279,12 +334,47 @@ export async function runArchivePass(
     });
   }
 
+  // ── 3. Schedules: relocate PAST months to their own sheets ───────────
+  // No settlement concept — schedules aren't approval-gated. A month's
+  // schedules move once the month is over (month < current). Current +
+  // future months stay in the doc so live/ahead scheduling is untouched.
+  const schedMonths = new Set<string>();
+  for (const date of Object.keys(schedules)) {
+    const mm = monthOf(date);
+    if (mm < thisMonth && !archivedScheduleMonths.includes(mm)) schedMonths.add(mm);
+  }
+  for (const ym of [...schedMonths].sort()) {
+    const addDays: Record<string, unknown[]> = {};
+    for (const date of Object.keys(schedules)) {
+      if (monthOf(date) === ym) addDays[date] = schedules[date];
+    }
+    if (Object.keys(addDays).length === 0) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const verified = await writeAndVerifyScheduleSheet(db, appId, ym, addDays, {by, now: nowMs}, warnings);
+    if (verified === null) continue;
+    for (const date of Object.keys(addDays)) {
+      update[`schedules.${date}`] = admin.firestore.FieldValue.delete();
+      mutated = true;
+    }
+    if (!archivedScheduleMonths.includes(ym)) archivedScheduleMonths.push(ym);
+    audits.push({
+      type: "schedule_month_archived",
+      crewLabel: ym,
+      valueLabel: "days",
+      valueAfter: Object.keys(addDays).length,
+      reasonNote:
+        `Auto-archived ${Object.keys(addDays).length} schedule day(s) of ${ym} → ` +
+        `sheet (server, past month). Full detail on scheduleMonths/${ym}.`,
+    });
+  }
+
   if (!mutated) return {archivedDays: 0, finalized: []};
 
   // Net-reducing doc update: strip archived/finalized dates, refresh markers.
   update.archivedDays = archivedDays;
   update.unlockedDays = unlockedDays;
   update.pushedMonths = pushedMonths.slice().sort();
+  update.archivedScheduleMonths = archivedScheduleMonths.slice().sort();
   await ref.update(update);
 
   // Audit — fire-and-forget; never block the sync on an audit failure.
@@ -299,7 +389,8 @@ export async function runArchivePass(
           userName: "Scheduled archive",
           userRole: "admin",
           targetDate: todayStr,
-          crewId: a.type === "performance_month_pushed" ? "performance-month" : "performance-day",
+          crewId: a.type === "performance_month_pushed" ? "performance-month" :
+            a.type === "schedule_month_archived" ? "schedule-month" : "performance-day",
           crewLabel: a.crewLabel,
           valueLabel: a.valueLabel,
           valueAfter: a.valueAfter,

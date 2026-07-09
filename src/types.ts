@@ -618,7 +618,8 @@ export type PerfActivityType =
   | 'chunk_payment_reversed'
   | 'performance_month_pushed'
   | 'performance_day_archived'
-  | 'performance_day_unlocked';
+  | 'performance_day_unlocked'
+  | 'schedule_month_archived';
 
 export interface PerfActivityEntry {
   id: string;
@@ -950,6 +951,11 @@ export interface AppData {
   // in the monthlySummaries subcollection and is overlaid here on read —
   // NOT written back into the appData doc. Read-only reporting.
   monthlySummaries?: Record<string, MonthlySummary>;
+  // Schedules relocation: past months whose schedules moved to their own
+  // scheduleMonths/{YYYY-MM} sheet. Format 'YYYY-MM'. Stripped from the doc
+  // write and overlaid back on read (mirrors pushedMonths for performance).
+  // Only PAST months — the current + future months stay in the doc.
+  archivedScheduleMonths?: string[];
   authorizedEmails: string[];
   supplies: string[];
   inspections: Inspection[];

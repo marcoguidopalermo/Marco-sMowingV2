@@ -64,6 +64,7 @@ export const ACTIVITY_TYPE_LABELS: Record<PerfActivityEntry['type'], string> = {
   performance_month_pushed: 'Month pushed to sheet',
   performance_day_archived: 'Day archived to sheet',
   performance_day_unlocked: 'Archived day unlocked',
+  schedule_month_archived: 'Schedule month archived',
 };
 
 export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amber' | 'rose' | 'slate'> = {
@@ -105,4 +106,5 @@ export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amb
   performance_month_pushed: 'slate',
   performance_day_archived: 'slate',
   performance_day_unlocked: 'amber',
+  schedule_month_archived: 'slate',
 };
