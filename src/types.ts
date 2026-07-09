@@ -840,6 +840,54 @@ export interface BulletinPost {
   isAdminOnly?: boolean;
 }
 
+// ── Trends / monthly summaries ──────────────────────────────────────────
+// Compact, bonus-basis snapshot of one month. Built ONLY via the shared
+// buildMtd/buildDivisionMtd/countBonusJobs (see lib/monthlySummary.ts) so
+// every month is directly comparable to the bonus totals.
+export interface MonthlyCrewSummary {
+  crewKey: string;
+  crewLabel: string;
+  crewNumber: number;
+  bh: number;
+  ah: number;
+  adjustedEff: number | null;
+}
+export interface MonthlyDivisionSummary {
+  division: string;
+  bh: number;
+  ah: number;
+  rawEff: number | null;
+  adjustedEff: number | null;
+  jobs: number;
+  perCrew: MonthlyCrewSummary[];
+}
+export interface MonthlyEmployeeSummary {
+  empId: string;
+  name: string;
+  bh: number;
+  ah: number;
+}
+export interface MonthlySummary {
+  month: string;            // 'YYYY-MM'
+  monthLabel: string;
+  basis: 'approved-days';
+  cutoff: string | null;
+  company: {
+    bh: number;
+    ah: number;
+    rawEff: number | null;
+    adjustedEff: number | null;
+    jobs: number;
+    employees: number;
+  };
+  divisions: MonthlyDivisionSummary[];
+  perEmployee: MonthlyEmployeeSummary[];
+  crewDayCounts: { approved: number; pending: number; waived: number };
+  generatedAt: number;
+  generatedBy: string;
+  finalized: boolean;
+}
+
 export interface AppData {
   schedules: Record<string, Crew[]>;
   employees: Employee[];
@@ -873,6 +921,11 @@ export interface AppData {
   // re-archive it. Suppression ends when the grace period passes or the day
   // is re-settled (see isArchiveSuppressed).
   unlockedDays?: Record<string, number>;
+  // Trends: compact per-month performance summaries (bonus basis), one per
+  // finalized month + optionally seeded history. Keyed by 'YYYY-MM'. Lives
+  // in the monthlySummaries subcollection and is overlaid here on read —
+  // NOT written back into the appData doc. Read-only reporting.
+  monthlySummaries?: Record<string, MonthlySummary>;
   authorizedEmails: string[];
   supplies: string[];
   inspections: Inspection[];

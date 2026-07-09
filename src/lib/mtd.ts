@@ -463,3 +463,37 @@ export function selfMtdBH(
   const row = result.perEmployee.find(e => e.empId === currentEmpId);
   return row?.bh ?? 0;
 }
+
+// Count of completed jobs on the SAME bonus basis as buildMtd /
+// buildDivisionMtd — approved crew-days only, over the identical
+// [monthStart, cutoff] range, using the same isBonusEligible gate and the
+// same per-division resolution. NOT a parallel efficiency calc: it only
+// tallies job rows, so months stay comparable to the bonus totals. Pass a
+// `division` to restrict to one division (uses the division cutoff); omit
+// for the company-wide count (uses the company cutoff).
+export function countBonusJobs(
+  today: string,
+  performance: Record<string, Record<string, PerformanceLog>>,
+  schedules: Record<string, Crew[]>,
+  division?: string,
+): number {
+  const { start } = getMonthRange(today);
+  const cutoff = division
+    ? getDivisionMtdCutoff(today, performance, schedules, start, division)
+    : getMtdCutoff(today, performance, start);
+  if (cutoff === null) return 0;
+  let jobs = 0;
+  for (const [date, dayLogs] of Object.entries(performance || {})) {
+    if (date < start || date > cutoff) continue;
+    const daySchedule = schedules[date] || [];
+    for (const [crewId, log] of Object.entries(dayLogs || {})) {
+      if (!isBonusEligible(log)) continue;
+      if (division) {
+        const crewObj = daySchedule.find(c => c.id === crewId);
+        if (resolveCrewDayDivision(crewObj, log) !== division) continue;
+      }
+      jobs += (log.jobs || []).length;
+    }
+  }
+  return jobs;
+}

@@ -16,6 +16,7 @@ import CompletionReviewModal from './CompletionReviewModal';
 import AHSplitModal from './AHSplitModal';
 import SplitBHModal from './SplitBHModal';
 import PerformanceActivityLog from './PerformanceActivityLog';
+import TrendsPage from './TrendsPage';
 import Stamp from './Stamp';
 import { can } from '../lib/permissions';
 import { getCrewAllowance, adjustedEfficiency, allowanceTag } from '../lib/crewAllowance';
@@ -1226,6 +1227,9 @@ export default function PerformanceBoard({
         <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
           <button onClick={() => setPerfTab('entry')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${perfTab === 'entry' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}><CalendarDays className="w-4 h-4" /> Daily Entry</button>
           <button onClick={() => setPerfTab('reports')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${perfTab === 'reports' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}><BarChart className="w-4 h-4" /> Advanced Reports</button>
+          {(isAdmin || isManager) && (
+            <button onClick={() => setPerfTab('trends')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${perfTab === 'trends' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}><TrendingUp className="w-4 h-4" /> Trends</button>
+          )}
           {can('canViewPerfActivityLog', currentUserRole) && (
             <button onClick={() => setPerfTab('activity')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${perfTab === 'activity' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}><Clock className="w-4 h-4" /> Activity Log</button>
           )}
@@ -1234,6 +1238,8 @@ export default function PerformanceBoard({
 
       {perfTab === 'activity' ? (
         <PerformanceActivityLog setPerfTab={setPerfTab} setPerfDate={setPerfDate} showToastMsg={showToastMsg} />
+      ) : perfTab === 'trends' ? (
+        <TrendsPage appData={appData} today={formatTodayInToronto()} />
       ) : perfTab === 'entry' ? (
         <div className="max-w-4xl mx-auto w-full pb-20 relative">
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6 sticky top-0 z-10">

@@ -22,7 +22,7 @@ import {
   TaskActivity, TaskActivityType, BulletinAudienceRole, TaskNote, UnitNote, AppSettings, UserRole, RolePermissionsOverride, JobberUser, PrimaryCrew, PRIMARY_CREWS,
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
-  TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob
+  TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
@@ -88,6 +88,7 @@ import {
   scanArchivableDays, groupDatesByMonth, ARCHIVE_WINDOW_DAYS,
   SHEET_SIZE_WARN_BYTES,
 } from './lib/performanceMonths';
+import { buildMonthlySummary } from './lib/monthlySummary';
 import { callGeminiWithRetry } from './lib/gemini';
 
 import {
@@ -186,6 +187,9 @@ export default function App() {
   // overlay so every performance reader (board, MTD, reports) is unchanged.
   const docPerformanceRef = useRef<Record<string, Record<string, PerformanceLog>>>({});
   const subPerformanceMonthsRef = useRef<Record<string, Record<string, PerformanceLog>>>({});
+  // Trends: monthlySummaries subcollection, overlaid like multiDayJobs. Not
+  // stored in the appData doc — a live map merged in on every render.
+  const subMonthlySummariesRef = useRef<Record<string, MonthlySummary>>({});
   const mergePerformance = (
     docPerf: Record<string, Record<string, PerformanceLog>>,
     monthOverlay: Record<string, Record<string, PerformanceLog>>,
@@ -829,6 +833,8 @@ export default function App() {
           pushedMonths: data.pushedMonths || [],
           archivedDays: data.archivedDays || {},
           unlockedDays: data.unlockedDays || {},
+          // Trends summaries live in a subcollection, overlaid via the ref.
+          monthlySummaries: subMonthlySummariesRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -1030,6 +1036,27 @@ export default function App() {
         }));
       },
       (err) => { console.error('performanceMonths subcollection listen error:', err); },
+    );
+  }, [user]);
+
+  // Trends: live monthlySummaries subcollection listener. One compact doc
+  // per month (id = YYYY-MM). Read-only reporting — never written back into
+  // the appData doc.
+  useEffect(() => {
+    if (!user) return;
+    const col = collection(db, 'artifacts', appId, 'public', 'data', 'monthlySummaries');
+    return onSnapshot(
+      col,
+      (snap) => {
+        const map: Record<string, MonthlySummary> = {};
+        snap.forEach((d) => {
+          const v = d.data() as MonthlySummary;
+          if (v && v.month) map[v.month] = v;
+        });
+        subMonthlySummariesRef.current = map;
+        setAppData((prev) => ({ ...prev, monthlySummaries: map }));
+      },
+      (err) => { console.error('monthlySummaries subcollection listen error:', err); },
     );
   }, [user]);
 
@@ -1908,6 +1935,22 @@ export default function App() {
       valueAfter: settle.crewDayCount,
       reasonNote: `${opts?.auto ? 'Auto-pushed' : 'Pushed'} ${ym} → sheet (${mergedCount} day${mergedCount === 1 ? '' : 's'}: ${inDocCount} merged from doc + ${alreadyArchivedForYm} already-archived; ${settle.crewDayCount} crew-days). Finalized/locked; full detail on performanceMonths/${ym}.`,
     });
+    // Trends: auto-generate the finalized month's summary (bonus basis, via
+    // the shared buildMtd/buildDivisionMtd). READ-ONLY w.r.t. performance —
+    // writes only the monthlySummaries doc. Idempotent (overwrites cleanly).
+    // Non-fatal: a summary hiccup must never fail the finalize.
+    try {
+      const summary = buildMonthlySummary(
+        ym, appData.performance || {}, appData.schedules || {}, appData.employees || [], appData.settings,
+        { generatedBy: displayEmail, finalized: true, now: Date.now() },
+      );
+      await setDoc(
+        doc(db, 'artifacts', appId, 'public', 'data', 'monthlySummaries', ym),
+        cleanForFirestore(summary),
+      );
+    } catch (err) {
+      console.error('[push-month] monthly summary write failed (non-fatal):', err);
+    }
     if (!opts?.auto) showToastMsg(`Pushed ${ym} — ${mergedCount} days on its sheet, doc shrunk.`);
     return true;
   };
