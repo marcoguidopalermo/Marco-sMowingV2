@@ -866,6 +866,8 @@ export interface MonthlyEmployeeSummary {
   name: string;
   bh: number;
   ah: number;
+  rawEff: number | null;
+  adjustedEff: number | null;
 }
 export interface MonthlySummary {
   month: string;            // 'YYYY-MM'

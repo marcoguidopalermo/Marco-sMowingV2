@@ -45,11 +45,11 @@ export default function TrendsPage({ appData, today }: TrendsPageProps) {
   // BH/AH share per month (same shares buildMtd already produced). Sorted by
   // total BH desc so top contributors lead.
   const employeeRows = useMemo(() => {
-    const map: Record<string, { name: string; totalBh: number; perMonth: Record<string, { bh: number; ah: number }> }> = {};
+    const map: Record<string, { name: string; totalBh: number; perMonth: Record<string, { bh: number; ah: number; rawEff: number | null; adjustedEff: number | null }> }> = {};
     for (const ym of months) {
       for (const e of summaryFor(ym)?.perEmployee || []) {
         if (!map[e.empId]) map[e.empId] = { name: e.name, totalBh: 0, perMonth: {} };
-        map[e.empId].perMonth[ym] = { bh: e.bh, ah: e.ah };
+        map[e.empId].perMonth[ym] = { bh: e.bh, ah: e.ah, rawEff: e.rawEff ?? null, adjustedEff: e.adjustedEff ?? null };
         map[e.empId].totalBh += e.bh;
       }
     }
@@ -237,7 +237,7 @@ export default function TrendsPage({ appData, today }: TrendsPageProps) {
         >
           {employeesOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
           By Employee ({employeeRows.length})
-          <span className="ml-1 text-[10px] font-medium uppercase tracking-widest text-slate-400">BH · AH beneath</span>
+          <span className="ml-1 text-[10px] font-medium uppercase tracking-widest text-slate-400">BH · AH · EFF% · *EFF%</span>
         </button>
         {employeesOpen && (
           <table className="w-full text-sm">
@@ -263,6 +263,12 @@ export default function TrendsPage({ appData, today }: TrendsPageProps) {
                       <td key={ym} className="py-1.5 px-3 text-right">
                         <div className="font-mono font-bold text-slate-700">{cell ? fmtNum(cell.bh) : '—'}</div>
                         <div className="font-mono text-[10px] text-slate-400">{cell ? `${fmtNum(cell.ah)} AH` : ''}</div>
+                        {cell && (
+                          <div className="font-mono text-[10px]">
+                            <span className="text-slate-500">{fmtPct(cell.rawEff)}</span>
+                            {' '}<span className="text-emerald-600 font-bold" title="Adjusted (crew-size) efficiency">*{fmtPct(cell.adjustedEff)}</span>
+                          </div>
+                        )}
                       </td>
                     );
                   })}

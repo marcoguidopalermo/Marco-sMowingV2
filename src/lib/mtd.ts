@@ -25,6 +25,11 @@ export interface MtdEmployeeStat {
   name: string;
   bh: number;
   ah: number;
+  // Virtual-BH adjusted efficiency for this employee across the month
+  // (Σ per-day [eBH + eAH×pct/100] ÷ Σ eAH). Same basis as the board's
+  // per-employee *EFF% and the crew/division adjusted numbers. null when
+  // ah === 0.
+  adjustedEfficiency: number | null;
 }
 
 export interface MtdResult {
@@ -133,6 +138,10 @@ export function buildMtd(
     employees.filter(e => e.isTestUser).map(e => e.id),
   );
   const empStats: Record<string, EmpEffStat> = {};
+  // Per-employee virtual-BH adjusted numerator (Σ eBH + eAH×pct/100),
+  // accumulated with the SAME per-day delta pattern the board uses for
+  // *EFF%. Purely additive — empStats bh/ah are untouched.
+  const empAdjNumerator: Record<string, number> = {};
   let companyBH = 0;
   let companyAH = 0;
   let companyAdjustedNumerator = 0;
@@ -170,7 +179,21 @@ export function buildMtd(
         // proportional slice via the same identity (Σ eBH = cBH when cAH > 0).
         // Test users are gated inside accumulateEmployeeEff via testUserIds.
         if (cAH > 0) {
+          // Snapshot before, accumulate (mutates empStats exactly as
+          // before), then derive each employee's per-day BH/AH delta to
+          // fold into their adjusted numerator with THIS crew-day's pct —
+          // identical to the board's per-employee *EFF% accumulation.
+          const before: Record<string, { bh: number; ah: number }> = {};
+          for (const k of Object.keys(empStats)) before[k] = { bh: empStats[k].bh, ah: empStats[k].ah };
           accumulateEmployeeEff(log, empStats, testUserIds);
+          for (const [empId, stat] of Object.entries(empStats)) {
+            const prior = before[empId] || { bh: 0, ah: 0 };
+            const dBH = stat.bh - prior.bh;
+            const dAH = stat.ah - prior.ah;
+            if (dAH > 0 || dBH > 0) {
+              empAdjNumerator[empId] = (empAdjNumerator[empId] || 0) + dBH + (dAH * allowance.pct) / 100;
+            }
+          }
           continue;
         }
 
@@ -217,6 +240,9 @@ export function buildMtd(
           for (const empId of roster) {
             if (!empStats[empId]) empStats[empId] = { bh: 0, ah: 0 };
             empStats[empId].bh += shareBH;
+            // dAH === 0 here (no crew AH), so the adjusted numerator delta
+            // is just the BH share. ah stays 0 → adjustedEfficiency null.
+            empAdjNumerator[empId] = (empAdjNumerator[empId] || 0) + shareBH;
           }
         }
       }
@@ -233,6 +259,10 @@ export function buildMtd(
       name: empById.get(empId)?.name || empId,
       bh: Number(stat.bh.toFixed(1)),
       ah: Number(stat.ah.toFixed(1)),
+      // Round once, at the end — same discipline as every other adjusted %.
+      adjustedEfficiency: stat.ah > 0
+        ? Number((((empAdjNumerator[empId] || 0) / stat.ah) * 100).toFixed(1))
+        : null,
     }))
     .sort((a, b) => b.bh - a.bh);
 
