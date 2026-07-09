@@ -11,6 +11,7 @@ import { DIVISIONS } from '../constants';
 import {
   buildMtd, buildDivisionMtd, countBonusJobs, getMonthRange,
 } from './mtd';
+import { STANDARD_BONUS_TIERS } from './bonusTiers';
 
 const rawEff = (bh: number, ah: number): number | null =>
   ah > 0 ? Number(((bh / ah) * 100).toFixed(1)) : null;
@@ -90,6 +91,9 @@ export function buildMonthlySummary(
         ah: c.ah,
         adjustedEff: c.adjustedEfficiency,
       })),
+      // Per-employee BH within the division — the bonus payout basis.
+      // Straight from buildDivisionMtd.perEmployee (no re-derivation).
+      perEmployee: d.perEmployee.map(e => ({ empId: e.empId, name: e.name, bh: e.bh })),
     };
   });
 
@@ -119,5 +123,8 @@ export function buildMonthlySummary(
     generatedAt: meta.now,
     generatedBy: meta.generatedBy,
     finalized: meta.finalized,
+    // Stamp the current standard ladder so a finalized month's payouts are
+    // computed from the structure in force when it closed, not a later edit.
+    tierTable: STANDARD_BONUS_TIERS,
   };
 }

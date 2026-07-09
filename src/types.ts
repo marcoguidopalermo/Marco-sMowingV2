@@ -852,6 +852,21 @@ export interface MonthlyCrewSummary {
   ah: number;
   adjustedEff: number | null;
 }
+// One tier of the bonus ladder: adjusted % >= minPct pays `rate` $/BH.
+// Floor semantics on lookup (84.9% → the 80% tier). <lowest minPct → $0.
+export interface BonusTier {
+  minPct: number;
+  rate: number;
+}
+
+// Per-employee BH within a division (bonus payout basis). Sourced ONLY from
+// buildDivisionMtd's perEmployee accumulation — never re-derived.
+export interface MonthlyDivisionEmployee {
+  empId: string;
+  name: string;
+  bh: number;
+}
+
 export interface MonthlyDivisionSummary {
   division: string;
   bh: number;
@@ -860,6 +875,8 @@ export interface MonthlyDivisionSummary {
   adjustedEff: number | null;
   jobs: number;
   perCrew: MonthlyCrewSummary[];
+  // Per-employee BH shares within this division (drives per-person payout).
+  perEmployee: MonthlyDivisionEmployee[];
 }
 export interface MonthlyEmployeeSummary {
   empId: string;
@@ -888,6 +905,11 @@ export interface MonthlySummary {
   generatedAt: number;
   generatedBy: string;
   finalized: boolean;
+  // Bonus tier ladder stamped at generation time. Finalized months compute
+  // payouts from THEIR stamped table so history can't shift if the standard
+  // changes later. Optional for back-compat (older summaries fall back to
+  // the current STANDARD_BONUS_TIERS on read).
+  tierTable?: BonusTier[];
 }
 
 export interface AppData {

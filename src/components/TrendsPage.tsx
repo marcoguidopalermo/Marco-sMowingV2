@@ -2,10 +2,12 @@ import { useMemo, useState, Fragment } from 'react';
 import { TrendingUp, ChevronDown, ChevronRight } from 'lucide-react';
 import { AppData, MonthlySummary } from '../types';
 import { buildMonthlySummary } from '../lib/monthlySummary';
+import BonusCalculator from './BonusCalculator';
 
 interface TrendsPageProps {
   appData: AppData;
   today: string;   // YYYY-MM-DD (Toronto)
+  isAdmin: boolean;
 }
 
 const fmtPct = (v: number | null | undefined) => (v == null ? '—' : `${v.toFixed(1)}%`);
@@ -16,7 +18,7 @@ const monthColLabel = (ym: string) => {
   return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
 };
 
-export default function TrendsPage({ appData, today }: TrendsPageProps) {
+export default function TrendsPage({ appData, today, isAdmin }: TrendsPageProps) {
   const currentYm = today.slice(0, 7);
   const [expandedDiv, setExpandedDiv] = useState<Record<string, boolean>>({});
 
@@ -110,6 +112,12 @@ export default function TrendsPage({ appData, today }: TrendsPageProps) {
           so months are directly comparable. The rightmost column is the current month <b>to date</b> (in progress).
         </p>
       </div>
+
+      {/* BONUS CALCULATOR — admin only. Reads efficiency/BH straight from the
+          summaries; only tier lookup + arithmetic happen here. */}
+      {isAdmin && (
+        <BonusCalculator summaries={finalized} liveSummary={liveSummary} currentYm={currentYm} />
+      )}
 
       {/* COMPANY */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">

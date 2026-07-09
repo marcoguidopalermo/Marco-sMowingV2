@@ -1239,7 +1239,7 @@ export default function PerformanceBoard({
       {perfTab === 'activity' ? (
         <PerformanceActivityLog setPerfTab={setPerfTab} setPerfDate={setPerfDate} showToastMsg={showToastMsg} />
       ) : perfTab === 'trends' ? (
-        <TrendsPage appData={appData} today={formatTodayInToronto()} />
+        <TrendsPage appData={appData} today={formatTodayInToronto()} isAdmin={isAdmin} />
       ) : perfTab === 'entry' ? (
         <div className="max-w-4xl mx-auto w-full pb-20 relative">
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6 sticky top-0 z-10">
