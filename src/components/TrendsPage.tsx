@@ -33,12 +33,31 @@ export default function TrendsPage({ appData, today }: TrendsPageProps) {
   ), [currentYm, appData.performance, appData.schedules, appData.employees, appData.settings, today]);
 
   const finalized = appData.monthlySummaries || {};
+  const [employeesOpen, setEmployeesOpen] = useState(false);
   const months = useMemo(
     () => [...new Set([...Object.keys(finalized), currentYm])].sort(),
     [finalized, currentYm],
   );
   const summaryFor = (ym: string): MonthlySummary | undefined =>
     ym === currentYm ? liveSummary : finalized[ym];
+
+  // Per-employee rows: union across all shown months, each carrying its
+  // BH/AH share per month (same shares buildMtd already produced). Sorted by
+  // total BH desc so top contributors lead.
+  const employeeRows = useMemo(() => {
+    const map: Record<string, { name: string; totalBh: number; perMonth: Record<string, { bh: number; ah: number }> }> = {};
+    for (const ym of months) {
+      for (const e of summaryFor(ym)?.perEmployee || []) {
+        if (!map[e.empId]) map[e.empId] = { name: e.name, totalBh: 0, perMonth: {} };
+        map[e.empId].perMonth[ym] = { bh: e.bh, ah: e.ah };
+        map[e.empId].totalBh += e.bh;
+      }
+    }
+    return Object.entries(map)
+      .map(([empId, v]) => ({ empId, ...v }))
+      .sort((a, b) => b.totalBh - a.totalBh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [months, finalized, liveSummary]);
 
   // Union of divisions across all shown months (stable order from first seen).
   const divisions = useMemo(() => {
@@ -206,6 +225,52 @@ export default function TrendsPage({ appData, today }: TrendsPageProps) {
             })}
           </tbody>
         </table>
+      </div>
+
+      {/* PER EMPLOYEE — collapsible; BH primary with AH beneath, sorted by
+          total BH desc. Includes the live MTD column. */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
+        <button
+          type="button"
+          onClick={() => setEmployeesOpen(o => !o)}
+          className="w-full px-4 py-3 border-b border-slate-100 font-bold text-slate-700 text-sm flex items-center gap-1.5 hover:bg-slate-50"
+        >
+          {employeesOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          By Employee ({employeeRows.length})
+          <span className="ml-1 text-[10px] font-medium uppercase tracking-widest text-slate-400">BH · AH beneath</span>
+        </button>
+        {employeesOpen && (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-100">
+                <th className="py-2 pl-3 pr-4 text-left text-[10px] font-black uppercase tracking-widest text-slate-400">Employee</th>
+                {months.map(ym => (
+                  <th key={ym} className="py-2 px-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-500 whitespace-nowrap">
+                    {monthColLabel(ym)}{isLive(ym) && <span className="ml-1 text-emerald-600">MTD</span>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {employeeRows.length === 0 ? (
+                <tr><td colSpan={months.length + 1} className="py-3 text-center text-slate-400 text-xs">No employee data yet.</td></tr>
+              ) : employeeRows.map(emp => (
+                <tr key={emp.empId} className="border-b border-slate-50">
+                  <td className="py-1.5 pl-3 pr-4 text-left font-medium text-slate-700 whitespace-nowrap">{emp.name}</td>
+                  {months.map(ym => {
+                    const cell = emp.perMonth[ym];
+                    return (
+                      <td key={ym} className="py-1.5 px-3 text-right">
+                        <div className="font-mono font-bold text-slate-700">{cell ? fmtNum(cell.bh) : '—'}</div>
+                        <div className="font-mono text-[10px] text-slate-400">{cell ? `${fmtNum(cell.ah)} AH` : ''}</div>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {/* Basis note */}
