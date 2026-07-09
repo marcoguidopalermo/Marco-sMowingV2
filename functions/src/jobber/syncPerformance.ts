@@ -308,6 +308,11 @@ interface AppDataShape {
   // re-bloat the doc and clobber the sheet), so we skip a targetDate in a
   // pushed month wholesale and drop any pushed-month cleanup write.
   pushedMonths?: string[];
+  // Rolling partial push: individual settled days archived to their month
+  // sheet (date 'YYYY-MM-DD' → ms). Same lock semantics as pushedMonths but
+  // at day granularity — the sync must never write an archived day back
+  // into the doc (re-bloat + clobber the sheet).
+  archivedDays?: Record<string, number>;
   settings?: AppSettingsDoc;
   // Schema sentinel. < 2 (or missing) triggers a one-time wipe of
   // multiDayJobs so legacy jobId-keyed entries don't cohabit with new
@@ -2368,13 +2373,18 @@ async function runPerformanceSync(args: {
     // drop the main write if targetDate is in a pushed month, and skip any
     // pushed-month cleanup write, warning on each.
     const pushedMonthsSet = new Set(appData.pushedMonths || []);
+    const archivedDaysSet = appData.archivedDays || {};
+    // A date is LOCKED if its whole month was pushed OR the individual day
+    // was rolling-archived — never write either back into the doc.
+    const isDateLocked = (date: string): boolean =>
+      pushedMonthsSet.has(date.slice(0, 7)) || !!archivedDaysSet[date];
     const writeUpdates: Record<string, unknown> = {
       visitBHSplits,
     };
-    if (pushedMonthsSet.has(targetDate.slice(0, 7))) {
+    if (isDateLocked(targetDate)) {
       summary.warnings.push(
-        `skipped_pushed_month targetDate=${targetDate} ` +
-        "(locked — lives on its own month sheet)",
+        `skipped_locked_day targetDate=${targetDate} ` +
+        "(archived — lives on its own month sheet)",
       );
     } else {
       writeUpdates[`performance.${targetDate}`] = newPerformanceDay;
@@ -2384,8 +2394,8 @@ async function runPerformanceSync(args: {
       writeUpdates["__multiDayKeyVersion"] = 2;
     }
     for (const [d, dayMap] of Object.entries(cleanupPerformanceByDate)) {
-      if (pushedMonthsSet.has(d.slice(0, 7))) {
-        summary.warnings.push(`skipped_pushed_cleanup date=${d} (locked)`);
+      if (isDateLocked(d)) {
+        summary.warnings.push(`skipped_locked_cleanup date=${d} (archived)`);
         continue;
       }
       writeUpdates[`performance.${d}`] = dayMap;

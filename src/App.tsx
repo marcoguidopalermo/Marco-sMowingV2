@@ -83,7 +83,11 @@ const SkidSteerIcon = ({ className, title }: { className?: string; title?: strin
 import { auth, db, appId, functions } from './lib/firebase';
 import { httpsCallable } from 'firebase/functions';
 import { logPerfActivity } from './lib/perfAudit';
-import { monthOfDate, extractMonth, monthSettlementStatus } from './lib/performanceMonths';
+import {
+  monthOfDate, extractMonth, monthSettlementStatus,
+  scanArchivableDays, groupDatesByMonth, ARCHIVE_WINDOW_DAYS,
+  SHEET_SIZE_WARN_BYTES,
+} from './lib/performanceMonths';
 import { callGeminiWithRetry } from './lib/gemini';
 
 import {
@@ -823,6 +827,8 @@ export default function App() {
           // Doc-base (current month) overlaid by the live month sheets.
           performance: mergePerformance(docPerformanceRef.current, subPerformanceMonthsRef.current),
           pushedMonths: data.pushedMonths || [],
+          archivedDays: data.archivedDays || {},
+          unlockedDays: data.unlockedDays || {},
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -1595,9 +1601,13 @@ export default function App() {
     // is what kept the doc under the 1 MiB cap). Pushed months are locked,
     // so there are no legitimate edits to them to preserve here.
     const pushedSet = new Set(safeData.pushedMonths || []);
+    const archivedSet = safeData.archivedDays || {};
     const docPerformance: Record<string, Record<string, PerformanceLog>> = {};
     for (const [date, dayMap] of Object.entries(safeData.performance || {})) {
+      // A date lives on a sheet if its whole month was pushed OR the
+      // individual day was rolling-archived — strip either from the doc.
       if (pushedSet.has(date.slice(0, 7))) continue;
+      if (archivedSet[date]) continue;
       docPerformance[date] = dayMap;
     }
     const docPayload = {
@@ -1622,6 +1632,202 @@ export default function App() {
     }
   };
 
+  // ── Sheet write/merge helper (shared by rolling archive + whole-month
+  // push) ───────────────────────────────────────────────────────────────
+  // MERGES `addDays` (date→crewMap) into the existing performanceMonths/{ym}
+  // sheet (never overwrites prior days — a partial sheet fills gradually),
+  // re-reads to VERIFY the day count, warns if the sheet nears its own
+  // 1 MiB cap, then writes a belt-and-suspenders backup. Returns the merged
+  // day count on success, or null on any failure (caller must then NOT
+  // remove anything from the doc). The `terminal` flag stamps whole-month
+  // finalization metadata.
+  const cleanForFirestore = (obj: any) => JSON.parse(JSON.stringify(obj, (_k, v) => v === undefined ? null : v));
+  const writeAndVerifySheet = async (
+    ym: string,
+    addDays: Record<string, Record<string, PerformanceLog>>,
+    meta: { terminal: boolean },
+  ): Promise<number | null> => {
+    try {
+      const sheetRef = doc(db, 'artifacts', appId, 'public', 'data', 'performanceMonths', ym);
+      const existingSnap = await getDoc(sheetRef);
+      const existingDays: Record<string, Record<string, PerformanceLog>> =
+        existingSnap.exists() ? ((existingSnap.data() as any)?.days || {}) : {};
+      const existingMeta = existingSnap.exists() ? (existingSnap.data() as any) : {};
+      // Merge — new days added, existing days preserved (never overwritten
+      // wholesale; a re-archive of the same date is a harmless no-op copy).
+      const mergedDays = { ...existingDays, ...addDays };
+      const mergedCount = Object.keys(mergedDays).length;
+      const expected = Object.keys(existingDays).length
+        + Object.keys(addDays).filter(d => !(d in existingDays)).length;
+      const payload: any = {
+        ...existingMeta,
+        month: ym,
+        days: mergedDays,
+        dayCount: mergedCount,
+        lastArchivedAt: Date.now(),
+        lastArchivedBy: displayEmail,
+      };
+      if (meta.terminal) {
+        payload.pushedAt = Date.now();
+        payload.pushedBy = displayEmail;
+        payload.pushedByName = displayName;
+      }
+      const cleaned = cleanForFirestore(payload);
+      // Sheet-size watch — month sheets are themselves 1 MiB-capped docs.
+      const bytes = JSON.stringify(cleaned).length;
+      if (bytes > SHEET_SIZE_WARN_BYTES) {
+        console.warn(`[month-sheet] ${ym} sheet is ${(bytes / 1024).toFixed(0)} KB — approaching the 1 MiB cap.`);
+        showToastMsg(`⚠️ ${ym} month sheet is ${(bytes / 1024).toFixed(0)} KB — nearing its 1 MiB limit. Flag for follow-up.`);
+      }
+      await setDoc(sheetRef, cleaned);
+      // VERIFY — re-read; the persisted day count must match the merge.
+      const check = await getDoc(sheetRef);
+      const got = check.exists() ? Object.keys((check.data() as any)?.days || {}).length : -1;
+      if (got !== expected) {
+        console.error(`[month-sheet] ${ym} verify failed: got ${got}, expected ${expected}. No removal.`);
+        return null;
+      }
+      // BACKUP — separate collection the overlay never reads, before removal.
+      await setDoc(
+        doc(db, 'artifacts', appId, 'public', 'data', 'performanceMonthsBackup', `${ym}-${Date.now()}`),
+        cleaned,
+      );
+      return got;
+    } catch (err: any) {
+      console.error(`[month-sheet] ${ym} write/verify/backup failed:`, err);
+      return null;
+    }
+  };
+
+  // ── Rolling partial push + catch-up scan ──────────────────────────────
+  // Archive a set of settled, aged DAYS to their month sheets, then remove
+  // them from the main doc. Copy → verify → backup (per month sheet) →
+  // remove (via syncToCloud's per-day write-strip). NO DATA LOSS: removal
+  // only runs for months whose sheet verified. Cross-month safe (a
+  // straggler routes to its own month's sheet). Admin-only; idempotent.
+  const archiveDays = async (dates: string[], opts?: { auto?: boolean }): Promise<number> => {
+    if (isViewingAs || !isAdmin) return 0;
+    if (dates.length === 0) return 0;
+    const byMonth = groupDatesByMonth(dates);
+    const archivedOk: string[] = [];
+    const perMonthArchived: Array<{ ym: string; count: number }> = [];
+    for (const [ym, monthDates] of Object.entries(byMonth)) {
+      const addDays: Record<string, Record<string, PerformanceLog>> = {};
+      for (const d of monthDates) {
+        const dayMap = docPerformanceRef.current[d];
+        if (dayMap) addDays[d] = dayMap;
+      }
+      if (Object.keys(addDays).length === 0) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const verified = await writeAndVerifySheet(ym, addDays, { terminal: false });
+      if (verified === null) continue;   // sheet failed — leave these days in the doc
+      archivedOk.push(...Object.keys(addDays));
+      perMonthArchived.push({ ym, count: Object.keys(addDays).length });
+    }
+    if (archivedOk.length === 0) return 0;
+    // REMOVE — mark days archived; the syncToCloud write-strip drops them
+    // from the doc. Also clear any stale unlock markers for these dates.
+    const nextArchived = { ...(appData.archivedDays || {}) };
+    const nextUnlocked = { ...(appData.unlockedDays || {}) };
+    const now = Date.now();
+    for (const d of archivedOk) { nextArchived[d] = now; delete nextUnlocked[d]; }
+    const ok = await syncToCloud({ ...appData, archivedDays: nextArchived, unlockedDays: nextUnlocked });
+    if (ok === false) return 0;   // sheets written (idempotent); doc unchanged — safe retry
+    for (const { ym, count } of perMonthArchived) {
+      logPerfActivity({
+        type: 'performance_day_archived',
+        targetDate: formatTodayInToronto(),
+        crewId: 'performance-day',
+        crewLabel: ym,
+        userId: user?.uid || displayEmail,
+        userName: displayName,
+        userRole: effectiveRole,
+        valueLabel: 'days',
+        valueAfter: count,
+        reasonNote: `${opts?.auto ? 'Auto-archived' : 'Archived'} ${count} settled day${count === 1 ? '' : 's'} of ${ym} → sheet (rolling, >${ARCHIVE_WINDOW_DAYS}d). Doc kept lean; full detail on performanceMonths/${ym}.`,
+      });
+    }
+    if (!opts?.auto) showToastMsg(`Archived ${archivedOk.length} settled day${archivedOk.length === 1 ? '' : 's'} to month sheets.`);
+    return archivedOk.length;
+  };
+
+  // ── Unlock (reverse a day's archive) ──────────────────────────────────
+  // Admin-only, per-day. Copies the day back from its month sheet into the
+  // main doc, removes it from the sheet, and stamps unlockedDays so the
+  // rolling scan can't immediately re-archive it (race guard). The day
+  // returns to normal approval-locking — an admin un-approves a crew-day to
+  // edit it. Handles both rolling-archived days (archivedDays) and days in a
+  // finalized month (downgrades that month out of pushedMonths, keeping its
+  // other days archived).
+  const unlockDay = async (date: string): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return false; }
+    const ym = monthOfDate(date);
+    const inArchived = !!(appData.archivedDays || {})[date];
+    const inPushedMonth = (appData.pushedMonths || []).includes(ym);
+    if (!inArchived && !inPushedMonth) { showToastMsg('That day is not archived.'); return false; }
+    try {
+      const sheetRef = doc(db, 'artifacts', appId, 'public', 'data', 'performanceMonths', ym);
+      const snap = await getDoc(sheetRef);
+      const sheetDays: Record<string, Record<string, PerformanceLog>> =
+        snap.exists() ? ((snap.data() as any)?.days || {}) : {};
+      const dayData = sheetDays[date] || (appData.performance || {})[date];
+      if (!dayData) { showToastMsg(`No sheet data found for ${date}.`); return false; }
+      // Remove the day from the sheet (keep the rest); re-verify.
+      const remaining = { ...sheetDays };
+      delete remaining[date];
+      const existingMeta = snap.exists() ? (snap.data() as any) : {};
+      await setDoc(sheetRef, cleanForFirestore({ ...existingMeta, month: ym, days: remaining, dayCount: Object.keys(remaining).length }));
+      const check = await getDoc(sheetRef);
+      const got = check.exists() ? Object.keys((check.data() as any)?.days || {}).length : -1;
+      if (got !== Object.keys(remaining).length) {
+        showToastMsg(`Unlock aborted — sheet re-verify failed for ${date}. No changes.`);
+        return false;
+      }
+      // Restore the day into the doc + clear markers + set the race guard.
+      const nextArchived = { ...(appData.archivedDays || {}) };
+      delete nextArchived[date];
+      let nextPushed = appData.pushedMonths || [];
+      if (inPushedMonth) {
+        // Downgrade the finalized month: it's no longer wholly on the sheet.
+        // Its OTHER days stay archived (added to archivedDays) so they remain
+        // stripped from the doc; only this day returns.
+        nextPushed = nextPushed.filter(m => m !== ym);
+        const now = Date.now();
+        for (const d of Object.keys(remaining)) {
+          if (monthOfDate(d) === ym) nextArchived[d] = now;
+        }
+      }
+      const nextUnlocked = { ...(appData.unlockedDays || {}), [date]: Date.now() };
+      const nextPerf = { ...(appData.performance || {}), [date]: dayData };
+      const ok = await syncToCloud({
+        ...appData,
+        performance: nextPerf,
+        pushedMonths: nextPushed,
+        archivedDays: nextArchived,
+        unlockedDays: nextUnlocked,
+      });
+      if (ok === false) { showToastMsg('Unlock failed on the doc write — retry.'); return false; }
+      logPerfActivity({
+        type: 'performance_day_unlocked',
+        targetDate: formatTodayInToronto(),
+        crewId: 'performance-day',
+        crewLabel: date,
+        userId: user?.uid || displayEmail,
+        userName: displayName,
+        userRole: effectiveRole,
+        valueLabel: 'day',
+        reasonNote: `Unlocked ${date} — copied back to the doc for editing. Auto-archive suppressed for 72h or until re-settled. Un-approve the crew-day(s) to edit.`,
+      });
+      showToastMsg(`Unlocked ${date} — editable again (un-approve the crew-day to edit). Won't re-archive for 72h.`);
+      return true;
+    } catch (err: any) {
+      console.error('[unlock-day] failed:', err);
+      showToastMsg(`Unlock failed for ${date}: ${err?.message || String(err)}.`);
+      return false;
+    }
+  };
+
   // ── Push Month ──────────────────────────────────────────────────────
   // MOVE a completed month out of the 1 MiB-capped appData doc into its own
   // performanceMonths/{YYYY-MM} sheet. Gated copy → verify → backup →
@@ -1629,7 +1835,8 @@ export default function App() {
   // write-strip) only runs after the sheet is written AND re-read to
   // confirm it landed. Returns true on success. Admin-only. Refuses the
   // current month and any month with unsettled (non-approved/waived)
-  // crew-days.
+  // crew-days. MERGES with a partially-filled sheet (rolling archive may
+  // already have moved some of the month's days) — never overwrites it.
   const pushMonth = async (ym: string, opts?: { auto?: boolean }): Promise<boolean> => {
     if (isViewingAs) { if (!opts?.auto) showToastMsg('View Only — exit "View As" to make changes.'); return false; }
     if (!isAdmin) { if (!opts?.auto) showToastMsg(PERMISSION_DENIED); return false; }
@@ -1656,44 +1863,36 @@ export default function App() {
       return false;
     }
 
-    const days = extractMonth(appData.performance || {}, ym);
-    const dayCount = Object.keys(days).length;
-    const payload = {
-      month: ym,
-      days,
-      dayCount,
-      pushedAt: Date.now(),
-      pushedBy: displayEmail,
-      pushedByName: displayName,
-    };
-    const clean = (obj: any) => JSON.parse(JSON.stringify(obj, (_k, v) => v === undefined ? null : v));
-    try {
-      // 1. COPY — write the month sheet (a separate doc, not doc-cap-bound).
-      const sheetRef = doc(db, 'artifacts', appId, 'public', 'data', 'performanceMonths', ym);
-      await setDoc(sheetRef, clean(payload));
-      // 2. VERIFY — re-read and confirm the day count matches before any remove.
-      const check = await getDoc(sheetRef);
-      const got = check.exists() ? Object.keys((check.data() as any)?.days || {}).length : -1;
-      if (got !== dayCount) {
-        showToastMsg(`Push aborted — sheet verify failed for ${ym} (${got}/${dayCount} days). No data removed.`);
-        return false;
-      }
-      // 3. BACKUP — belt-and-suspenders copy in a separate collection the
-      //    reader never overlays, written BEFORE the remove step.
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'performanceMonthsBackup', `${ym}-${payload.pushedAt}`), clean(payload));
-    } catch (err: any) {
-      console.error('[push-month] sheet/verify/backup write failed:', err);
-      showToastMsg(`Push failed for ${ym}: ${err?.message || String(err)}. No data removed.`);
+    // Days still in the DOC for this month — rolling archive may already
+    // have moved the rest onto the sheet. We MERGE only these into the
+    // (possibly partial) sheet; already-archived days stay put, never
+    // overwritten, never a failure.
+    const inDocDays = extractMonth(docPerformanceRef.current || {}, ym);
+    const inDocCount = Object.keys(inDocDays).length;
+    const alreadyArchivedForYm = Object.keys(appData.archivedDays || {})
+      .filter(d => monthOfDate(d) === ym).length;
+    // MERGE → VERIFY → BACKUP, stamping terminal (finalized) metadata.
+    const mergedCount = await writeAndVerifySheet(ym, inDocDays, { terminal: true });
+    if (mergedCount === null) {
+      if (!opts?.auto) showToastMsg(`Push aborted — sheet write/verify failed for ${ym}. No data removed.`);
       return false;
     }
-    // 4. REMOVE — mark the month pushed and syncToCloud. The write-strip in
-    //    syncToCloud drops this month's dates from the doc automatically
-    //    (net-reducing), so the doc shrinks; the sheet is the live copy.
+    // The finalized sheet must hold EVERY day of the month:
+    // in-doc remaining + already-rolling-archived.
+    const expectedTotal = inDocCount + alreadyArchivedForYm;
+    if (mergedCount !== expectedTotal) {
+      showToastMsg(`Push aborted — ${ym} day-count mismatch (sheet ${mergedCount}, expected ${expectedTotal}). No data removed.`);
+      return false;
+    }
+    // REMOVE — mark the month terminal in pushedMonths; collapse its per-day
+    // archived markers into the month marker; the write-strip drops all of
+    // ym's dates from the doc.
     const nextPushed = [...(appData.pushedMonths || []), ym].sort();
-    const ok = await syncToCloud({ ...appData, pushedMonths: nextPushed });
+    const nextArchived = { ...(appData.archivedDays || {}) };
+    for (const d of Object.keys(nextArchived)) if (monthOfDate(d) === ym) delete nextArchived[d];
+    const ok = await syncToCloud({ ...appData, pushedMonths: nextPushed, archivedDays: nextArchived });
     if (ok === false) {
-      // Roll back the marker locally; the sheet + backup remain (harmless,
-      // idempotent — a retry overwrites them). Nothing was removed.
+      // The sheet + backup remain (idempotent — a retry re-merges). Nothing removed.
       showToastMsg(`Push wrote the ${ym} sheet but the doc update failed — nothing removed, safe to retry.`);
       return false;
     }
@@ -1707,17 +1906,21 @@ export default function App() {
       userRole: effectiveRole,
       valueLabel: 'crew-days',
       valueAfter: settle.crewDayCount,
-      reasonNote: `${opts?.auto ? 'Auto-pushed' : 'Pushed'} ${ym} → sheet (${dayCount} day${dayCount === 1 ? '' : 's'}, ${settle.crewDayCount} crew-days). Locked; full detail preserved on performanceMonths/${ym}.`,
+      reasonNote: `${opts?.auto ? 'Auto-pushed' : 'Pushed'} ${ym} → sheet (${mergedCount} day${mergedCount === 1 ? '' : 's'}: ${inDocCount} merged from doc + ${alreadyArchivedForYm} already-archived; ${settle.crewDayCount} crew-days). Finalized/locked; full detail on performanceMonths/${ym}.`,
     });
-    if (!opts?.auto) showToastMsg(`Pushed ${ym} to its own sheet — ${dayCount} days preserved, doc shrunk.`);
+    if (!opts?.auto) showToastMsg(`Pushed ${ym} — ${mergedCount} days on its sheet, doc shrunk.`);
     return true;
   };
 
-  // AUTO-PUSH fallback: 7 days after a month ends, if it's still in the doc
-  // and fully settled, push it automatically. Admin sessions only (the push
-  // is an admin write); best-effort and idempotent — pushMonth re-guards
-  // everything, so a race between tabs is safe. Never forces an unsettled
-  // month (it just skips and waits for approvals).
+  // ROLLING ARCHIVE + CATCH-UP SCAN + AUTO-FINALIZE. Runs once per admin
+  // session after data loads (the sync cadence in practice — admins open the
+  // board ≈daily). Idempotent and best-effort; every step re-guards itself.
+  //   1. Rolling/catch-up: archive every settled day older than the window
+  //      (cross-month, no backward limit — catches late-approved stragglers)
+  //      so the doc stays lean continuously and never hits the cap mid-month.
+  //   2. Auto-finalize: a completed, fully-settled month whose end is >14d
+  //      past is pushed whole (merging any remaining in-doc days into its
+  //      already-partial sheet) so its per-day markers collapse to one.
   const autoPushRanRef = useRef(false);
   useEffect(() => {
     if (!user || loading || isViewingAs || !isAdmin) return;
@@ -1726,30 +1929,46 @@ export default function App() {
     autoPushRanRef.current = true;
     const today = formatTodayInToronto();
     const thisMonth = monthOfDate(today);
-    const pushed = new Set(appData.pushedMonths || []);
-    // Candidate completed months still living in the doc.
-    const docMonths = new Set<string>();
-    for (const d of Object.keys(docPerformanceRef.current || {})) {
-      const m = monthOfDate(d);
-      if (m < thisMonth && !pushed.has(m)) docMonths.add(m);
-    }
-    const dayOfMonth = Number(today.slice(8, 10));
     (async () => {
-      for (const ym of [...docMonths].sort()) {
-        // "7 days after the month ends" — the month before the current one
-        // is eligible once we're at least 7 days into the new month; older
-        // months are always past their +7 window.
+      // 1. Rolling partial push + catch-up scan.
+      const archivable = scanArchivableDays(docPerformanceRef.current || {}, today, {
+        windowDays: ARCHIVE_WINDOW_DAYS,
+        archivedDays: appData.archivedDays || {},
+        unlockedDays: appData.unlockedDays || {},
+        now: Date.now(),
+      });
+      if (archivable.length > 0) {
+        await archiveDays(archivable, { auto: true });
+      }
+      // 2. Auto-finalize completed, fully-settled months >14d past month-end.
+      //    docPerformanceRef reflects the pre-archive doc; recompute candidate
+      //    months from BOTH the doc and archivedDays so a fully-rolling-
+      //    archived month still finalizes.
+      const pushed = new Set(appData.pushedMonths || []);
+      const candidateMonths = new Set<string>();
+      for (const d of Object.keys(docPerformanceRef.current || {})) {
+        const m = monthOfDate(d);
+        if (m < thisMonth && !pushed.has(m)) candidateMonths.add(m);
+      }
+      for (const d of Object.keys(appData.archivedDays || {})) {
+        const m = monthOfDate(d);
+        if (m < thisMonth && !pushed.has(m)) candidateMonths.add(m);
+      }
+      const dayOfMonth = Number(today.slice(8, 10));
+      for (const ym of [...candidateMonths].sort()) {
+        // Finalize a prior month once we're >14 days past its end (i.e. at
+        // least 14 days into a later month), so late corrections have landed.
         const [y, m] = ym.split('-').map(Number);
         const monthsBack = (Number(thisMonth.slice(0, 4)) - y) * 12 + (Number(thisMonth.slice(5, 7)) - m);
-        const eligible = monthsBack > 1 || (monthsBack === 1 && dayOfMonth >= 8);
+        const eligible = monthsBack > 1 || (monthsBack === 1 && dayOfMonth >= ARCHIVE_WINDOW_DAYS);
         if (!eligible) continue;
         const settle = monthSettlementStatus(appData.performance || {}, ym);
-        if (!settle.settled) continue;
+        if (settle.dayCount === 0 || !settle.settled) continue;
         // eslint-disable-next-line no-await-in-loop
         await pushMonth(ym, { auto: true });
       }
     })();
-    // Run once per session after data loads; pushMonth re-reads live state.
+    // Run once per session after data loads; each op re-reads live state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, loading, dataLoaded, isViewingAs, isAdmin]);
 
@@ -2963,7 +3182,9 @@ export default function App() {
     <PerformanceBoard
       performance={appData.performance}
       pushedMonths={appData.pushedMonths || []}
+      archivedDays={appData.archivedDays || {}}
       onPushMonth={pushMonth}
+      onUnlockDay={unlockDay}
       routes={appData.routes}
       employees={appData.employees}
       startOfWeek={startOfWeek}

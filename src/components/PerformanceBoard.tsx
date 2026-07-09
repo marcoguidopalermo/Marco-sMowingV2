@@ -55,7 +55,11 @@ interface PerformanceBoardProps {
   // Months already moved to their own performanceMonths/{YYYY-MM} sheet
   // (locked). onPushMonth moves a completed, fully-settled month there.
   pushedMonths: string[];
+  // Individual days rolling-archived to their month sheet (date → ms). A day
+  // is "archived/locked" if it is here OR its month is in pushedMonths.
+  archivedDays: Record<string, number>;
   onPushMonth: (ym: string) => Promise<boolean>;
+  onUnlockDay: (date: string) => Promise<boolean>;
   routes: Job[];
   employees: Employee[];
   startOfWeek: Date;
@@ -108,7 +112,9 @@ interface PerformanceBoardProps {
 export default function PerformanceBoard({
   performance,
   pushedMonths,
+  archivedDays,
   onPushMonth,
+  onUnlockDay,
   routes,
   employees,
   startOfWeek,
@@ -166,6 +172,7 @@ export default function PerformanceBoard({
 
   const [syncing, setSyncing] = useState(false);
   const [pushingMonth, setPushingMonth] = useState<string | null>(null);
+  const [unlockingDay, setUnlockingDay] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<SyncLogEntry | null>(null);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [divisionFilter, setDivisionFilter] = useState<'all' | 'lawn' | 'small' | 'large' | 'adhoc'>(
@@ -1282,6 +1289,39 @@ export default function PerformanceBoard({
                   return (
                     <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded ${settled ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
                       {approved} approved{waived > 0 ? ` · ${waived} waived` : ''}{outstanding > 0 ? ` · ${outstanding} outstanding` : ''} / {total}
+                    </span>
+                  );
+                })()}
+                {/* LOCKED badge — shows ONLY on ARCHIVED days (rolling day
+                    archive or a finalized month). NOT on merely-approved
+                    days (those keep their existing look — approval-locking is
+                    separate from archive-locking). Data stays fully viewable
+                    via the overlay; the badge signals view-only + why, with an
+                    admin-only Unlock. */}
+                {(() => {
+                  const isArchived = !!archivedDays[perfDate] || pushedMonths.includes(monthOfDate(perfDate));
+                  if (!isArchived) return null;
+                  const busy = unlockingDay === perfDate;
+                  return (
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded bg-slate-200 text-slate-600 inline-flex items-center gap-1" title="This day is archived to its month sheet (view-only). Data is fully preserved and still counts in reports/MTD.">
+                        <Archive className="w-3 h-3" /> Locked
+                      </span>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (!confirm(`Unlock ${perfDate}?\n\nThe day is copied back from its month sheet into the live data so you can correct it. It won't re-archive automatically for 72h (or until you re-approve). Un-approve the crew-day(s) to edit.`)) return;
+                            setUnlockingDay(perfDate);
+                            try { await onUnlockDay(perfDate); } finally { setUnlockingDay(null); }
+                          }}
+                          className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded inline-flex items-center gap-1 ${busy ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'}`}
+                          title="Admin: copy this day back into the doc to edit it"
+                        >
+                          <Unlock className="w-3 h-3" /> {busy ? 'Unlocking…' : 'Unlock'}
+                        </button>
+                      )}
                     </span>
                   );
                 })()}

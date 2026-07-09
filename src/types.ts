@@ -616,7 +616,9 @@ export type PerfActivityType =
   | 'approval_waived'
   | 'chunk_marked_paid'
   | 'chunk_payment_reversed'
-  | 'performance_month_pushed';
+  | 'performance_month_pushed'
+  | 'performance_day_archived'
+  | 'performance_day_unlocked';
 
 export interface PerfActivityEntry {
   id: string;
@@ -858,6 +860,19 @@ export interface AppData {
   // (no re-edit/re-approve, and the sync refuses to touch them). NO DATA
   // IS DELETED — the month's full data lives on its sheet. Format: 'YYYY-MM'.
   pushedMonths?: string[];
+  // Rolling partial push: individual SETTLED days of a not-yet-finalized
+  // month that have been archived to their month sheet (kept lean so the
+  // doc never hits the cap mid-month). Keyed by date 'YYYY-MM-DD' → archived
+  // timestamp (ms). Stripped from the doc write and overlaid back on read,
+  // exactly like pushedMonths but at day granularity. When a month is later
+  // finalized (whole-month push), its per-day entries here collapse into
+  // pushedMonths. NO DATA LOSS — the day lives on performanceMonths/{YYYY-MM}.
+  archivedDays?: Record<string, number>;
+  // Unlock race guard: an admin-unlocked archived day is stamped here
+  // (date → unlockedAt ms) so the very next cycle does NOT immediately
+  // re-archive it. Suppression ends when the grace period passes or the day
+  // is re-settled (see isArchiveSuppressed).
+  unlockedDays?: Record<string, number>;
   authorizedEmails: string[];
   supplies: string[];
   inspections: Inspection[];
