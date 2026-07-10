@@ -201,7 +201,13 @@ export default function ActivityLog({ activityLog, fleet }: ActivityLogProps) {
                         {actionLabel(a)}
                       </span>
                     </td>
-                    <td className="p-3 align-top text-sm font-medium text-slate-700">{a.unitName || <span className="italic text-slate-400">—</span>}</td>
+                    <td className="p-3 align-top text-sm font-medium text-slate-700">
+                      {a.unitName || <span className="italic text-slate-400">—</span>}
+                      {(() => {
+                        const rep = a.reportedBy?.name || a.userName;
+                        return rep ? <div className="text-[10px] text-slate-400 font-normal">Reported by {rep}</div> : null;
+                      })()}
+                    </td>
                     <td className="p-3 align-top text-sm">
                       {a.taskCategory ? (
                         <span className="inline-flex items-center gap-1.5">

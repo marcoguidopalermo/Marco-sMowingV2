@@ -225,6 +225,10 @@ export default function MyMechanicTaskModal({
             <div className="text-[11px] text-slate-500 mt-0.5 inline-flex items-center gap-1">
               <Clock className="w-3 h-3" /> Reported {formatReportedDate(task.dateReported)}
             </div>
+            {(() => {
+              const rep = task.reportedBy?.name || task.activity?.find(a => a.type === 'created')?.userName;
+              return rep ? <div className="text-[11px] text-slate-500 mt-0.5">Reported by <span className="font-bold text-slate-700">{rep}</span></div> : null;
+            })()}
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-2 rounded min-w-[44px] min-h-[44px] inline-flex items-center justify-center shrink-0" aria-label="Close">
             <X className="w-5 h-5" />

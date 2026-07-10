@@ -678,6 +678,10 @@ export default function MechanicBoard({
                     {task.description && task.description !== 'Unit marked Out of Service' && (
                       <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1 sm:line-clamp-2">{task.description}</div>
                     )}
+                    {(() => {
+                      const rep = task.reportedBy?.name || task.activity?.find(a => a.type === 'created')?.userName;
+                      return rep ? <div className="text-[10px] text-slate-400 mt-0.5">Reported by {rep}</div> : null;
+                    })()}
 
                     {/* Status indicators row: priority pill + parts
                         (button OR colored tag) + assign-to-me (only when

@@ -349,6 +349,9 @@ export interface TaskActivity {
   unitName?: string;
   taskCategory?: string;
   taskSeverity?: 'minor' | 'major';
+  // Reporter of the underlying repair, stamped onto each activity so the
+  // repair log shows "Reported by" even after the task itself is removed.
+  reportedBy?: { employeeId: string; name: string };
   payload?: Record<string, any>;
 }
 
@@ -372,6 +375,11 @@ export interface MechanicTask {
   dateReported: string;
   isMaintenance?: boolean;
   inspectionId?: string;
+  // Who reported the repair (may differ from who entered it — a manager
+  // can file on behalf of a crew member). Defaults to the enterer at
+  // creation. Backfill: entries without this fall back to their 'created'
+  // activity's userName for display.
+  reportedBy?: { employeeId: string; name: string };
   activity?: TaskActivity[];
   // Legacy single assignee. Kept for back-compat — readers prefer
   // `assignees` when it's present and fall back to this otherwise (see

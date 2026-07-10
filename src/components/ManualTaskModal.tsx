@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { PenTool, X, Flag } from 'lucide-react';
-import { FleetItem } from '../types';
+import { FleetItem, Employee } from '../types';
 import { fleetItemLabel } from '../lib/fleetUtils';
 
 export interface ManualTaskModalState {
@@ -11,17 +11,23 @@ export interface ManualTaskModalState {
   description: string;
   severity: string;
   priority?: boolean;
+  // Who reported the repair. Defaults to the enterer; changeable.
+  reportedByEmployeeId?: string;
 }
 
 interface ManualTaskModalProps {
   state: ManualTaskModalState;
   setState: Dispatch<SetStateAction<ManualTaskModalState>>;
   fleet: FleetItem[];
+  employees?: Employee[];
+  defaultReporterId?: string;   // the current user's employee id
   onSubmit: () => void | Promise<void>;
 }
 
-export default function ManualTaskModal({ state, setState, fleet, onSubmit }: ManualTaskModalProps) {
+export default function ManualTaskModal({ state, setState, fleet, employees = [], defaultReporterId, onSubmit }: ManualTaskModalProps) {
   if (!state.isOpen) return null;
+  const reporterId = state.reportedByEmployeeId ?? defaultReporterId ?? '';
+  const reporters = employees.filter(e => e.status === 'Active');
   return (
     <div className="fixed inset-0 bg-black/60 z-[110] flex md:items-center md:justify-center md:p-4">
       <div className="bg-white md:rounded-2xl shadow-2xl h-full md:h-auto w-full md:max-w-md overflow-hidden flex flex-col animate-in slide-in-from-bottom-8">
@@ -91,6 +97,21 @@ export default function ManualTaskModal({ state, setState, fleet, onSubmit }: Ma
               onChange={e => setState({ ...state, description: e.target.value })}
             />
           </div>
+
+          {reporters.length > 0 && (
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Reported by</label>
+              <select
+                className="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-lime-400"
+                value={reporterId}
+                onChange={e => setState({ ...state, reportedByEmployeeId: e.target.value })}
+              >
+                {!reporters.some(e => e.id === reporterId) && <option value={reporterId}>{reporterId ? '(you)' : '—'}</option>}
+                {reporters.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+              </select>
+              <div className="text-[10px] text-slate-400">Defaults to you — change if filing on someone's behalf.</div>
+            </div>
+          )}
 
           <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer bg-rose-50 border border-rose-200 px-3 py-2 rounded-xl">
             <input

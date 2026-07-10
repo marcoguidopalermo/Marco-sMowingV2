@@ -1294,7 +1294,7 @@ export default function App() {
   // --- TASK ACTIVITY HELPERS ---
   const makeActivity = (
     type: TaskActivityType,
-    task: Pick<MechanicTask, 'id' | 'unitId' | 'unitName' | 'category' | 'severity'>,
+    task: Pick<MechanicTask, 'id' | 'unitId' | 'unitName' | 'category' | 'severity' | 'reportedBy'>,
     payload?: Record<string, any>
   ): TaskActivity => ({
     id: `act-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
@@ -1307,6 +1307,9 @@ export default function App() {
     unitName: task.unitName,
     taskCategory: task.category,
     taskSeverity: task.severity,
+    // Carry the repair's reporter onto every activity so the log shows it
+    // even for completed repairs whose task row has been removed.
+    reportedBy: task.reportedBy,
     payload: isViewingAs ? { ...(payload || {}), viewAsRole } : payload,
   });
 
@@ -4720,7 +4723,15 @@ export default function App() {
         state={manualTaskModal}
         setState={setManualTaskModal}
         fleet={appData.fleet}
+        employees={appData.employees || []}
+        defaultReporterId={currentUserEmployee?.id}
         onSubmit={async () => {
+          // Resolve the reporter (defaults to the enterer's employee record).
+          const reporterId = (manualTaskModal as any).reportedByEmployeeId || currentUserEmployee?.id;
+          const reporterEmp = (appData.employees || []).find(e => e.id === reporterId);
+          const reportedBy = reporterEmp
+            ? { employeeId: reporterEmp.id, name: reporterEmp.name || displayName }
+            : { employeeId: currentUserEmployee?.id || '', name: displayName };
           const newTask: MechanicTask = {
             id: `task-${Date.now()}`,
             unitId: manualTaskModal.unitId || undefined,
@@ -4731,6 +4742,7 @@ export default function App() {
             severity: manualTaskModal.severity as any,
             status: 'todo',
             dateReported: formatDate(new Date()),
+            reportedBy,
             activity: [],
             priority: !!manualTaskModal.priority,
           };
