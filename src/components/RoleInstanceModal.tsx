@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { X, BookOpen, Check, SkipForward, Ban, UserCog, Layers } from 'lucide-react';
 import { Employee, RoleTaskInstance, RoleMasterDuty } from '../types';
+import SopText from './SopText';
 
 interface Props {
   instance: RoleTaskInstance;
@@ -47,7 +48,7 @@ export default function RoleInstanceModal({
         {duty?.sop && (
           <details className="px-5 py-3 border-b border-slate-100" open>
             <summary className="text-xs font-black uppercase tracking-widest text-slate-500 cursor-pointer flex items-center gap-1.5"><BookOpen className="w-3.5 h-3.5" /> How-to (SOP)</summary>
-            <pre className="mt-2 text-[12px] text-slate-700 whitespace-pre-wrap font-sans bg-slate-50 border border-slate-100 rounded p-2">{duty.sop}</pre>
+            <SopText text={duty.sop} className="mt-2 text-[12px] text-slate-700 bg-slate-50 border border-slate-100 rounded p-2" />
           </details>
         )}
 

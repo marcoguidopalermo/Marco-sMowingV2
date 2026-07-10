@@ -3,6 +3,7 @@ import { ClipboardList, Plus, Power, ChevronDown, ChevronRight, Pencil, UserCog,
 import {
   Employee, RoleMasterRole, RoleMasterDuty, RoleTaskInstance, RoleRecurrence, RoleInstanceStatus,
 } from '../types';
+import SopText from './SopText';
 
 interface RoleMasterProps {
   roles: Record<string, RoleMasterRole>;
@@ -35,6 +36,7 @@ export default function RoleMaster({
 }: RoleMasterProps) {
   const [tab, setTab] = useState<'directory' | 'manage' | 'history'>('directory');
   const [expandedRole, setExpandedRole] = useState<Record<string, boolean>>({});
+  const [expandedDuty, setExpandedDuty] = useState<Record<string, boolean>>({});
   const [editRole, setEditRole] = useState<RoleMasterRole | null>(null);
   const [editDuty, setEditDuty] = useState<RoleMasterDuty | null>(null);
 
@@ -74,13 +76,21 @@ export default function RoleMaster({
                 <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">{cat}</div>
                 <div className="space-y-1">
                   {byCat[cat].map(d => (
-                    <div key={d.id} className="flex items-center justify-between gap-2 text-sm border border-slate-100 rounded px-2 py-1.5">
-                      <div className="min-w-0">
-                        <span className="font-medium text-slate-700">{d.name}</span>
-                        {!d.active && <span className="ml-2 text-[9px] uppercase bg-slate-200 text-slate-500 px-1 rounded">off</span>}
-                        <div className="text-[11px] text-slate-400">{recurrenceLabel(d.recurrence)} · asks: “{d.notePrompt}”</div>
+                    <div key={d.id} className="text-sm border border-slate-100 rounded px-2 py-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="font-medium text-slate-700">{d.name}</span>
+                          {!d.active && <span className="ml-2 text-[9px] uppercase bg-slate-200 text-slate-500 px-1 rounded">off</span>}
+                          <div className="text-[11px] text-slate-400">{recurrenceLabel(d.recurrence)} · asks: “{d.notePrompt}”</div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {d.sop && <button onClick={() => setExpandedDuty(s => ({ ...s, [d.id]: !s[d.id] }))} className="text-[10px] font-bold text-indigo-600 border border-indigo-200 rounded px-1.5 py-0.5">SOP</button>}
+                          {isAdmin && <button onClick={() => setEditDuty(d)} className="text-slate-400 hover:text-slate-700"><Pencil className="w-3.5 h-3.5" /></button>}
+                        </div>
                       </div>
-                      {isAdmin && <button onClick={() => setEditDuty(d)} className="shrink-0 text-slate-400 hover:text-slate-700"><Pencil className="w-3.5 h-3.5" /></button>}
+                      {d.sop && expandedDuty[d.id] && (
+                        <SopText text={d.sop} className="mt-2 text-[12px] text-slate-700 bg-slate-50 border border-slate-100 rounded p-2" />
+                      )}
                     </div>
                   ))}
                 </div>
@@ -142,6 +152,12 @@ export default function RoleMaster({
                       <span className="font-medium text-slate-700">{i.title}</span>
                       <span className="text-[11px] text-slate-400 ml-2">{i.occurrenceDate} · {i.assignedTo?.name}</span>
                       {(i.completionNote || i.skipReason || i.voidReason) && <div className="text-[11px] text-slate-500 mt-0.5 italic">“{i.completionNote || i.skipReason || i.voidReason}”</div>}
+                      {i.sopSnapshot && (
+                        <details className="mt-1">
+                          <summary className="text-[10px] font-bold uppercase tracking-widest text-slate-400 cursor-pointer">SOP as followed</summary>
+                          <SopText text={i.sopSnapshot} className="mt-1 text-[11px] text-slate-600 bg-slate-50 border border-slate-100 rounded p-2" />
+                        </details>
+                      )}
                     </div>
                     <span className={`shrink-0 text-[10px] font-black uppercase px-1.5 py-0.5 rounded ${statusChip(i.status)}`}>{i.status.replace('_', ' ')}</span>
                   </div>
@@ -197,7 +213,13 @@ function DutyEditor({ duty, onClose, onSave }: { duty: RoleMasterDuty; onClose: 
       </Field>
       <Field label="Completion note prompt (required at completion)"><input value={d.notePrompt} onChange={e => setD({ ...d, notePrompt: e.target.value })} className="inp" placeholder="e.g. Pay period + exceptions" /></Field>
       <Field label="Due-soon window (days)"><input type="number" value={d.dueSoonDays} onChange={e => setD({ ...d, dueSoonDays: Number(e.target.value) || 0 })} className="inp w-24" /></Field>
-      <Field label="SOP (how-to)"><textarea value={d.sop} onChange={e => setD({ ...d, sop: e.target.value })} className="inp h-28 font-mono text-xs" placeholder="Step-by-step…" /></Field>
+      <Field label="SOP (how-to) — supports [label](https://…) and bare links"><textarea value={d.sop} onChange={e => setD({ ...d, sop: e.target.value })} className="inp h-28 font-mono text-xs" placeholder="Step-by-step… Full guide: [Payroll walkthrough](https://scribehow.com/…)" /></Field>
+      {d.sop.trim() && (
+        <div className="mb-3">
+          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Preview</div>
+          <SopText text={d.sop} className="text-[12px] text-slate-700 bg-slate-50 border border-slate-100 rounded p-2" />
+        </div>
+      )}
       <label className="flex items-center gap-2 text-sm mt-2"><input type="checkbox" checked={d.active} onChange={e => setD({ ...d, active: e.target.checked })} /> Active</label>
       <SaveBar onClose={onClose} disabled={!d.name.trim() || !d.notePrompt.trim() || !d.category.trim()} onSave={() => onSave({ ...d, updatedAt: Date.now() })} />
     </Modal>
