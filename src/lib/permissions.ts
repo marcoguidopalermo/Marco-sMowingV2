@@ -59,6 +59,8 @@ export const ROLE_PERMISSIONS = {
     canViewPerfActivityLog: true,
     canViewTaskMaster: true,
     canCreateTasks: true,
+    canViewRoleMaster: true,
+    canManageRoleMaster: true,
     canApproveTimeOff: true,
     canViewDashboard: true,
   },
@@ -122,6 +124,8 @@ export const ROLE_PERMISSIONS = {
     canViewPerfActivityLog: false,
     canViewTaskMaster: true,
     canCreateTasks: false,
+    canViewRoleMaster: true,
+    canManageRoleMaster: false,
     canApproveTimeOff: false,
     canViewDashboard: true,
   },
@@ -183,6 +187,8 @@ export const ROLE_PERMISSIONS = {
     canViewPerfActivityLog: false,
     canViewTaskMaster: false,
     canCreateTasks: false,
+    canViewRoleMaster: true,
+    canManageRoleMaster: false,
     canApproveTimeOff: false,
     canViewDashboard: false,
   },
@@ -244,6 +250,8 @@ export const ROLE_PERMISSIONS = {
     canViewPerfActivityLog: false,
     canViewTaskMaster: false,
     canCreateTasks: false,
+    canViewRoleMaster: true,
+    canManageRoleMaster: false,
     canApproveTimeOff: false,
     canViewDashboard: false,
   },
@@ -307,6 +315,8 @@ export const ROLE_PERMISSIONS = {
     canViewPerfActivityLog: false,
     canViewTaskMaster: false,
     canCreateTasks: false,
+    canViewRoleMaster: true,
+    canManageRoleMaster: false,
     canApproveTimeOff: false,
     canViewDashboard: false,
   },
@@ -364,9 +374,9 @@ export function resolveRole(employee: Employee | null | undefined): UserRole {
   return employee.systemRole || 'worker';
 }
 
-export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'dashboard' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster';
+export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'dashboard' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster' | 'rolemaster';
 
-export const APP_VIEW_ORDER: AppView[] = ['schedule', 'mechanic', 'mymechanic', 'performance', 'dashboard', 'mycrew', 'timemaster', 'bulletins', 'taskmaster'];
+export const APP_VIEW_ORDER: AppView[] = ['schedule', 'mechanic', 'mymechanic', 'performance', 'dashboard', 'mycrew', 'timemaster', 'bulletins', 'taskmaster', 'rolemaster'];
 
 export function canAccessView(view: AppView, role: UserRole | null | undefined): boolean {
   switch (view) {
@@ -389,6 +399,7 @@ export function canAccessView(view: AppView, role: UserRole | null | undefined):
     case 'timemaster': return can('canViewOwnTimeMaster', role) || can('canViewAllTimeMaster', role) || can('canApproveTimeOff', role);
     case 'bulletins': return can('canViewBulletins', role);
     case 'taskmaster': return can('canViewTaskMaster', role);
+    case 'rolemaster': return can('canViewRoleMaster', role);
   }
 }
 

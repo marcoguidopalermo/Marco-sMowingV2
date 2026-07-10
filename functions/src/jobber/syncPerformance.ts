@@ -10,6 +10,7 @@ import {
 } from "./oauth.js";
 import {makeJobberClient, JobberClient, sleep} from "./client.js";
 import {runArchivePass} from "./archive.js";
+import {runRoleGeneration} from "./roleMaster.js";
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -2608,6 +2609,18 @@ async function runPerformanceSync(args: {
           error: err instanceof Error ? err.message : String(err),
         });
         summary.warnings.push("archive_pass_error");
+      }
+      // RoleMaster generation — sibling to the archive pass, gated by the
+      // master toggle (default OFF). Isolated: never fails the sync.
+      try {
+        await runRoleGeneration(
+          db, APP_ID, formatTodayInToronto(), Date.now(), summary.warnings,
+        );
+      } catch (err) {
+        logger.warn("role generation failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        summary.warnings.push("role_generation_error");
       }
     }
 

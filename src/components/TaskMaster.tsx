@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import { CheckSquare, Plus, ChevronDown, ChevronUp, MessageSquare, Flame, Check } from 'lucide-react';
-import { TaskMasterTask, Employee } from '../types';
+import { CheckSquare, Plus, ChevronDown, ChevronUp, MessageSquare, Flame, Check, ClipboardList } from 'lucide-react';
+import { TaskMasterTask, Employee, RoleTaskInstance, RoleMasterDuty } from '../types';
 import { personColor } from '../lib/personColor';
 import Stamp from './Stamp';
 
@@ -13,6 +13,10 @@ interface TaskMasterProps {
   onOpenTask: (taskId: string) => void;
   // One-tap complete from an open task card → status 'done' + completedAt.
   onComplete: (taskId: string) => void;
+  // RoleMaster generated duty instances (open only) rendered in the SAME list.
+  roleInstances?: RoleTaskInstance[];
+  duties?: Record<string, RoleMasterDuty>;
+  onOpenRoleInstance?: (id: string) => void;
 }
 
 type SortKey = 'due' | 'created' | 'priority';
@@ -37,6 +41,18 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+// Stack open role instances by dutyId → one representative (earliest due) +
+// count of outstanding, so multiple missed occurrences of a duty collapse.
+interface RoleGroup { rep: RoleTaskInstance; count: number; }
+function stackRoleInstances(list: RoleTaskInstance[]): RoleGroup[] {
+  const byDuty: Record<string, RoleTaskInstance[]> = {};
+  for (const i of list) (byDuty[i.dutyId] = byDuty[i.dutyId] || []).push(i);
+  return Object.values(byDuty).map(arr => {
+    arr.sort((a, b) => (a.dueDate || 0) - (b.dueDate || 0));
+    return { rep: arr[0], count: arr.length };
+  });
+}
+
 export default function TaskMaster({
   tasks,
   canCreate,
@@ -44,6 +60,9 @@ export default function TaskMaster({
   onOpenCreate,
   onOpenTask,
   onComplete,
+  roleInstances = [],
+  duties = {},
+  onOpenRoleInstance,
 }: TaskMasterProps) {
   const [sortKey, setSortKey] = useState<SortKey>('due');
   const [notStartedOpen, setNotStartedOpen] = useState(true);
@@ -91,6 +110,55 @@ export default function TaskMaster({
     return { notStarted: ns, done: dn };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, sortKey]);
+
+  const roleGroups = useMemo(() => stackRoleInstances(roleInstances), [roleInstances]);
+  // Due-soon banner: open duties due within their dueSoonDays window (or overdue).
+  const dueSoonCount = useMemo(() => {
+    const now = Date.now();
+    return roleInstances.filter(i => {
+      const win = (i.dueSoonDays ?? 2) * DAY_MS;
+      return (i.dueDate || 0) - now <= win;   // due within window OR overdue
+    }).length;
+  }, [roleInstances]);
+
+  // A role-duty row (stacked). Urgency: overdue red, due-today/soon amber,
+  // else slate — reusing the same tone vocabulary as regular tasks.
+  const renderRoleRow = (g: RoleGroup) => {
+    const inst = g.rep;
+    const duty = duties[inst.dutyId];
+    const due = formatDueDate(inst.dueDate);
+    const dueSoon = !due.tone.includes('red') && (inst.dueDate - Date.now() <= (inst.dueSoonDays ?? 2) * DAY_MS);
+    const tone = due.tone === 'red' ? 'bg-rose-50 text-rose-700 border-rose-200'
+      : (dueSoon || due.tone === 'amber') ? 'bg-amber-50 text-amber-700 border-amber-200'
+        : 'bg-slate-50 text-slate-600 border-slate-200';
+    const firstName = (inst.assignedTo?.name || '').split(/\s+/)[0] || '?';
+    const color = personColor(inst.assignedTo?.email);
+    return (
+      <div key={`role-${inst.dutyId}`} role="button" tabIndex={0}
+        onClick={() => onOpenRoleInstance?.(inst.id)}
+        onKeyDown={(e) => { if (e.key === 'Enter') onOpenRoleInstance?.(inst.id); }}
+        className="relative w-full text-left p-3 rounded-lg border shadow-sm hover:shadow cursor-pointer bg-white border-indigo-200">
+        <div className="flex items-start gap-3">
+          <div className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-white ${color}`}><ClipboardList className="w-4 h-4" /></div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border bg-indigo-50 text-indigo-700 border-indigo-200">Role duty{duty?.category ? ` · ${duty.category}` : ''}</span>
+              <span className="text-sm font-bold text-slate-800 truncate">{inst.title}</span>
+              {g.count > 1 && <span className="text-[10px] font-black bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded-full">{g.count} outstanding</span>}
+            </div>
+            <div className="text-[11px] font-medium text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
+              <span className={`inline-flex text-white text-[10px] font-bold px-1.5 py-0.5 rounded ${color}`}>{firstName}</span>
+              <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${tone}`}>{due.label}</span>
+            </div>
+          </div>
+          <button type="button" onClick={(e) => { e.stopPropagation(); onOpenRoleInstance?.(inst.id); }}
+            className="shrink-0 inline-flex items-center gap-1.5 min-h-[40px] px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black uppercase tracking-widest">
+            <Check className="w-4 h-4" /> Log
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   const renderRow = (t: TaskMasterTask) => {
     const firstName = (t.assignedTo?.name || '').split(/\s+/)[0] || (t.assignedTo?.email || '').split('@')[0];
@@ -226,7 +294,34 @@ export default function TaskMaster({
           </div>
         </div>
 
-        <Section title="Open" items={notStarted} isOpen={notStartedOpen} setOpen={setNotStartedOpen} emptyMsg="Nothing open." />
+        {dueSoonCount > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 text-sm font-bold text-amber-800 flex items-center gap-2">
+            <ClipboardList className="w-4 h-4" /> {dueSoonCount} role {dueSoonCount === 1 ? 'duty is' : 'duties are'} due soon or overdue.
+          </div>
+        )}
+        {/* OPEN — regular tasks + role-duty groups interleaved by due date. */}
+        <section className="bg-white rounded-xl shadow-sm border border-slate-200">
+          <button type="button" onClick={() => setNotStartedOpen(!notStartedOpen)} className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-black uppercase tracking-widest text-slate-700">Open</span>
+              <span className="text-[10px] font-bold text-slate-400">{notStarted.length + roleGroups.length}</span>
+            </div>
+            {notStartedOpen ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+          </button>
+          {notStartedOpen && (
+            <div className="border-t border-slate-100 p-3 space-y-2">
+              {(() => {
+                const rows: { due: number; node: React.ReactNode }[] = [
+                  ...notStarted.map(t => ({ due: typeof t.dueDate === 'number' ? t.dueDate : Number.MAX_SAFE_INTEGER, node: renderRow(t) })),
+                  ...roleGroups.map(g => ({ due: g.rep.dueDate || 0, node: renderRoleRow(g) })),
+                ].sort((a, b) => a.due - b.due);
+                return rows.length === 0
+                  ? <div className="text-xs text-slate-400 italic text-center py-2">Nothing open.</div>
+                  : rows.map((r, i) => <div key={i}>{r.node}</div>);
+              })()}
+            </div>
+          )}
+        </section>
         <Section title="Done · last 30 days" items={done} isOpen={doneOpen} setOpen={setDoneOpen} emptyMsg="No completed tasks in the past 30 days." />
       </div>
     </div>

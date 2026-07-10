@@ -794,6 +794,10 @@ export interface AppSettings {
   // Admin-editable allowance table. When absent, the default
   // (1-2 → 0%, 3 → 10%, 4 → 15%, 5+ → 20%) applies.
   crewSizeAllowance?: CrewSizeAllowanceRow[];
+  // RoleMaster MASTER TOGGLE. Default OFF (undefined/false) for beta — the
+  // server-side duty→task generator produces NOTHING until an admin flips
+  // this on. Per-role and per-duty `active` flags gate further.
+  roleMasterGenerationEnabled?: boolean;
 }
 
 export type BulletinAudienceRole = 'admin' | 'manager' | 'foreman' | 'mechanic' | 'worker';
@@ -839,6 +843,79 @@ export interface BulletinPost {
   author: string;
   audience?: BulletinAudienceRole[];
   isAdminOnly?: boolean;
+}
+
+// ── RoleMaster ──────────────────────────────────────────────────────────
+// Roles + recurring duties + generated task instances. All three live in
+// subcollections (roleMaster/roles, /duties, /taskInstances) — nothing
+// unbounded enters the 1 MiB-capped appData doc. Terminal instances are
+// retained forever as the accountability record.
+
+export type RoleRecurrenceKind = 'weekly' | 'biweekly' | 'monthly';
+export interface RoleRecurrence {
+  kind: RoleRecurrenceKind;
+  // weekly / biweekly: 0=Sun..6=Sat.
+  dayOfWeek?: number;
+  // biweekly: the reference date (YYYY-MM-DD) every 14 days counts from.
+  anchorDate?: string;
+  // monthly: 1..31, or 'last' for the last calendar day.
+  dayOfMonth?: number | 'last';
+}
+
+export interface RoleMasterRole {
+  id: string;
+  name: string;
+  description?: string;
+  assignedEmployeeId?: string;
+  division?: string;
+  createdBy?: { email: string; name: string };
+  tier: 'admin';              // v1: admin-defined only
+  active: boolean;
+  updatedAt?: number;
+}
+
+export interface RoleMasterDuty {
+  id: string;
+  name: string;
+  category: string;           // visual grouping label (Payroll, Bookkeeping…)
+  sop: string;                // how-to (markdown)
+  notePrompt: string;         // REQUIRED completion question
+  recurrence: RoleRecurrence;
+  dueSoonDays: number;        // amber window before due (default 2)
+  roleId: string;
+  division?: string;
+  tier: 'admin';
+  active: boolean;
+  lastGeneratedThrough?: string;  // YYYY-MM-DD cursor advanced by the engine
+  updatedAt?: number;
+}
+
+export type RoleInstanceStatus =
+  | 'open' | 'done' | 'done_late' | 'skipped' | 'missed' | 'voided';
+
+// TaskMasterTask-compatible so it can render in the same unified list.
+export interface RoleTaskInstance {
+  id: string;                 // `${dutyId}-${YYYY-MM-DD}`
+  title: string;
+  assignedTo: { employeeId: string; email: string; name: string };
+  createdAt: number;
+  dueDate: number;            // ms — occurrence date end-of-day
+  status: RoleInstanceStatus;
+  // RoleMaster linkage + accountability fields.
+  dutyId: string;
+  roleId: string;
+  category?: string;
+  occurrenceDate: string;     // YYYY-MM-DD
+  generated: true;
+  dueSoonDays?: number;
+  completedAt?: number;
+  completionNote?: string;
+  sopSnapshot?: string;       // SOP text frozen at completion (history fidelity)
+  skipReason?: string;
+  voidReason?: string;
+  resolvedAt?: number;
+  resolvedBy?: { email: string; name: string };
+  reassignedTo?: { employeeId: string; email: string; name: string };
 }
 
 // ── Trends / monthly summaries ──────────────────────────────────────────
@@ -988,6 +1065,11 @@ export interface AppData {
   // the user's normalized email. Compared against each bulletin's
   // `createdAt` to compute the unread-count badge on the nav item.
   bulletinReads?: Record<string, number>;
+  // RoleMaster — overlaid live from their subcollections (roleMaster/*),
+  // never written into the appData doc. Read-only mirrors for the UI.
+  roleMasterRoles?: Record<string, RoleMasterRole>;
+  roleMasterDuties?: Record<string, RoleMasterDuty>;
+  roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of
   // multiDayJobs in the next sync so legacy jobId-keyed entries don't mix

@@ -22,7 +22,8 @@ import {
   TaskActivity, TaskActivityType, BulletinAudienceRole, TaskNote, UnitNote, AppSettings, UserRole, RolePermissionsOverride, JobberUser, PrimaryCrew, PRIMARY_CREWS,
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
-  TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary
+  TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary,
+  RoleMasterRole, RoleMasterDuty, RoleTaskInstance
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
@@ -57,6 +58,8 @@ import TimeMasterWidget from './components/TimeMasterWidget';
 import TaskMaster from './components/TaskMaster';
 import CreateTaskModal, { type CreateTaskSubmit } from './components/CreateTaskModal';
 import TaskDetailModal from './components/TaskDetailModal';
+import RoleMaster from './components/RoleMaster';
+import RoleInstanceModal from './components/RoleInstanceModal';
 import RequestTimeOffModal, { type RequestTimeOffSubmit } from './components/RequestTimeOffModal';
 
 // --- CUSTOM ICONS ---
@@ -189,6 +192,10 @@ export default function App() {
   // Trends: monthlySummaries subcollection, overlaid like multiDayJobs. Not
   // stored in the appData doc — a live map merged in on every render.
   const subMonthlySummariesRef = useRef<Record<string, MonthlySummary>>({});
+  // RoleMaster — three subcollections, overlaid like the others.
+  const subRoleMasterRolesRef = useRef<Record<string, RoleMasterRole>>({});
+  const subRoleMasterDutiesRef = useRef<Record<string, RoleMasterDuty>>({});
+  const subRoleTaskInstancesRef = useRef<Record<string, RoleTaskInstance>>({});
   const mergePerformance = (
     docPerf: Record<string, Record<string, PerformanceLog>>,
     monthOverlay: Record<string, Record<string, PerformanceLog>>,
@@ -849,6 +856,9 @@ export default function App() {
           unlockedDays: data.unlockedDays || {},
           // Trends summaries live in a subcollection, overlaid via the ref.
           monthlySummaries: subMonthlySummariesRef.current,
+          roleMasterRoles: subRoleMasterRolesRef.current,
+          roleMasterDuties: subRoleMasterDutiesRef.current,
+          roleTaskInstances: subRoleTaskInstancesRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -1097,6 +1107,28 @@ export default function App() {
       },
       (err) => { console.error('scheduleMonths subcollection listen error:', err); },
     );
+  }, [user]);
+
+  // RoleMaster: roles, duties, and generated task instances — each its own
+  // subcollection, overlaid live (never in the appData doc).
+  useEffect(() => {
+    if (!user) return;
+    const mk = <T extends { id?: string }>(
+      name: string, ref: React.MutableRefObject<Record<string, T>>, key: keyof AppData,
+    ) => onSnapshot(
+      collection(db, 'artifacts', appId, 'public', 'data', name),
+      (snap) => {
+        const map: Record<string, T> = {};
+        snap.forEach((d) => { const v = d.data() as T; if (v && v.id) map[v.id] = v; });
+        ref.current = map;
+        setAppData((prev) => ({ ...prev, [key]: map }));
+      },
+      (err) => { console.error(`${name} subcollection listen error:`, err); },
+    );
+    const u1 = mk('roleMasterRoles', subRoleMasterRolesRef, 'roleMasterRoles');
+    const u2 = mk('roleMasterDuties', subRoleMasterDutiesRef, 'roleMasterDuties');
+    const u3 = mk('roleTaskInstances', subRoleTaskInstancesRef, 'roleTaskInstances');
+    return () => { u1(); u2(); u3(); };
   }, [user]);
 
   useEffect(() => {
@@ -2000,6 +2032,76 @@ export default function App() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, loading, dataLoaded, isViewingAs, appData.pushedMonths]);
+
+  // ── RoleMaster handlers ─────────────────────────────────────────────
+  // Roles/duties/instances live in their own subcollections; these write
+  // directly (like the month sheets), never touching the appData doc.
+  const roleColl = (name: string) => collection(db, 'artifacts', appId, 'public', 'data', name);
+  const cleanRM = (o: any) => JSON.parse(JSON.stringify(o, (_k, v) => v === undefined ? null : v));
+  const saveRoleMasterRole = async (r: RoleMasterRole) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    await setDoc(doc(roleColl('roleMasterRoles'), r.id), cleanRM({ ...r, createdBy: r.createdBy || { email: displayEmail, name: displayName } }));
+    showToastMsg('Role saved.');
+  };
+  const saveRoleMasterDuty = async (d: RoleMasterDuty) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    await setDoc(doc(roleColl('roleMasterDuties'), d.id), cleanRM(d));
+    showToastMsg('Duty saved.');
+  };
+  const setRoleMasterMaster = async (enabled: boolean) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), roleMasterGenerationEnabled: enabled } });
+    showToastMsg(enabled ? 'Duty generation ON.' : 'Duty generation OFF.');
+  };
+  const [roleInstanceModalId, setRoleInstanceModalId] = useState<string | null>(null);
+  const resolveInstance = async (id: string, patch: Partial<RoleTaskInstance>) => {
+    await setDoc(doc(roleColl('roleTaskInstances'), id), cleanRM(patch), { merge: true } as any);
+  };
+  const completeRoleInstance = async (id: string, note: string) => {
+    if (isViewingAs) { showToastMsg('View Only.'); return; }
+    const inst = appData.roleTaskInstances?.[id]; if (!inst) return;
+    if (!note.trim()) { showToastMsg('A completion note is required.'); return; }
+    const duty = appData.roleMasterDuties?.[inst.dutyId];
+    const now = Date.now();
+    const late = now > (inst.dueDate || 0) + 86400000;  // past end of due day
+    await resolveInstance(id, {
+      status: late ? 'done_late' : 'done', completedAt: now, completionNote: note.trim(),
+      sopSnapshot: duty?.sop, resolvedAt: now, resolvedBy: { email: displayEmail, name: displayName },
+    });
+    logPerfActivity({ type: 'ah_manually_edited', targetDate: inst.occurrenceDate, crewId: 'rolemaster', crewLabel: inst.title, userId: user?.uid || displayEmail, userName: displayName, userRole: effectiveRole, valueLabel: 'duty', reasonNote: `Completed${late ? ' (late)' : ''}: ${note.trim()}` });
+    setRoleInstanceModalId(null); showToastMsg('Duty completed.');
+  };
+  const skipRoleInstance = async (id: string, reason: string) => {
+    if (isViewingAs) { showToastMsg('View Only.'); return; }
+    if (!reason.trim()) { showToastMsg('A reason is required to skip.'); return; }
+    await resolveInstance(id, { status: 'skipped', skipReason: reason.trim(), resolvedAt: Date.now(), resolvedBy: { email: displayEmail, name: displayName } });
+    setRoleInstanceModalId(null); showToastMsg('Duty skipped.');
+  };
+  const voidRoleInstance = async (id: string, reason: string) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    if (!reason.trim()) { showToastMsg('A reason is required to void.'); return; }
+    await resolveInstance(id, { status: 'voided', voidReason: reason.trim(), resolvedAt: Date.now(), resolvedBy: { email: displayEmail, name: displayName } });
+    setRoleInstanceModalId(null); showToastMsg('Duty voided.');
+  };
+  const reassignRoleInstance = async (id: string, employeeId: string) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    const emp = appData.employees.find(e => e.id === employeeId); if (!emp) return;
+    const to = { employeeId: emp.id, email: (emp.linkedUserEmail || emp.email || '').toLowerCase(), name: emp.name || emp.id };
+    await resolveInstance(id, { assignedTo: to, reassignedTo: to });
+    showToastMsg(`Reassigned to ${emp.name}.`);
+  };
+  const batchCompleteRoleInstances = async (ids: string[], note: string) => {
+    if (isViewingAs) { showToastMsg('View Only.'); return; }
+    if (!note.trim()) { showToastMsg('A completion note is required.'); return; }
+    const now = Date.now();
+    for (const id of ids) {
+      const inst = appData.roleTaskInstances?.[id]; if (!inst) continue;
+      const duty = appData.roleMasterDuties?.[inst.dutyId];
+      // eslint-disable-next-line no-await-in-loop
+      await resolveInstance(id, { status: 'done_late', completedAt: now, completionNote: note.trim(), sopSnapshot: duty?.sop, resolvedAt: now, resolvedBy: { email: displayEmail, name: displayName } });
+    }
+    setRoleInstanceModalId(null); showToastMsg(`Caught up ${ids.length} duties.`);
+  };
 
   const handleCopyDay = (dateString: string) => {
     if (!can('canCopyDay', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
@@ -3667,6 +3769,11 @@ export default function App() {
                 Tasks
               </button>
             )}
+            {canAccessView('rolemaster', effectiveRole) && (
+              <button onClick={() => setCurrentView('rolemaster')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'rolemaster' ? 'bg-white shadow-sm text-slate-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}>
+                <ClipboardList className="w-4 h-4" /> RoleMaster
+              </button>
+            )}
             {canAccessView('schedule', effectiveRole) && canEditSchedule && (
               <button
                 onClick={() => {
@@ -4133,6 +4240,28 @@ export default function App() {
             const next: TaskMasterTask = { ...existing, status: 'done', completedAt: Date.now() };
             syncToCloud({ ...appData, tasks: { ...(appData.tasks || {}), [taskId]: next } });
           }}
+          // RoleMaster: generated duty instances render in this same list.
+          // Admins see all open instances; everyone else sees their own.
+          roleInstances={(() => {
+            const me = (displayEmail || '').trim().toLowerCase();
+            return Object.values(appData.roleTaskInstances || {})
+              .filter(i => i.status === 'open')
+              .filter(i => isAdmin || (i.assignedTo?.email || '').toLowerCase() === me);
+          })()}
+          duties={appData.roleMasterDuties || {}}
+          onOpenRoleInstance={(id) => setRoleInstanceModalId(id)}
+        />
+      ) : currentView === 'rolemaster' ? (
+        <RoleMaster
+          roles={appData.roleMasterRoles || {}}
+          duties={appData.roleMasterDuties || {}}
+          instances={appData.roleTaskInstances || {}}
+          employees={appData.employees || []}
+          isAdmin={isAdmin}
+          masterEnabled={!!appData.settings?.roleMasterGenerationEnabled}
+          onSetMasterEnabled={setRoleMasterMaster}
+          onSaveRole={saveRoleMasterRole}
+          onSaveDuty={saveRoleMasterDuty}
         />
       ) : (
         <ScheduleBoard
@@ -4984,6 +5113,35 @@ export default function App() {
           showToastMsg('Task deleted.');
         }}
       />
+
+      {/* ROLEMASTER INSTANCE MODAL — SOP + required note completion, skip,
+          void (admin), reassign (admin), and batch catch-up of a duty's
+          outstanding instances. */}
+      {roleInstanceModalId && (() => {
+        const inst = (appData.roleTaskInstances || {})[roleInstanceModalId];
+        if (!inst) return null;
+        const duty = (appData.roleMasterDuties || {})[inst.dutyId];
+        const role = (appData.roleMasterRoles || {})[inst.roleId];
+        const outstanding = Object.values(appData.roleTaskInstances || {})
+          .filter(i => i.dutyId === inst.dutyId && i.status === 'open')
+          .sort((a, b) => (a.dueDate || 0) - (b.dueDate || 0));
+        return (
+          <RoleInstanceModal
+            instance={inst}
+            duty={duty}
+            roleName={role?.name}
+            outstanding={outstanding}
+            employees={appData.employees || []}
+            isAdmin={isAdmin}
+            onClose={() => setRoleInstanceModalId(null)}
+            onComplete={(note) => completeRoleInstance(inst.id, note)}
+            onSkip={(reason) => skipRoleInstance(inst.id, reason)}
+            onVoid={(reason) => voidRoleInstance(inst.id, reason)}
+            onReassign={(empId) => reassignRoleInstance(inst.id, empId)}
+            onBatchComplete={(ids, note) => batchCompleteRoleInstances(ids, note)}
+          />
+        );
+      })()}
 
       {/* MYMECHANIC TASK DETAIL MODAL — opens in place over MyMechanic.
           Looks up the live task by id every render so status/assignee/notes
