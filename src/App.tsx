@@ -91,6 +91,7 @@ import {
   SHEET_SIZE_WARN_BYTES,
 } from './lib/performanceMonths';
 import { buildMonthlySummary } from './lib/monthlySummary';
+import { nextUnusedColorKey } from './lib/roleCategories';
 import { callGeminiWithRetry } from './lib/gemini';
 
 import {
@@ -2046,7 +2047,19 @@ export default function App() {
   const saveRoleMasterDuty = async (d: RoleMasterDuty) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
     await setDoc(doc(roleColl('roleMasterDuties'), d.id), cleanRM(d));
+    // New category → auto-assign the next unused palette color (bounded map
+    // in settings; persisted only when the category isn't mapped yet).
+    const cat = (d.category || '').trim();
+    const map = appData.settings?.roleMasterCategoryColors || {};
+    if (cat && !map[cat]) {
+      await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), roleMasterCategoryColors: { ...map, [cat]: nextUnusedColorKey(map) } } });
+    }
     showToastMsg('Duty saved.');
+  };
+  const setRoleCategoryColor = async (category: string, colorKey: string) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    const map = appData.settings?.roleMasterCategoryColors || {};
+    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), roleMasterCategoryColors: { ...map, [category]: colorKey } } });
   };
   const setRoleMasterMaster = async (enabled: boolean) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
@@ -4249,6 +4262,7 @@ export default function App() {
               .filter(i => isAdmin || (i.assignedTo?.email || '').toLowerCase() === me);
           })()}
           duties={appData.roleMasterDuties || {}}
+          categoryColors={appData.settings?.roleMasterCategoryColors || {}}
           onOpenRoleInstance={(id) => setRoleInstanceModalId(id)}
         />
       ) : currentView === 'rolemaster' ? (
@@ -4262,6 +4276,8 @@ export default function App() {
           onSetMasterEnabled={setRoleMasterMaster}
           onSaveRole={saveRoleMasterRole}
           onSaveDuty={saveRoleMasterDuty}
+          categoryColors={appData.settings?.roleMasterCategoryColors || {}}
+          onSetCategoryColor={setRoleCategoryColor}
         />
       ) : (
         <ScheduleBoard
@@ -5133,6 +5149,7 @@ export default function App() {
             outstanding={outstanding}
             employees={appData.employees || []}
             isAdmin={isAdmin}
+            categoryColors={appData.settings?.roleMasterCategoryColors || {}}
             onClose={() => setRoleInstanceModalId(null)}
             onComplete={(note) => completeRoleInstance(inst.id, note)}
             onSkip={(reason) => skipRoleInstance(inst.id, reason)}

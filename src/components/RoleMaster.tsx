@@ -3,6 +3,7 @@ import { ClipboardList, Plus, Power, ChevronDown, ChevronRight, Pencil, UserCog,
 import {
   Employee, RoleMasterRole, RoleMasterDuty, RoleTaskInstance, RoleRecurrence, RoleInstanceStatus,
 } from '../types';
+import { categoryColor, CATEGORY_PALETTE } from '../lib/roleCategories';
 import SopText from './SopText';
 
 interface RoleMasterProps {
@@ -15,6 +16,18 @@ interface RoleMasterProps {
   onSetMasterEnabled: (v: boolean) => void;
   onSaveRole: (r: RoleMasterRole) => void;
   onSaveDuty: (d: RoleMasterDuty) => void;
+  categoryColors: Record<string, string>;
+  onSetCategoryColor: (category: string, colorKey: string) => void;
+}
+
+// Small toggle switch (admin active/inactive control).
+function Toggle({ on, onChange, title }: { on: boolean; onChange: () => void; title?: string }) {
+  return (
+    <button type="button" title={title} onClick={(e) => { e.stopPropagation(); onChange(); }}
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${on ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${on ? 'translate-x-4' : 'translate-x-0.5'}`} />
+    </button>
+  );
 }
 
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -33,10 +46,12 @@ const statusChip = (s: RoleInstanceStatus): string => ({
 
 export default function RoleMaster({
   roles, duties, instances, employees, isAdmin, masterEnabled, onSetMasterEnabled, onSaveRole, onSaveDuty,
+  categoryColors, onSetCategoryColor,
 }: RoleMasterProps) {
   const [tab, setTab] = useState<'directory' | 'manage' | 'history'>('directory');
   const [expandedRole, setExpandedRole] = useState<Record<string, boolean>>({});
   const [expandedDuty, setExpandedDuty] = useState<Record<string, boolean>>({});
+  const [showInactive, setShowInactive] = useState(true);   // admin-only control
   const [editRole, setEditRole] = useState<RoleMasterRole | null>(null);
   const [editDuty, setEditDuty] = useState<RoleMasterDuty | null>(null);
 
@@ -44,25 +59,30 @@ export default function RoleMaster({
   const roleList = useMemo(() => Object.values(roles).sort((a, b) => a.name.localeCompare(b.name)), [roles]);
   const dutiesOf = (roleId: string) => Object.values(duties).filter(d => d.roleId === roleId);
 
-  const RoleCard = ({ role }: { role: RoleMasterRole }) => {
+  const RoleCard = ({ role, manage }: { role: RoleMasterRole; manage?: boolean }) => {
     const open = !!expandedRole[role.id];
-    const rd = dutiesOf(role.id);
+    // Duty visibility: everyone sees active; admins additionally see inactive
+    // (dimmed) unless they hide them via the filter.
+    const rd = dutiesOf(role.id).filter(d => d.active || (isAdmin && showInactive));
     const byCat: Record<string, RoleMasterDuty[]> = {};
     for (const d of rd) (byCat[d.category] = byCat[d.category] || []).push(d);
     return (
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
-        <button type="button" onClick={() => setExpandedRole(s => ({ ...s, [role.id]: !s[role.id] }))}
-          className="w-full text-left p-4 flex items-center justify-between gap-3 hover:bg-slate-50">
-          <div className="min-w-0">
+      <div className={`bg-white rounded-xl border shadow-sm ${role.active ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
+        <div className="p-4 flex items-center justify-between gap-3">
+          <button type="button" onClick={() => setExpandedRole(s => ({ ...s, [role.id]: !s[role.id] }))} className="min-w-0 text-left flex-1">
             <div className="flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full ${role.active ? 'bg-emerald-500' : 'bg-slate-300'}`} title={role.active ? 'Active' : 'Inactive'} />
               <span className="text-base font-bold text-slate-800">{role.name}</span>
-              {!role.active && <span className="text-[10px] font-black uppercase bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded">inactive</span>}
+              {!role.active && <span className="text-[10px] font-black uppercase bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded">Inactive</span>}
             </div>
             {role.description && <div className="text-xs text-slate-500 mt-0.5">{role.description}</div>}
-            <div className="text-[11px] text-slate-600 mt-1"><UserCog className="w-3 h-3 inline mr-1" />Held by <b>{empName(role.assignedEmployeeId)}</b> · {rd.length} duties</div>
+            <div className="text-[11px] text-slate-600 mt-1"><UserCog className="w-3 h-3 inline mr-1" />Held by <b>{empName(role.assignedEmployeeId)}</b> · {dutiesOf(role.id).length} duties</div>
+          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {isAdmin && manage && <Toggle on={role.active} onChange={() => onSaveRole({ ...role, active: !role.active, updatedAt: Date.now() })} title="Active" />}
+            <button type="button" onClick={() => setExpandedRole(s => ({ ...s, [role.id]: !s[role.id] }))}>{open ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}</button>
           </div>
-          {open ? <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />}
-        </button>
+        </div>
         {open && (
           <div className="border-t border-slate-100 p-4 space-y-3">
             {isAdmin && (
@@ -71,20 +91,26 @@ export default function RoleMaster({
                 <button onClick={() => setEditDuty({ id: uid('duty'), name: '', category: Object.keys(byCat)[0] || 'General', sop: '', notePrompt: '', recurrence: { kind: 'weekly', dayOfWeek: 1 }, dueSoonDays: 2, roleId: role.id, division: role.division, tier: 'admin', active: true })} className="text-[11px] font-bold text-white bg-slate-700 rounded px-2 py-1 inline-flex items-center gap-1"><Plus className="w-3 h-3" /> Add duty</button>
               </div>
             )}
-            {Object.keys(byCat).sort().map(cat => (
+            {Object.keys(byCat).sort().map(cat => {
+              const cc = categoryColor(cat, categoryColors);
+              return (
               <div key={cat}>
-                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">{cat}</div>
+                <div className="mb-1 flex items-center gap-1.5">
+                  <span className={`w-2 h-2 rounded-full ${cc.dot}`} />
+                  <span className={`text-[10px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${cc.chip}`}>{cat}</span>
+                </div>
                 <div className="space-y-1">
                   {byCat[cat].map(d => (
-                    <div key={d.id} className="text-sm border border-slate-100 rounded px-2 py-1.5">
+                    <div key={d.id} className={`text-sm border border-slate-100 rounded px-2 py-1.5 ${d.active ? '' : 'opacity-55 bg-slate-50'}`}>
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <span className="font-medium text-slate-700">{d.name}</span>
-                          {!d.active && <span className="ml-2 text-[9px] uppercase bg-slate-200 text-slate-500 px-1 rounded">off</span>}
+                          {!d.active && <span className="ml-2 text-[9px] font-black uppercase bg-slate-200 text-slate-500 px-1 rounded">Inactive</span>}
                           <div className="text-[11px] text-slate-400">{recurrenceLabel(d.recurrence)} · asks: “{d.notePrompt}”</div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           {d.sop && <button onClick={() => setExpandedDuty(s => ({ ...s, [d.id]: !s[d.id] }))} className="text-[10px] font-bold text-indigo-600 border border-indigo-200 rounded px-1.5 py-0.5">SOP</button>}
+                          {isAdmin && manage && <Toggle on={d.active} onChange={() => onSaveDuty({ ...d, active: !d.active, updatedAt: Date.now() })} title="Active" />}
                           {isAdmin && <button onClick={() => setEditDuty(d)} className="text-slate-400 hover:text-slate-700"><Pencil className="w-3.5 h-3.5" /></button>}
                         </div>
                       </div>
@@ -95,7 +121,7 @@ export default function RoleMaster({
                   ))}
                 </div>
               </div>
-            ))}
+            );})}
             {rd.length === 0 && <div className="text-xs text-slate-400 italic">No duties yet.</div>}
           </div>
         )}
@@ -127,14 +153,23 @@ export default function RoleMaster({
 
         {tab === 'directory' && (
           <div className="space-y-3">
-            {roleList.length === 0 ? <div className="text-center text-slate-400 py-8">No roles defined yet.</div> : roleList.map(r => <RoleCard key={r.id} role={r} />)}
+            {isAdmin && (
+              <label className="flex items-center gap-2 text-[11px] font-bold text-slate-500"><input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} /> Show inactive</label>
+            )}
+            {(() => {
+              const visible = roleList.filter(r => r.active || (isAdmin && showInactive));
+              return visible.length === 0 ? <div className="text-center text-slate-400 py-8">No roles to show.</div> : visible.map(r => <RoleCard key={r.id} role={r} manage={false} />);
+            })()}
           </div>
         )}
 
         {tab === 'manage' && isAdmin && (
           <div className="space-y-3">
-            <button onClick={() => setEditRole({ id: uid('role'), name: '', description: '', tier: 'admin', active: true })} className="text-sm font-bold text-white bg-lime-600 hover:bg-lime-700 px-3 py-2 rounded-md inline-flex items-center gap-1.5"><Plus className="w-4 h-4" /> New Role</button>
-            {roleList.map(r => <RoleCard key={r.id} role={r} />)}
+            <div className="flex items-center justify-between gap-2">
+              <button onClick={() => setEditRole({ id: uid('role'), name: '', description: '', tier: 'admin', active: true })} className="text-sm font-bold text-white bg-lime-600 hover:bg-lime-700 px-3 py-2 rounded-md inline-flex items-center gap-1.5"><Plus className="w-4 h-4" /> New Role</button>
+              <label className="flex items-center gap-2 text-[11px] font-bold text-slate-500"><input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} /> Show inactive</label>
+            </div>
+            {roleList.filter(r => r.active || showInactive).map(r => <RoleCard key={r.id} role={r} manage={true} />)}
           </div>
         )}
 
@@ -150,6 +185,7 @@ export default function RoleMaster({
                   <div key={i.id} className="px-4 py-2 text-sm flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <span className="font-medium text-slate-700">{i.title}</span>
+                      {i.category && <span className={`ml-2 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${categoryColor(i.category, categoryColors).chip}`}>{i.category}</span>}
                       <span className="text-[11px] text-slate-400 ml-2">{i.occurrenceDate} · {i.assignedTo?.name}</span>
                       {(i.completionNote || i.skipReason || i.voidReason) && <div className="text-[11px] text-slate-500 mt-0.5 italic">“{i.completionNote || i.skipReason || i.voidReason}”</div>}
                       {i.sopSnapshot && (
@@ -169,7 +205,7 @@ export default function RoleMaster({
       </div>
 
       {editRole && <RoleEditor role={editRole} employees={employees} onClose={() => setEditRole(null)} onSave={(r) => { onSaveRole(r); setEditRole(null); }} />}
-      {editDuty && <DutyEditor duty={editDuty} onClose={() => setEditDuty(null)} onSave={(d) => { onSaveDuty(d); setEditDuty(null); }} />}
+      {editDuty && <DutyEditor duty={editDuty} categoryColors={categoryColors} onSetCategoryColor={onSetCategoryColor} onClose={() => setEditDuty(null)} onSave={(d) => { onSaveDuty(d); setEditDuty(null); }} />}
     </div>
   );
 }
@@ -189,14 +225,27 @@ function RoleEditor({ role, employees, onClose, onSave }: { role: RoleMasterRole
   );
 }
 
-function DutyEditor({ duty, onClose, onSave }: { duty: RoleMasterDuty; onClose: () => void; onSave: (d: RoleMasterDuty) => void }) {
+function DutyEditor({ duty, categoryColors, onSetCategoryColor, onClose, onSave }: { duty: RoleMasterDuty; categoryColors: Record<string, string>; onSetCategoryColor: (c: string, k: string) => void; onClose: () => void; onSave: (d: RoleMasterDuty) => void }) {
   const [d, setD] = useState<RoleMasterDuty>({ ...duty });
   const rec = d.recurrence;
   const setRec = (patch: Partial<RoleRecurrence>) => setD({ ...d, recurrence: { ...rec, ...patch } });
+  const cat = (d.category || '').trim();
+  const activeKey = cat ? categoryColor(cat, categoryColors).key : '';
   return (
     <Modal title={duty.name ? 'Edit duty' : 'New duty'} onClose={onClose}>
       <Field label="Name"><input value={d.name} onChange={e => setD({ ...d, name: e.target.value })} className="inp" /></Field>
-      <Field label="Category"><input value={d.category} onChange={e => setD({ ...d, category: e.target.value })} className="inp" placeholder="Payroll, Bookkeeping…" /></Field>
+      <Field label="Category">
+        <input value={d.category} onChange={e => setD({ ...d, category: e.target.value })} className="inp" placeholder="Payroll, Bookkeeping…" />
+        {cat && (
+          <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+            <span className="text-[10px] font-bold text-slate-400 uppercase">Color</span>
+            {CATEGORY_PALETTE.map(c => (
+              <button key={c.key} type="button" title={c.label} onClick={() => onSetCategoryColor(cat, c.key)}
+                className={`w-5 h-5 rounded-full ${c.dot} ${activeKey === c.key ? 'ring-2 ring-offset-1 ring-slate-800' : ''}`} />
+            ))}
+          </div>
+        )}
+      </Field>
       <Field label="Recurrence">
         <div className="flex gap-2 flex-wrap items-center">
           <select value={rec.kind} onChange={e => setRec({ kind: e.target.value as RoleRecurrence['kind'] })} className="inp w-auto">

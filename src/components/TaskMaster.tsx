@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { CheckSquare, Plus, ChevronDown, ChevronUp, MessageSquare, Flame, Check, ClipboardList } from 'lucide-react';
 import { TaskMasterTask, Employee, RoleTaskInstance, RoleMasterDuty } from '../types';
 import { personColor } from '../lib/personColor';
+import { categoryColor } from '../lib/roleCategories';
 import Stamp from './Stamp';
 
 interface TaskMasterProps {
@@ -16,6 +17,7 @@ interface TaskMasterProps {
   // RoleMaster generated duty instances (open only) rendered in the SAME list.
   roleInstances?: RoleTaskInstance[];
   duties?: Record<string, RoleMasterDuty>;
+  categoryColors?: Record<string, string>;
   onOpenRoleInstance?: (id: string) => void;
 }
 
@@ -62,6 +64,7 @@ export default function TaskMaster({
   onComplete,
   roleInstances = [],
   duties = {},
+  categoryColors = {},
   onOpenRoleInstance,
 }: TaskMasterProps) {
   const [sortKey, setSortKey] = useState<SortKey>('due');
@@ -142,7 +145,7 @@ export default function TaskMaster({
           <div className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-white ${color}`}><ClipboardList className="w-4 h-4" /></div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border bg-indigo-50 text-indigo-700 border-indigo-200">Role duty{duty?.category ? ` · ${duty.category}` : ''}</span>
+              <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${duty?.category ? categoryColor(duty.category, categoryColors).chip : 'bg-indigo-50 text-indigo-700 border-indigo-200'}`}>Role duty{duty?.category ? ` · ${duty.category}` : ''}</span>
               <span className="text-sm font-bold text-slate-800 truncate">{inst.title}</span>
               {g.count > 1 && <span className="text-[10px] font-black bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded-full">{g.count} outstanding</span>}
             </div>

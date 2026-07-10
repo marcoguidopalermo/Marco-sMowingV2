@@ -798,6 +798,9 @@ export interface AppSettings {
   // server-side duty→task generator produces NOTHING until an admin flips
   // this on. Per-role and per-duty `active` flags gate further.
   roleMasterGenerationEnabled?: boolean;
+  // RoleMaster category → palette color-key map. Small + bounded (a handful
+  // of categories). New categories auto-assign the next unused palette color.
+  roleMasterCategoryColors?: Record<string, string>;
 }
 
 export type BulletinAudienceRole = 'admin' | 'manager' | 'foreman' | 'mechanic' | 'worker';
