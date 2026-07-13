@@ -92,8 +92,45 @@ export function computeOccurrences(
       if (dMs >= fromMs && dMs <= toMs) out.push(d);
       cur = new Date(Date.UTC(y, m + 1, 1, 12));
     }
+  } else if (rec.kind === 'yearly') {
+    // One occurrence per year at month/day (clamped to the month length).
+    const mo = Math.min(12, Math.max(1, Number(rec.month ?? 1) || 1));
+    const fromY = Number(fromDate.slice(0, 4));
+    const toY = Number(toDate.slice(0, 4));
+    for (let y = fromY; y <= toY; y++) {
+      const last = lastDayOfMonth(y, mo - 1);
+      const day = Math.min(Number(rec.day ?? 1) || 1, last);
+      const d = `${y}-${String(mo).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const dMs = dateToMs(d);
+      if (dMs >= fromMs && dMs <= toMs) out.push(d);
+    }
   }
   return out.sort();
+}
+
+// MM-DD band membership, year-wrap aware. Normal band (from <= to):
+// from <= md <= to. Wrapping band (from > to, e.g. 11-01..03-31):
+// md >= from OR md <= to.
+export function inSeasonWindow(date: string, sw?: { fromMonthDay: string; toMonthDay: string }): boolean {
+  if (!sw || !sw.fromMonthDay || !sw.toMonthDay) return true;
+  const md = date.slice(5); // 'MM-DD'
+  const from = sw.fromMonthDay;
+  const to = sw.toMonthDay;
+  if (from <= to) return md >= from && md <= to;
+  return md >= from || md <= to;   // wrap
+}
+
+// [activeFrom, activeUntil] inclusive; either bound optional.
+export function inActiveWindow(date: string, from?: string, until?: string): boolean {
+  if (from && date < from) return false;
+  if (until && date > until) return false;
+  return true;
+}
+
+// All gates a date must pass to be generatable for a duty.
+export function dateGenerable(date: string, duty: RoleMasterDuty): boolean {
+  return inActiveWindow(date, duty.activeFrom, duty.activeUntil) &&
+    inSeasonWindow(date, duty.seasonWindow);
 }
 
 export interface GeneratedInstanceSeed {
@@ -123,6 +160,8 @@ export function plannedInstancesForDuty(
   const occ = computeOccurrences(duty.recurrence, from, to);
   const seeds: GeneratedInstanceSeed[] = [];
   for (const date of occ) {
+    // Duration + seasonal gates (both must hold when set).
+    if (!dateGenerable(date, duty)) continue;
     const id = instanceId(duty.id, date);
     if (existingIds.has(id)) continue;
     // Due end-of-day of the occurrence (noon-UTC anchor + 12h ≈ EOD-ish;
@@ -158,3 +197,78 @@ export function isTerminal(status: RoleInstanceStatusLike): boolean {
     status === 'skipped' || status === 'missed' || status === 'voided';
 }
 type RoleInstanceStatusLike = RoleTaskInstance['status'];
+
+// ── Chart / display helpers ─────────────────────────────────────────────
+const DOW_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const monthDayLabel = (md: string): string => {
+  const [m, d] = md.split('-').map(Number);
+  return `${MONTH_NAMES[(m || 1) - 1]} ${d || 1}`;
+};
+
+// Full human-readable recurrence incl. season/duration, e.g.
+// "Weekly · Fri", "Yearly · Mar 15", "Weekly · Mon · May 1–Oct 30".
+export function describeRecurrence(duty: RoleMasterDuty): string {
+  const r = duty.recurrence;
+  let base: string;
+  if (r.kind === 'weekly') base = `Weekly · ${DOW_NAMES[r.dayOfWeek ?? 1]}`;
+  else if (r.kind === 'biweekly') base = `Biweekly${r.anchorDate ? ` · from ${r.anchorDate}` : ''}`;
+  else if (r.kind === 'monthly') base = `Monthly · ${r.dayOfMonth === 'last' ? 'last day' : `day ${r.dayOfMonth ?? 1}`}`;
+  else base = `Yearly · ${MONTH_NAMES[(Number(r.month ?? 1) || 1) - 1]} ${r.day ?? 1}`;
+  if (duty.seasonWindow?.fromMonthDay && duty.seasonWindow?.toMonthDay) {
+    base += ` · ${monthDayLabel(duty.seasonWindow.fromMonthDay)}–${monthDayLabel(duty.seasonWindow.toMonthDay)}`;
+  }
+  return base;
+}
+
+export function isEnded(duty: RoleMasterDuty, today: string): boolean {
+  return !!duty.activeUntil && today > duty.activeUntil;
+}
+export function inSeasonNow(duty: RoleMasterDuty, today: string): boolean {
+  return inSeasonWindow(today, duty.seasonWindow);
+}
+// Next date (>= today) the duty re-enters its season band; null if none/always.
+export function seasonResumeDate(duty: RoleMasterDuty, today: string): string | null {
+  if (!duty.seasonWindow?.fromMonthDay) return null;
+  for (let i = 0; i <= 366; i++) {
+    const d = addDaysStr(today, i);
+    if (inSeasonWindow(d, duty.seasonWindow)) return d;
+  }
+  return null;
+}
+
+// The next scheduled occurrence (>= today) that would actually generate —
+// respecting recurrence, season, and duration bounds. null if none within
+// ~2 years (e.g. ended). For chart "Next due" even before generation.
+export function nextOccurrence(duty: RoleMasterDuty, today: string): string | null {
+  const to = addDaysStr(today, 740);
+  for (const date of computeOccurrences(duty.recurrence, today, to)) {
+    if (dateGenerable(date, duty)) return date;
+  }
+  return null;
+}
+
+export interface DutyChartStatus {
+  kind: 'overdue' | 'due_soon' | 'caught_up' | 'neutral';
+  count: number;          // outstanding overdue count (for 🔴 N)
+  note?: string;          // 'Inactive' | 'Ended' | 'Dormant' etc.
+}
+// Status derived from a duty's OPEN instances (+ inactive/ended/dormant gates).
+export function dutyChartStatus(
+  duty: RoleMasterDuty,
+  openInstances: RoleTaskInstance[],
+  today: string,
+): DutyChartStatus {
+  if (!duty.active) return { kind: 'neutral', count: 0, note: 'Inactive' };
+  if (isEnded(duty, today)) return { kind: 'neutral', count: 0, note: 'Ended' };
+  if (!inSeasonNow(duty, today)) return { kind: 'neutral', count: 0, note: 'Dormant' };
+  let overdue = 0; let dueSoon = 0;
+  for (const i of openInstances) {
+    const u = urgencyFor(i.dueDate, i.dueSoonDays ?? duty.dueSoonDays ?? 2, today);
+    if (u === 'overdue') overdue++;
+    else if (u === 'due_soon' || u === 'due_today') dueSoon++;
+  }
+  if (overdue > 0) return { kind: 'overdue', count: overdue };
+  if (dueSoon > 0) return { kind: 'due_soon', count: dueSoon };
+  return { kind: 'caught_up', count: 0 };
+}

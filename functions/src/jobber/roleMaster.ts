@@ -13,10 +13,18 @@ const HORIZON_DAYS = 31;
 const MISSED_AFTER_DAYS = 14;
 
 type Recurrence = {
-  kind: "weekly" | "biweekly" | "monthly";
+  kind: "weekly" | "biweekly" | "monthly" | "yearly";
   dayOfWeek?: number;
   anchorDate?: string;
   dayOfMonth?: number | "last";
+  month?: number;
+  day?: number;
+};
+type Duty = {
+  id: string; name: string; category?: string; roleId: string;
+  recurrence: Recurrence; dueSoonDays?: number; active?: boolean;
+  activeFrom?: string; activeUntil?: string;
+  seasonWindow?: { fromMonthDay: string; toMonthDay: string };
 };
 
 const dateToMs = (d: string): number => Date.parse(`${d}T12:00:00Z`);
@@ -57,8 +65,38 @@ function computeOccurrences(rec: Recurrence, fromDate: string, toDate: string): 
       if (dMs >= fromMs && dMs <= toMs) out.push(d);
       cur = new Date(Date.UTC(y, m + 1, 1, 12));
     }
+  } else if (rec.kind === "yearly") {
+    const mo = Math.min(12, Math.max(1, Number(rec.month ?? 1) || 1));
+    const fromY = Number(fromDate.slice(0, 4));
+    const toY = Number(toDate.slice(0, 4));
+    for (let y = fromY; y <= toY; y++) {
+      const last = lastDayOfMonth(y, mo - 1);
+      const day = Math.min(Number(rec.day ?? 1) || 1, last);
+      const d = `${y}-${String(mo).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      const dMs = dateToMs(d);
+      if (dMs >= fromMs && dMs <= toMs) out.push(d);
+    }
   }
   return out.sort();
+}
+
+// MM-DD band membership, year-wrap aware (mirror of src/lib/roleMaster.ts).
+function inSeasonWindow(date: string, sw?: { fromMonthDay: string; toMonthDay: string }): boolean {
+  if (!sw || !sw.fromMonthDay || !sw.toMonthDay) return true;
+  const md = date.slice(5);
+  const from = sw.fromMonthDay;
+  const to = sw.toMonthDay;
+  if (from <= to) return md >= from && md <= to;
+  return md >= from || md <= to;
+}
+function inActiveWindow(date: string, from?: string, until?: string): boolean {
+  if (from && date < from) return false;
+  if (until && date > until) return false;
+  return true;
+}
+function dateGenerable(date: string, duty: Duty): boolean {
+  return inActiveWindow(date, duty.activeFrom, duty.activeUntil) &&
+    inSeasonWindow(date, duty.seasonWindow);
 }
 
 const clean = (o: unknown): unknown => JSON.parse(JSON.stringify(o, (_k, v) => (v === undefined ? null : v)));
@@ -114,6 +152,8 @@ export async function runRoleGeneration(
       {employeeId: role.assignedEmployeeId, email: "", name: role.assignedEmployeeId};
     const occ = computeOccurrences(duty.recurrence, from, to);
     for (const date of occ) {
+      // season + duration gates
+      if (!dateGenerable(date, duty as Duty)) continue;
       const id = `${duty.id}-${date}`;
       if (existing.has(id)) continue;
       const inst = {

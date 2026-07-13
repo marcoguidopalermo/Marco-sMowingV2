@@ -862,7 +862,7 @@ export interface BulletinPost {
 // unbounded enters the 1 MiB-capped appData doc. Terminal instances are
 // retained forever as the accountability record.
 
-export type RoleRecurrenceKind = 'weekly' | 'biweekly' | 'monthly';
+export type RoleRecurrenceKind = 'weekly' | 'biweekly' | 'monthly' | 'yearly';
 export interface RoleRecurrence {
   kind: RoleRecurrenceKind;
   // weekly / biweekly: 0=Sun..6=Sat.
@@ -871,6 +871,9 @@ export interface RoleRecurrence {
   anchorDate?: string;
   // monthly: 1..31, or 'last' for the last calendar day.
   dayOfMonth?: number | 'last';
+  // yearly: month (1..12) + day (1..31, clamped to the month length).
+  month?: number;
+  day?: number;
 }
 
 export interface RoleMasterRole {
@@ -897,6 +900,14 @@ export interface RoleMasterDuty {
   division?: string;
   tier: 'admin';
   active: boolean;
+  // Duration bounds (optional). Occurrences only materialize within
+  // [activeFrom, activeUntil] when set. Past activeUntil = "Ended".
+  activeFrom?: string;        // YYYY-MM-DD
+  activeUntil?: string;       // YYYY-MM-DD
+  // Seasonal band (optional). Occurrences only materialize when the date's
+  // MM-DD falls inside the band, EVERY year. Year-wrapping bands supported
+  // (e.g. from '11-01' to '03-31').
+  seasonWindow?: { fromMonthDay: string; toMonthDay: string };
   lastGeneratedThrough?: string;  // YYYY-MM-DD cursor advanced by the engine
   updatedAt?: number;
 }
