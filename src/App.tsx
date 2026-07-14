@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 
 import {
-  Employee, FleetItem, DefectDetail, MechanicTask, StoredFile,
+  Employee, FleetItem, DefectDetail, MechanicTask, StoredFile, FleetDocument,
   Inspection, InventoryItem, Crew, Job, PerformanceLog, AppData,
   TaskActivity, TaskActivityType, BulletinAudienceRole, TaskNote, UnitNote, AppSettings, UserRole, RolePermissionsOverride, JobberUser, PrimaryCrew, PRIMARY_CREWS,
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
@@ -41,6 +41,7 @@ import InspectionModal from './components/InspectionModal';
 import RouteSelectionModal from './components/RouteSelectionModal';
 import InspectionReportModal from './components/InspectionReportModal';
 import ManageResourcesModal from './components/ManageResourcesModal';
+import UnitDocumentsModal from './components/UnitDocumentsModal';
 import SettingsModal, { ManageTab } from './components/SettingsModal';
 import UnitHistoryModal from './components/UnitHistoryModal';
 import BulletinBoard from './components/BulletinBoard';
@@ -263,6 +264,10 @@ export default function App() {
   const [printDateRange, setPrintDateRange] = useState({ start: formatDate(new Date()), end: formatDate(new Date()) });
   const [printDailyDate, setPrintDailyDate] = useState<string>(formatDate(new Date()));
   const [manualTaskModal, setManualTaskModal] = useState<import('./components/ManualTaskModal').ManualTaskModalState>({ isOpen: false, unitId: '', unitName: '', category: '', description: '', severity: 'minor', priority: false });
+  // Which unit's documents modal is open (null = closed). Opened from the
+  // MyCrewToday truck/trailer strip (worker view-only) and the fleet
+  // manager surface (admin/manager, editable).
+  const [documentsUnitId, setDocumentsUnitId] = useState<string | null>(null);
   const [requestPartsModal, setRequestPartsModal] = useState<RequestPartsModalState>({ isOpen: false });
   const [historyUnitId, setHistoryUnitId] = useState<string | null>(null);
   const [draggingResource, setDraggingResource] = useState<{ type: ResourceType; id: string } | null>(null);
@@ -4176,6 +4181,7 @@ export default function App() {
             setActiveInspection={setActiveInspection}
             setViewingInspectionId={setViewingInspectionId}
             inspections={appData.inspections}
+            onOpenUnitDocuments={(unitId) => setDocumentsUnitId(unitId)}
           onReportRepair={(effectiveRole === 'worker' || effectiveRole === 'foreman' || effectiveRole === 'manager') ? () => setManualTaskModal({
             isOpen: true,
             unitId: '',
@@ -4505,6 +4511,7 @@ export default function App() {
         localFleet={localFleet}
         setLocalFleet={setLocalFleet}
         persistedFleet={appData.fleet}
+        onOpenUnitDocuments={(unitId) => setDocumentsUnitId(unitId)}
         mechanicPayChunks={appData.mechanicPayChunks || {}}
         onCreateInitialChunk={(emp, hoursAlreadyWorked, startTimestamp) => {
           if (!isAdmin && !isManager) { showToastMsg(PERMISSION_DENIED); return; }
@@ -4697,6 +4704,15 @@ export default function App() {
               nextSchedules[d] = day.map(crew => ({ ...crew, fleet: crew.fleet.filter(id => id !== unit.id) }));
             }
           }
+          // Unit documents are managed out-of-band (UnitDocumentsModal
+          // writes them straight to appData.fleet). This modal's draft
+          // (localFleet, captured at open) never edits `documents`, so
+          // preserve the LIVE array — otherwise a save here would clobber a
+          // document uploaded during this editing session.
+          fleetAfterSpawn = fleetAfterSpawn.map(u => {
+            const live = appData.fleet.find(p => p.id === u.id);
+            return live ? { ...u, documents: live.documents } : u;
+          });
           const success = await syncToCloud({
             ...appData,
             employees: normalizedEmployees,
@@ -4774,6 +4790,30 @@ export default function App() {
           }
         }}
       />
+
+      {/* UNIT DOCUMENTS MODAL — per-unit documents (insurance / registration
+          / ownership / safety inspection) with expiry states + service
+          history. Metadata rides on the fleet record; bytes in Storage at
+          fleet/{unitId}/{docType}/. Admin + manager edit; workers view-only. */}
+      {documentsUnitId && (() => {
+        const unit = appData.fleet.find(f => f.id === documentsUnitId);
+        if (!unit) return null;
+        return (
+          <UnitDocumentsModal
+            unit={unit}
+            repairLog={appData.repairLog || []}
+            canEdit={isManager}
+            uploadedBy={{ email: displayEmail, name: displayName }}
+            onClose={() => setDocumentsUnitId(null)}
+            onSave={(unitId, documents) => {
+              // Metadata-only write onto the existing fleet record. No pay/
+              // performance/RoleMaster paths; bytes already live in Storage.
+              const nextFleet = appData.fleet.map(f => f.id === unitId ? { ...f, documents } : f);
+              syncToCloud({ ...appData, fleet: nextFleet });
+            }}
+          />
+        );
+      })()}
 
       {/* REQUEST PARTS MODAL — opened from the top of the Repair Board
           (generic, no repair linkage) or from a repair card's green

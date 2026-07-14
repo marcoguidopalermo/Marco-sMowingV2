@@ -122,11 +122,27 @@ export const DEFAULT_EQUIPMENT_SUBTYPES: EquipmentSubtypeDefinition[] = [
   { id: 'chainsaw',         name: 'Chainsaw',           sortOrder: 9 },
 ];
 
+// Per-unit document (registration, insurance, ownership, safety cert).
+// Extends StoredFile (bytes in Storage under fleet/{unitId}/{docType}/…) with
+// document-specific metadata. Stored on FleetItem.documents — metadata only.
+export type FleetDocType = 'insurance' | 'registration' | 'ownership' | 'safety_inspection' | 'other';
+export interface FleetDocument extends StoredFile {
+  docType: FleetDocType;
+  // Free-text label, required in practice only for docType 'other'.
+  label?: string;
+  // Optional expiry (YYYY-MM-DD). Ownership has none; insurance /
+  // registration / safety inspection do — drives the expiry warnings.
+  expiryDate?: string;
+  notes?: string;
+}
+
 export interface FleetItem {
   id: string;
   name: string;
   type: string;
   status: string;
+  // Uploaded documents for this unit (metadata only; bytes in Storage).
+  documents?: FleetDocument[];
   // Legacy weight-class label. New records derive their band from
   // `registeredGrossWeight` via resolveWeightBand(); this string is
   // preserved on existing records for back-compat and only consulted

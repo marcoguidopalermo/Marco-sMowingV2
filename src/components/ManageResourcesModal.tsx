@@ -6,8 +6,9 @@ import { functions, db, appId } from '../lib/firebase';
 import {
   Settings, X, Users, Truck, Package, Hammer, Map as MapIcon, ShieldCheck,
   Plus, Trash2, Calendar as CalendarIcon, CreditCard as IdCard,
-  AlertTriangle, CheckSquare, UserCircle, Clock, Sliders, Link2, Mail
+  AlertTriangle, CheckSquare, UserCircle, Clock, Sliders, Link2, Mail, FileText
 } from 'lucide-react';
+import { unitDocAlerts } from '../lib/fleetDocuments';
 import { Employee, FleetItem, InventoryItem, Job, AppSettings, RolePermissionsOverride, UserRole, JobberUser, PRIMARY_CREWS, EquipmentSubtypeDefinition, PartialTimeOff } from '../types';
 import { makeSubtypeId, fleetItemLabel } from '../lib/fleetUtils';
 import FleetGroupedList from './FleetGroupedList';
@@ -42,6 +43,8 @@ interface ManageResourcesModalProps {
   // if so, the Current Hrs input in the setup form locks (ongoing
   // hour updates happen via the Fleet List inline edit, not here).
   persistedFleet: FleetItem[];
+  // Open the per-unit documents modal (App-level) for editing.
+  onOpenUnitDocuments: (unitId: string) => void;
   // Pay-chunk ledger — read-only here. Drives the "Set up first
   // chunk" rollout form's visibility: shown only when a mechanic
   // has hoursPer1000 set and no open chunk for them yet.
@@ -93,6 +96,7 @@ export default function ManageResourcesModal({
   localFleet,
   setLocalFleet,
   persistedFleet,
+  onOpenUnitDocuments,
   mechanicPayChunks,
   onCreateInitialChunk,
   localInventory,
@@ -580,13 +584,18 @@ export default function ManageResourcesModal({
               <FleetGroupedList
                 fleet={localFleet}
                 subtypes={localEquipmentSubtypes}
-                renderSummary={(f) => (
+                renderSummary={(f) => {
+                  const alerts = unitDocAlerts(f);
+                  return (
                   <span className="font-bold text-slate-800 flex items-center gap-2 flex-wrap">
                     {f.color && <span className={`w-3 h-3 rounded-full ${f.color} shadow-sm border border-gray-200 inline-block`} />}
                     {fleetItemLabel(f)}
                     {f.status !== 'Active' && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded">{f.status}</span>}
+                    {alerts.expired > 0 && <span className="inline-flex items-center gap-1 bg-red-100 text-red-700 border border-red-300 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded"><AlertTriangle className="w-3 h-3" />{alerts.expired} doc{alerts.expired > 1 ? 's' : ''} expired</span>}
+                    {alerts.expired === 0 && alerts.expiring > 0 && <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-700 border border-amber-300 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded"><AlertTriangle className="w-3 h-3" />{alerts.expiring} expiring</span>}
                   </span>
-                )}
+                  );
+                }}
                 renderDetails={(f) => {
                   const realIdx = localFleet.findIndex(lf => lf.id === f.id);
                   if (realIdx < 0) return null;
@@ -624,8 +633,9 @@ export default function ManageResourcesModal({
                           <button key={color} onClick={() => { const nf = [...localFleet]; nf[realIdx].color = color; setLocalFleet(nf); }} className={`w-6 h-6 rounded-full ${color} border border-gray-300 transition-all ${f.color === color ? 'ring-2 ring-offset-1 ring-slate-800 scale-110' : 'opacity-60 hover:opacity-100'}`} />
                         ))}
                       </div>
+                      <button onClick={() => onOpenUnitDocuments(f.id)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-sky-50 text-sky-700 border border-sky-200 hover:bg-sky-100 text-xs font-black uppercase tracking-widest ml-auto" title="Insurance, registration, ownership, safety docs"><FileText className="w-4 h-4" /> Documents</button>
                       {isAdmin && (
-                        <button onClick={() => setLocalFleet(localFleet.filter(item => item.id !== f.id))} className="text-red-400 hover:bg-red-50 p-2 rounded-lg transition-colors ml-auto" title="Delete fleet (admin only)"><Trash2 className="w-5 h-5" /></button>
+                        <button onClick={() => setLocalFleet(localFleet.filter(item => item.id !== f.id))} className="text-red-400 hover:bg-red-50 p-2 rounded-lg transition-colors" title="Delete fleet (admin only)"><Trash2 className="w-5 h-5" /></button>
                       )}
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-1">

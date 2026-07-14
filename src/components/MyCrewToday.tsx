@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import { Calendar as CalendarIcon, Target, Clock, TrendingUp, Link2, Users, Truck, Hammer, Wrench, AlertCircle, AlertTriangle, CheckCircle } from 'lucide-react';
+import { Calendar as CalendarIcon, Target, Clock, TrendingUp, Link2, Users, Truck, Hammer, Wrench, AlertCircle, AlertTriangle, CheckCircle, FileText } from 'lucide-react';
 import { AppSettings, Crew, Employee, FleetItem, EquipmentSubtypeDefinition, PerformanceLog, PartialTimeOff, Inspection } from '../types';
 import { formatTimeRange, addDaysToronto } from '../lib/dateUtils';
 import { sortFleetGrouped, fleetItemLabel, isFleetOutOfService } from '../lib/fleetUtils';
@@ -37,6 +37,9 @@ interface MyCrewTodayProps {
   setActiveInspection?: Dispatch<SetStateAction<ActiveInspectionState>>;
   setViewingInspectionId?: (id: string) => void;
   inspections?: Inspection[];
+  // One-tap access to a unit's documents (view-only for workers). Opens the
+  // App-level UnitDocumentsModal. Omit to hide the documents affordance.
+  onOpenUnitDocuments?: (unitId: string) => void;
 }
 
 const numericOr = (v: unknown, fallback = 0): number => {
@@ -68,6 +71,7 @@ export default function MyCrewToday({
   setActiveInspection,
   setViewingInspectionId,
   inspections,
+  onOpenUnitDocuments,
 }: MyCrewTodayProps) {
   const myCrews = useMemo<Crew[]>(() => {
     if (!currentUserEmployee) return [];
@@ -380,6 +384,33 @@ export default function MyCrewToday({
                       )}
                     </div>
                   </div>
+
+                  {/* Today's truck + trailer — roadside document access.
+                      One tap → that unit's insurance / registration / etc.
+                      Only renders when a truck or trailer is assigned today
+                      (no empty-state noise). Worker access is view-only. */}
+                  {onOpenUnitDocuments && (() => {
+                    const rolling = (crew.fleet || [])
+                      .map(id => fleet.find(f => f.id === id))
+                      .filter((f): f is FleetItem => !!f && (f.type === 'truck' || f.type === 'trailer'));
+                    if (rolling.length === 0) return null;
+                    return (
+                      <div className="px-4 py-2.5 border-t border-slate-100 bg-white flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1"><FileText className="w-3.5 h-3.5" /> Docs</span>
+                        {rolling.map(item => (
+                          <button
+                            key={item.id}
+                            onClick={() => onOpenUnitDocuments(item.id)}
+                            title={`View ${item.name} documents (insurance, registration…)`}
+                            className="inline-flex items-center gap-1.5 min-h-[40px] px-3 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 active:bg-slate-700"
+                          >
+                            {item.type === 'truck' ? <Truck className="w-4 h-4" /> : <Hammer className="w-4 h-4" />}
+                            {fleetItemLabel(item)}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
 
                   {/* Fleet + Supplies — read-only mirror of the Schedule
                       board. Uses the same fleetUtils helpers (sortFleetGrouped
