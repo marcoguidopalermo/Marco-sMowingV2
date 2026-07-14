@@ -1,4 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
+import { useState } from 'react';
 import { PenTool, X, Flag } from 'lucide-react';
 import { FleetItem, Employee } from '../types';
 import { fleetItemLabel } from '../lib/fleetUtils';
@@ -25,9 +26,25 @@ interface ManualTaskModalProps {
 }
 
 export default function ManualTaskModal({ state, setState, fleet, employees = [], defaultReporterId, onSubmit }: ManualTaskModalProps) {
+  const [saving, setSaving] = useState(false);
   if (!state.isOpen) return null;
   const reporterId = state.reportedByEmployeeId ?? defaultReporterId ?? '';
   const reporters = employees.filter(e => e.status === 'Active');
+
+  // Single-flight submit. The in-flight `saving` flag both disables the
+  // button (showing "Submitting…") and hard-blocks a second invocation, so
+  // a double-tap during the async save can't post two distinct repairs.
+  // The parent's onSubmit closes the modal on success; on failure it stays
+  // open and we re-enable here (syncToCloud has already toasted the error).
+  const handleSubmit = async () => {
+    if (saving || !state.unitName || !state.category) return;
+    setSaving(true);
+    try {
+      await onSubmit();
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
     <div className="fixed inset-0 bg-black/60 z-[110] flex md:items-center md:justify-center md:p-4">
       <div className="bg-white md:rounded-2xl shadow-2xl h-full md:h-auto w-full md:max-w-md overflow-hidden flex flex-col animate-in slide-in-from-bottom-8">
@@ -36,7 +53,7 @@ export default function ManualTaskModal({ state, setState, fleet, employees = []
             <PenTool className="w-6 h-6 text-lime-400" />
             <h3 className="text-xl font-bold">Report New Repair</h3>
           </div>
-          <button onClick={() => setState({ ...state, isOpen: false })} className="text-white/60 hover:text-white transition-colors min-w-[44px] min-h-[44px] inline-flex items-center justify-center"><X className="w-6 h-6" /></button>
+          <button onClick={() => setState({ ...state, isOpen: false })} disabled={saving} className="text-white/60 hover:text-white transition-colors min-w-[44px] min-h-[44px] inline-flex items-center justify-center disabled:opacity-40"><X className="w-6 h-6" /></button>
         </div>
 
         <div className="p-6 space-y-4">
@@ -125,13 +142,13 @@ export default function ManualTaskModal({ state, setState, fleet, employees = []
         </div>
 
         <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
-          <button onClick={() => setState({ ...state, isOpen: false })} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors">Cancel</button>
+          <button onClick={() => setState({ ...state, isOpen: false })} disabled={saving} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-50">Cancel</button>
           <button
-            disabled={!state.unitName || !state.category}
-            onClick={onSubmit}
-            className="px-8 py-2.5 font-black text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-lg disabled:opacity-50 transition-all uppercase tracking-widest text-xs"
+            disabled={!state.unitName || !state.category || saving}
+            onClick={handleSubmit}
+            className="px-8 py-2.5 font-black text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all uppercase tracking-widest text-xs"
           >
-            Submit Task
+            {saving ? 'Submitting…' : 'Submit Task'}
           </button>
         </div>
       </div>
