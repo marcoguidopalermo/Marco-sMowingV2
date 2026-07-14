@@ -206,19 +206,49 @@ const monthDayLabel = (md: string): string => {
   return `${MONTH_NAMES[(m || 1) - 1]} ${d || 1}`;
 };
 
-// Full human-readable recurrence incl. season/duration, e.g.
-// "Weekly · Fri", "Yearly · Mar 15", "Weekly · Mon · May 1–Oct 30".
+// ── Season presets — named, colored, repeating annual bands. Selecting one
+// populates seasonWindow with these MM-DD dates; the generators only read
+// seasonWindow, so a season is purely a display/identity tag over the same
+// annual-band mechanic. Winter wraps the year-end (from > to).
+export type RoleSeason = 'summer' | 'winter';
+export const SEASON_PRESETS: Record<RoleSeason, { label: string; emoji: string; fromMonthDay: string; toMonthDay: string; chip: string }> = {
+  summer: { label: 'Summer', emoji: '🟢', fromMonthDay: '05-01', toMonthDay: '10-30', chip: 'bg-emerald-100 text-emerald-700 border-emerald-300' },
+  winter: { label: 'Winter', emoji: '🔵', fromMonthDay: '11-01', toMonthDay: '04-30', chip: 'bg-sky-100 text-sky-700 border-sky-300' },
+};
+export function dutySeason(duty: RoleMasterDuty): RoleSeason | null {
+  return duty.season === 'summer' || duty.season === 'winter' ? duty.season : null;
+}
+
+// Recurrence base only (how often), e.g. "Weekly · Fri", "Yearly · Mar 15".
+// Duration is described separately by describeDuration().
 export function describeRecurrence(duty: RoleMasterDuty): string {
   const r = duty.recurrence;
-  let base: string;
-  if (r.kind === 'weekly') base = `Weekly · ${DOW_NAMES[r.dayOfWeek ?? 1]}`;
-  else if (r.kind === 'biweekly') base = `Biweekly${r.anchorDate ? ` · from ${r.anchorDate}` : ''}`;
-  else if (r.kind === 'monthly') base = `Monthly · ${r.dayOfMonth === 'last' ? 'last day' : `day ${r.dayOfMonth ?? 1}`}`;
-  else base = `Yearly · ${MONTH_NAMES[(Number(r.month ?? 1) || 1) - 1]} ${r.day ?? 1}`;
+  if (r.kind === 'weekly') return `Weekly · ${DOW_NAMES[r.dayOfWeek ?? 1]}`;
+  if (r.kind === 'biweekly') return `Biweekly${r.anchorDate ? ` · from ${r.anchorDate}` : ''}`;
+  if (r.kind === 'monthly') return `Monthly · ${r.dayOfMonth === 'last' ? 'last day' : `day ${r.dayOfMonth ?? 1}`}`;
+  return `Yearly · ${MONTH_NAMES[(Number(r.month ?? 1) || 1) - 1]} ${r.day ?? 1}`;
+}
+
+const absDateLabel = (d: string): string => {
+  const [y, m, day] = d.split('-').map(Number);
+  return `${MONTH_NAMES[(m || 1) - 1]} ${day || 1}, ${y}`;
+};
+
+// Duration descriptor (the window it fires within). `season` set → render the
+// colored chip; else `text` carries the human window; both absent = indefinite.
+export interface DurationDisplay { season?: RoleSeason; text?: string; }
+export function describeDuration(duty: RoleMasterDuty): DurationDisplay {
+  const s = dutySeason(duty);
+  if (s) return { season: s };
   if (duty.seasonWindow?.fromMonthDay && duty.seasonWindow?.toMonthDay) {
-    base += ` · ${monthDayLabel(duty.seasonWindow.fromMonthDay)}–${monthDayLabel(duty.seasonWindow.toMonthDay)}`;
+    return { text: `${monthDayLabel(duty.seasonWindow.fromMonthDay)} – ${monthDayLabel(duty.seasonWindow.toMonthDay)} · yearly` };
   }
-  return base;
+  if (duty.activeFrom || duty.activeUntil) {
+    const from = duty.activeFrom ? absDateLabel(duty.activeFrom) : '…';
+    const to = duty.activeUntil ? absDateLabel(duty.activeUntil) : '…';
+    return { text: duty.activeUntil ? `${from} – Ends ${to}` : `${from} – ${to}` };
+  }
+  return {};
 }
 
 export function isEnded(duty: RoleMasterDuty, today: string): boolean {

@@ -2,9 +2,10 @@ import { useMemo, useState } from 'react';
 import { Employee, RoleMasterRole, RoleMasterDuty, RoleTaskInstance } from '../types';
 import { categoryColor } from '../lib/roleCategories';
 import {
-  describeRecurrence, dutyChartStatus, nextOccurrence, seasonResumeDate, DutyChartStatus,
+  describeRecurrence, describeDuration, dutyChartStatus, nextOccurrence, seasonResumeDate, DutyChartStatus,
 } from '../lib/roleMaster';
-import { Pencil, ArrowRightLeft } from 'lucide-react';
+import SeasonChip from './SeasonChip';
+import { Pencil, ArrowRightLeft, Plus } from 'lucide-react';
 
 interface Props {
   roles: Record<string, RoleMasterRole>;
@@ -14,6 +15,7 @@ interface Props {
   categoryColors: Record<string, string>;
   isAdmin: boolean;
   onEditDuty: (d: RoleMasterDuty) => void;
+  onAddDuty: () => void;
   onMoveDuty: (dutyId: string, newRoleId: string) => void;
 }
 
@@ -26,7 +28,7 @@ function StatusIcon({ s }: { s: DutyChartStatus }) {
   return <span className="text-slate-300" title={s.note || 'Inactive'}>—</span>;
 }
 
-export default function RoleDutiesChart({ roles, duties, instances, employees, categoryColors, isAdmin, onEditDuty, onMoveDuty }: Props) {
+export default function RoleDutiesChart({ roles, duties, instances, employees, categoryColors, isAdmin, onEditDuty, onAddDuty, onMoveDuty }: Props) {
   const today = torontoToday();
   const empName = (id?: string) => employees.find(e => e.id === id)?.name;
   const [fDiv, setFDiv] = useState('');
@@ -84,6 +86,15 @@ export default function RoleDutiesChart({ roles, duties, instances, employees, c
 
   return (
     <div className="space-y-3">
+      {/* Admin: add a duty straight from the chart (editor has a role picker). */}
+      {isAdmin && (
+        <div className="flex justify-end">
+          <button onClick={onAddDuty} className="inline-flex items-center gap-1.5 text-sm font-black uppercase tracking-widest text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-2 rounded-lg shadow-sm">
+            <Plus className="w-4 h-4" /> Add duty
+          </button>
+        </div>
+      )}
+
       {/* Per-holder rollup strip */}
       {rollup.length > 0 && (
         <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-wrap gap-2">
@@ -126,6 +137,7 @@ export default function RoleDutiesChart({ roles, duties, instances, employees, c
             {filtered.map(({ duty, role, holderId, holderName, status, nextDue }) => {
               const cc = categoryColor(duty.category, categoryColors);
               const resume = status.note === 'Dormant' ? seasonResumeDate(duty, today) : null;
+              const dur = describeDuration(duty);
               return (
                 <tr key={duty.id} className={`border-b border-slate-50 ${duty.active ? '' : 'opacity-55'}`}>
                   <td className="py-1.5 px-2 text-center"><StatusIcon s={status} /></td>
@@ -133,7 +145,14 @@ export default function RoleDutiesChart({ roles, duties, instances, employees, c
                   <td className="py-1.5 px-2"><span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${cc.chip}`}>{duty.category}</span></td>
                   <td className="py-1.5 px-2 text-slate-600">{role?.name || '—'}</td>
                   <td className="py-1.5 px-2">{holderId ? <span className="text-slate-700">{holderName}</span> : <span className="text-rose-600 font-bold text-[11px] uppercase bg-rose-50 px-1.5 py-0.5 rounded">Unassigned</span>}</td>
-                  <td className="py-1.5 px-2 text-slate-500 text-[12px]">{describeRecurrence(duty)}{resume ? ` · resumes ${resume}` : ''}</td>
+                  <td className="py-1.5 px-2 text-slate-500 text-[12px]">
+                    <span className="inline-flex items-center gap-1.5 flex-wrap">
+                      {describeRecurrence(duty)}
+                      {dur.season && <SeasonChip season={dur.season} />}
+                      {dur.text && <span className="text-slate-400">· {dur.text}</span>}
+                      {resume && <span className="text-slate-400">· resumes {resume}</span>}
+                    </span>
+                  </td>
                   <td className="py-1.5 px-2 text-slate-500 text-[12px]">{duty.division || '—'}</td>
                   <td className="py-1.5 px-2 font-mono text-[12px] text-slate-600">{nextDue || '—'}</td>
                   {isAdmin && (

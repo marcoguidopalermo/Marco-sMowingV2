@@ -4,7 +4,9 @@ import {
   Employee, RoleMasterRole, RoleMasterDuty, RoleTaskInstance, RoleRecurrence, RoleInstanceStatus,
 } from '../types';
 import { categoryColor, CATEGORY_PALETTE } from '../lib/roleCategories';
+import { SEASON_PRESETS, RoleSeason, dutySeason, describeRecurrence } from '../lib/roleMaster';
 import SopText from './SopText';
+import SeasonChip from './SeasonChip';
 import RoleDutiesChart from './RoleDutiesChart';
 
 interface RoleMasterProps {
@@ -35,11 +37,6 @@ const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-function recurrenceLabel(r: RoleRecurrence): string {
-  if (r.kind === 'weekly') return `Weekly · ${DOW[r.dayOfWeek ?? 1]}`;
-  if (r.kind === 'biweekly') return `Biweekly${r.anchorDate ? ` · from ${r.anchorDate}` : ''}`;
-  return `Monthly · ${r.dayOfMonth === 'last' ? 'last day' : `day ${r.dayOfMonth ?? 1}`}`;
-}
 const statusChip = (s: RoleInstanceStatus): string => ({
   open: 'bg-slate-100 text-slate-600', done: 'bg-emerald-100 text-emerald-700',
   done_late: 'bg-amber-100 text-amber-700', skipped: 'bg-slate-200 text-slate-500',
@@ -108,7 +105,8 @@ export default function RoleMaster({
                         <div className="min-w-0">
                           <span className="font-medium text-slate-700">{d.name}</span>
                           {!d.active && <span className="ml-2 text-[9px] font-black uppercase bg-slate-200 text-slate-500 px-1 rounded">Inactive</span>}
-                          <div className="text-[11px] text-slate-400">{recurrenceLabel(d.recurrence)} · asks: “{d.notePrompt}”</div>
+                          {dutySeason(d) && <span className="ml-1.5 align-middle"><SeasonChip season={dutySeason(d) as RoleSeason} /></span>}
+                          <div className="text-[11px] text-slate-400">{describeRecurrence(d)} · asks: “{d.notePrompt}”</div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           {d.sop && <button onClick={() => setExpandedDuty(s => ({ ...s, [d.id]: !s[d.id] }))} className="text-[10px] font-bold text-indigo-600 border border-indigo-200 rounded px-1.5 py-0.5">SOP</button>}
@@ -171,6 +169,10 @@ export default function RoleMaster({
             roles={roles} duties={duties} instances={instances} employees={employees}
             categoryColors={categoryColors} isAdmin={isAdmin}
             onEditDuty={(d) => setEditDuty(d)}
+            onAddDuty={() => {
+              const first = roleList[0];
+              setEditDuty({ id: uid('duty'), name: '', category: 'General', sop: '', notePrompt: '', recurrence: { kind: 'weekly', dayOfWeek: 1 }, dueSoonDays: 2, roleId: first?.id || '', division: first?.division, tier: 'admin', active: true });
+            }}
             onMoveDuty={(dutyId, newRoleId) => { const d = duties[dutyId]; if (d) onSaveDuty({ ...d, roleId: newRoleId, updatedAt: Date.now() }); }}
           />
         )}
@@ -217,7 +219,7 @@ export default function RoleMaster({
       </div>
 
       {editRole && <RoleEditor role={editRole} employees={employees} onClose={() => setEditRole(null)} onSave={(r) => { onSaveRole(r); setEditRole(null); }} />}
-      {editDuty && <DutyEditor duty={editDuty} categoryColors={categoryColors} onSetCategoryColor={onSetCategoryColor} onClose={() => setEditDuty(null)} onSave={(d) => { onSaveDuty(d); setEditDuty(null); }} />}
+      {editDuty && <DutyEditor duty={editDuty} roles={roleList} categoryColors={categoryColors} onSetCategoryColor={onSetCategoryColor} onClose={() => setEditDuty(null)} onSave={(d) => { onSaveDuty(d); setEditDuty(null); }} />}
     </div>
   );
 }
@@ -237,15 +239,52 @@ function RoleEditor({ role, employees, onClose, onSave }: { role: RoleMasterRole
   );
 }
 
-function DutyEditor({ duty, categoryColors, onSetCategoryColor, onClose, onSave }: { duty: RoleMasterDuty; categoryColors: Record<string, string>; onSetCategoryColor: (c: string, k: string) => void; onClose: () => void; onSave: (d: RoleMasterDuty) => void }) {
+function DutyEditor({ duty, roles, categoryColors, onSetCategoryColor, onClose, onSave }: { duty: RoleMasterDuty; roles: RoleMasterRole[]; categoryColors: Record<string, string>; onSetCategoryColor: (c: string, k: string) => void; onClose: () => void; onSave: (d: RoleMasterDuty) => void }) {
   const [d, setD] = useState<RoleMasterDuty>({ ...duty });
   const rec = d.recurrence;
   const setRec = (patch: Partial<RoleRecurrence>) => setD({ ...d, recurrence: { ...rec, ...patch } });
   const cat = (d.category || '').trim();
   const activeKey = cat ? categoryColor(cat, categoryColors).key : '';
+  const roleOptions = roles.filter(r => r.active || r.id === d.roleId);
+
+  // ── DURATION — one field, three modes. Derived from the duty, edited
+  // locally, and folded back into the storage fields on save (season →
+  // season+seasonWindow; custom+repeat → seasonWindow; custom one-shot →
+  // activeFrom/Until; indefinite → all cleared). One mechanic, no parallel
+  // paths; the generators only ever read seasonWindow / activeFrom / activeUntil.
+  const mmddToDate = (md: string) => md ? `${new Date().getFullYear()}-${md}` : '';
+  const deriveMode = (x: RoleMasterDuty): 'indefinite' | 'season' | 'custom' =>
+    x.season ? 'season' : (x.seasonWindow || x.activeFrom || x.activeUntil) ? 'custom' : 'indefinite';
+  const [durMode, setDurMode] = useState<'indefinite' | 'season' | 'custom'>(deriveMode(duty));
+  const [season, setSeason] = useState<RoleSeason | undefined>(duty.season);
+  const [repeatAnnually, setRepeatAnnually] = useState<boolean>(!!duty.seasonWindow && !duty.season);
+  const [customFrom, setCustomFrom] = useState<string>(duty.activeFrom || (duty.seasonWindow?.fromMonthDay ? mmddToDate(duty.seasonWindow.fromMonthDay) : ''));
+  const [customTo, setCustomTo] = useState<string>(duty.activeUntil || (duty.seasonWindow?.toMonthDay ? mmddToDate(duty.seasonWindow.toMonthDay) : ''));
+
+  const buildDuration = (): Pick<RoleMasterDuty, 'season' | 'seasonWindow' | 'activeFrom' | 'activeUntil'> => {
+    if (durMode === 'season' && season) {
+      const p = SEASON_PRESETS[season];
+      return { season, seasonWindow: { fromMonthDay: p.fromMonthDay, toMonthDay: p.toMonthDay }, activeFrom: undefined, activeUntil: undefined };
+    }
+    if (durMode === 'custom') {
+      if (repeatAnnually) {
+        return { season: undefined, seasonWindow: (customFrom && customTo) ? { fromMonthDay: customFrom.slice(5), toMonthDay: customTo.slice(5) } : undefined, activeFrom: undefined, activeUntil: undefined };
+      }
+      return { season: undefined, seasonWindow: undefined, activeFrom: customFrom || undefined, activeUntil: customTo || undefined };
+    }
+    return { season: undefined, seasonWindow: undefined, activeFrom: undefined, activeUntil: undefined };
+  };
+  const modeBtn = (active: boolean) => `text-xs font-bold px-3 py-1.5 rounded-lg border ${active ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200'}`;
+
   return (
     <Modal title={duty.name ? 'Edit duty' : 'New duty'} onClose={onClose}>
       <Field label="Name"><input value={d.name} onChange={e => setD({ ...d, name: e.target.value })} className="inp" /></Field>
+      <Field label="Role (who holds this duty)">
+        <select value={d.roleId} onChange={e => { const r = roles.find(x => x.id === e.target.value); setD({ ...d, roleId: e.target.value, division: r?.division ?? d.division }); }} className="inp">
+          <option value="">(select a role)</option>
+          {roleOptions.map(r => <option key={r.id} value={r.id}>{r.name}{r.active ? '' : ' (inactive)'}</option>)}
+        </select>
+      </Field>
       <Field label="Category">
         <input value={d.category} onChange={e => setD({ ...d, category: e.target.value })} className="inp" placeholder="Payroll, Bookkeeping…" />
         {cat && (
@@ -258,7 +297,9 @@ function DutyEditor({ duty, categoryColors, onSetCategoryColor, onClose, onSave 
           </div>
         )}
       </Field>
-      <Field label="Recurrence">
+
+      {/* RECURRENCE — how often it fires. */}
+      <Field label="Recurrence (how often)">
         <div className="flex gap-2 flex-wrap items-center">
           <select value={rec.kind} onChange={e => setRec({ kind: e.target.value as RoleRecurrence['kind'] })} className="inp w-auto">
             <option value="weekly">Weekly</option><option value="biweekly">Biweekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option>
@@ -276,28 +317,43 @@ function DutyEditor({ duty, categoryColors, onSetCategoryColor, onClose, onSave 
           </>)}
         </div>
       </Field>
-      <details className="mb-3 border border-slate-200 rounded-lg p-2">
-        <summary className="text-[11px] font-black uppercase tracking-widest text-slate-500 cursor-pointer">Advanced: duration &amp; season</summary>
-        <div className="mt-2 space-y-2">
-          <div>
-            <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Runs from / until (blank = always)</div>
-            <div className="flex gap-2 items-center">
-              <input type="date" value={d.activeFrom || ''} onChange={e => setD({ ...d, activeFrom: e.target.value || undefined })} className="inp w-auto" />
-              <span className="text-slate-400 text-xs">to</span>
-              <input type="date" value={d.activeUntil || ''} onChange={e => setD({ ...d, activeUntil: e.target.value || undefined })} className="inp w-auto" />
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Seasonal band (every year, MM-DD; blank = year-round)</div>
-            <div className="flex gap-2 items-center flex-wrap">
-              <input type="text" placeholder="05-01" value={d.seasonWindow?.fromMonthDay || ''} onChange={e => setD({ ...d, seasonWindow: { fromMonthDay: e.target.value, toMonthDay: d.seasonWindow?.toMonthDay || '' } })} className="inp w-20" />
-              <span className="text-slate-400 text-xs">to</span>
-              <input type="text" placeholder="10-30" value={d.seasonWindow?.toMonthDay || ''} onChange={e => setD({ ...d, seasonWindow: { fromMonthDay: d.seasonWindow?.fromMonthDay || '', toMonthDay: e.target.value } })} className="inp w-20" />
-              {(d.seasonWindow?.fromMonthDay || d.seasonWindow?.toMonthDay) && <button type="button" onClick={() => setD({ ...d, seasonWindow: undefined })} className="text-[10px] text-rose-500 font-bold">clear</button>}
-            </div>
-          </div>
+
+      {/* DURATION — the window it fires within (separate from recurrence). */}
+      <Field label="Duration (when it runs)">
+        <div className="flex gap-1.5 flex-wrap mb-2">
+          <button type="button" onClick={() => setDurMode('indefinite')} className={modeBtn(durMode === 'indefinite')}>Indefinite</button>
+          <button type="button" onClick={() => { setDurMode('season'); if (!season) setSeason('summer'); }} className={modeBtn(durMode === 'season')}>Season</button>
+          <button type="button" onClick={() => setDurMode('custom')} className={modeBtn(durMode === 'custom')}>Custom window</button>
         </div>
-      </details>
+        {durMode === 'indefinite' && <div className="text-[11px] text-slate-400">Runs forever — no start or end.</div>}
+        {durMode === 'season' && (
+          <div className="space-y-1.5">
+            <div className="flex gap-2 flex-wrap">
+              {(['summer', 'winter'] as RoleSeason[]).map(s => {
+                const p = SEASON_PRESETS[s];
+                return (
+                  <button key={s} type="button" onClick={() => setSeason(s)} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold ${season === s ? p.chip + ' ring-2 ring-offset-1 ring-slate-400' : 'bg-white text-slate-600 border-slate-200'}`}>
+                    {p.emoji} {p.label} <span className="text-[10px] opacity-70">{p.fromMonthDay}→{p.toMonthDay}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="text-[11px] text-slate-400">Auto-fills the dates and repeats every year; dormant outside the band, resumes automatically the following year — no manual toggling.</div>
+          </div>
+        )}
+        {durMode === 'custom' && (
+          <div className="space-y-2">
+            <div className="flex gap-2 items-center">
+              <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} className="inp w-auto" />
+              <span className="text-slate-400 text-xs">to</span>
+              <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} className="inp w-auto" />
+            </div>
+            <label className="flex items-center gap-2 text-xs font-bold text-slate-600"><input type="checkbox" checked={repeatAnnually} onChange={e => setRepeatAnnually(e.target.checked)} /> Repeat every year</label>
+            <div className="text-[11px] text-slate-400">{repeatAnnually ? 'Runs the same month/day band every year (the dates’ year is ignored).' : 'Runs once within this window, then ends.'}</div>
+          </div>
+        )}
+      </Field>
+
       <Field label="Completion note prompt (required at completion)"><input value={d.notePrompt} onChange={e => setD({ ...d, notePrompt: e.target.value })} className="inp" placeholder="e.g. Pay period + exceptions" /></Field>
       <Field label="Due-soon window (days)"><input type="number" value={d.dueSoonDays} onChange={e => setD({ ...d, dueSoonDays: Number(e.target.value) || 0 })} className="inp w-24" /></Field>
       <Field label="SOP (how-to) — supports [label](https://…) and bare links"><textarea value={d.sop} onChange={e => setD({ ...d, sop: e.target.value })} className="inp h-28 font-mono text-xs" placeholder="Step-by-step… Full guide: [Payroll walkthrough](https://scribehow.com/…)" /></Field>
@@ -308,7 +364,7 @@ function DutyEditor({ duty, categoryColors, onSetCategoryColor, onClose, onSave 
         </div>
       )}
       <label className="flex items-center gap-2 text-sm mt-2"><input type="checkbox" checked={d.active} onChange={e => setD({ ...d, active: e.target.checked })} /> Active</label>
-      <SaveBar onClose={onClose} disabled={!d.name.trim() || !d.notePrompt.trim() || !d.category.trim()} onSave={() => onSave({ ...d, updatedAt: Date.now() })} />
+      <SaveBar onClose={onClose} disabled={!d.name.trim() || !d.notePrompt.trim() || !d.category.trim() || !d.roleId} onSave={() => onSave({ ...d, ...buildDuration(), updatedAt: Date.now() })} />
     </Modal>
   );
 }

@@ -937,14 +937,20 @@ export interface RoleMasterDuty {
   division?: string;
   tier: 'admin';
   active: boolean;
-  // Duration bounds (optional). Occurrences only materialize within
-  // [activeFrom, activeUntil] when set. Past activeUntil = "Ended".
+  // ── DURATION (the window a duty fires within). Three shapes, all optional
+  // and mutually exclusive per the editor. Absent = INDEFINITE (runs forever
+  // — byte-identical to pre-v1.6 behaviour):
+  //  • ONE-SHOT bounded window → activeFrom/activeUntil (past activeUntil =
+  //    "Ended"; does NOT repeat).
+  //  • ANNUAL band → seasonWindow (MM-DD, generates every year, dormant
+  //    outside; year-wrapping bands supported e.g. '11-01'→'04-30').
+  //  • SEASON preset → `season` tag PLUS the matching seasonWindow (the tag
+  //    is display/identity only; generators read seasonWindow, so a season is
+  //    just a named, colored annual band — one mechanic, not two).
   activeFrom?: string;        // YYYY-MM-DD
   activeUntil?: string;       // YYYY-MM-DD
-  // Seasonal band (optional). Occurrences only materialize when the date's
-  // MM-DD falls inside the band, EVERY year. Year-wrapping bands supported
-  // (e.g. from '11-01' to '03-31').
   seasonWindow?: { fromMonthDay: string; toMonthDay: string };
+  season?: 'summer' | 'winter';
   lastGeneratedThrough?: string;  // YYYY-MM-DD cursor advanced by the engine
   updatedAt?: number;
 }
