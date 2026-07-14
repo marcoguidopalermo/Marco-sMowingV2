@@ -26,6 +26,26 @@ function isOutstanding(log: Pick<PerformanceLog, 'approvalStatus'>): boolean {
   return s !== 'approved' && s !== 'waived';
 }
 
+// Whether a crew-day has ANY real work. The scheduled sync writes a
+// pending PerformanceLog for EVERY crew on the day's schedule, including
+// crews that had zero synced work (jobs:[], employeeAH:{}) — a no-work
+// placeholder. Those must NOT count as "outstanding" (nothing to approve).
+// A day counts as real work if it has any job row, any positive attributed
+// hours (employeeAH — covers Jobber, TimeMaster, and manual AH splits), or
+// any captured timesheet interval. This guard is self-protecting: a real
+// unapproved day still flags, and a sync-gap day (case (b)) — which BY
+// DEFINITION has Jobber visits or clock-ins, i.e. jobs/employeeAH/timesheets
+// — still flags, so it can never accidentally hide a genuine gap.
+function hasRealWork(log: PerformanceLog): boolean {
+  if ((log.jobs?.length ?? 0) > 0) return true;
+  for (const v of Object.values(log.employeeAH || {})) {
+    if ((Number(v) || 0) > 0) return true;
+  }
+  const ts = (log as { employeeTimesheets?: Record<string, unknown> }).employeeTimesheets;
+  if (ts && Object.keys(ts).length > 0) return true;
+  return false;
+}
+
 // Outstanding-tracking start date. The approval workflow launched
 // 2026-07-01, so every June-and-earlier crew-day would read as
 // "outstanding" forever. Days before this floor are suppressed from
@@ -55,6 +75,9 @@ export function scanOutstandingCrewDays(
     if (earliest && date < earliest) continue; // window floor
     for (const [crewId, log] of Object.entries(dayLogs || {})) {
       if (!log || !isOutstanding(log)) continue;
+      // No-work placeholder → not outstanding (nothing to approve/waive).
+      // A day with real work that's merely unapproved still flags.
+      if (!hasRealWork(log)) continue;
       const division = log.division || 'Unassigned';
       const crewNumber = log.crewNumber ?? 0;
       out.push({

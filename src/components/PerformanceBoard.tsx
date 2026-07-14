@@ -1363,16 +1363,20 @@ export default function PerformanceBoard({
             )}
           </div>
 
-          {/* ADMIN OVERSIGHT — cross-date outstanding crew-days (neither
-              approved nor waived), grouped by division. Excludes today
-              and anything before OUTSTANDING_TRACKING_START (pre-launch
-              backlog — suppressed from view only, data untouched).
-              Read-derived from the performance map; no new storage.
-              Each crew-day chip navigates to that date and highlights
-              the crew card so it can be approved or waived directly. */}
-          {isAdmin && (() => {
+          {/* OVERSIGHT — cross-date outstanding crew-days (neither approved
+              nor waived), grouped by division. Visible to admins AND managers
+              (managers own approval). Scoped to the active division filter,
+              which DEFAULTS to the viewer's managedDivision — so a Lawn
+              manager sees only Lawn's outstanding days, while an admin
+              (managedDivision 'all') keeps the all-divisions view. Excludes
+              today and anything before OUTSTANDING_TRACKING_START (pre-launch
+              backlog — view-only suppression, data untouched). Read-derived
+              from the performance map; no new storage. Each crew-day chip
+              navigates to that date and highlights the crew card. */}
+          {(isAdmin || isManager) && (() => {
             // Scoped to the active division filter — 'all' passes
-            // everything (admin cross-division oversight unchanged).
+            // everything (admin cross-division oversight); a division
+            // manager's filter defaults to their own division.
             const outstanding = scanOutstandingCrewDays(performance, formatTodayInToronto())
               .filter(o => divisionFilter === 'all'
                 || (divisionFilter === 'adhoc' ? o.isAdHoc : divisionNameToCode(o.division) === divisionFilter));
