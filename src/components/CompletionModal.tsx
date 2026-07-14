@@ -1,5 +1,8 @@
 import type { Dispatch, SetStateAction } from 'react';
+import { useState } from 'react';
 import { CheckCircle, X, Wrench, Users, Check } from 'lucide-react';
+import type { StoredFile } from '../types';
+import PhotoUpload from './PhotoUpload';
 
 interface Worker { userEmail: string; userName: string; }
 
@@ -63,6 +66,9 @@ export interface CompletionModalState {
   // Edit button); false => unlocked (number input + Lock button).
   // Defaults to locked so the common case is one click.
   nextDueLocked?: boolean;
+  // Completion photos of the finished work. Uploaded to repairs/{taskId};
+  // merged onto the repairLog entry (with the task's report photos) on save.
+  photos?: StoredFile[];
 }
 
 interface CompletionModalProps {
@@ -77,9 +83,12 @@ interface CompletionModalProps {
   // shows "Saving…". The modal only closes on success, so without this a
   // slow connection invites a re-tap and a duplicate repair entry.
   isSubmitting?: boolean;
+  uploaderEmail: string;
+  uploaderName: string;
 }
 
-export default function CompletionModal({ state, setState, onSubmit, mechanicRoster = [], isSubmitting = false }: CompletionModalProps) {
+export default function CompletionModal({ state, setState, onSubmit, mechanicRoster = [], isSubmitting = false, uploaderEmail, uploaderName }: CompletionModalProps) {
+  const [uploading, setUploading] = useState(false);
   if (!state.isOpen) return null;
   const selected = state.selectedWorkers || [];
   const isSelected = (email: string) => selected.some(w => w.userEmail.toLowerCase() === email.toLowerCase());
@@ -138,6 +147,19 @@ export default function CompletionModal({ state, setState, onSubmit, mechanicRos
           <div className="space-y-1">
             <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Mechanic Fix Notes</label>
             <textarea value={state.fixNotes} onChange={e => setState({ ...state, fixNotes: e.target.value })} className="w-full border border-slate-300 rounded-xl p-3 text-sm font-medium outline-none focus:ring-2 focus:ring-green-500 resize-none" rows={3} placeholder="What was fixed?" />
+          </div>
+
+          {/* Completion photos of the finished work (optional). */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Photos of finished work (optional)</label>
+            <PhotoUpload
+              dir={`repairs/${state.taskId}`}
+              value={state.photos || []}
+              onChange={photos => setState(s => ({ ...s, photos }))}
+              uploadedBy={{ email: uploaderEmail, name: uploaderName }}
+              phase="completion"
+              onUploadingChange={setUploading}
+            />
           </div>
 
           {/* WHO WORKED ON THIS TASK? — multi-select, no cap. Pre-seeded
@@ -261,7 +283,7 @@ export default function CompletionModal({ state, setState, onSubmit, mechanicRos
 
         <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
           <button onClick={() => setState({ ...state, isOpen: false })} disabled={isSubmitting} className="px-6 py-2.5 font-bold text-slate-500 disabled:opacity-50">Cancel</button>
-          <button onClick={onSubmit} disabled={isSubmitting} className="px-8 py-2.5 font-black text-white bg-green-600 rounded-xl shadow-lg shadow-green-600/20 uppercase tracking-widest text-xs disabled:opacity-60 disabled:cursor-not-allowed">{isSubmitting ? 'Saving…' : 'Save & Close Task'}</button>
+          <button onClick={onSubmit} disabled={isSubmitting || uploading} className="px-8 py-2.5 font-black text-white bg-green-600 rounded-xl shadow-lg shadow-green-600/20 uppercase tracking-widest text-xs disabled:opacity-60 disabled:cursor-not-allowed">{isSubmitting ? 'Saving…' : uploading ? 'Uploading…' : 'Save & Close Task'}</button>
         </div>
       </div>
     </div>

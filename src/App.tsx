@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 
 import {
-  Employee, FleetItem, DefectDetail, MechanicTask,
+  Employee, FleetItem, DefectDetail, MechanicTask, StoredFile,
   Inspection, InventoryItem, Crew, Job, PerformanceLog, AppData,
   TaskActivity, TaskActivityType, BulletinAudienceRole, TaskNote, UnitNote, AppSettings, UserRole, RolePermissionsOverride, JobberUser, PrimaryCrew, PRIMARY_CREWS,
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
@@ -262,7 +262,7 @@ export default function App() {
   const [printType, setPrintType] = useState<'daily' | 'weekly' | 'range'>('daily');
   const [printDateRange, setPrintDateRange] = useState({ start: formatDate(new Date()), end: formatDate(new Date()) });
   const [printDailyDate, setPrintDailyDate] = useState<string>(formatDate(new Date()));
-  const [manualTaskModal, setManualTaskModal] = useState({ isOpen: false, unitId: '', unitName: '', category: '', description: '', severity: 'minor', priority: false });
+  const [manualTaskModal, setManualTaskModal] = useState<import('./components/ManualTaskModal').ManualTaskModalState>({ isOpen: false, unitId: '', unitName: '', category: '', description: '', severity: 'minor', priority: false });
   const [requestPartsModal, setRequestPartsModal] = useState<RequestPartsModalState>({ isOpen: false });
   const [historyUnitId, setHistoryUnitId] = useState<string | null>(null);
   const [draggingResource, setDraggingResource] = useState<{ type: ResourceType; id: string } | null>(null);
@@ -2734,6 +2734,15 @@ export default function App() {
           activityLog: [priorityAct, createdAct, ...(appData.activityLog || [])],
         });
       }}
+      onSetTaskPhotos={(taskId, photos) => {
+        // Persist a repair's photo metadata array (after a board-side photo
+        // delete). Bytes are removed from Storage by the caller; here we
+        // only write the trimmed metadata onto the task. No pay/stat paths.
+        const updated = appData.mechanicTasks.map(t =>
+          t.id === taskId ? { ...t, photos } : t
+        );
+        syncToCloud({ ...appData, mechanicTasks: updated });
+      }}
       onToggleWaitingOnParts={(task) => {
         if (!can('canEditRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
         const existing = appData.mechanicTasks.find(t => t.id === task.id);
@@ -4725,6 +4734,8 @@ export default function App() {
         fleet={appData.fleet}
         employees={appData.employees || []}
         defaultReporterId={currentUserEmployee?.id}
+        uploaderEmail={displayEmail}
+        uploaderName={displayName}
         onSubmit={async () => {
           // Resolve the reporter (defaults to the enterer's employee record).
           const reporterId = (manualTaskModal as any).reportedByEmployeeId || currentUserEmployee?.id;
@@ -4732,8 +4743,11 @@ export default function App() {
           const reportedBy = reporterEmp
             ? { employeeId: reporterEmp.id, name: reporterEmp.name || displayName }
             : { employeeId: currentUserEmployee?.id || '', name: displayName };
+          const photos = manualTaskModal.photos || [];
           const newTask: MechanicTask = {
-            id: `task-${Date.now()}`,
+            // Reuse the draft id the modal minted so report-time photos
+            // (already uploaded to repairs/{draftId}) match the task.
+            id: manualTaskModal.draftId || `task-${Date.now()}`,
             unitId: manualTaskModal.unitId || undefined,
             unitName: manualTaskModal.unitName,
             category: manualTaskModal.category,
@@ -4745,6 +4759,7 @@ export default function App() {
             reportedBy,
             activity: [],
             priority: !!manualTaskModal.priority,
+            ...(photos.length ? { photos } : {}),
           };
           const act = makeActivity('created', newTask, { source: 'manual' });
           newTask.activity = [act];
@@ -5497,6 +5512,8 @@ export default function App() {
       <CompletionModal
         state={completionModal}
         setState={setCompletionModal}
+        uploaderEmail={displayEmail}
+        uploaderName={displayName}
         mechanicRoster={(appData.employees || [])
           .filter(e => e.status === 'Active' && e.systemRole === 'mechanic' && !!e.linkedUserEmail)
           .map(e => ({ userEmail: e.linkedUserEmail as string, userName: e.name || (e.linkedUserEmail as string) }))
@@ -5520,12 +5537,20 @@ export default function App() {
           completionSubmitRef.current = true;
           setIsCompletingRepair(true);
           try {
-          const newLogEntry = {
-            id: `rep-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, equipmentId: unitId, equipmentName: completionModal.unitName,
-            date: repairDate, fixNotes, cost: costNum, laborHours: Number(laborHours) || 0
-          };
           // Build the 'completed' activity. If the task isn't in mechanicTasks (synthetic), use modal data.
           const existing = appData.mechanicTasks.find(t => t.id === taskId);
+          // Carry photos forward: the task's report-time photos + any
+          // completion photos just attached. Metadata only — bytes already
+          // live in Storage under repairs/{taskId}/.
+          const mergedPhotos = [
+            ...((existing?.photos as StoredFile[] | undefined) || []),
+            ...((completionModal.photos as StoredFile[] | undefined) || []),
+          ];
+          const newLogEntry = {
+            id: `rep-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, equipmentId: unitId, equipmentName: completionModal.unitName,
+            date: repairDate, fixNotes, cost: costNum, laborHours: Number(laborHours) || 0,
+            ...(mergedPhotos.length ? { photos: mergedPhotos } : {}),
+          };
           const taskRef = existing || {
             id: taskId,
             unitId,

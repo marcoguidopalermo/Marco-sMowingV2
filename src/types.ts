@@ -363,6 +363,23 @@ export interface TaskNote {
   text: string;
 }
 
+// A file stored in Firebase Storage, referenced from Firestore by metadata
+// only — the bytes never live in Firestore. Shared across every upload
+// surface (repair photos now; fleet docs, policies, duty photos next).
+export interface StoredFile {
+  url: string;                 // download URL
+  path: string;                // full Storage path (used for delete)
+  name: string;                // original filename
+  size: number;                // bytes AFTER compression
+  contentType: string;
+  uploadedAt: number;
+  uploadedBy: { email: string; name: string };
+  kind: 'image' | 'pdf' | 'other';
+  // Which stage of a repair the photo documents. Absent on non-repair
+  // surfaces. 'report' = problem as filed; 'completion' = finished work.
+  phase?: 'report' | 'completion';
+}
+
 export interface MechanicTask {
   id: string;
   unitId?: string;
@@ -370,6 +387,10 @@ export interface MechanicTask {
   category: string;
   description: string;
   notes?: TaskNote[];
+  // Repair photos (Storage bytes; metadata only here). Report-time shots
+  // documenting the problem; completion shots are merged onto the
+  // repairLog entry when the task is closed.
+  photos?: StoredFile[];
   severity: 'minor' | 'major';
   status: 'todo' | 'doing' | 'done';
   dateReported: string;

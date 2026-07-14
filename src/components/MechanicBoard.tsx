@@ -3,9 +3,11 @@ import {
   PenTool, List, LayoutDashboard, ClipboardList, Plus, AlertCircle,
   CheckCircle, CheckCircle2, Flame, Trash2, Save, X, Clock, AlertTriangle, Wrench,
   Activity, ChevronDown, ChevronUp, FileSignature, TrendingUp,
-  BookOpen, UserPlus, Package
+  BookOpen, UserPlus, Package, Camera
 } from 'lucide-react';
-import { AppData, FleetItem, MechanicTask, PartsOrder } from '../types';
+import { AppData, FleetItem, MechanicTask, PartsOrder, StoredFile } from '../types';
+import { deleteFile } from '../lib/storage';
+import PhotoViewer from './PhotoViewer';
 import { assigneesForTask, collaboratorNames, joinNames, shareForMechanic } from '../lib/workCredit';
 import FleetGroupedList from './FleetGroupedList';
 import { getUnitAttention } from '../lib/fleetGrouping';
@@ -113,6 +115,8 @@ interface MechanicBoardProps {
   onDeleteTaskNote: (taskId: string, noteId: string) => void;
   onTogglePriority: (task: MechanicTask) => void;
   onToggleWaitingOnParts: (task: MechanicTask) => void;
+  // Persist a task's photo metadata array (after a delete from the board).
+  onSetTaskPhotos: (taskId: string, photos: StoredFile[]) => void;
   onOpenUnitHistory: (unit: FleetItem) => void;
   // Granular delete gates + handlers. Each one opens the shared
   // ConfirmDeleteModal at the App.tsx layer (deliberate-wording dialog
@@ -190,6 +194,7 @@ export default function MechanicBoard({
   onDeleteTaskNote,
   onTogglePriority,
   onToggleWaitingOnParts,
+  onSetTaskPhotos,
   onOpenUnitHistory,
   canDeleteMechanicTask,
   canDeleteRepairLog,
@@ -216,6 +221,8 @@ export default function MechanicBoard({
   // description + quick actions (priority / parts / assign) + a link to the
   // full detail modal. Null = all collapsed.
   const [expandedRepairId, setExpandedRepairId] = useState<string | null>(null);
+  // Full-screen photo viewer (repair photos). Null when closed.
+  const [photoViewer, setPhotoViewer] = useState<{ files: StoredFile[]; idx: number } | null>(null);
   // Which Parts Orders row's status-chip dropdown is currently open.
   // Null when no menu is open. The chip is rendered as a button when
   // canChangePartsStatus is true; clicking it sets this id and renders
@@ -647,6 +654,11 @@ export default function MechanicBoard({
                             ))}
                           </div>
                         )}
+                        {!!task.photos?.length && (
+                          <span className="inline-flex items-center gap-0.5 text-[11px] font-bold text-slate-400" title={`${task.photos.length} photo${task.photos.length > 1 ? 's' : ''}`}>
+                            <Camera className="w-3.5 h-3.5" />{task.photos.length}
+                          </span>
+                        )}
                         {age.label && (
                           <span className={`text-[11px] font-bold tabular-nums ${age.aging ? 'text-rose-600' : 'text-slate-400'}`} title={`Reported ${formatReportedDate(task.dateReported)}`}>
                             {age.label}
@@ -670,6 +682,35 @@ export default function MechanicBoard({
                           {rep ? ` · Reported by ${rep}` : ''}
                           {task.dateReported ? ` · ${formatReportedDate(task.dateReported)}` : ''}
                         </div>
+                        {!!task.photos?.length && (
+                          <div className="flex flex-wrap gap-2">
+                            {task.photos.map((f, i) => {
+                              const canDel = isAdmin || (f.uploadedBy?.email || '').toLowerCase() === meLc;
+                              return (
+                                <div key={f.path} className="relative w-16 h-16 rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
+                                  <button type="button" onClick={() => setPhotoViewer({ files: task.photos!, idx: i })} className="w-full h-full" title="View photo">
+                                    {f.kind === 'pdf'
+                                      ? <span className="w-full h-full flex items-center justify-center"><FileSignature className="w-6 h-6 text-slate-400" /></span>
+                                      : <img src={f.url} alt={f.name} className="w-full h-full object-cover" />}
+                                  </button>
+                                  {canDel && (
+                                    <button
+                                      type="button"
+                                      title="Remove photo"
+                                      onClick={async () => {
+                                        onSetTaskPhotos(task.id, (task.photos || []).filter(p => p.path !== f.path));
+                                        try { await deleteFile(f.path); } catch { /* metadata already dropped; orphan byte is harmless */ }
+                                      }}
+                                      className="absolute top-0.5 right-0.5 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <button
                             type="button"
@@ -839,7 +880,19 @@ export default function MechanicBoard({
                 <tr key={log.id} className="hover:bg-gray-50 transition-colors">
                   <td className="p-4 font-medium text-sm text-gray-700">{log.date}</td>
                   <td className="p-4 font-bold text-gray-900 text-sm">{log.equipmentName}</td>
-                  <td className="p-4 text-sm text-gray-600">{log.fixNotes}</td>
+                  <td className="p-4 text-sm text-gray-600">
+                    {log.fixNotes}
+                    {!!(log.photos?.length) && (
+                      <button
+                        type="button"
+                        onClick={() => setPhotoViewer({ files: log.photos as StoredFile[], idx: 0 })}
+                        title={`${log.photos.length} photo${log.photos.length > 1 ? 's' : ''}`}
+                        className="ml-2 inline-flex items-center gap-0.5 text-[11px] font-bold text-slate-400 hover:text-slate-700 align-middle"
+                      >
+                        <Camera className="w-3.5 h-3.5" />{log.photos.length}
+                      </button>
+                    )}
+                  </td>
                   <td className="p-4 text-right font-mono font-bold text-rose-600">${Number(log.cost).toFixed(2)}</td>
                   {canDeleteRepairLog && (
                     <td className="p-4 text-right">
@@ -1659,6 +1712,10 @@ export default function MechanicBoard({
             </div>
           </div>
         </div>
+      )}
+
+      {photoViewer && (
+        <PhotoViewer files={photoViewer.files} startIndex={photoViewer.idx} onClose={() => setPhotoViewer(null)} />
       )}
     </div>
   );

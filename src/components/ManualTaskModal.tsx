@@ -1,8 +1,9 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { PenTool, X, Flag } from 'lucide-react';
-import { FleetItem, Employee } from '../types';
+import { FleetItem, Employee, StoredFile } from '../types';
 import { fleetItemLabel } from '../lib/fleetUtils';
+import PhotoUpload from './PhotoUpload';
 
 export interface ManualTaskModalState {
   isOpen: boolean;
@@ -14,6 +15,11 @@ export interface ManualTaskModalState {
   priority?: boolean;
   // Who reported the repair. Defaults to the enterer; changeable.
   reportedByEmployeeId?: string;
+  // Report-time photos + the id the task will be created with. The id is
+  // minted when the modal opens so photos can upload to repairs/{id}/…
+  // BEFORE submit; App reuses this id when it builds the task.
+  photos?: StoredFile[];
+  draftId?: string;
 }
 
 interface ManualTaskModalProps {
@@ -22,11 +28,21 @@ interface ManualTaskModalProps {
   fleet: FleetItem[];
   employees?: Employee[];
   defaultReporterId?: string;   // the current user's employee id
+  uploaderEmail: string;
+  uploaderName: string;
   onSubmit: () => void | Promise<void>;
 }
 
-export default function ManualTaskModal({ state, setState, fleet, employees = [], defaultReporterId, onSubmit }: ManualTaskModalProps) {
+export default function ManualTaskModal({ state, setState, fleet, employees = [], defaultReporterId, uploaderEmail, uploaderName, onSubmit }: ManualTaskModalProps) {
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  // Mint the draft task id once per open so report-time photos have a
+  // stable Storage directory before the task exists.
+  useEffect(() => {
+    if (state.isOpen && !state.draftId) {
+      setState(s => ({ ...s, draftId: `task-${Date.now()}` }));
+    }
+  }, [state.isOpen, state.draftId, setState]);
   if (!state.isOpen) return null;
   const reporterId = state.reportedByEmployeeId ?? defaultReporterId ?? '';
   const reporters = employees.filter(e => e.status === 'Active');
@@ -37,7 +53,7 @@ export default function ManualTaskModal({ state, setState, fleet, employees = []
   // The parent's onSubmit closes the modal on success; on failure it stays
   // open and we re-enable here (syncToCloud has already toasted the error).
   const handleSubmit = async () => {
-    if (saving || !state.unitName || !state.category) return;
+    if (saving || uploading || !state.unitName || !state.category) return;
     setSaving(true);
     try {
       await onSubmit();
@@ -45,6 +61,9 @@ export default function ManualTaskModal({ state, setState, fleet, employees = []
       setSaving(false);
     }
   };
+  // Close without submitting — clear the draft id + photos so a cancelled
+  // report never reuses its Storage dir or shows its photos on the next open.
+  const handleClose = () => setState({ ...state, isOpen: false, photos: [], draftId: undefined });
   return (
     <div className="fixed inset-0 bg-black/60 z-[110] flex md:items-center md:justify-center md:p-4">
       <div className="bg-white md:rounded-2xl shadow-2xl h-full md:h-auto w-full md:max-w-md overflow-hidden flex flex-col animate-in slide-in-from-bottom-8">
@@ -53,7 +72,7 @@ export default function ManualTaskModal({ state, setState, fleet, employees = []
             <PenTool className="w-6 h-6 text-lime-400" />
             <h3 className="text-xl font-bold">Report New Repair</h3>
           </div>
-          <button onClick={() => setState({ ...state, isOpen: false })} disabled={saving} className="text-white/60 hover:text-white transition-colors min-w-[44px] min-h-[44px] inline-flex items-center justify-center disabled:opacity-40"><X className="w-6 h-6" /></button>
+          <button onClick={handleClose} disabled={saving} className="text-white/60 hover:text-white transition-colors min-w-[44px] min-h-[44px] inline-flex items-center justify-center disabled:opacity-40"><X className="w-6 h-6" /></button>
         </div>
 
         <div className="p-6 space-y-4">
@@ -115,6 +134,20 @@ export default function ManualTaskModal({ state, setState, fleet, employees = []
             />
           </div>
 
+          {/* Report-time photos — document the problem. Uploads go to
+              repairs/{draftId}; submit is disabled while any upload runs. */}
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Photos (optional)</label>
+            <PhotoUpload
+              dir={`repairs/${state.draftId || 'pending'}`}
+              value={state.photos || []}
+              onChange={photos => setState(s => ({ ...s, photos }))}
+              uploadedBy={{ email: uploaderEmail, name: uploaderName }}
+              phase="report"
+              onUploadingChange={setUploading}
+            />
+          </div>
+
           {reporters.length > 0 && (
             <div className="space-y-1.5">
               <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Reported by</label>
@@ -142,13 +175,13 @@ export default function ManualTaskModal({ state, setState, fleet, employees = []
         </div>
 
         <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
-          <button onClick={() => setState({ ...state, isOpen: false })} disabled={saving} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-50">Cancel</button>
+          <button onClick={handleClose} disabled={saving} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-50">Cancel</button>
           <button
-            disabled={!state.unitName || !state.category || saving}
+            disabled={!state.unitName || !state.category || saving || uploading}
             onClick={handleSubmit}
             className="px-8 py-2.5 font-black text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all uppercase tracking-widest text-xs"
           >
-            {saving ? 'Submitting…' : 'Submit Task'}
+            {saving ? 'Submitting…' : uploading ? 'Uploading…' : 'Submit Task'}
           </button>
         </div>
       </div>

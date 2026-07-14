@@ -1,0 +1,64 @@
+rules_version = '2';
+
+// Firebase Storage rules for crewmaster-73f31.
+// Principles:
+//   - Only signed-in users can read or write anything.
+//   - Writes are confined to the app's known path prefixes.
+//   - Every uploaded object must be an image or a PDF, <= 10 MB.
+//   - Deletes are allowed for signed-in users (app enforces
+//     uploader/admin at the UI + metadata layer; Storage just gates auth).
+// Path conventions (keep in sync with src/lib/storage.ts):
+//   repairs/{taskId}/{timestamp}-{filename}
+//   fleet/{unitId}/{docType}/{timestamp}-{filename}
+//   policies/{policyId}/{timestamp}-{filename}
+//   roleMaster/{instanceId}/{timestamp}-{filename}
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Upload guard: image/* or application/pdf, capped at 10 MB.
+    function validUpload() {
+      return request.resource.size < 10 * 1024 * 1024
+        && (
+          request.resource.contentType.matches('image/.*')
+          || request.resource.contentType == 'application/pdf'
+        );
+    }
+
+    // Repair photos (MechanicMaster) — the first live surface.
+    match /repairs/{taskId}/{fileName} {
+      allow read: if signedIn();
+      allow write: if signedIn() && validUpload();
+      allow delete: if signedIn();
+    }
+
+    // Fleet documents (registration, insurance, safety certs, etc.).
+    match /fleet/{unitId}/{docType}/{fileName} {
+      allow read: if signedIn();
+      allow write: if signedIn() && validUpload();
+      allow delete: if signedIn();
+    }
+
+    // Company / HR policy documents.
+    match /policies/{policyId}/{fileName} {
+      allow read: if signedIn();
+      allow write: if signedIn() && validUpload();
+      allow delete: if signedIn();
+    }
+
+    // RoleMaster duty-completion photos.
+    match /roleMaster/{instanceId}/{fileName} {
+      allow read: if signedIn();
+      allow write: if signedIn() && validUpload();
+      allow delete: if signedIn();
+    }
+
+    // Everything else: locked down.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
