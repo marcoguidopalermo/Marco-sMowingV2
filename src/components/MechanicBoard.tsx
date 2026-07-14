@@ -9,7 +9,6 @@ import { AppData, FleetItem, MechanicTask, PartsOrder } from '../types';
 import { assigneesForTask, collaboratorNames, joinNames, shareForMechanic } from '../lib/workCredit';
 import FleetGroupedList from './FleetGroupedList';
 import { getUnitAttention } from '../lib/fleetGrouping';
-import Stamp from './Stamp';
 import { personColor } from '../lib/personColor';
 import { isExpiringSoon, isExpired, isOdoStale, formatTodayInToronto } from '../lib/dateUtils';
 import { fleetItemLabel, needsPlateRenewal, needsCommercialSafety, weightBandLabel } from '../lib/fleetUtils';
@@ -26,6 +25,22 @@ function formatReportedDate(iso: string): string {
   const d = new Date(`${iso}T12:00:00`);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+// Compact age badge for the scannable row: "today" / "3d" / "2w" / "3mo".
+// Returns { label, aging } — aging flips true past 7 days so the row can
+// render the age in an alarm color while the repair sits unresolved.
+function repairAge(iso: string, today: string): { label: string; aging: boolean } {
+  if (!iso) return { label: '', aging: false };
+  const start = Date.parse(`${iso}T12:00:00Z`);
+  const now = Date.parse(`${today}T12:00:00Z`);
+  if (Number.isNaN(start) || Number.isNaN(now)) return { label: '', aging: false };
+  const days = Math.max(0, Math.floor((now - start) / 86_400_000));
+  const label = days === 0 ? 'today'
+    : days < 14 ? `${days}d`
+    : days < 60 ? `${Math.floor(days / 7)}w`
+    : `${Math.floor(days / 30)}mo`;
+  return { label, aging: days >= 7 };
 }
 
 // Completion timestamp is a full ISO string (date + time) from the
@@ -196,6 +211,11 @@ export default function MechanicBoard({
   // App.tsx sets 'mine' for mechanic role, 'all' otherwise. The user can
   // flip via the toggle in the Active section header.
   const [repairFilter, setRepairFilter] = useState<'all' | 'mine'>(defaultRepairFilter);
+  // Which active repair row is expanded inline (accordion — one at a time).
+  // Compact rows keep 8+ repairs scannable on a phone; the tap reveals the
+  // description + quick actions (priority / parts / assign) + a link to the
+  // full detail modal. Null = all collapsed.
+  const [expandedRepairId, setExpandedRepairId] = useState<string | null>(null);
   // Which Parts Orders row's status-chip dropdown is currently open.
   // Null when no menu is open. The chip is rendered as a button when
   // canChangePartsStatus is true; clicking it sets this id and renders
@@ -504,21 +524,8 @@ export default function MechanicBoard({
               return `Unit #${f.unitNumber}`;
             };
 
-            const severityChip = (task: MechanicTask) => {
-              const isMajor = task.severity === 'major';
-              return (
-                <span
-                  className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full whitespace-nowrap inline-flex items-center gap-1 ${
-                    isMajor ? 'bg-rose-600 text-white' :
-                    task.isMaintenance ? 'bg-yellow-200 text-yellow-900 border border-yellow-300' :
-                    'bg-amber-100 text-amber-700'
-                  }`}
-                >
-                  {isMajor && <Flame className="w-3 h-3" />}
-                  {task.category}
-                </span>
-              );
-            };
+            // Today (Toronto) — drives the compact per-row age badge.
+            const today = formatTodayInToronto();
 
             // Append the current mechanic to the task's assignee list
             // (multi-assignee, no cap) rather than replacing it.
@@ -570,223 +577,183 @@ export default function MechanicBoard({
                 : /oil change|maintenance|sharpening|filter/.test(lc) ? 'maintenance'
                 : /tire pressure|brakes|lights|hitch|defect/.test(lc) ? 'inspection'
                 : 'manual';
-              const sourceBorder =
-                task.priority ? 'border-l-rose-500 ring-1 ring-rose-100'
-                : sourceKind === 'inspection' ? 'border-l-blue-400'
-                : sourceKind === 'maintenance' ? 'border-l-yellow-400'
-                : 'border-l-slate-200';
               const hasPartsRequest = !!task.partsStatus;
               const partsTag = hasPartsRequest ? partsTagFor(task.partsStatus) : null;
-              // Parts-waiting visual state. 'arrived' is actionable again so
-              // it is NOT pending (keeps its emerald pill, no stamp/dim). The
-              // manual waitingOnParts flag also stamps, unless parts arrived.
+              // Parts-waiting state. 'arrived' is actionable again so it is
+              // NOT pending. The manual waitingOnParts flag also blocks,
+              // unless parts arrived.
               const partsState: 'ordered' | 'requested' | 'waiting' | null =
                 task.partsStatus === 'ordered' ? 'ordered'
                 : task.partsStatus === 'requested' ? 'requested'
                 : (task.waitingOnParts && task.partsStatus !== 'arrived') ? 'waiting'
                 : null;
               const partsPending = partsState !== null;
-              const stampLabel = partsState === 'ordered' ? 'Parts on Order'
-                : partsState === 'requested' ? 'Parts Requested'
-                : 'Parts Waiting';
-              const stampColor: 'rose' | 'amber' = partsState === 'ordered' ? 'rose' : 'amber';
-              // Distinct full-card border for pending cards (replaces the
-              // source-based left accent) so the card reads as blocked.
-              const pendingBorder = partsState === 'ordered'
-                ? 'border-rose-200 border-l-rose-400'
-                : 'border-amber-200 border-l-amber-400';
+              const isMajor = task.severity === 'major';
+              const expanded = expandedRepairId === task.id;
+              const asg = assigneesForTask(task);
+              const rep = task.reportedBy?.name || task.activity?.find(a => a.type === 'created')?.userName;
+              const age = repairAge(task.dateReported, today);
+              const unassigned = asg.length === 0;
+              // Left accent encodes urgency at a glance: priority → rose,
+              // parts-blocked → rose/amber, major → rose, else source color.
+              const accent =
+                task.priority ? 'border-l-rose-500'
+                : partsState === 'ordered' ? 'border-l-rose-400'
+                : partsState ? 'border-l-amber-400'
+                : isMajor ? 'border-l-rose-400'
+                : sourceKind === 'inspection' ? 'border-l-blue-400'
+                : sourceKind === 'maintenance' ? 'border-l-yellow-400'
+                : 'border-l-slate-200';
+              const toggle = () => setExpandedRepairId(expanded ? null : task.id);
               return (
-                <li key={task.id} className="relative">
-                  {/* Centered "stamp" — sits in the <li> (outside the dimmed
-                      card) so it stays crisp while the card body recedes.
-                      Centered over the card so it can't be missed on mobile. */}
-                  {partsPending && (
-                    <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-                      <Stamp
-                        label={stampLabel}
-                        color={stampColor}
-                        rotate={-6}
-                        size="lg"
-                        title="Blocked on parts — not actionable yet"
-                        className="bg-white/80 shadow-sm"
-                      />
-                    </div>
-                  )}
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onOpenTask(task.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        onOpenTask(task.id);
-                      }
-                    }}
-                    aria-label={`Open ${task.category} on ${unitName(task)}`}
-                    className={`relative border border-l-4 rounded-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer p-2 sm:p-3 ${partsPending ? `bg-slate-50 opacity-60 ${pendingBorder}` : `bg-white border-slate-200 hover:border-slate-300 ${sourceBorder}`}`}
-                  >
-                    {/* Top row — severity (left) + date + assignee (right). */}
-                    <div className="flex items-start justify-between gap-2 flex-wrap">
-                      {severityChip(task)}
-                      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-                        <span className="text-[10px] font-medium text-slate-500 whitespace-nowrap" title={task.dateReported}>
-                          {formatReportedDate(task.dateReported)}
-                        </span>
-                        {(() => {
-                          const asg = assigneesForTask(task);
-                          if (asg.length === 0) {
-                            return (
-                              <span className="text-[9px] font-black uppercase tracking-widest bg-slate-100 text-slate-600 border border-slate-300 px-1.5 py-0.5 rounded whitespace-nowrap">
-                                Unassigned
+                <li key={task.id}>
+                  <div className={`border border-l-4 rounded-lg bg-white shadow-sm ${accent} ${partsPending ? 'opacity-75' : ''} ${expanded ? 'border-slate-300 shadow-md' : 'border-slate-200'}`}>
+                    {/* COMPACT HEADER — the whole strip is one big tap target
+                        (glove-friendly, min-h 52) that expands the row. */}
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={expanded}
+                      onClick={toggle}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } }}
+                      aria-label={`${task.category} on ${unitName(task)} — tap for details`}
+                      className="flex items-center gap-2 px-2.5 py-2 min-h-[52px] cursor-pointer rounded-lg active:bg-slate-50"
+                    >
+                      {(task.priority || isMajor) && (
+                        <Flame className={`w-4 h-4 shrink-0 ${task.priority ? 'text-rose-500' : 'text-rose-400'}`} fill={task.priority ? '#f43f5e' : 'none'} />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-bold text-sm text-slate-800 truncate">{unitName(task)}</span>
+                          {isMajor && <span className="shrink-0 text-[8px] font-black uppercase tracking-widest bg-rose-600 text-white px-1 py-0.5 rounded">Major</span>}
+                        </div>
+                        <div className="text-[11px] text-slate-500 truncate">
+                          {task.category}
+                          {unitNumberLabel(task) ? ` · ${unitNumberLabel(task)}` : ''}
+                          {rep ? ` · ${rep}` : ''}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {partsPending && partsTag ? (
+                          <Package className={`w-4 h-4 ${partsState === 'ordered' ? 'text-rose-500' : 'text-amber-500'}`} aria-label={partsTag.label} />
+                        ) : unassigned ? (
+                          <span className="text-[8px] font-black uppercase tracking-widest bg-slate-100 text-slate-500 border border-slate-300 px-1 py-0.5 rounded">Unassigned</span>
+                        ) : (
+                          <div className="flex -space-x-1.5" title={asg.map(a => a.userName || a.userEmail).join(', ')}>
+                            {asg.slice(0, 3).map(a => (
+                              <span key={a.userEmail} className={`w-5 h-5 rounded-full ${hashColorFor(a.userEmail)} text-white text-[9px] font-black flex items-center justify-center shrink-0 ring-1 ring-white`}>
+                                {firstInitial(a.userName || '', a.userEmail || '')}
                               </span>
-                            );
-                          }
-                          // Overlapping avatar stack for the crew, with the
-                          // first mechanic's name inline on wide viewports
-                          // and a "+N" when more than one is assigned.
-                          const shown = asg.slice(0, 4);
-                          return (
-                            <div className="inline-flex items-center gap-1.5" title={asg.map(a => a.userName || a.userEmail).join(', ')}>
-                              <div className="flex -space-x-1.5">
-                                {shown.map(a => (
-                                  <span key={a.userEmail} className={`w-5 h-5 sm:w-6 sm:h-6 rounded-full ${hashColorFor(a.userEmail)} text-white text-[10px] font-black flex items-center justify-center shrink-0 ring-1 ring-white`}>
-                                    {firstInitial(a.userName || '', a.userEmail || '')}
-                                  </span>
-                                ))}
-                              </div>
-                              <span className="text-[10px] font-bold text-slate-600 truncate max-w-[72px] hidden sm:inline">
-                                {firstNameOnly(asg[0].userName || '', asg[0].userEmail || '')}
-                                {asg.length > 1 ? ` +${asg.length - 1}` : ''}
-                              </span>
-                            </div>
-                          );
-                        })()}
+                            ))}
+                          </div>
+                        )}
+                        {age.label && (
+                          <span className={`text-[11px] font-bold tabular-nums ${age.aging ? 'text-rose-600' : 'text-slate-400'}`} title={`Reported ${formatReportedDate(task.dateReported)}`}>
+                            {age.label}
+                          </span>
+                        )}
+                        {expanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
                       </div>
                     </div>
 
-                    {/* Title + Unit # inlined — saves a whole row on mobile.
-                        On a wide viewport the Unit # sits inline as muted
-                        text after a separator dot; on narrow viewports it
-                        wraps to the next line (flex-wrap on the parent
-                        block) rather than overflowing. */}
-                    <div className="mt-1 sm:mt-1.5 text-sm leading-snug">
-                      <span className="font-bold text-slate-800">{unitName(task)}</span>
-                      {unitNumberLabel(task) && (
-                        <span className="ml-1.5 font-medium text-slate-500 text-[11px] sm:text-xs">· {unitNumberLabel(task)}</span>
-                      )}
-                    </div>
-                    {task.description && task.description !== 'Unit marked Out of Service' && (
-                      <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1 sm:line-clamp-2">{task.description}</div>
+                    {/* EXPANDED PANEL — full description + reporter/assignees
+                        + the board quick actions (priority / parts / assign)
+                        + a link into the full detail modal. Nothing removed;
+                        it just lives behind the tap now. */}
+                    {expanded && (
+                      <div className="px-2.5 pb-2.5 pt-1 border-t border-slate-100 space-y-2">
+                        {task.description && task.description !== 'Unit marked Out of Service' && (
+                          <div className="text-[12px] text-slate-600 mt-2 whitespace-pre-wrap">{task.description}</div>
+                        )}
+                        <div className="text-[11px] text-slate-500">
+                          {asg.length ? `Assigned: ${asg.map(a => firstNameOnly(a.userName || '', a.userEmail || '')).join(', ')}` : 'Unassigned'}
+                          {rep ? ` · Reported by ${rep}` : ''}
+                          {task.dateReported ? ` · ${formatReportedDate(task.dateReported)}` : ''}
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => onTogglePriority(task)}
+                            title={task.priority ? 'Unmark priority' : 'Mark as priority'}
+                            aria-pressed={!!task.priority}
+                            className={`min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border transition-colors ${
+                              task.priority ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            <Flame className="w-3 h-3" fill={task.priority ? '#f43f5e' : 'none'} />
+                            Priority
+                          </button>
+                          {hasPartsRequest && partsTag ? (
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border ${partsTag.cls}`} title="Status managed in the Parts Orders tab">
+                              <Package className="w-3 h-3" /> {partsTag.label}
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onOpenRequestParts({ unitId: task.unitId, unitName: unitName(task), repairId: task.id })}
+                              title="Request parts for this repair"
+                              className="min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-emerald-100 text-emerald-700 border border-emerald-200 hover:bg-emerald-200"
+                            >
+                              <Package className="w-3 h-3" /> Request Parts
+                            </button>
+                          )}
+                          {!asg.some(a => a.userEmail.toLowerCase() === meLc) && (
+                            <button
+                              type="button"
+                              onClick={() => assignSelf(task.id)}
+                              title="Add me to this repair"
+                              className="min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                            >
+                              <UserPlus className="w-3 h-3" /> Assign to me
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => onOpenTask(task.id)}
+                            className="min-h-[36px] inline-flex items-center gap-1 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-slate-900 text-white hover:bg-slate-800 ml-auto"
+                          >
+                            Open details →
+                          </button>
+                        </div>
+                      </div>
                     )}
-                    {(() => {
-                      const rep = task.reportedBy?.name || task.activity?.find(a => a.type === 'created')?.userName;
-                      return rep ? <div className="text-[10px] text-slate-400 mt-0.5">Reported by {rep}</div> : null;
-                    })()}
-
-                    {/* Status indicators row: priority pill + parts
-                        (button OR colored tag) + assign-to-me (only when
-                        unassigned). flex-wrap keeps things tidy on a
-                        narrow viewport — the row breaks before any pill
-                        overflows the card. */}
-                    <div className="mt-1.5 sm:mt-2 flex items-center gap-1.5 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); onTogglePriority(task); }}
-                        onMouseDown={e => e.stopPropagation()}
-                        title={task.priority ? 'Unmark priority' : 'Mark as priority'}
-                        aria-label="Toggle priority"
-                        aria-pressed={!!task.priority}
-                        className={`min-h-[28px] sm:min-h-[32px] inline-flex items-center gap-1 px-2 py-0.5 sm:py-1 rounded-full text-[10px] font-black uppercase tracking-widest border transition-colors ${
-                          task.priority
-                            ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
-                            : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
-                        }`}
-                      >
-                        <Flame className="w-3 h-3" fill={task.priority ? '#f43f5e' : 'none'} />
-                        Priority
-                      </button>
-                      {hasPartsRequest && partsTag ? (
-                        <span
-                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border ${partsTag.cls}`}
-                          title="Status managed in the Parts Orders tab"
-                        >
-                          <Package className="w-3 h-3" /> {partsTag.label}
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onOpenRequestParts({
-                              unitId: task.unitId,
-                              unitName: unitName(task),
-                              repairId: task.id,
-                            });
-                          }}
-                          onMouseDown={e => e.stopPropagation()}
-                          title="Request parts for this repair"
-                          className="min-h-[28px] sm:min-h-[32px] inline-flex items-center gap-1 px-2 py-0.5 sm:py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-emerald-100 text-emerald-700 border border-emerald-200 hover:bg-emerald-200"
-                        >
-                          <Package className="w-3 h-3" /> Request Parts
-                        </button>
-                      )}
-                      {!assigneesForTask(task).some(a => a.userEmail.toLowerCase() === meLc) && (
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); assignSelf(task.id); }}
-                          onMouseDown={e => e.stopPropagation()}
-                          title="Add me to this repair"
-                          className="min-h-[28px] sm:min-h-[32px] inline-flex items-center gap-1 px-2 py-0.5 sm:py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
-                        >
-                          <UserPlus className="w-3 h-3" /> Assign to me
-                        </button>
-                      )}
-                    </div>
                   </div>
                 </li>
               );
             };
 
-            const renderCompletedRow = ({ task, completedTs }: { task: MechanicTask; completedTs: string }) => (
-              <li key={task.id}>
-                <button
-                  type="button"
-                  onClick={() => onOpenTask(task.id)}
-                  className="w-full text-left bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md hover:border-slate-300 transition-all p-2 sm:p-3 min-h-[44px]"
-                >
-                  <div className="flex items-start justify-between gap-2 flex-wrap">
-                    {severityChip(task)}
-                    <span className="text-[10px] font-medium text-emerald-700 whitespace-nowrap inline-flex items-center gap-1" title={String(completedTs)}>
-                      <CheckCircle2 className="w-3 h-3" /> {formatCompletedAt(completedTs)}
-                    </span>
-                  </div>
-                  <div className="mt-1 sm:mt-1.5 text-sm leading-snug">
-                    <span className="font-bold text-slate-800">{unitName(task)}</span>
-                    {unitNumberLabel(task) && (
-                      <span className="ml-1.5 font-medium text-slate-500 text-[11px] sm:text-xs">· {unitNumberLabel(task)}</span>
-                    )}
-                  </div>
-                  {task.description && task.description !== 'Unit marked Out of Service' && (
-                    <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1 sm:line-clamp-2">{task.description}</div>
-                  )}
-                  {(() => {
-                    // "Collaborated with X" — every mechanic credited on
-                    // the completion except the one who marked it complete.
-                    // Admin/all-repairs context shows the full crew minus
-                    // the completer.
-                    const completedAct = (task.activity || []).find(a => a.type === 'completed');
-                    if (!completedAct) return null;
-                    const others = collaboratorNames(completedAct, completedAct.userEmail || '');
-                    if (others.length === 0) return null;
-                    return (
-                      <div className="text-[10px] font-bold text-violet-600 mt-1 inline-flex items-center gap-1">
-                        <UserPlus className="w-3 h-3" /> Collaborated with {joinNames(others)}
+            // Completed rows get the same compact one-line treatment — tap
+            // opens the full detail modal (read-only history). The green
+            // check + date sit on the right; collaboration credit is folded
+            // into the muted subline so the row stays a single strip.
+            const renderCompletedRow = ({ task, completedTs }: { task: MechanicTask; completedTs: string }) => {
+              const completedAct = (task.activity || []).find(a => a.type === 'completed');
+              const others = completedAct ? collaboratorNames(completedAct, completedAct.userEmail || '') : [];
+              return (
+                <li key={task.id}>
+                  <button
+                    type="button"
+                    onClick={() => onOpenTask(task.id)}
+                    className="w-full text-left flex items-center gap-2 px-2.5 py-2 min-h-[48px] bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md hover:border-slate-300 transition-all active:bg-slate-50"
+                  >
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="font-bold text-sm text-slate-800 truncate">{unitName(task)}</span>
                       </div>
-                    );
-                  })()}
-                </button>
-              </li>
-            );
+                      <div className="text-[11px] text-slate-500 truncate">
+                        {task.category}
+                        {unitNumberLabel(task) ? ` · ${unitNumberLabel(task)}` : ''}
+                        {others.length ? ` · with ${joinNames(others)}` : ''}
+                      </div>
+                    </div>
+                    <span className="text-[11px] font-medium text-emerald-700 whitespace-nowrap shrink-0" title={String(completedTs)}>
+                      {formatCompletedAt(completedTs)}
+                    </span>
+                  </button>
+                </li>
+              );
+            };
 
             const emptyMsg = (kind: 'active' | 'complete') => (
               kind === 'active'
