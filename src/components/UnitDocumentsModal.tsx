@@ -75,8 +75,8 @@ export default function UnitDocumentsModal({ unit, repairLog, canEdit, uploadedB
 
   return (
     <div className="fixed inset-0 bg-black/60 z-[120] flex md:items-center md:justify-center md:p-4" onClick={onClose}>
-      <div className="bg-white md:rounded-2xl shadow-2xl h-full md:h-auto md:max-h-[92vh] w-full md:max-w-lg overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="p-4 border-b border-slate-200 bg-slate-900 text-white flex justify-between items-center">
+      <div className="bg-white md:rounded-2xl shadow-2xl h-[100dvh] md:h-auto md:max-h-[92dvh] w-full md:max-w-lg overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="p-4 border-b border-slate-200 bg-slate-900 text-white flex justify-between items-center shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <FileText className="w-6 h-6 text-sky-400 shrink-0" />
             <div className="min-w-0">
@@ -87,7 +87,7 @@ export default function UnitDocumentsModal({ unit, repairLog, canEdit, uploadedB
           <button onClick={onClose} className="text-white/60 hover:text-white min-w-[44px] min-h-[44px] inline-flex items-center justify-center"><X className="w-6 h-6" /></button>
         </div>
 
-        <div className="p-4 space-y-4 overflow-y-auto">
+        <div className="p-4 space-y-4 flex-1 min-h-0 overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
           {/* Unit info — plate / VIN / mileage or hours + last-updated stamp. */}
           <div className="grid grid-cols-2 gap-2 text-sm bg-slate-50 border border-slate-200 rounded-xl p-3">
             <Info label="Plate" value={unit.plateNumber} />

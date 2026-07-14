@@ -66,8 +66,8 @@ export default function ManualTaskModal({ state, setState, fleet, employees = []
   const handleClose = () => setState({ ...state, isOpen: false, photos: [], draftId: undefined });
   return (
     <div className="fixed inset-0 bg-black/60 z-[110] flex md:items-center md:justify-center md:p-4">
-      <div className="bg-white md:rounded-2xl shadow-2xl h-full md:h-auto w-full md:max-w-md overflow-hidden flex flex-col animate-in slide-in-from-bottom-8">
-        <div className="p-5 border-b border-gray-200 bg-slate-900 text-white flex justify-between items-center">
+      <div className="bg-white md:rounded-2xl shadow-2xl h-[100dvh] md:h-auto md:max-h-[92dvh] w-full md:max-w-md overflow-hidden flex flex-col animate-in slide-in-from-bottom-8">
+        <div className="p-5 border-b border-gray-200 bg-slate-900 text-white flex justify-between items-center shrink-0">
           <div className="flex items-center gap-3">
             <PenTool className="w-6 h-6 text-lime-400" />
             <h3 className="text-xl font-bold">Report New Repair</h3>
@@ -75,7 +75,7 @@ export default function ManualTaskModal({ state, setState, fleet, employees = []
           <button onClick={handleClose} disabled={saving} className="text-white/60 hover:text-white transition-colors min-w-[44px] min-h-[44px] inline-flex items-center justify-center disabled:opacity-40"><X className="w-6 h-6" /></button>
         </div>
 
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 flex-1 min-h-0 overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
           <div className="space-y-1.5">
             <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Select Equipment (Optional)</label>
             <select
@@ -174,7 +174,7 @@ export default function ManualTaskModal({ state, setState, fleet, employees = []
           </label>
         </div>
 
-        <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
+        <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3 shrink-0">
           <button onClick={handleClose} disabled={saving} className="px-6 py-2.5 font-bold text-slate-500 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-50">Cancel</button>
           <button
             disabled={!state.unitName || !state.category || saving || uploading}

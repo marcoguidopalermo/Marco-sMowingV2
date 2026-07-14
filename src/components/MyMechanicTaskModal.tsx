@@ -192,7 +192,7 @@ export default function MyMechanicTaskModal({
       className="fixed inset-0 bg-black/60 z-50 flex md:items-center md:justify-center md:p-4"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-white md:rounded-2xl shadow-2xl w-full md:max-w-2xl h-full md:h-auto md:max-h-[92vh] overflow-hidden flex flex-col">
+      <div className="bg-white md:rounded-2xl shadow-2xl w-full md:max-w-2xl h-[100dvh] md:h-auto md:max-h-[92dvh] overflow-hidden flex flex-col">
         {/* Sticky header */}
         <div className="px-4 md:px-5 py-3 border-b border-slate-200 flex items-start justify-between gap-3 shrink-0">
           <div className="flex-1 min-w-0">

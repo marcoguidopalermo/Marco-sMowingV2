@@ -118,8 +118,8 @@ export default function CompletionModal({ state, setState, onSubmit, mechanicRos
     : `Engine hours at service${state.maintenanceItemName ? ` (${state.maintenanceItemName})` : ''}`;
   return (
     <div className="fixed inset-0 bg-black/60 z-[90] flex md:items-center md:justify-center md:p-4">
-      <div className="bg-white md:rounded-2xl shadow-2xl h-full md:h-auto w-full md:max-w-md overflow-hidden flex flex-col animate-in zoom-in-95">
-        <div className="p-5 border-b border-gray-200 bg-slate-900 text-white flex justify-between items-center">
+      <div className="bg-white md:rounded-2xl shadow-2xl h-[100dvh] md:h-auto md:max-h-[92dvh] w-full md:max-w-md overflow-hidden flex flex-col animate-in zoom-in-95">
+        <div className="p-5 border-b border-gray-200 bg-slate-900 text-white flex justify-between items-center shrink-0">
           <div className="flex items-center gap-3">
             <CheckCircle className="w-6 h-6 text-green-400" />
             <h2 className="text-xl font-bold">Complete Repair</h2>
@@ -127,7 +127,7 @@ export default function CompletionModal({ state, setState, onSubmit, mechanicRos
           <button onClick={() => setState({ ...state, isOpen: false })} className="text-white/60 hover:text-white min-w-[44px] min-h-[44px] inline-flex items-center justify-center"><X className="w-6 h-6" /></button>
         </div>
 
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 flex-1 min-h-0 overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
           <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Unit</span>
             <p className="font-bold text-slate-800">{state.unitName}</p>
@@ -281,7 +281,7 @@ export default function CompletionModal({ state, setState, onSubmit, mechanicRos
 
         </div>
 
-        <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
+        <div className="p-5 bg-slate-50 border-t border-slate-200 flex justify-end gap-3 shrink-0">
           <button onClick={() => setState({ ...state, isOpen: false })} disabled={isSubmitting} className="px-6 py-2.5 font-bold text-slate-500 disabled:opacity-50">Cancel</button>
           <button onClick={onSubmit} disabled={isSubmitting || uploading} className="px-8 py-2.5 font-black text-white bg-green-600 rounded-xl shadow-lg shadow-green-600/20 uppercase tracking-widest text-xs disabled:opacity-60 disabled:cursor-not-allowed">{isSubmitting ? 'Saving…' : uploading ? 'Uploading…' : 'Save & Close Task'}</button>
         </div>
