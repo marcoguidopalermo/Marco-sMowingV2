@@ -23,7 +23,7 @@ import {
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary,
-  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleTaskInstance
+  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleTaskInstance
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
@@ -198,6 +198,8 @@ export default function App() {
   const subRoleMasterRolesRef = useRef<Record<string, RoleMasterRole>>({});
   const subRoleMasterDutiesRef = useRef<Record<string, RoleMasterDuty>>({});
   const subRoleMasterResponsibilitiesRef = useRef<Record<string, RoleMasterResponsibility>>({});
+  const subRoleMasterTemplatesRef = useRef<Record<string, RoleMasterTemplate>>({});
+  const subRoleMasterPoliciesRef = useRef<Record<string, RoleMasterPolicy>>({});
   const subRoleTaskInstancesRef = useRef<Record<string, RoleTaskInstance>>({});
   const mergePerformance = (
     docPerf: Record<string, Record<string, PerformanceLog>>,
@@ -866,6 +868,8 @@ export default function App() {
           roleMasterRoles: subRoleMasterRolesRef.current,
           roleMasterDuties: subRoleMasterDutiesRef.current,
           roleMasterResponsibilities: subRoleMasterResponsibilitiesRef.current,
+          roleMasterTemplates: subRoleMasterTemplatesRef.current,
+          roleMasterPolicies: subRoleMasterPoliciesRef.current,
           roleTaskInstances: subRoleTaskInstancesRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
@@ -1137,7 +1141,9 @@ export default function App() {
     const u2 = mk('roleMasterDuties', subRoleMasterDutiesRef, 'roleMasterDuties');
     const u3 = mk('roleTaskInstances', subRoleTaskInstancesRef, 'roleTaskInstances');
     const u4 = mk('roleMasterResponsibilities', subRoleMasterResponsibilitiesRef, 'roleMasterResponsibilities');
-    return () => { u1(); u2(); u3(); u4(); };
+    const u5 = mk('roleMasterTemplates', subRoleMasterTemplatesRef, 'roleMasterTemplates');
+    const u6 = mk('roleMasterPolicies', subRoleMasterPoliciesRef, 'roleMasterPolicies');
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); };
   }, [user]);
 
   useEffect(() => {
@@ -2076,6 +2082,28 @@ export default function App() {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
     await setDoc(doc(roleColl('roleMasterResponsibilities'), r.id), cleanRM({ ...r, createdBy: r.createdBy || { email: displayEmail, name: displayName } }));
     showToastMsg('Responsibility saved.');
+  };
+  // Library — Templates (admin + managers edit; admin deletes) and Policies
+  // (admin-only). Own subcollections; never in the main doc.
+  const saveRoleMasterTemplate = async (t: RoleMasterTemplate) => {
+    if (!isManager) { showToastMsg(PERMISSION_DENIED); return; }
+    await setDoc(doc(roleColl('roleMasterTemplates'), t.id), cleanRM({ ...t, createdBy: t.createdBy || { email: displayEmail, name: displayName }, updatedAt: Date.now() }));
+    showToastMsg('Template saved.');
+  };
+  const deleteRoleMasterTemplate = async (id: string) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    await deleteDoc(doc(roleColl('roleMasterTemplates'), id));
+    showToastMsg('Template deleted.');
+  };
+  const saveRoleMasterPolicy = async (p: RoleMasterPolicy) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    await setDoc(doc(roleColl('roleMasterPolicies'), p.id), cleanRM({ ...p, createdBy: p.createdBy || { email: displayEmail, name: displayName }, updatedAt: Date.now() }));
+    showToastMsg('Policy saved.');
+  };
+  const deleteRoleMasterPolicy = async (id: string) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    await deleteDoc(doc(roleColl('roleMasterPolicies'), id));
+    showToastMsg('Policy deleted.');
   };
   const setRoleMasterMaster = async (enabled: boolean) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
@@ -4308,14 +4336,22 @@ export default function App() {
           roles={appData.roleMasterRoles || {}}
           duties={appData.roleMasterDuties || {}}
           responsibilities={appData.roleMasterResponsibilities || {}}
+          templates={appData.roleMasterTemplates || {}}
+          policies={appData.roleMasterPolicies || {}}
           instances={appData.roleTaskInstances || {}}
           employees={appData.employees || []}
           isAdmin={isAdmin}
+          isManager={isManager}
+          uploadedBy={{ email: displayEmail, name: displayName }}
           masterEnabled={!!appData.settings?.roleMasterGenerationEnabled}
           onSetMasterEnabled={setRoleMasterMaster}
           onSaveRole={saveRoleMasterRole}
           onSaveDuty={saveRoleMasterDuty}
           onSaveResponsibility={saveRoleMasterResponsibility}
+          onSaveTemplate={saveRoleMasterTemplate}
+          onDeleteTemplate={deleteRoleMasterTemplate}
+          onSavePolicy={saveRoleMasterPolicy}
+          onDeletePolicy={deleteRoleMasterPolicy}
           categoryColors={appData.settings?.roleMasterCategoryColors || {}}
           onSetCategoryColor={setRoleCategoryColor}
         />

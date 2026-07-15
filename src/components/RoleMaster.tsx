@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { ClipboardList, Plus, Power, ChevronDown, ChevronRight, Pencil, UserCog, History, Layers, Search } from 'lucide-react';
 import {
-  Employee, RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleTaskInstance, RoleRecurrence, RoleInstanceStatus,
+  Employee, RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleTaskInstance, RoleRecurrence, RoleInstanceStatus,
 } from '../types';
 import { categoryColor, CATEGORY_PALETTE } from '../lib/roleCategories';
 import { dutyChip, responsibilityColor } from '../lib/roleResponsibilities';
@@ -9,6 +9,7 @@ import { SEASON_PRESETS, RoleSeason, dutySeason, describeRecurrence, dutyChartSt
 import SopText from './SopText';
 import SeasonChip from './SeasonChip';
 import RoleDutiesChart from './RoleDutiesChart';
+import RoleLibrary from './RoleLibrary';
 
 interface RoleMasterProps {
   roles: Record<string, RoleMasterRole>;
@@ -22,6 +23,14 @@ interface RoleMasterProps {
   onSaveRole: (r: RoleMasterRole) => void;
   onSaveDuty: (d: RoleMasterDuty) => void;
   onSaveResponsibility: (r: RoleMasterResponsibility) => void;
+  templates: Record<string, RoleMasterTemplate>;
+  policies: Record<string, RoleMasterPolicy>;
+  isManager: boolean;
+  uploadedBy: { email: string; name: string };
+  onSaveTemplate: (t: RoleMasterTemplate) => void;
+  onDeleteTemplate: (id: string) => void;
+  onSavePolicy: (p: RoleMasterPolicy) => void;
+  onDeletePolicy: (id: string) => void;
   categoryColors: Record<string, string>;
   onSetCategoryColor: (category: string, colorKey: string) => void;
 }
@@ -55,9 +64,10 @@ const statusChip = (s: RoleInstanceStatus): string => ({
 
 export default function RoleMaster({
   roles, duties, responsibilities, instances, employees, isAdmin, masterEnabled, onSetMasterEnabled, onSaveRole, onSaveDuty, onSaveResponsibility,
+  templates, policies, isManager, uploadedBy, onSaveTemplate, onDeleteTemplate, onSavePolicy, onDeletePolicy,
   categoryColors, onSetCategoryColor,
 }: RoleMasterProps) {
-  const [tab, setTab] = useState<'directory' | 'responsibilities' | 'duties' | 'manage' | 'history'>('directory');
+  const [tab, setTab] = useState<'directory' | 'responsibilities' | 'duties' | 'library' | 'manage' | 'history'>('directory');
   const [expandedRole, setExpandedRole] = useState<Record<string, boolean>>({});
   const [expandedDuty, setExpandedDuty] = useState<Record<string, boolean>>({});
   const [expandedResp, setExpandedResp] = useState<Record<string, boolean>>({});
@@ -197,10 +207,11 @@ export default function RoleMaster({
       <div className="max-w-3xl mx-auto space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><ClipboardList className="w-6 h-6 text-slate-700" /> RoleMaster</h2>
-          <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
+          <div className="flex flex-wrap bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
             <button onClick={() => setTab('directory')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'directory' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Directory</button>
             <button onClick={() => setTab('responsibilities')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'responsibilities' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Responsibilities</button>
             <button onClick={() => setTab('duties')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'duties' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Duties</button>
+            <button onClick={() => setTab('library')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'library' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Library</button>
             {isAdmin && <button onClick={() => setTab('manage')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'manage' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Manage</button>}
             {isAdmin && <button onClick={() => setTab('history')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'history' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}><History className="w-3.5 h-3.5 inline" /> History</button>}
           </div>
@@ -320,6 +331,16 @@ export default function RoleMaster({
               setEditDuty({ id: uid('duty'), name: '', category: 'General', sop: '', notePrompt: '', recurrence: { kind: 'weekly', dayOfWeek: 1 }, dueSoonDays: 2, roleId: first?.id || '', division: first?.division, tier: 'admin', active: true });
             }}
             onMoveDuty={(dutyId, newRoleId) => { const d = duties[dutyId]; if (d) onSaveDuty({ ...d, roleId: newRoleId, updatedAt: Date.now() }); }}
+          />
+        )}
+
+        {tab === 'library' && (
+          <RoleLibrary
+            templates={templates} policies={policies}
+            isAdmin={isAdmin} isManager={isManager} uploadedBy={uploadedBy}
+            categoryColors={categoryColors}
+            onSaveTemplate={onSaveTemplate} onDeleteTemplate={onDeleteTemplate}
+            onSavePolicy={onSavePolicy} onDeletePolicy={onDeletePolicy}
           />
         )}
 

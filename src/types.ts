@@ -945,6 +945,35 @@ export interface RoleMasterResponsibility {
   updatedAt?: number;
 }
 
+// A reusable TEMPLATE (v1.8 Library) — email/copy blocks staff copy-paste.
+// Placeholders like [Customer Name] stay literal (no merge system in v1).
+// Own subcollection: roleMasterTemplates/{id}.
+export interface RoleMasterTemplate {
+  id: string;
+  title: string;
+  category: string;           // lightweight tag (Quotes, Billing, Scheduling…)
+  body: string;               // plain text; line breaks preserved
+  notes?: string;             // when to use it
+  createdBy?: { email: string; name: string };
+  updatedAt?: number;
+  active: boolean;
+}
+
+// A POLICY / DOCUMENT (v1.8 Library) — an uploaded PDF (StoredFile in
+// Storage at policies/{id}/…) OR an external link (Google Doc / Scribe).
+// Own subcollection: roleMasterPolicies/{id}.
+export interface RoleMasterPolicy {
+  id: string;
+  title: string;
+  category?: string;
+  file?: StoredFile;          // uploaded doc (bytes in Storage; metadata here)
+  link?: string;             // external URL (mutually used with file; one or the other)
+  description?: string;
+  createdBy?: { email: string; name: string };
+  updatedAt?: number;
+  active: boolean;
+}
+
 export interface RoleMasterDuty {
   id: string;
   name: string;
@@ -1160,6 +1189,8 @@ export interface AppData {
   roleMasterRoles?: Record<string, RoleMasterRole>;
   roleMasterDuties?: Record<string, RoleMasterDuty>;
   roleMasterResponsibilities?: Record<string, RoleMasterResponsibility>;
+  roleMasterTemplates?: Record<string, RoleMasterTemplate>;
+  roleMasterPolicies?: Record<string, RoleMasterPolicy>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of
