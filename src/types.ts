@@ -846,6 +846,34 @@ export interface AppSettings {
   // RoleMaster category → palette color-key map. Small + bounded (a handful
   // of categories). New categories auto-assign the next unused palette color.
   roleMasterCategoryColors?: Record<string, string>;
+  // SalesMaster rates sheet — bounded (a handful of services + materials),
+  // admin-edited. Absent → the coded DEFAULT_SALES_RATES seed is used.
+  salesMaster?: SalesRates;
+}
+
+// ── SalesMaster (v1) — pricing rates sheet. Bounded data (small fixed set),
+// admin-only editing. Actual COST fields are admin-only at the UI layer.
+export type SalesMaterialUnit = 'sqft' | 'yard' | 'load' | 'each';
+export interface SalesService {
+  id: string;
+  name: string;
+  chargeRatePerHr: number;      // client-facing labour rate ($/BH)
+  labourCostPerHr?: number;     // optional internal cost override; else global default
+  division?: string;
+  active: boolean;
+}
+export interface SalesMaterial {
+  id: string;
+  name: string;
+  unit: SalesMaterialUnit;
+  costPerUnit: number;          // internal cost (admin-only)
+  chargePerUnit: number;        // client-facing charge
+  active: boolean;
+}
+export interface SalesRates {
+  labourCostPerHrDefault: number;   // internal labour cost when a service has no override
+  services: SalesService[];
+  materials: SalesMaterial[];
 }
 
 export type BulletinAudienceRole = 'admin' | 'manager' | 'foreman' | 'mechanic' | 'worker';

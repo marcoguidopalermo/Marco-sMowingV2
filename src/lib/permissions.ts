@@ -61,6 +61,7 @@ export const ROLE_PERMISSIONS = {
     canCreateTasks: true,
     canViewRoleMaster: true,
     canManageRoleMaster: true,
+    canViewSalesMaster: true,
     canApproveTimeOff: true,
     canViewDashboard: true,
   },
@@ -126,6 +127,7 @@ export const ROLE_PERMISSIONS = {
     canCreateTasks: false,
     canViewRoleMaster: true,
     canManageRoleMaster: false,
+    canViewSalesMaster: true,
     canApproveTimeOff: false,
     canViewDashboard: true,
   },
@@ -189,6 +191,7 @@ export const ROLE_PERMISSIONS = {
     canCreateTasks: false,
     canViewRoleMaster: true,
     canManageRoleMaster: false,
+    canViewSalesMaster: false,
     canApproveTimeOff: false,
     canViewDashboard: false,
   },
@@ -252,6 +255,7 @@ export const ROLE_PERMISSIONS = {
     canCreateTasks: false,
     canViewRoleMaster: true,
     canManageRoleMaster: false,
+    canViewSalesMaster: false,
     canApproveTimeOff: false,
     canViewDashboard: false,
   },
@@ -317,6 +321,7 @@ export const ROLE_PERMISSIONS = {
     canCreateTasks: false,
     canViewRoleMaster: true,
     canManageRoleMaster: false,
+    canViewSalesMaster: false,
     canApproveTimeOff: false,
     canViewDashboard: false,
   },
@@ -374,9 +379,9 @@ export function resolveRole(employee: Employee | null | undefined): UserRole {
   return employee.systemRole || 'worker';
 }
 
-export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'dashboard' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster' | 'rolemaster';
+export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'dashboard' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster' | 'rolemaster' | 'salesmaster';
 
-export const APP_VIEW_ORDER: AppView[] = ['schedule', 'mechanic', 'mymechanic', 'performance', 'dashboard', 'mycrew', 'timemaster', 'bulletins', 'taskmaster', 'rolemaster'];
+export const APP_VIEW_ORDER: AppView[] = ['schedule', 'mechanic', 'mymechanic', 'performance', 'dashboard', 'mycrew', 'timemaster', 'bulletins', 'taskmaster', 'rolemaster', 'salesmaster'];
 
 export function canAccessView(view: AppView, role: UserRole | null | undefined): boolean {
   switch (view) {
@@ -400,6 +405,7 @@ export function canAccessView(view: AppView, role: UserRole | null | undefined):
     case 'bulletins': return can('canViewBulletins', role);
     case 'taskmaster': return can('canViewTaskMaster', role);
     case 'rolemaster': return can('canViewRoleMaster', role);
+    case 'salesmaster': return can('canViewSalesMaster', role);
   }
 }
 

@@ -12,7 +12,7 @@ import {
   PenTool, AlertCircle, CheckCircle, Clock, List, LayoutDashboard, Save, TrendingUp, BarChart,
   Target, Award, CalendarDays, FileSignature, Map, CheckSquare, Info, Sparkles, Loader2,
   MessageSquareText, Leaf, Download, LogOut, ShieldCheck, UserPlus, Megaphone, Lock,
-  Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown, Hammer,
+  Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown, Hammer, Calculator,
   ChevronUp, Layers, Eye
 } from 'lucide-react';
 
@@ -60,6 +60,8 @@ import TaskMaster from './components/TaskMaster';
 import CreateTaskModal, { type CreateTaskSubmit } from './components/CreateTaskModal';
 import TaskDetailModal from './components/TaskDetailModal';
 import RoleMaster from './components/RoleMaster';
+import SalesMaster from './components/SalesMaster';
+import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
 import RequestTimeOffModal, { type RequestTimeOffSubmit } from './components/RequestTimeOffModal';
 
@@ -2105,6 +2107,12 @@ export default function App() {
     await deleteDoc(doc(roleColl('roleMasterPolicies'), id));
     showToastMsg('Policy deleted.');
   };
+  // SalesMaster rates — bounded, admin-only, stored in the settings doc.
+  const saveSalesRates = async (r: import('./types').SalesRates) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), salesMaster: r } });
+    showToastMsg('Rates saved.');
+  };
   const setRoleMasterMaster = async (enabled: boolean) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
     await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), roleMasterGenerationEnabled: enabled } });
@@ -3851,6 +3859,11 @@ export default function App() {
                 <ClipboardList className="w-4 h-4" /> RoleMaster
               </button>
             )}
+            {canAccessView('salesmaster', effectiveRole) && (
+              <button onClick={() => setCurrentView('salesmaster')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'salesmaster' ? 'bg-white shadow-sm text-slate-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}>
+                <Calculator className="w-4 h-4" /> SalesMaster
+              </button>
+            )}
             {canAccessView('schedule', effectiveRole) && canEditSchedule && (
               <button
                 onClick={() => {
@@ -4354,6 +4367,12 @@ export default function App() {
           onDeletePolicy={deleteRoleMasterPolicy}
           categoryColors={appData.settings?.roleMasterCategoryColors || {}}
           onSetCategoryColor={setRoleCategoryColor}
+        />
+      ) : currentView === 'salesmaster' ? (
+        <SalesMaster
+          rates={ratesOrDefault(appData.settings?.salesMaster)}
+          isAdmin={isAdmin}
+          onSaveRates={saveSalesRates}
         />
       ) : (
         <ScheduleBoard
