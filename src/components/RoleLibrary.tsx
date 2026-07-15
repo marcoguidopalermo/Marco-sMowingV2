@@ -1,9 +1,29 @@
 import { useMemo, useRef, useState } from 'react';
-import { Search, Plus, Pencil, Trash2, Copy, Check, X, FileText, ExternalLink, Loader2, ClipboardList, FileUp } from 'lucide-react';
+import { Search, Plus, Pencil, Trash2, Copy, Check, X, FileText, ExternalLink, Loader2, ClipboardList, FileUp, ArchiveRestore } from 'lucide-react';
 import { RoleMasterTemplate, RoleMasterPolicy, StoredFile } from '../types';
 import { categoryColor } from '../lib/roleCategories';
 import { uploadFile, deleteFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
+
+// Shared 3-tier clipboard copy — one implementation, used by the list-row
+// quick-copy and the full-view Copy button. Returns true if the text was
+// copied; false means both programmatic paths were blocked and the caller
+// should fall back to a manual select-all UI.
+async function copyToClipboard(text: string): Promise<boolean> {
+  // 1) modern async clipboard
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* fall through */ }
+  // 2) execCommand fallback via a temp textarea
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok = document.execCommand('copy'); document.body.removeChild(ta);
+    if (ok) return true;
+  } catch { /* fall through */ }
+  return false;
+}
 
 interface Props {
   templates: Record<string, RoleMasterTemplate>;
@@ -30,12 +50,27 @@ export default function RoleLibrary({
 
   const [tQuery, setTQuery] = useState('');
   const [tCat, setTCat] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [viewTemplate, setViewTemplate] = useState<RoleMasterTemplate | null>(null);
   const [editTemplate, setEditTemplate] = useState<RoleMasterTemplate | null>(null);
   const [editPolicy, setEditPolicy] = useState<RoleMasterPolicy | null>(null);
   const [viewer, setViewer] = useState<{ files: StoredFile[]; idx: number } | null>(null);
 
-  const tList = useMemo(() => Object.values(templates).filter(t => t.active || isManager).sort((a, b) => a.title.localeCompare(b.title)), [templates, isManager]);
+  // Active templates always; archived (active:false) only when a manager/admin
+  // flips "Show archived". active:false is the archived state (model unchanged).
+  const tList = useMemo(
+    () => Object.values(templates).filter(t => t.active || (canEditTemplates && showArchived)).sort((a, b) => a.title.localeCompare(b.title)),
+    [templates, canEditTemplates, showArchived],
+  );
+
+  // One-tap copy from a list row: shared helper → brief ✓ ack on the icon; on
+  // failure, open the full view so the user gets the manual select-all copy.
+  const copyRow = async (t: RoleMasterTemplate) => {
+    const ok = await copyToClipboard(t.body);
+    if (ok) { setCopiedId(t.id); setTimeout(() => setCopiedId(c => (c === t.id ? null : c)), 1500); }
+    else { setViewTemplate(t); }
+  };
   const tCats = useMemo(() => [...new Set(Object.values(templates).map(t => t.category).filter(Boolean))].sort(), [templates]);
   const tFiltered = tList.filter(t => {
     if (tCat && t.category !== tCat) return false;
@@ -65,6 +100,9 @@ export default function RoleLibrary({
               <button onClick={() => setEditTemplate({ id: uid('tpl'), title: '', category: 'Quotes', body: '', notes: '', active: true })} className="inline-flex items-center gap-1.5 text-sm font-black uppercase tracking-widest text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-2 rounded-lg shadow-sm"><Plus className="w-4 h-4" /> Add template</button>
             )}
           </div>
+          {canEditTemplates && (
+            <label className="flex items-center gap-2 text-[11px] font-bold text-slate-500"><input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} /> Show archived</label>
+          )}
           {tFiltered.length === 0 ? (
             <div className="text-center text-slate-400 py-8">{tList.length === 0 ? 'No templates yet.' : 'No templates match.'}</div>
           ) : (
@@ -72,14 +110,24 @@ export default function RoleLibrary({
               {tFiltered.map(t => {
                 const cc = categoryColor(t.category, categoryColors);
                 return (
-                  <button key={t.id} onClick={() => setViewTemplate(t)} className={`w-full text-left bg-white rounded-xl border shadow-sm p-3 hover:border-slate-300 ${t.active ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-bold text-slate-800">{t.title}</span>
-                      {t.category && <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${cc.chip}`}>{t.category}</span>}
-                      {!t.active && <span className="text-[9px] font-black uppercase bg-slate-200 text-slate-500 px-1 rounded">Inactive</span>}
+                  <div key={t.id} className={`bg-white rounded-xl border shadow-sm p-3 flex items-start justify-between gap-2 ${t.active ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
+                    <button onClick={() => setViewTemplate(t)} className="min-w-0 text-left flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-slate-800">{t.title}</span>
+                        {t.category && <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${cc.chip}`}>{t.category}</span>}
+                        {!t.active && <span className="text-[9px] font-black uppercase bg-slate-200 text-slate-500 px-1 rounded">Archived</span>}
+                      </div>
+                      <div className="text-[12px] text-slate-500 mt-1 line-clamp-2 whitespace-pre-wrap">{t.body}</div>
+                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {canEditTemplates && !t.active && (
+                        <button onClick={() => onSaveTemplate({ ...t, active: true })} title="Restore from archive" className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-emerald-600"><ArchiveRestore className="w-4 h-4" /></button>
+                      )}
+                      <button onClick={() => copyRow(t)} title="Copy template body" aria-label="Copy template body" className={`min-w-[40px] min-h-[40px] inline-flex items-center justify-center rounded-lg border ${copiedId === t.id ? 'border-emerald-300 bg-emerald-50 text-emerald-600' : 'border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800'}`}>
+                        {copiedId === t.id ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                      </button>
                     </div>
-                    <div className="text-[12px] text-slate-500 mt-1 line-clamp-2 whitespace-pre-wrap">{t.body}</div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -155,20 +203,9 @@ function TemplateViewer({ template, categoryColors, canEdit, canDelete, onEdit, 
   const cc = categoryColor(template.category, categoryColors);
 
   const doCopy = async () => {
-    const text = template.body;
-    // 1) modern async clipboard
-    try {
-      if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); return; }
-    } catch { /* fall through */ }
-    // 2) execCommand fallback via a temp textarea
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text; ta.style.position = 'fixed'; ta.style.top = '0'; ta.style.opacity = '0';
-      document.body.appendChild(ta); ta.focus(); ta.select();
-      const ok = document.execCommand('copy'); document.body.removeChild(ta);
-      if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); return; }
-    } catch { /* fall through */ }
-    // 3) manual select-all fallback (clipboard API unavailable / blocked)
+    const ok = await copyToClipboard(template.body);   // shared 3-tier helper
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); return; }
+    // manual select-all fallback (clipboard API unavailable / blocked)
     setManual(true);
     setTimeout(() => taRef.current?.select(), 0);
   };
@@ -216,7 +253,7 @@ function TemplateEditor({ template, onClose, onSave }: { template: RoleMasterTem
       <LibField label="Category"><input value={t.category} onChange={e => setT({ ...t, category: e.target.value })} className="libinp" placeholder="Quotes, Billing, Scheduling, Customer Service…" /></LibField>
       <LibField label="Body (line breaks preserved; [Placeholders] stay literal)"><textarea value={t.body} onChange={e => setT({ ...t, body: e.target.value })} className="libinp h-56 font-sans" placeholder="Hi [Customer Name], …" /></LibField>
       <LibField label="Notes — when to use it (optional)"><input value={t.notes || ''} onChange={e => setT({ ...t, notes: e.target.value })} className="libinp" /></LibField>
-      <label className="flex items-center gap-2 text-sm mt-2"><input type="checkbox" checked={t.active} onChange={e => setT({ ...t, active: e.target.checked })} /> Active</label>
+      <label className="flex items-center gap-2 text-sm mt-2"><input type="checkbox" checked={!t.active} onChange={e => setT({ ...t, active: !e.target.checked })} /> Archived (hidden from the default list)</label>
       <LibSaveBar onClose={onClose} disabled={!t.title.trim() || !t.body.trim()} onSave={() => onSave(t)} />
     </LibModal>
   );
