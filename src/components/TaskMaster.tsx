@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { CheckSquare, Plus, ChevronDown, ChevronUp, MessageSquare, Flame, Check, ClipboardList } from 'lucide-react';
-import { TaskMasterTask, Employee, RoleTaskInstance, RoleMasterDuty } from '../types';
+import { TaskMasterTask, Employee, RoleTaskInstance, RoleMasterDuty, RoleMasterResponsibility } from '../types';
 import { personColor } from '../lib/personColor';
-import { categoryColor } from '../lib/roleCategories';
+import { dutyChip } from '../lib/roleResponsibilities';
 import Stamp from './Stamp';
 
 interface TaskMasterProps {
@@ -17,6 +17,7 @@ interface TaskMasterProps {
   // RoleMaster generated duty instances (open only) rendered in the SAME list.
   roleInstances?: RoleTaskInstance[];
   duties?: Record<string, RoleMasterDuty>;
+  responsibilities?: Record<string, RoleMasterResponsibility>;
   categoryColors?: Record<string, string>;
   onOpenRoleInstance?: (id: string) => void;
 }
@@ -64,6 +65,7 @@ export default function TaskMaster({
   onComplete,
   roleInstances = [],
   duties = {},
+  responsibilities = {},
   categoryColors = {},
   onOpenRoleInstance,
 }: TaskMasterProps) {
@@ -129,6 +131,7 @@ export default function TaskMaster({
   const renderRoleRow = (g: RoleGroup) => {
     const inst = g.rep;
     const duty = duties[inst.dutyId];
+    const belongs = duty ? dutyChip(duty, responsibilities, categoryColors) : null;
     const due = formatDueDate(inst.dueDate);
     const dueSoon = !due.tone.includes('red') && (inst.dueDate - Date.now() <= (inst.dueSoonDays ?? 2) * DAY_MS);
     const tone = due.tone === 'red' ? 'bg-rose-50 text-rose-700 border-rose-200'
@@ -145,7 +148,7 @@ export default function TaskMaster({
           <div className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-white ${color}`}><ClipboardList className="w-4 h-4" /></div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${duty?.category ? categoryColor(duty.category, categoryColors).chip : 'bg-indigo-50 text-indigo-700 border-indigo-200'}`}>Role duty{duty?.category ? ` · ${duty.category}` : ''}</span>
+              <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${belongs ? belongs.color.chip : 'bg-indigo-50 text-indigo-700 border-indigo-200'}`}>Role duty{belongs ? ` · ${belongs.label}` : ''}</span>
               <span className="text-sm font-bold text-slate-800 truncate">{inst.title}</span>
               {g.count > 1 && <span className="text-[10px] font-black bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded-full">{g.count} outstanding</span>}
             </div>

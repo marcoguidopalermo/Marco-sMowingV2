@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
-import { ClipboardList, Plus, Power, ChevronDown, ChevronRight, Pencil, UserCog, History } from 'lucide-react';
+import { ClipboardList, Plus, Power, ChevronDown, ChevronRight, Pencil, UserCog, History, Layers, Search } from 'lucide-react';
 import {
-  Employee, RoleMasterRole, RoleMasterDuty, RoleTaskInstance, RoleRecurrence, RoleInstanceStatus,
+  Employee, RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleTaskInstance, RoleRecurrence, RoleInstanceStatus,
 } from '../types';
 import { categoryColor, CATEGORY_PALETTE } from '../lib/roleCategories';
-import { SEASON_PRESETS, RoleSeason, dutySeason, describeRecurrence } from '../lib/roleMaster';
+import { dutyChip, responsibilityColor } from '../lib/roleResponsibilities';
+import { SEASON_PRESETS, RoleSeason, dutySeason, describeRecurrence, dutyChartStatus } from '../lib/roleMaster';
 import SopText from './SopText';
 import SeasonChip from './SeasonChip';
 import RoleDutiesChart from './RoleDutiesChart';
@@ -12,6 +13,7 @@ import RoleDutiesChart from './RoleDutiesChart';
 interface RoleMasterProps {
   roles: Record<string, RoleMasterRole>;
   duties: Record<string, RoleMasterDuty>;
+  responsibilities: Record<string, RoleMasterResponsibility>;
   instances: Record<string, RoleTaskInstance>;
   employees: Employee[];
   isAdmin: boolean;
@@ -19,8 +21,16 @@ interface RoleMasterProps {
   onSetMasterEnabled: (v: boolean) => void;
   onSaveRole: (r: RoleMasterRole) => void;
   onSaveDuty: (d: RoleMasterDuty) => void;
+  onSaveResponsibility: (r: RoleMasterResponsibility) => void;
   categoryColors: Record<string, string>;
   onSetCategoryColor: (category: string, colorKey: string) => void;
+}
+
+// Duty belongs-to chip (responsibility name+color, else category tag, else none).
+function DutyBelongsChip({ duty, responsibilities, categoryColors }: { duty: RoleMasterDuty; responsibilities: Record<string, RoleMasterResponsibility>; categoryColors: Record<string, string> }) {
+  const chip = dutyChip(duty, responsibilities, categoryColors);
+  if (!chip) return null;
+  return <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${chip.color.chip}`} title={chip.kind === 'responsibility' ? 'Responsibility' : 'Category'}>{chip.label}</span>;
 }
 
 // Small toggle switch (admin active/inactive control).
@@ -44,27 +54,50 @@ const statusChip = (s: RoleInstanceStatus): string => ({
 }[s] || 'bg-slate-100');
 
 export default function RoleMaster({
-  roles, duties, instances, employees, isAdmin, masterEnabled, onSetMasterEnabled, onSaveRole, onSaveDuty,
+  roles, duties, responsibilities, instances, employees, isAdmin, masterEnabled, onSetMasterEnabled, onSaveRole, onSaveDuty, onSaveResponsibility,
   categoryColors, onSetCategoryColor,
 }: RoleMasterProps) {
-  const [tab, setTab] = useState<'directory' | 'duties' | 'manage' | 'history'>('directory');
+  const [tab, setTab] = useState<'directory' | 'responsibilities' | 'duties' | 'manage' | 'history'>('directory');
   const [expandedRole, setExpandedRole] = useState<Record<string, boolean>>({});
   const [expandedDuty, setExpandedDuty] = useState<Record<string, boolean>>({});
+  const [expandedResp, setExpandedResp] = useState<Record<string, boolean>>({});
   const [showInactive, setShowInactive] = useState(true);   // admin-only control
   const [editRole, setEditRole] = useState<RoleMasterRole | null>(null);
   const [editDuty, setEditDuty] = useState<RoleMasterDuty | null>(null);
+  const [editResp, setEditResp] = useState<RoleMasterResponsibility | null>(null);
+  const [respQuery, setRespQuery] = useState('');
 
   const empName = (id?: string) => employees.find(e => e.id === id)?.name || (id ? '(unknown)' : '(unassigned)');
   const roleList = useMemo(() => Object.values(roles).sort((a, b) => a.name.localeCompare(b.name)), [roles]);
   const dutiesOf = (roleId: string) => Object.values(duties).filter(d => d.roleId === roleId);
+  const respList = useMemo(() => Object.values(responsibilities).sort((a, b) => a.name.localeCompare(b.name)), [responsibilities]);
+  const respsOf = (roleId: string) => respList.filter(r => r.roleId === roleId);
+  const dutiesOfResp = (respId: string) => Object.values(duties).filter(d => d.responsibilityId === respId);
+  // Holder resolved THROUGH the owning role (ownership follows the role).
+  const roleHolderName = (roleId: string) => empName(roles[roleId]?.assignedEmployeeId);
+  const today = useMemo(() => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Toronto', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()), []);
+  const openInstancesByDuty = useMemo(() => {
+    const m: Record<string, RoleTaskInstance[]> = {};
+    for (const i of Object.values(instances)) if (i.status === 'open') (m[i.dutyId] = m[i.dutyId] || []).push(i);
+    return m;
+  }, [instances]);
+  const instancesForDuty = (dutyId: string) => openInstancesByDuty[dutyId] || [];
+  const dutyStatusIcon = (duty: RoleMasterDuty, open: RoleTaskInstance[]): string => {
+    const s = dutyChartStatus(duty, open, today);
+    return s.kind === 'overdue' ? `🔴${s.count > 1 ? ` ${s.count}` : ''}` : s.kind === 'due_soon' ? '🟡' : s.kind === 'caught_up' ? '✅' : '—';
+  };
 
   const RoleCard = ({ role, manage }: { role: RoleMasterRole; manage?: boolean }) => {
     const open = !!expandedRole[role.id];
     // Duty visibility: everyone sees active; admins additionally see inactive
     // (dimmed) unless they hide them via the filter.
     const rd = dutiesOf(role.id).filter(d => d.active || (isAdmin && showInactive));
-    const byCat: Record<string, RoleMasterDuty[]> = {};
-    for (const d of rd) (byCat[d.category] = byCat[d.category] || []).push(d);
+    const rr = respsOf(role.id).filter(r => r.active || (isAdmin && showInactive));
+    // Group a role's duties by belongs-to label (responsibility name, else
+    // category tag, else "Ungrouped") — the chip resolves the same way.
+    const groupLabel = (d: RoleMasterDuty) => { const c = dutyChip(d, responsibilities, categoryColors); return c ? (c.kind === 'responsibility' ? `◆ ${c.label}` : c.label) : 'Ungrouped'; };
+    const byGroup: Record<string, RoleMasterDuty[]> = {};
+    for (const d of rd) (byGroup[groupLabel(d)] = byGroup[groupLabel(d)] || []).push(d);
     return (
       <div className={`bg-white rounded-xl border shadow-sm ${role.active ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
         <div className="p-4 flex items-center justify-between gap-3">
@@ -75,7 +108,7 @@ export default function RoleMaster({
               {!role.active && <span className="text-[10px] font-black uppercase bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded">Inactive</span>}
             </div>
             {role.description && <div className="text-xs text-slate-500 mt-0.5">{role.description}</div>}
-            <div className="text-[11px] text-slate-600 mt-1"><UserCog className="w-3 h-3 inline mr-1" />Held by <b>{empName(role.assignedEmployeeId)}</b> · {dutiesOf(role.id).length} duties</div>
+            <div className="text-[11px] text-slate-600 mt-1"><UserCog className="w-3 h-3 inline mr-1" />Held by <b>{empName(role.assignedEmployeeId)}</b> · {dutiesOf(role.id).length} duties{respsOf(role.id).length > 0 ? ` · ${respsOf(role.id).length} responsibilities` : ''}</div>
           </button>
           <div className="flex items-center gap-2 shrink-0">
             {isAdmin && manage && <Toggle on={role.active} onChange={() => onSaveRole({ ...role, active: !role.active, updatedAt: Date.now() })} title="Active" />}
@@ -85,25 +118,55 @@ export default function RoleMaster({
         {open && (
           <div className="border-t border-slate-100 p-4 space-y-3">
             {isAdmin && (
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap">
                 <button onClick={() => setEditRole(role)} className="text-[11px] font-bold text-slate-600 border border-slate-300 rounded px-2 py-1 inline-flex items-center gap-1"><Pencil className="w-3 h-3" /> Edit role</button>
-                <button onClick={() => setEditDuty({ id: uid('duty'), name: '', category: Object.keys(byCat)[0] || 'General', sop: '', notePrompt: '', recurrence: { kind: 'weekly', dayOfWeek: 1 }, dueSoonDays: 2, roleId: role.id, division: role.division, tier: 'admin', active: true })} className="text-[11px] font-bold text-white bg-slate-700 rounded px-2 py-1 inline-flex items-center gap-1"><Plus className="w-3 h-3" /> Add duty</button>
+                <button onClick={() => setEditDuty({ id: uid('duty'), name: '', category: 'General', sop: '', notePrompt: '', recurrence: { kind: 'weekly', dayOfWeek: 1 }, dueSoonDays: 2, roleId: role.id, division: role.division, tier: 'admin', active: true })} className="text-[11px] font-bold text-white bg-slate-700 rounded px-2 py-1 inline-flex items-center gap-1"><Plus className="w-3 h-3" /> Add duty</button>
+                <button onClick={() => setEditResp({ id: uid('resp'), name: '', description: '', sop: '', roleId: role.id, division: role.division, tier: 'admin', active: true })} className="text-[11px] font-bold text-white bg-indigo-600 rounded px-2 py-1 inline-flex items-center gap-1"><Layers className="w-3 h-3" /> Add responsibility</button>
               </div>
             )}
-            {Object.keys(byCat).sort().map(cat => {
-              const cc = categoryColor(cat, categoryColors);
-              return (
-              <div key={cat}>
+
+            {/* Responsibilities this role owns (v1.7) — standing ownership. */}
+            {rr.length > 0 && (
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1 flex items-center gap-1"><Layers className="w-3 h-3" /> Responsibilities</div>
+                <div className="space-y-1">
+                  {rr.map(r => {
+                    const rc = responsibilityColor(r);
+                    const dc = dutiesOfResp(r.id).length;
+                    return (
+                      <div key={r.id} className={`text-sm border border-slate-100 rounded px-2 py-1.5 ${r.active ? '' : 'opacity-55 bg-slate-50'}`}>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${rc.chip}`}>{r.name}</span>
+                            {!r.active && <span className="ml-2 text-[9px] font-black uppercase bg-slate-200 text-slate-500 px-1 rounded">Inactive</span>}
+                            {r.description && <div className="text-[11px] text-slate-500 mt-0.5">{r.description}</div>}
+                            <div className="text-[10px] text-slate-400">{dc} {dc === 1 ? 'duty' : 'duties'}</div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {r.sop && <button onClick={() => setExpandedResp(s => ({ ...s, [r.id]: !s[r.id] }))} className="text-[10px] font-bold text-indigo-600 border border-indigo-200 rounded px-1.5 py-0.5">SOP</button>}
+                            {isAdmin && <button onClick={() => setEditResp(r)} className="text-slate-400 hover:text-slate-700"><Pencil className="w-3.5 h-3.5" /></button>}
+                          </div>
+                        </div>
+                        {r.sop && expandedResp[r.id] && <SopText text={r.sop} className="mt-2 text-[12px] text-slate-700 bg-slate-50 border border-slate-100 rounded p-2" />}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {Object.keys(byGroup).sort().map(group => (
+              <div key={group}>
                 <div className="mb-1 flex items-center gap-1.5">
-                  <span className={`w-2 h-2 rounded-full ${cc.dot}`} />
-                  <span className={`text-[10px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${cc.chip}`}>{cat}</span>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">{group}</span>
                 </div>
                 <div className="space-y-1">
-                  {byCat[cat].map(d => (
+                  {byGroup[group].map(d => (
                     <div key={d.id} className={`text-sm border border-slate-100 rounded px-2 py-1.5 ${d.active ? '' : 'opacity-55 bg-slate-50'}`}>
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <span className="font-medium text-slate-700">{d.name}</span>
+                          <span className="ml-1.5 align-middle"><DutyBelongsChip duty={d} responsibilities={responsibilities} categoryColors={categoryColors} /></span>
                           {!d.active && <span className="ml-2 text-[9px] font-black uppercase bg-slate-200 text-slate-500 px-1 rounded">Inactive</span>}
                           {dutySeason(d) && <span className="ml-1.5 align-middle"><SeasonChip season={dutySeason(d) as RoleSeason} /></span>}
                           <div className="text-[11px] text-slate-400">{describeRecurrence(d)} · asks: “{d.notePrompt}”</div>
@@ -121,8 +184,8 @@ export default function RoleMaster({
                   ))}
                 </div>
               </div>
-            );})}
-            {rd.length === 0 && <div className="text-xs text-slate-400 italic">No duties yet.</div>}
+            ))}
+            {rd.length === 0 && rr.length === 0 && <div className="text-xs text-slate-400 italic">No responsibilities or duties yet.</div>}
           </div>
         )}
       </div>
@@ -136,6 +199,7 @@ export default function RoleMaster({
           <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><ClipboardList className="w-6 h-6 text-slate-700" /> RoleMaster</h2>
           <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
             <button onClick={() => setTab('directory')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'directory' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Directory</button>
+            <button onClick={() => setTab('responsibilities')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'responsibilities' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Responsibilities</button>
             <button onClick={() => setTab('duties')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'duties' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Duties</button>
             {isAdmin && <button onClick={() => setTab('manage')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'manage' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Manage</button>}
             {isAdmin && <button onClick={() => setTab('history')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'history' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}><History className="w-3.5 h-3.5 inline" /> History</button>}
@@ -164,9 +228,91 @@ export default function RoleMaster({
           </div>
         )}
 
+        {tab === 'responsibilities' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="relative flex-1 min-w-[180px]">
+                <Search className="w-4 h-4 text-slate-400 absolute left-2 top-1/2 -translate-y-1/2" />
+                <input value={respQuery} onChange={e => setRespQuery(e.target.value)} placeholder="Search responsibilities, roles, holders…" className="w-full border border-slate-200 rounded-lg pl-8 pr-3 py-2 text-sm outline-none" />
+              </div>
+              {isAdmin && (
+                <button onClick={() => { const first = roleList[0]; setEditResp({ id: uid('resp'), name: '', description: '', sop: '', roleId: first?.id || '', division: first?.division, tier: 'admin', active: true }); }} className="inline-flex items-center gap-1.5 text-sm font-black uppercase tracking-widest text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-2 rounded-lg shadow-sm"><Plus className="w-4 h-4" /> Add responsibility</button>
+              )}
+            </div>
+            {(() => {
+              const q = respQuery.trim().toLowerCase();
+              const visible = respList
+                .filter(r => r.active || (isAdmin && showInactive))
+                .filter(r => {
+                  if (!q) return true;
+                  const role = roles[r.roleId];
+                  return [r.name, r.description, r.division, role?.name, roleHolderName(r.roleId)].some(s => (s || '').toLowerCase().includes(q));
+                });
+              if (visible.length === 0) return <div className="text-center text-slate-400 py-8">{respList.length === 0 ? 'No responsibilities defined yet.' : 'No responsibilities match.'}</div>;
+              return visible.map(r => {
+                const rc = responsibilityColor(r);
+                const role = roles[r.roleId];
+                const rduties = dutiesOfResp(r.id).filter(d => d.active || (isAdmin && showInactive));
+                const open = !!expandedResp[r.id];
+                return (
+                  <div key={r.id} className={`bg-white rounded-xl border shadow-sm ${r.active ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
+                    <div className="p-4 flex items-start justify-between gap-3">
+                      <button type="button" onClick={() => setExpandedResp(s => ({ ...s, [r.id]: !s[r.id] }))} className="min-w-0 text-left flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Layers className="w-4 h-4 text-slate-400" />
+                          <span className={`text-[11px] font-black uppercase tracking-widest px-2 py-0.5 rounded border ${rc.chip}`}>{r.name}</span>
+                          {!r.active && <span className="text-[10px] font-black uppercase bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded">Inactive</span>}
+                        </div>
+                        {r.description && <div className="text-xs text-slate-500 mt-1">{r.description}</div>}
+                        <div className="text-[11px] text-slate-600 mt-1">
+                          <UserCog className="w-3 h-3 inline mr-1" />Owned by <b>{role?.name || '(no role)'}</b> · held by <b>{roleHolderName(r.roleId)}</b>
+                          {r.division ? ` · ${r.division}` : ''} · {rduties.length} {rduties.length === 1 ? 'duty' : 'duties'}
+                        </div>
+                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {isAdmin && <button onClick={() => setEditResp(r)} className="text-slate-400 hover:text-slate-700"><Pencil className="w-4 h-4" /></button>}
+                        <button type="button" onClick={() => setExpandedResp(s => ({ ...s, [r.id]: !s[r.id] }))}>{open ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}</button>
+                      </div>
+                    </div>
+                    {open && (
+                      <div className="border-t border-slate-100 p-4 space-y-3">
+                        {r.sop && <SopText text={r.sop} className="text-[12px] text-slate-700 bg-slate-50 border border-slate-100 rounded p-2" />}
+                        {rduties.length === 0 ? (
+                          <div className="text-xs text-slate-400 italic">As-needed ownership — no scheduled duties. Ownership + how-to above is the whole picture.</div>
+                        ) : (
+                          <div className="space-y-1">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Linked duties</div>
+                            {rduties.map(d => {
+                              const open = instancesForDuty(d.id);
+                              const st = dutyStatusIcon(d, open);
+                              const dutyHolder = roleHolderName(d.roleId);
+                              const differs = d.roleId !== r.roleId;
+                              return (
+                                <div key={d.id} className={`text-sm border border-slate-100 rounded px-2 py-1.5 flex items-center justify-between gap-2 ${d.active ? '' : 'opacity-55 bg-slate-50'}`}>
+                                  <div className="min-w-0">
+                                    <span className="mr-1.5">{st}</span>
+                                    <span className="font-medium text-slate-700">{d.name}</span>
+                                    {dutySeason(d) && <span className="ml-1.5 align-middle"><SeasonChip season={dutySeason(d) as RoleSeason} /></span>}
+                                    <div className="text-[11px] text-slate-400">{describeRecurrence(d)} · held by <b className={differs ? 'text-amber-700' : ''}>{dutyHolder}</b>{differs ? ' (differs from owner)' : ''}</div>
+                                  </div>
+                                  {isAdmin && <button onClick={() => setEditDuty(d)} className="text-slate-400 hover:text-slate-700 shrink-0"><Pencil className="w-3.5 h-3.5" /></button>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              });
+            })()}
+          </div>
+        )}
+
         {tab === 'duties' && (
           <RoleDutiesChart
-            roles={roles} duties={duties} instances={instances} employees={employees}
+            roles={roles} duties={duties} responsibilities={responsibilities} instances={instances} employees={employees}
             categoryColors={categoryColors} isAdmin={isAdmin}
             onEditDuty={(d) => setEditDuty(d)}
             onAddDuty={() => {
@@ -219,7 +365,8 @@ export default function RoleMaster({
       </div>
 
       {editRole && <RoleEditor role={editRole} employees={employees} onClose={() => setEditRole(null)} onSave={(r) => { onSaveRole(r); setEditRole(null); }} />}
-      {editDuty && <DutyEditor duty={editDuty} roles={roleList} categoryColors={categoryColors} onSetCategoryColor={onSetCategoryColor} onClose={() => setEditDuty(null)} onSave={(d) => { onSaveDuty(d); setEditDuty(null); }} />}
+      {editDuty && <DutyEditor duty={editDuty} roles={roleList} responsibilities={respList} categoryColors={categoryColors} onSetCategoryColor={onSetCategoryColor} onClose={() => setEditDuty(null)} onSave={(d) => { onSaveDuty(d); setEditDuty(null); }} />}
+      {editResp && <ResponsibilityEditor resp={editResp} roles={roleList} onClose={() => setEditResp(null)} onSave={(r) => { onSaveResponsibility(r); setEditResp(null); }} />}
     </div>
   );
 }
@@ -239,13 +386,26 @@ function RoleEditor({ role, employees, onClose, onSave }: { role: RoleMasterRole
   );
 }
 
-function DutyEditor({ duty, roles, categoryColors, onSetCategoryColor, onClose, onSave }: { duty: RoleMasterDuty; roles: RoleMasterRole[]; categoryColors: Record<string, string>; onSetCategoryColor: (c: string, k: string) => void; onClose: () => void; onSave: (d: RoleMasterDuty) => void }) {
+function DutyEditor({ duty, roles, responsibilities, categoryColors, onSetCategoryColor, onClose, onSave }: { duty: RoleMasterDuty; roles: RoleMasterRole[]; responsibilities: RoleMasterResponsibility[]; categoryColors: Record<string, string>; onSetCategoryColor: (c: string, k: string) => void; onClose: () => void; onSave: (d: RoleMasterDuty) => void }) {
   const [d, setD] = useState<RoleMasterDuty>({ ...duty });
   const rec = d.recurrence;
   const setRec = (patch: Partial<RoleRecurrence>) => setD({ ...d, recurrence: { ...rec, ...patch } });
   const cat = (d.category || '').trim();
   const activeKey = cat ? categoryColor(cat, categoryColors).key : '';
   const roleOptions = roles.filter(r => r.active || r.id === d.roleId);
+
+  // ── BELONGS TO — one field: a responsibility XOR a plain category tag XOR
+  // none. Responsibility wins (its category is cleared on save).
+  const deriveBelongs = (x: RoleMasterDuty): 'responsibility' | 'category' | 'none' =>
+    x.responsibilityId ? 'responsibility' : (x.category || '').trim() ? 'category' : 'none';
+  const [belongs, setBelongs] = useState<'responsibility' | 'category' | 'none'>(deriveBelongs(duty));
+  const respOptions = responsibilities.filter(r => r.active || r.id === d.responsibilityId);
+  const buildBelongs = (): Pick<RoleMasterDuty, 'responsibilityId' | 'category'> => {
+    if (belongs === 'responsibility' && d.responsibilityId) return { responsibilityId: d.responsibilityId, category: '' };
+    if (belongs === 'category') return { responsibilityId: undefined, category: (d.category || '').trim() };
+    return { responsibilityId: undefined, category: '' };
+  };
+  const belongsBtn = (active: boolean) => `text-xs font-bold px-3 py-1.5 rounded-lg border ${active ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200'}`;
 
   // ── DURATION — one field, three modes. Derived from the duty, edited
   // locally, and folded back into the storage fields on save (season →
@@ -285,17 +445,35 @@ function DutyEditor({ duty, roles, categoryColors, onSetCategoryColor, onClose, 
           {roleOptions.map(r => <option key={r.id} value={r.id}>{r.name}{r.active ? '' : ' (inactive)'}</option>)}
         </select>
       </Field>
-      <Field label="Category">
-        <input value={d.category} onChange={e => setD({ ...d, category: e.target.value })} className="inp" placeholder="Payroll, Bookkeeping…" />
-        {cat && (
-          <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-            <span className="text-[10px] font-bold text-slate-400 uppercase">Color</span>
-            {CATEGORY_PALETTE.map(c => (
-              <button key={c.key} type="button" title={c.label} onClick={() => onSetCategoryColor(cat, c.key)}
-                className={`w-5 h-5 rounded-full ${c.dot} ${activeKey === c.key ? 'ring-2 ring-offset-1 ring-slate-800' : ''}`} />
-            ))}
-          </div>
+      <Field label="Belongs to (grouping + color chip)">
+        <div className="flex gap-1.5 flex-wrap mb-2">
+          <button type="button" onClick={() => setBelongs('responsibility')} className={belongsBtn(belongs === 'responsibility')}>Responsibility</button>
+          <button type="button" onClick={() => setBelongs('category')} className={belongsBtn(belongs === 'category')}>Category tag</button>
+          <button type="button" onClick={() => setBelongs('none')} className={belongsBtn(belongs === 'none')}>None</button>
+        </div>
+        {belongs === 'responsibility' && (
+          respOptions.length === 0 ? (
+            <div className="text-[11px] text-slate-400 italic">No responsibilities yet — create one first, or use a category tag.</div>
+          ) : (
+            <select value={d.responsibilityId || ''} onChange={e => setD({ ...d, responsibilityId: e.target.value || undefined })} className="inp">
+              <option value="">(pick a responsibility)</option>
+              {respOptions.map(r => <option key={r.id} value={r.id}>{r.name}{r.active ? '' : ' (inactive)'}</option>)}
+            </select>
+          )
         )}
+        {belongs === 'category' && (<>
+          <input value={d.category} onChange={e => setD({ ...d, category: e.target.value })} className="inp" placeholder="Payroll, Bookkeeping…" />
+          {cat && (
+            <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+              <span className="text-[10px] font-bold text-slate-400 uppercase">Color</span>
+              {CATEGORY_PALETTE.map(c => (
+                <button key={c.key} type="button" title={c.label} onClick={() => onSetCategoryColor(cat, c.key)}
+                  className={`w-5 h-5 rounded-full ${c.dot} ${activeKey === c.key ? 'ring-2 ring-offset-1 ring-slate-800' : ''}`} />
+              ))}
+            </div>
+          )}
+        </>)}
+        {belongs === 'none' && <div className="text-[11px] text-slate-400 italic">No grouping — the duty shows no chip.</div>}
       </Field>
 
       {/* RECURRENCE — how often it fires. */}
@@ -364,7 +542,42 @@ function DutyEditor({ duty, roles, categoryColors, onSetCategoryColor, onClose, 
         </div>
       )}
       <label className="flex items-center gap-2 text-sm mt-2"><input type="checkbox" checked={d.active} onChange={e => setD({ ...d, active: e.target.checked })} /> Active</label>
-      <SaveBar onClose={onClose} disabled={!d.name.trim() || !d.notePrompt.trim() || !d.category.trim() || !d.roleId} onSave={() => onSave({ ...d, ...buildDuration(), updatedAt: Date.now() })} />
+      <SaveBar onClose={onClose} disabled={!d.name.trim() || !d.notePrompt.trim() || !d.roleId || (belongs === 'responsibility' && !d.responsibilityId) || (belongs === 'category' && !(d.category || '').trim())} onSave={() => onSave({ ...d, ...buildDuration(), ...buildBelongs(), updatedAt: Date.now() })} />
+    </Modal>
+  );
+}
+
+function ResponsibilityEditor({ resp, roles, onClose, onSave }: { resp: RoleMasterResponsibility; roles: RoleMasterRole[]; onClose: () => void; onSave: (r: RoleMasterResponsibility) => void }) {
+  const [r, setR] = useState<RoleMasterResponsibility>({ ...resp });
+  const roleOptions = roles.filter(x => x.active || x.id === r.roleId);
+  const activeColor = r.color || responsibilityColor(r).key;
+  return (
+    <Modal title={resp.name ? 'Edit responsibility' : 'New responsibility'} onClose={onClose}>
+      <Field label="Name"><input value={r.name} onChange={e => setR({ ...r, name: e.target.value })} className="inp" placeholder="Website & Domain, Company Insurance…" /></Field>
+      <Field label="Owning role (ownership follows the role, not a person)">
+        <select value={r.roleId} onChange={e => { const role = roles.find(x => x.id === e.target.value); setR({ ...r, roleId: e.target.value, division: role?.division ?? r.division }); }} className="inp">
+          <option value="">(select a role)</option>
+          {roleOptions.map(x => <option key={x.id} value={x.id}>{x.name}{x.active ? '' : ' (inactive)'}</option>)}
+        </select>
+      </Field>
+      <Field label="Description"><textarea value={r.description || ''} onChange={e => setR({ ...r, description: e.target.value })} className="inp h-16" placeholder="What this area of ownership covers." /></Field>
+      <Field label="Color">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {CATEGORY_PALETTE.map(c => (
+            <button key={c.key} type="button" title={c.label} onClick={() => setR({ ...r, color: c.key })}
+              className={`w-6 h-6 rounded-full ${c.dot} ${activeColor === c.key ? 'ring-2 ring-offset-1 ring-slate-800' : ''}`} />
+          ))}
+        </div>
+      </Field>
+      <Field label="SOP (how-to) — supports [label](https://…) and bare links"><textarea value={r.sop} onChange={e => setR({ ...r, sop: e.target.value })} className="inp h-28 font-mono text-xs" placeholder="Access + how-to… e.g. Registrar: [GoDaddy account](https://…) — login in 1Password." /></Field>
+      {r.sop.trim() && (
+        <div className="mb-3">
+          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Preview</div>
+          <SopText text={r.sop} className="text-[12px] text-slate-700 bg-slate-50 border border-slate-100 rounded p-2" />
+        </div>
+      )}
+      <label className="flex items-center gap-2 text-sm mt-2"><input type="checkbox" checked={r.active} onChange={e => setR({ ...r, active: e.target.checked })} /> Active</label>
+      <SaveBar onClose={onClose} disabled={!r.name.trim() || !r.roleId} onSave={() => onSave({ ...r, updatedAt: Date.now() })} />
     </Modal>
   );
 }

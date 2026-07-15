@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import { Employee, RoleMasterRole, RoleMasterDuty, RoleTaskInstance } from '../types';
-import { categoryColor } from '../lib/roleCategories';
+import { Employee, RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleTaskInstance } from '../types';
+import { dutyChip } from '../lib/roleResponsibilities';
 import {
   describeRecurrence, describeDuration, dutyChartStatus, nextOccurrence, seasonResumeDate, DutyChartStatus,
 } from '../lib/roleMaster';
@@ -10,6 +10,7 @@ import { Pencil, ArrowRightLeft, Plus } from 'lucide-react';
 interface Props {
   roles: Record<string, RoleMasterRole>;
   duties: Record<string, RoleMasterDuty>;
+  responsibilities: Record<string, RoleMasterResponsibility>;
   instances: Record<string, RoleTaskInstance>;
   employees: Employee[];
   categoryColors: Record<string, string>;
@@ -28,7 +29,9 @@ function StatusIcon({ s }: { s: DutyChartStatus }) {
   return <span className="text-slate-300" title={s.note || 'Inactive'}>—</span>;
 }
 
-export default function RoleDutiesChart({ roles, duties, instances, employees, categoryColors, isAdmin, onEditDuty, onAddDuty, onMoveDuty }: Props) {
+export default function RoleDutiesChart({ roles, duties, responsibilities, instances, employees, categoryColors, isAdmin, onEditDuty, onAddDuty, onMoveDuty }: Props) {
+  const chipOf = (d: RoleMasterDuty) => dutyChip(d, responsibilities, categoryColors);
+  const chipLabelOf = (d: RoleMasterDuty) => chipOf(d)?.label || '';
   const today = torontoToday();
   const empName = (id?: string) => employees.find(e => e.id === id)?.name;
   const [fDiv, setFDiv] = useState('');
@@ -56,14 +59,14 @@ export default function RoleDutiesChart({ roles, duties, instances, employees, c
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [duties, roles, openByDuty, today]);
 
-  const categories = useMemo(() => [...new Set(Object.values(duties).map(d => d.category))].sort(), [duties]);
+  const categories = useMemo(() => [...new Set(Object.values(duties).map(d => chipLabelOf(d)).filter(Boolean))].sort(), [duties, responsibilities, categoryColors]);
   const divisions = useMemo(() => [...new Set(Object.values(duties).map(d => d.division).filter(Boolean))].sort() as string[], [duties]);
 
   const filtered = rows.filter(r => {
     if (fDiv && r.duty.division !== fDiv) return false;
     if (fRole && r.duty.roleId !== fRole) return false;
     if (fHolder && r.holderId !== fHolder) return false;
-    if (fCat && r.duty.category !== fCat) return false;
+    if (fCat && chipLabelOf(r.duty) !== fCat) return false;
     if (activeOnly && !r.duty.active) return false;
     if (overdueOnly && r.status.kind !== 'overdue') return false;
     return true;
@@ -112,7 +115,7 @@ export default function RoleDutiesChart({ roles, duties, instances, employees, c
         <select value={fDiv} onChange={e => setFDiv(e.target.value)} className="border border-slate-200 rounded px-2 py-1"><option value="">All divisions</option>{divisions.map(d => <option key={d} value={d}>{d}</option>)}</select>
         <select value={fRole} onChange={e => setFRole(e.target.value)} className="border border-slate-200 rounded px-2 py-1"><option value="">All roles</option>{Object.values(roles).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select value={fHolder} onChange={e => setFHolder(e.target.value)} className="border border-slate-200 rounded px-2 py-1"><option value="">All holders</option>{[...new Set(rows.map(r => r.holderId).filter(Boolean))].map(id => <option key={id} value={id!}>{empName(id!) || id}</option>)}</select>
-        <select value={fCat} onChange={e => setFCat(e.target.value)} className="border border-slate-200 rounded px-2 py-1"><option value="">All categories</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
+        <select value={fCat} onChange={e => setFCat(e.target.value)} className="border border-slate-200 rounded px-2 py-1"><option value="">All groups</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
         <label className="flex items-center gap-1 font-bold text-slate-500"><input type="checkbox" checked={activeOnly} onChange={e => setActiveOnly(e.target.checked)} /> Active only</label>
         <label className="flex items-center gap-1 font-bold text-slate-500"><input type="checkbox" checked={overdueOnly} onChange={e => setOverdueOnly(e.target.checked)} /> Overdue only</label>
       </div>
@@ -135,14 +138,14 @@ export default function RoleDutiesChart({ roles, duties, instances, employees, c
           </thead>
           <tbody>
             {filtered.map(({ duty, role, holderId, holderName, status, nextDue }) => {
-              const cc = categoryColor(duty.category, categoryColors);
+              const chip = chipOf(duty);
               const resume = status.note === 'Dormant' ? seasonResumeDate(duty, today) : null;
               const dur = describeDuration(duty);
               return (
                 <tr key={duty.id} className={`border-b border-slate-50 ${duty.active ? '' : 'opacity-55'}`}>
                   <td className="py-1.5 px-2 text-center"><StatusIcon s={status} /></td>
                   <td className="py-1.5 px-2 font-medium text-slate-700">{duty.name}{status.note && <span className="ml-1.5 text-[9px] font-black uppercase bg-slate-200 text-slate-500 px-1 rounded">{status.note}</span>}</td>
-                  <td className="py-1.5 px-2"><span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${cc.chip}`}>{duty.category}</span></td>
+                  <td className="py-1.5 px-2">{chip ? <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${chip.color.chip}`} title={chip.kind === 'responsibility' ? 'Responsibility' : 'Category'}>{chip.label}</span> : <span className="text-slate-300">—</span>}</td>
                   <td className="py-1.5 px-2 text-slate-600">{role?.name || '—'}</td>
                   <td className="py-1.5 px-2">{holderId ? <span className="text-slate-700">{holderName}</span> : <span className="text-rose-600 font-bold text-[11px] uppercase bg-rose-50 px-1.5 py-0.5 rounded">Unassigned</span>}</td>
                   <td className="py-1.5 px-2 text-slate-500 text-[12px]">

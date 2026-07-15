@@ -925,10 +925,35 @@ export interface RoleMasterRole {
   updatedAt?: number;
 }
 
+// A RESPONSIBILITY (v1.7) — standing ownership of an area (e.g. "Website &
+// Domain", "Company Insurance"), distinct from a duty (recurring work).
+// Ownership follows the OWNING ROLE (roleId), not a person; the current
+// holder resolves through the role's assignment. May have zero linked duties
+// (as-needed ownership) or several (a duty links back via responsibilityId).
+// Own subcollection: roleMasterResponsibilities/{id} — never in the main doc.
+export interface RoleMasterResponsibility {
+  id: string;
+  name: string;
+  description?: string;
+  sop: string;                // how-to (markdown + clickable links, same as duty SOPs)
+  roleId: string;             // the OWNING role
+  division?: string;
+  color?: string;             // palette key (same CATEGORY_PALETTE as category chips)
+  createdBy?: { email: string; name: string };
+  tier: 'admin';
+  active: boolean;
+  updatedAt?: number;
+}
+
 export interface RoleMasterDuty {
   id: string;
   name: string;
-  category: string;           // visual grouping label (Payroll, Bookkeeping…)
+  // ── BELONGS TO (v1.7). A duty belongs to EITHER a responsibility OR a plain
+  // category tag, never both. When responsibilityId is set the responsibility
+  // IS the grouping (name + color) and `category` is cleared/ignored. When
+  // absent, `category` is a lightweight color label only (no ownership).
+  responsibilityId?: string;
+  category: string;           // display-only color tag when no responsibilityId
   sop: string;                // how-to (markdown)
   notePrompt: string;         // REQUIRED completion question
   recurrence: RoleRecurrence;
@@ -1134,6 +1159,7 @@ export interface AppData {
   // never written into the appData doc. Read-only mirrors for the UI.
   roleMasterRoles?: Record<string, RoleMasterRole>;
   roleMasterDuties?: Record<string, RoleMasterDuty>;
+  roleMasterResponsibilities?: Record<string, RoleMasterResponsibility>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of

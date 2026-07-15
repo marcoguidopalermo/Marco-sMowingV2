@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { X, BookOpen, Check, SkipForward, Ban, UserCog, Layers } from 'lucide-react';
-import { Employee, RoleTaskInstance, RoleMasterDuty } from '../types';
-import { categoryColor } from '../lib/roleCategories';
+import { Employee, RoleTaskInstance, RoleMasterDuty, RoleMasterResponsibility } from '../types';
+import { dutyChip } from '../lib/roleResponsibilities';
 import SopText from './SopText';
 
 interface Props {
@@ -11,6 +11,7 @@ interface Props {
   outstanding: RoleTaskInstance[];   // all open instances of the same duty
   employees: Employee[];
   isAdmin: boolean;
+  responsibilities?: Record<string, RoleMasterResponsibility>;
   categoryColors?: Record<string, string>;
   onClose: () => void;
   onComplete: (note: string) => void;
@@ -21,9 +22,10 @@ interface Props {
 }
 
 export default function RoleInstanceModal({
-  instance, duty, roleName, outstanding, employees, isAdmin, categoryColors = {},
+  instance, duty, roleName, outstanding, employees, isAdmin, responsibilities = {}, categoryColors = {},
   onClose, onComplete, onSkip, onVoid, onReassign, onBatchComplete,
 }: Props) {
+  const belongs = duty ? dutyChip(duty, responsibilities, categoryColors) : null;
   const [mode, setMode] = useState<'complete' | 'skip' | 'void' | 'reassign' | 'batch'>('complete');
   const [note, setNote] = useState('');
   const [reassignId, setReassignId] = useState('');
@@ -41,7 +43,7 @@ export default function RoleInstanceModal({
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{roleName || 'Role duty'}</span>
-              {duty?.category && <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${categoryColor(duty.category, categoryColors).chip}`}>{duty.category}</span>}
+              {belongs && <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${belongs.color.chip}`}>{belongs.label}</span>}
             </div>
             <h2 className="text-lg font-bold text-slate-800">{instance.title}</h2>
             <div className="text-xs text-slate-500">Due {instance.occurrenceDate}{stackCount > 1 ? ` · ${stackCount} outstanding` : ''}</div>
