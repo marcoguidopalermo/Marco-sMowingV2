@@ -2087,7 +2087,7 @@ export default function App() {
   // (admin-only). Own subcollections; never in the main doc.
   const saveRoleMasterTemplate = async (t: RoleMasterTemplate) => {
     if (!isManager) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('roleMasterTemplates'), t.id), cleanRM({ ...t, createdBy: t.createdBy || { email: displayEmail, name: displayName }, updatedAt: Date.now() }));
+    await setDoc(doc(roleColl('roleMasterTemplates'), t.id), cleanRM({ ...t, createdBy: t.createdBy || { email: displayEmail, name: displayName }, updatedBy: { email: displayEmail, name: displayName }, updatedAt: Date.now() }));
     showToastMsg('Template saved.');
   };
   const deleteRoleMasterTemplate = async (id: string) => {
@@ -2097,7 +2097,7 @@ export default function App() {
   };
   const saveRoleMasterPolicy = async (p: RoleMasterPolicy) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('roleMasterPolicies'), p.id), cleanRM({ ...p, createdBy: p.createdBy || { email: displayEmail, name: displayName }, updatedAt: Date.now() }));
+    await setDoc(doc(roleColl('roleMasterPolicies'), p.id), cleanRM({ ...p, createdBy: p.createdBy || { email: displayEmail, name: displayName }, updatedBy: { email: displayEmail, name: displayName }, updatedAt: Date.now() }));
     showToastMsg('Policy saved.');
   };
   const deleteRoleMasterPolicy = async (id: string) => {

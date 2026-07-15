@@ -955,6 +955,7 @@ export interface RoleMasterTemplate {
   body: string;               // plain text; line breaks preserved
   notes?: string;             // when to use it
   createdBy?: { email: string; name: string };
+  updatedBy?: { email: string; name: string };
   updatedAt?: number;
   active: boolean;
 }
@@ -970,6 +971,7 @@ export interface RoleMasterPolicy {
   link?: string;             // external URL (mutually used with file; one or the other)
   description?: string;
   createdBy?: { email: string; name: string };
+  updatedBy?: { email: string; name: string };
   updatedAt?: number;
   active: boolean;
 }

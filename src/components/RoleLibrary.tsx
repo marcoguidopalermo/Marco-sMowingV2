@@ -40,6 +40,14 @@ interface Props {
 
 const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
+// "Updated Jul 15, 2026 · Marco" from the latest save stamp. Null when there's
+// no updatedAt (no createdAt field exists to fall back to → omit the line).
+function updatedLine(r: { updatedAt?: number; updatedBy?: { name: string } }): string | null {
+  if (!r.updatedAt) return null;
+  const date = new Date(r.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return `Updated ${date}${r.updatedBy?.name ? ` · ${r.updatedBy.name}` : ''}`;
+}
+
 export default function RoleLibrary({
   templates, policies, isAdmin, isManager, uploadedBy, categoryColors,
   onSaveTemplate, onDeleteTemplate, onSavePolicy, onDeletePolicy,
@@ -158,6 +166,7 @@ export default function RoleLibrary({
                         {!p.active && <span className="text-[9px] font-black uppercase bg-slate-200 text-slate-500 px-1 rounded">Inactive</span>}
                       </div>
                       {p.description && <div className="text-[12px] text-slate-500 mt-0.5">{p.description}</div>}
+                      {updatedLine(p) && <div className="text-[10px] text-slate-400 mt-0.5">{updatedLine(p)}</div>}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {p.file ? (
@@ -225,6 +234,7 @@ function TemplateViewer({ template, categoryColors, canEdit, canDelete, onEdit, 
         <div className="p-4 space-y-3 flex-1 min-h-0 overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
           {template.notes && <div className="text-[12px] text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-2"><span className="font-black uppercase tracking-widest text-[10px] text-slate-400">When to use</span><div className="mt-0.5 whitespace-pre-wrap">{template.notes}</div></div>}
           <div className="whitespace-pre-wrap text-sm text-slate-800 bg-white border border-slate-200 rounded-lg p-3 font-sans">{template.body}</div>
+          {updatedLine(template) && <div className="text-[10px] text-slate-400">{updatedLine(template)}</div>}
           {manual && (
             <div>
               <div className="text-[11px] text-amber-700 font-bold mb-1">Clipboard blocked — select all below and copy (Ctrl/Cmd+C):</div>
