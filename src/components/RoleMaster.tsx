@@ -391,7 +391,11 @@ function DutyEditor({ duty, roles, responsibilities, categoryColors, onSetCatego
   const rec = d.recurrence;
   const setRec = (patch: Partial<RoleRecurrence>) => setD({ ...d, recurrence: { ...rec, ...patch } });
   const cat = (d.category || '').trim();
-  const activeKey = cat ? categoryColor(cat, categoryColors).key : '';
+  // Highlight ONLY the explicitly-mapped color for this category. Do NOT fall
+  // back to categoryColor()'s name-hash — that made the "selected" swatch cycle
+  // on every keystroke while typing the category (a derived-state leak, not a
+  // real selection change). Unmapped category → nothing ringed until a click.
+  const activeKey = cat ? (categoryColors[cat] || '') : '';
   const roleOptions = roles.filter(r => r.active || r.id === d.roleId);
 
   // ── BELONGS TO — one field: a responsibility XOR a plain category tag XOR
@@ -550,7 +554,10 @@ function DutyEditor({ duty, roles, responsibilities, categoryColors, onSetCatego
 function ResponsibilityEditor({ resp, roles, onClose, onSave }: { resp: RoleMasterResponsibility; roles: RoleMasterRole[]; onClose: () => void; onSave: (r: RoleMasterResponsibility) => void }) {
   const [r, setR] = useState<RoleMasterResponsibility>({ ...resp });
   const roleOptions = roles.filter(x => x.active || x.id === r.roleId);
-  const activeColor = r.color || responsibilityColor(r).key;
+  // Highlight ONLY an explicitly-chosen color. Do NOT fall back to the
+  // name-hash (responsibilityColor) — that made the "selected" swatch cycle
+  // per keystroke while typing the name. Nothing ringed until a swatch click.
+  const activeColor = r.color || '';
   return (
     <Modal title={resp.name ? 'Edit responsibility' : 'New responsibility'} onClose={onClose}>
       <Field label="Name"><input value={r.name} onChange={e => setR({ ...r, name: e.target.value })} className="inp" placeholder="Website & Domain, Company Insurance…" /></Field>
