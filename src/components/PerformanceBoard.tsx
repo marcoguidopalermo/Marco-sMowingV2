@@ -83,6 +83,12 @@ interface PerformanceBoardProps {
   setSelectedRouteIds: Dispatch<SetStateAction<Set<string>>>;
 
   onSaveDaily: () => void | Promise<void>;
+  // Persist a SINGLE crew-day into saved performance state immediately,
+  // merging (not clobbering other crews/days). Used so unscheduled job /
+  // unscheduled crew additions survive the dailyLogs rebuild without
+  // waiting for "Save Daily Data" (matches approve/waive/AH-split, which
+  // all write immediately). Same merge path onSaveDaily uses.
+  onPersistCrewDay: (crewId: string, log: PerformanceLog) => void;
   isManager: boolean;
   onApprove: (crewId: string, log: PerformanceLog) => void;
   onUnapprove: (crewId: string) => void;
@@ -136,6 +142,7 @@ export default function PerformanceBoard({
   selectedRouteIds,
   setSelectedRouteIds,
   onSaveDaily,
+  onPersistCrewDay,
   isManager,
   onApprove,
   onUnapprove,
@@ -193,6 +200,27 @@ export default function PerformanceBoard({
     if (divisionFilter === 'large') return /large/i.test(d);
     return true;
   };
+
+  // Persist-on-first-edit for unscheduled additions. A manual job / ad-hoc
+  // crew added via the + buttons lives only in local dailyLogs until "Save
+  // Daily Data" — so any performance snapshot re-runs the App-level rebuild
+  // and wipes it. To fix that WITHOUT persisting blank rows, we write the
+  // crew-day into saved performance the moment it has real content (a job
+  // desc/BH, or positive AH). Empty placeholders are never written (they're
+  // harmless if clobbered, and would otherwise litter the outstanding flag).
+  const crewDayHasContent = (log?: PerformanceLog | null): boolean => {
+    if (!log) return false;
+    if ((log.jobs || []).some(j => (j.desc || '').trim() !== '' || String(j.bh ?? '').trim() !== '')) return true;
+    if (Object.values(log.employeeAH || {}).some(v => (Number(v) || 0) > 0)) return true;
+    return false;
+  };
+  // Merge one crew-day into saved state (same semantics as onSaveDaily, but
+  // per-crew so it never clobbers other crews). No-op for empty crew-days.
+  const persistCrewDay = (crewId: string, log?: PerformanceLog | null) => {
+    if (!log || !crewDayHasContent(log)) return;
+    onPersistCrewDay(crewId, log);
+  };
+
   // Click-through target from the outstanding-days rollup: after the
   // date switch loads the day's logs, scroll to and briefly highlight
   // the crew card. Navigation only — never touches log data.
@@ -1576,10 +1604,10 @@ export default function PerformanceBoard({
                       <div className="border-b border-gray-200 bg-gray-50 p-3 pl-4 flex justify-between items-center">
                         <div className="flex-1 flex gap-2 items-center">
                           {log.isAdHoc ? <span className="text-[10px] bg-orange-100 text-orange-800 uppercase px-1.5 py-0.5 rounded font-bold">Ad-Hoc</span> : null}
-                          <select value={log.division} onChange={e => setDailyLogs(p => ({ ...p, [cId]: { ...p[cId], division: e.target.value } }))} className="font-bold text-gray-800 bg-white border border-gray-300 rounded px-2 py-1 outline-none disabled:bg-transparent disabled:border-transparent" disabled={!log.isAdHoc}>
+                          <select value={log.division} onChange={e => { const v = e.target.value; setDailyLogs(p => ({ ...p, [cId]: { ...p[cId], division: v } })); persistCrewDay(cId, { ...dailyLogs[cId], division: v }); }} className="font-bold text-gray-800 bg-white border border-gray-300 rounded px-2 py-1 outline-none disabled:bg-transparent disabled:border-transparent" disabled={!log.isAdHoc}>
                             {DIVISIONS.map(d => <option key={d} value={d}>{d}</option>)}
                           </select>
-                          <select value={log.crewNumber} onChange={e => setDailyLogs(p => ({ ...p, [cId]: { ...p[cId], crewNumber: Number(e.target.value) } }))} className="font-bold text-gray-800 bg-white border border-gray-300 rounded px-2 py-1 outline-none disabled:bg-transparent disabled:border-transparent" disabled={!log.isAdHoc}>
+                          <select value={log.crewNumber} onChange={e => { const v = Number(e.target.value); setDailyLogs(p => ({ ...p, [cId]: { ...p[cId], crewNumber: v } })); persistCrewDay(cId, { ...dailyLogs[cId], crewNumber: v }); }} className="font-bold text-gray-800 bg-white border border-gray-300 rounded px-2 py-1 outline-none disabled:bg-transparent disabled:border-transparent" disabled={!log.isAdHoc}>
                             {CREW_NUMBERS.map(n => <option key={n} value={n}>{n}</option>)}
                           </select>
                         </div>
@@ -1847,6 +1875,7 @@ export default function PerformanceBoard({
                                     disabled={isLocked || isIncomplete || isGhost}
                                     title={isGhost ? `Credit moved to ${job.movedToDate} — kept here as audit ghost on locked day` : isIncomplete ? 'Visit not complete in Jobber — read-only' : isRemoved ? 'No longer in Jobber — remove or keep manually?' : lockTitle}
                                     onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: n[cId].jobs.map((j, i) => i === jIdx ? { ...j, desc: e.target.value } : j) }; return n; })}
+                                    onBlur={() => persistCrewDay(cId, dailyLogs[cId])}
                                     className={`flex-1 min-w-0 border border-gray-300 rounded p-1.5 text-sm outline-none bg-white font-medium disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed ${isRemoved ? 'line-through text-amber-700' : ''} ${isIncomplete ? 'italic text-slate-400' : ''} ${isGhost ? 'italic text-slate-400 line-through' : ''}`}
                                   />
                                 )}
@@ -1894,6 +1923,14 @@ export default function PerformanceBoard({
                                       return nextJob;
                                     }) }; return n; });
                                     clearDraft(bhKey);
+                                    // Persist-on-first-edit: a manual (unscheduled) job row with
+                                    // BH just entered should survive the rebuild without waiting
+                                    // for Save Daily Data. Overlay the just-committed value onto
+                                    // the current crew-day (state update above is async).
+                                    if (job.source === 'manual') {
+                                      const cur = dailyLogs[cId];
+                                      if (cur) persistCrewDay(cId, { ...cur, jobs: (cur.jobs || []).map((j, i) => i === jIdx ? { ...j, bh: draftVal } : j) });
+                                    }
                                     if (filledAwaitingTag) {
                                       logPerfActivity({
                                         type: 'bh_filled_in_manually',
