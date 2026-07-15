@@ -22,6 +22,7 @@ import { can } from '../lib/permissions';
 import { getCrewAllowance, adjustedEfficiency, allowanceTag } from '../lib/crewAllowance';
 import { accumulateEmployeeEff } from '../lib/efficiency';
 import { isBonusEligible } from '../lib/mtd';
+import { computeMonthlyStreaks, crewDayHasFlame, crewKeyOf } from '../lib/crewGamification';
 import { DIVISIONS, CREW_NUMBERS, PERMISSION_DENIED } from '../constants';
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto, addDaysToronto } from '../lib/dateUtils';
 import RouteSelectionModal from './RouteSelectionModal';
@@ -319,6 +320,13 @@ export default function PerformanceBoard({
   const testUserIds = useMemo(
     () => new Set(employees.filter(e => e.isTestUser).map(e => e.id)),
     [employees],
+  );
+
+  // 🔆 Monthly consistency streaks, computed once per render over the current
+  // month's loaded performance (display-only; reads single-source approved math).
+  const crewStreaks = useMemo(
+    () => computeMonthlyStreaks(performance, formatTodayInToronto(), testUserIds),
+    [performance, testUserIds],
   );
 
   const pendingCarryForward = useMemo(() => {
@@ -1556,6 +1564,9 @@ export default function PerformanceBoard({
                 const isWaived = log.approvalStatus === 'waived';
                 // Both approved and waived are terminal/locked states.
                 const isLocked = isApproved || isWaived;
+                // 🔥/🔆 gamification (display-only; approved-math single source).
+                const hasFlame = crewDayHasFlame(log, testUserIds);
+                const crewStreak = crewStreaks[crewKeyOf(log)] || 0;
                 const lockTitle = isApproved
                   ? 'Approved — unapprove to edit'
                   : isWaived
@@ -1753,6 +1764,28 @@ export default function PerformanceBoard({
                         })()
                       )}
                     </div>
+
+                    {/* 🔥/🔆 gamification strip — celebration only, shown only
+                        when there's something to celebrate (no layout change
+                        otherwise). Flame = approved day ≥100%; streak = monthly
+                        consistency. Reads the existing approved numbers. */}
+                    {(hasFlame || crewStreak > 0) && (
+                      <div className="px-4 py-1.5 bg-white border-b border-slate-100 flex items-center gap-2 flex-wrap">
+                        {hasFlame && (
+                          <span title="100%+ — hit budget" className="inline-flex items-center gap-1 text-[11px] font-black uppercase tracking-widest text-orange-700 bg-orange-100 border border-orange-300 px-2 py-0.5 rounded-full">
+                            🔥 On fire
+                          </span>
+                        )}
+                        {crewStreak > 0 && (
+                          <span
+                            title={`${crewStreak} approved day${crewStreak === 1 ? '' : 's'} ≥80% this month`}
+                            className={`inline-flex items-center gap-1 text-[11px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${crewStreak >= 20 ? 'bg-violet-100 text-violet-700 border-violet-300' : crewStreak >= 10 ? 'bg-amber-100 text-amber-700 border-amber-300' : crewStreak >= 5 ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : 'bg-slate-100 text-slate-600 border-slate-200'}`}
+                          >
+                            🔆 {crewStreak}-day streak
+                          </span>
+                        )}
+                      </div>
+                    )}
 
                     {/* Freshness disclaimer — sub-header strip, once per
                         crew card. Sits between the status strip and the

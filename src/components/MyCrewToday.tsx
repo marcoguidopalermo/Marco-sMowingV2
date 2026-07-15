@@ -6,6 +6,7 @@ import { formatTimeRange, addDaysToronto } from '../lib/dateUtils';
 import { sortFleetGrouped, fleetItemLabel, isFleetOutOfService } from '../lib/fleetUtils';
 import { accumulateEmployeeEff, efficiencyPct, EmpEffStat } from '../lib/efficiency';
 import { isHourMaintenanceUnit } from '../lib/maintenanceUtils';
+import { computeMonthlyStreaks, crewDayHasFlame, crewKeyOf } from '../lib/crewGamification';
 import type { ActiveInspectionState } from './InspectionModal';
 import TopCrewSpotlight from './TopCrewSpotlight';
 import MtdSelfWidget from './MtdSelfWidget';
@@ -78,6 +79,12 @@ export default function MyCrewToday({
     const todaysCrews = schedules[today] || [];
     return todaysCrews.filter(c => (c.employees || []).includes(currentUserEmployee.id));
   }, [currentUserEmployee, schedules, today]);
+
+  // 🔥/🔆 gamification (display-only, single-source approved math). testUserIds
+  // matches the board so the crew sees the same numbers; streaks read only the
+  // current month's loaded performance.
+  const testUserIds = useMemo(() => new Set((employees || []).filter(e => e.isTestUser).map(e => e.id)), [employees]);
+  const crewStreaks = useMemo(() => computeMonthlyStreaks(performance, today, testUserIds), [performance, today, testUserIds]);
 
   const tomorrowStr = useMemo(() => {
     const d = new Date(`${today}T12:00:00Z`);
@@ -353,6 +360,24 @@ export default function MyCrewToday({
                       <div className="text-lg font-bold text-slate-800">
                         {crew.division} #{crew.crewNumber}
                       </div>
+                      {(() => {
+                        // Flame reflects THIS crew's approved day today; streak is
+                        // the crew's monthly consistency. Both read approved math.
+                        const crewLog = performance[today]?.[crew.id];
+                        const flame = crewDayHasFlame(crewLog, testUserIds);
+                        const streak = crewStreaks[crewKeyOf(crew)] || 0;
+                        if (!flame && streak === 0) return null;
+                        return (
+                          <div className="mt-1 flex items-center gap-2 flex-wrap">
+                            {flame && (
+                              <span title="100%+ — hit budget" className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-orange-700 bg-orange-100 border border-orange-300 px-2 py-0.5 rounded-full">🔥 On fire</span>
+                            )}
+                            {streak > 0 && (
+                              <span title={`${streak} approved day${streak === 1 ? '' : 's'} ≥80% this month`} className={`inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${streak >= 20 ? 'bg-violet-100 text-violet-700 border-violet-300' : streak >= 10 ? 'bg-amber-100 text-amber-700 border-amber-300' : streak >= 5 ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>🔆 {streak} days ≥80%</span>
+                            )}
+                          </div>
+                        );
+                      })()}
                       <div className="text-xs text-slate-500 mt-0.5">
                         {(crew.employees || []).length} {(crew.employees || []).length === 1 ? 'worker' : 'workers'}
                       </div>
