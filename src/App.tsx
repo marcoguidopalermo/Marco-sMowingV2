@@ -3366,14 +3366,16 @@ export default function App() {
       selectedRouteIds={selectedRouteIds}
       setSelectedRouteIds={setSelectedRouteIds}
       onSaveDaily={async () => { await syncToCloud({ ...appData, performance: { ...appData.performance, [perfDate]: dailyLogs } }); showToastMsg("Saved!"); }}
-      onPersistCrewDay={(crewId, log) => {
+      onPersistCrewDay={async (crewId, log) => {
         // Merge ONE crew-day into saved performance immediately (same merge
         // semantics onSaveDaily / approve / waive use) so unscheduled job /
         // crew additions survive the dailyLogs rebuild without a manual Save.
-        // Per-crew merge → never clobbers other crews or other days.
+        // Per-crew merge → never clobbers other crews or other days. Returns
+        // the write result so the board can show an honest Saved✓ / error ack.
         const newPerf = { ...appData.performance };
         newPerf[perfDate] = { ...(newPerf[perfDate] || {}), [crewId]: log };
-        syncToCloud({ ...appData, performance: newPerf });
+        const ok = await syncToCloud({ ...appData, performance: newPerf });
+        return ok !== false;
       }}
       isManager={isManager}
       onApprove={(crewId, log) => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   TrendingUp, CalendarDays, BarChart, Save, Calendar as CalendarIcon,
@@ -88,7 +88,7 @@ interface PerformanceBoardProps {
   // unscheduled crew additions survive the dailyLogs rebuild without
   // waiting for "Save Daily Data" (matches approve/waive/AH-split, which
   // all write immediately). Same merge path onSaveDaily uses.
-  onPersistCrewDay: (crewId: string, log: PerformanceLog) => void;
+  onPersistCrewDay: (crewId: string, log: PerformanceLog) => void | Promise<boolean>;
   isManager: boolean;
   onApprove: (crewId: string, log: PerformanceLog) => void;
   onUnapprove: (crewId: string) => void;
@@ -214,11 +214,37 @@ export default function PerformanceBoard({
     if (Object.values(log.employeeAH || {}).some(v => (Number(v) || 0) > 0)) return true;
     return false;
   };
+  // Per-target save acknowledgement (display only). Keyed by a stable target
+  // string (a job row = `${crewId}:${jIdx}`, a crew field = `${crewId}:crew`).
+  // 'saving' → in flight, 'saved' → written (auto-fades ~1.5s), 'error' →
+  // write failed (stays until retried). Honest: 'saved' is set ONLY when the
+  // write actually resolves truthy.
+  type Ack = 'saving' | 'saved' | 'error';
+  const [saveAck, setSaveAck] = useState<Record<string, Ack>>({});
+  const ackTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  useEffect(() => () => { Object.values(ackTimers.current).forEach(clearTimeout); }, []);
+
   // Merge one crew-day into saved state (same semantics as onSaveDaily, but
-  // per-crew so it never clobbers other crews). No-op for empty crew-days.
-  const persistCrewDay = (crewId: string, log?: PerformanceLog | null) => {
+  // per-crew so it never clobbers other crews). No-op for empty crew-days —
+  // blanks never persist and never show an ack. Reflects the real write
+  // result on `ackKey` so the indicator can't show a false success.
+  const persistCrewDay = async (ackKey: string, crewId: string, log?: PerformanceLog | null) => {
     if (!log || !crewDayHasContent(log)) return;
-    onPersistCrewDay(crewId, log);
+    if (ackTimers.current[ackKey]) clearTimeout(ackTimers.current[ackKey]);
+    setSaveAck(s => ({ ...s, [ackKey]: 'saving' }));
+    let okFinal = false;
+    try {
+      const ok = await Promise.resolve(onPersistCrewDay(crewId, log));
+      okFinal = ok !== false; // void (older impls) counts as success
+    } catch {
+      okFinal = false;
+    }
+    setSaveAck(s => ({ ...s, [ackKey]: okFinal ? 'saved' : 'error' }));
+    if (okFinal) {
+      ackTimers.current[ackKey] = setTimeout(() => {
+        setSaveAck(s => { if (s[ackKey] !== 'saved') return s; const n = { ...s }; delete n[ackKey]; return n; });
+      }, 1500);
+    }
   };
 
   // Click-through target from the outstanding-days rollup: after the
@@ -1374,6 +1400,14 @@ export default function PerformanceBoard({
                 <button onClick={onSaveDaily} className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-bold shadow flex items-center gap-2">
                   <Save className="w-4 h-4" /> Save Daily Data
                 </button>
+                {/* Auto-persist status (unscheduled additions save as you type). */}
+                {(() => {
+                  const vals = Object.values(saveAck);
+                  if (vals.includes('saving')) return <span className="text-xs font-bold text-slate-500 inline-flex items-center gap-1">Saving…</span>;
+                  if (vals.includes('error')) return <span className="text-xs font-bold text-rose-600 inline-flex items-center gap-1">Some rows didn’t save</span>;
+                  if (vals.includes('saved')) return <span className="text-xs font-bold text-emerald-600 inline-flex items-center gap-1 animate-in fade-in">Saved ✓</span>;
+                  return null;
+                })()}
               </div>
             </div>
             {jobberConnected && lastSync && (
@@ -1604,10 +1638,10 @@ export default function PerformanceBoard({
                       <div className="border-b border-gray-200 bg-gray-50 p-3 pl-4 flex justify-between items-center">
                         <div className="flex-1 flex gap-2 items-center">
                           {log.isAdHoc ? <span className="text-[10px] bg-orange-100 text-orange-800 uppercase px-1.5 py-0.5 rounded font-bold">Ad-Hoc</span> : null}
-                          <select value={log.division} onChange={e => { const v = e.target.value; setDailyLogs(p => ({ ...p, [cId]: { ...p[cId], division: v } })); persistCrewDay(cId, { ...dailyLogs[cId], division: v }); }} className="font-bold text-gray-800 bg-white border border-gray-300 rounded px-2 py-1 outline-none disabled:bg-transparent disabled:border-transparent" disabled={!log.isAdHoc}>
+                          <select value={log.division} onChange={e => { const v = e.target.value; setDailyLogs(p => ({ ...p, [cId]: { ...p[cId], division: v } })); persistCrewDay(`${cId}:crew`, cId, { ...dailyLogs[cId], division: v }); }} className="font-bold text-gray-800 bg-white border border-gray-300 rounded px-2 py-1 outline-none disabled:bg-transparent disabled:border-transparent" disabled={!log.isAdHoc}>
                             {DIVISIONS.map(d => <option key={d} value={d}>{d}</option>)}
                           </select>
-                          <select value={log.crewNumber} onChange={e => { const v = Number(e.target.value); setDailyLogs(p => ({ ...p, [cId]: { ...p[cId], crewNumber: v } })); persistCrewDay(cId, { ...dailyLogs[cId], crewNumber: v }); }} className="font-bold text-gray-800 bg-white border border-gray-300 rounded px-2 py-1 outline-none disabled:bg-transparent disabled:border-transparent" disabled={!log.isAdHoc}>
+                          <select value={log.crewNumber} onChange={e => { const v = Number(e.target.value); setDailyLogs(p => ({ ...p, [cId]: { ...p[cId], crewNumber: v } })); persistCrewDay(`${cId}:crew`, cId, { ...dailyLogs[cId], crewNumber: v }); }} className="font-bold text-gray-800 bg-white border border-gray-300 rounded px-2 py-1 outline-none disabled:bg-transparent disabled:border-transparent" disabled={!log.isAdHoc}>
                             {CREW_NUMBERS.map(n => <option key={n} value={n}>{n}</option>)}
                           </select>
                         </div>
@@ -1758,6 +1792,14 @@ export default function PerformanceBoard({
                               (mdHist.length === 1 && mdHist[0].percentComplete < 100) ||
                               mdJob.status === 'in_progress'
                             );
+                            // Manual (unscheduled) job row state for save feedback.
+                            // A blank manual row hasn't persisted yet (blanks never
+                            // write) — mark it pending/unsaved; a content row is
+                            // settled. `ack` reflects the real per-row write result.
+                            const isManual = job.source === 'manual';
+                            const isBlankManual = isManual && !(job.desc || '').trim() && !String(job.bh ?? '').trim();
+                            const rowAckKey = `${cId}:${jIdx}`;
+                            const rowAck = saveAck[rowAckKey];
                             const rowBg = isGhost
                               ? 'bg-slate-100 border-slate-200 opacity-75'
                               : isIncomplete
@@ -1770,7 +1812,9 @@ export default function PerformanceBoard({
                                       ? 'bg-amber-50/60 border-amber-200'
                                       : hasConflict
                                         ? 'bg-amber-50/40 border-amber-200'
-                                        : 'bg-gray-50 border-gray-200';
+                                        : isBlankManual
+                                          ? 'bg-slate-50/70 border-slate-300 border-dashed'
+                                          : 'bg-gray-50 border-gray-200';
                             const menuKey = `${cId}::${jIdx}`;
                             const menuOpen = rowMenuKey === menuKey;
                             // Item 3: an incomplete hourly visit — manager logs hours
@@ -1875,7 +1919,7 @@ export default function PerformanceBoard({
                                     disabled={isLocked || isIncomplete || isGhost}
                                     title={isGhost ? `Credit moved to ${job.movedToDate} — kept here as audit ghost on locked day` : isIncomplete ? 'Visit not complete in Jobber — read-only' : isRemoved ? 'No longer in Jobber — remove or keep manually?' : lockTitle}
                                     onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: n[cId].jobs.map((j, i) => i === jIdx ? { ...j, desc: e.target.value } : j) }; return n; })}
-                                    onBlur={() => persistCrewDay(cId, dailyLogs[cId])}
+                                    onBlur={() => persistCrewDay(`${cId}:${jIdx}`, cId, dailyLogs[cId])}
                                     className={`flex-1 min-w-0 border border-gray-300 rounded p-1.5 text-sm outline-none bg-white font-medium disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed ${isRemoved ? 'line-through text-amber-700' : ''} ${isIncomplete ? 'italic text-slate-400' : ''} ${isGhost ? 'italic text-slate-400 line-through' : ''}`}
                                   />
                                 )}
@@ -1929,7 +1973,7 @@ export default function PerformanceBoard({
                                     // the current crew-day (state update above is async).
                                     if (job.source === 'manual') {
                                       const cur = dailyLogs[cId];
-                                      if (cur) persistCrewDay(cId, { ...cur, jobs: (cur.jobs || []).map((j, i) => i === jIdx ? { ...j, bh: draftVal } : j) });
+                                      if (cur) persistCrewDay(`${cId}:${jIdx}`, cId, { ...cur, jobs: (cur.jobs || []).map((j, i) => i === jIdx ? { ...j, bh: draftVal } : j) });
                                     }
                                     if (filledAwaitingTag) {
                                       logPerfActivity({
@@ -2145,6 +2189,19 @@ export default function PerformanceBoard({
                                   }
                                 }} className="text-red-400 hover:text-red-600 p-1 disabled:opacity-30 disabled:cursor-not-allowed"><X className="w-4 h-4" /></button>
                               </div>
+                              {/* Per-row save feedback for manual (unscheduled) jobs.
+                                  Honest: 'Saved ✓' shows only after the write resolves;
+                                  a failed write shows a retry, never a false success. */}
+                              {isManual && (rowAck || isBlankManual) && (
+                                <div className="pl-1 text-xs">
+                                  {rowAck === 'saving' && <span className="text-slate-400 font-medium">Saving…</span>}
+                                  {rowAck === 'saved' && <span className="text-emerald-600 font-bold animate-in fade-in">Saved ✓</span>}
+                                  {rowAck === 'error' && (
+                                    <button type="button" onClick={() => persistCrewDay(rowAckKey, cId, dailyLogs[cId])} className="text-rose-600 font-bold hover:underline" title="Save failed — click to retry">Not saved ✕ — retry</button>
+                                  )}
+                                  {!rowAck && isBlankManual && <span className="text-slate-400 italic">Unsaved — add a name or BH to save</span>}
+                                </div>
+                              )}
                               {/* Multi-crew split indicator — rendered on its
                                   own line below the main row so a long chip
                                   ("Split: 4 of 20 BH (auto)") doesn't compete
