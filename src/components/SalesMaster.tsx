@@ -100,7 +100,8 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
         </div>
 
         {tab === 'calculator' && (
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className="space-y-4">
+            <div className="grid md:grid-cols-2 gap-4">
             {/* INPUTS */}
             <div className="space-y-4">
               {loadedQuoteName && (
@@ -165,7 +166,7 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
               </div>
             </div>
 
-            {/* OUTPUT */}
+            {/* QUOTE BREAKDOWN */}
             <div className="space-y-4">
               <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
                 <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">Quote breakdown</div>
@@ -191,36 +192,62 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
                 </div>
                 <div className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1"><Info className="w-3 h-3" /> Internal pricing workbench — build the client quote in Jobber. Saved quotes store charge-side numbers + BH only.</div>
               </div>
-
-              {/* ADMIN-ONLY PROFIT PANEL — three efficiency scenarios. */}
-              {isAdmin && (
-                <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-sm p-4 text-slate-100">
-                  <div className="text-[11px] font-black uppercase tracking-widest text-amber-400 mb-2 flex items-center gap-1.5"><TrendingUp className="w-3.5 h-3.5" /> Profit (admin only) · labour {money(labourCostFor(service, rates))}/hr{profit.hasOverhead ? ` · overhead ${money(profit.overheadPerBH)}/BH` : ''}</div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-[13px] font-mono">
-                      <thead>
-                        <tr className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                          <th className="text-left font-sans py-1">Efficiency</th>
-                          {profit.cols.map(c => <th key={c.eff} className="text-right py-1">{Math.round(c.eff * 100)}%</th>)}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr><td className="text-left font-sans text-slate-400 py-0.5">Actual hours</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-300">{c.actualHours}</td>)}</tr>
-                        <tr><td className="text-left font-sans text-slate-400 py-0.5">Labour cost</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-300">{money(c.labourCost)}</td>)}</tr>
-                        <tr><td className="text-left font-sans text-slate-400 py-0.5">Material cost</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-300">{money(c.materialCost)}</td>)}</tr>
-                        <tr className="border-t border-slate-700"><td className="text-left font-sans font-black text-emerald-400 py-1">Gross profit</td>{profit.cols.map(c => <td key={c.eff} className="text-right font-black text-emerald-400">{money(c.gp)}</td>)}</tr>
-                        <tr><td className="text-left font-sans text-slate-400 pb-1 text-[11px]">margin</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-400 text-[11px]">{c.margin.toFixed(1)}%</td>)}</tr>
-                        {profit.hasOverhead && (<>
-                          <tr className="border-t border-slate-700"><td className="text-left font-sans text-slate-400 py-1">Overhead ({bhDisp}×{money(profit.overheadPerBH)})</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-300">{money(profit.overhead)}</td>)}</tr>
-                          <tr><td className="text-left font-sans font-black text-amber-400 py-1">Net after overhead</td>{profit.cols.map(c => <td key={c.eff} className="text-right font-black text-amber-400">{money(c.net)}</td>)}</tr>
-                          <tr><td className="text-left font-sans text-slate-400 text-[11px]">margin</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-400 text-[11px]">{c.netMargin.toFixed(1)}%</td>)}</tr>
-                        </>)}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
             </div>
+            </div>{/* end inputs + breakdown grid */}
+
+            {/* ADMIN-ONLY PROFIT PANEL — full-width bottom section. Desktop: a
+                spacious three-column table. Mobile: three stacked scenario
+                cards (no horizontal scroll, no microscopic text). */}
+            {isAdmin && (
+              <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-sm p-4 md:p-5 text-slate-100">
+                <div className="text-[11px] font-black uppercase tracking-widest text-amber-400 mb-3 flex items-center gap-1.5"><TrendingUp className="w-3.5 h-3.5" /> Profit (admin only) · labour {money(labourCostFor(service, rates))}/hr{profit.hasOverhead ? ` · overhead ${money(profit.overheadPerBH)}/BH` : ''}</div>
+
+                {/* Desktop / tablet table */}
+                <div className="hidden sm:block">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-[11px] font-black uppercase tracking-widest text-slate-400">
+                        <th className="text-left font-sans py-2 pr-4">Efficiency</th>
+                        {profit.cols.map(c => <th key={c.eff} className="text-right font-mono py-2 px-4 w-40">{Math.round(c.eff * 100)}%</th>)}
+                      </tr>
+                    </thead>
+                    <tbody className="font-mono">
+                      <tr><td className="text-left font-sans text-slate-400 py-1.5 pr-4">Actual hours</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-200 px-4">{c.actualHours}</td>)}</tr>
+                      <tr><td className="text-left font-sans text-slate-400 py-1.5 pr-4">Labour cost</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-200 px-4">{money(c.labourCost)}</td>)}</tr>
+                      <tr><td className="text-left font-sans text-slate-400 py-1.5 pr-4">Material cost</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-200 px-4">{money(c.materialCost)}</td>)}</tr>
+                      <tr className="border-t border-slate-700"><td className="text-left font-sans font-black text-emerald-400 py-2 pr-4">Gross profit</td>{profit.cols.map(c => <td key={c.eff} className="text-right font-black text-emerald-400 text-base px-4">{money(c.gp)}</td>)}</tr>
+                      <tr><td className="text-left font-sans text-slate-400 pb-2 text-[12px] pr-4">margin</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-400 text-[12px] px-4">{c.margin.toFixed(1)}%</td>)}</tr>
+                      {profit.hasOverhead && (<>
+                        <tr className="border-t border-slate-700"><td className="text-left font-sans text-slate-400 py-2 pr-4">Overhead ({bhDisp}×{money(profit.overheadPerBH)})</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-200 px-4">{money(profit.overhead)}</td>)}</tr>
+                        <tr><td className="text-left font-sans font-black text-amber-400 py-2 pr-4">Net after overhead</td>{profit.cols.map(c => <td key={c.eff} className="text-right font-black text-amber-400 text-base px-4">{money(c.net)}</td>)}</tr>
+                        <tr><td className="text-left font-sans text-slate-400 text-[12px] pr-4">margin</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-400 text-[12px] px-4">{c.netMargin.toFixed(1)}%</td>)}</tr>
+                      </>)}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Mobile: three scenario cards */}
+                <div className="sm:hidden grid grid-cols-1 gap-2">
+                  {profit.cols.map(c => (
+                    <div key={c.eff} className="bg-slate-800 rounded-lg p-3">
+                      <div className="text-[11px] font-black uppercase tracking-widest text-slate-300 mb-1.5">{Math.round(c.eff * 100)}% efficiency</div>
+                      <div className="grid grid-cols-2 gap-y-1 text-sm font-mono">
+                        <span className="text-slate-400 font-sans">Actual hours</span><span className="text-right text-slate-200">{c.actualHours}</span>
+                        <span className="text-slate-400 font-sans">Labour cost</span><span className="text-right text-slate-200">{money(c.labourCost)}</span>
+                        <span className="text-slate-400 font-sans">Material cost</span><span className="text-right text-slate-200">{money(c.materialCost)}</span>
+                        <span className="text-emerald-400 font-sans font-black border-t border-slate-700 pt-1">Gross profit</span><span className="text-right text-emerald-400 font-black border-t border-slate-700 pt-1">{money(c.gp)}</span>
+                        <span className="text-slate-400 font-sans text-[11px]">margin</span><span className="text-right text-slate-400 text-[11px]">{c.margin.toFixed(1)}%</span>
+                        {profit.hasOverhead && (<>
+                          <span className="text-slate-400 font-sans border-t border-slate-700 pt-1">Overhead</span><span className="text-right text-slate-200 border-t border-slate-700 pt-1">{money(profit.overhead)}</span>
+                          <span className="text-amber-400 font-sans font-black">Net after ovhd</span><span className="text-right text-amber-400 font-black">{money(c.net)}</span>
+                          <span className="text-slate-400 font-sans text-[11px]">margin</span><span className="text-right text-slate-400 text-[11px]">{c.netMargin.toFixed(1)}%</span>
+                        </>)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
