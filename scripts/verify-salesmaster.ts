@@ -1,6 +1,6 @@
 // Verify SalesMaster math against the exact worked sod example.
 // Run: npx tsx scripts/verify-salesmaster.ts
-import { DEFAULT_SALES_RATES, computeQuote, computeProfitTable, bhFromPrice, priceFromBH, round2, buildQuoteSnapshot } from '../src/lib/salesMaster';
+import { DEFAULT_SALES_RATES, computeQuote, computeProfitTable, bhFromPrice, priceFromBH, round2, buildQuoteSnapshot, coverageQty, roundUpHalf } from '../src/lib/salesMaster';
 
 const rates = DEFAULT_SALES_RATES;
 const sodSvc = rates.services.find(s => s.id === 'svc-sod')!;
@@ -21,9 +21,8 @@ ok('labour charge (2400)', q.labourCharge === 2400, q.labourCharge);
 ok('quote total (3400)', q.quoteTotal === 3400, q.quoteTotal);
 ok('BH identity (3400-1000)/120 = 20', bhFromPrice(3400, 1000, 120) === 20, bhFromPrice(3400, 1000, 120));
 
-console.log('\n=== admin profit panel — 3 scenarios (overhead $30/BH) ===');
+console.log('\n=== admin profit panel — 3 scenarios (overhead $30/ACTUAL hr) ===');
 ok('overhead per BH seeded ($30)', pt.overheadPerBH === 30 && pt.hasOverhead, pt.overheadPerBH);
-ok('overhead allocation (20×30 = 600, constant)', pt.overhead === 600, pt.overhead);
 const [c100, c80, c60] = pt.cols;
 const row = (label: string, a: number, b: number, c: number, ea: number, eb: number, ec: number) =>
   ok(`${label.padEnd(20)} ${a} / ${b} / ${c}`, a === ea && b === eb && Math.abs(c - ec) < 0.02, `${a}/${b}/${c}`);
@@ -32,11 +31,25 @@ row('labour cost', c100.labourCost, c80.labourCost, c60.labourCost, 600, 750, 10
 row('material cost', c100.materialCost, c80.materialCost, c60.materialCost, 740, 740, 740);
 row('gross profit', c100.gp, c80.gp, c60.gp, 2060, 1910, 1660);
 row('gp margin %', c100.margin, c80.margin, c60.margin, 60.59, 56.18, 48.82);
-row('net after ovhd', c100.net, c80.net, c60.net, 1460, 1310, 1060);
-row('net margin %', c100.netMargin, c80.netMargin, c60.netMargin, 42.94, 38.53, 31.18);
+row('overhead (actual hrs×30)', c100.overhead, c80.overhead, c60.overhead, 600, 750, 1000);
+row('net after ovhd', c100.net, c80.net, c60.net, 1460, 1160, 660);
+row('net margin %', c100.netMargin, c80.netMargin, c60.netMargin, 42.94, 34.12, 19.41);
 // hide net rows when overhead is 0
 const noOvhd = computeProfitTable(q, sodSvc, { ...rates, overheadPerBH: 0 });
 ok('overheadPerBH 0 → hasOverhead false (net rows hidden)', noOvhd.hasOverhead === false, noOvhd.hasOverhead);
+
+console.log('\n=== material coverage (soil: covers 100 sqft @ 3" / yard) ===');
+const soil = rates.materials.find((m: any) => m.id === 'mat-soil')!;
+ok('soil coverage seeded (100 sqft @ 3")', soil.coverageSqft === 100 && soil.coverageDepthInches === 3, `${soil.coverageSqft}@${soil.coverageDepthInches}`);
+const cov = (a: number, d: number) => coverageQty(soil, a, d)!;
+ok('1000 sqft @ 3" → 10 yd (exact, rounds to 10.0)', cov(1000, 3) === 10 && roundUpHalf(cov(1000, 3)) === 10, `${cov(1000, 3)} → ${roundUpHalf(cov(1000, 3))}`);
+ok('1000 sqft @ 2" → 6.67 raw → rounds UP (0.5 step) to 7.0', Math.abs(cov(1000, 2) - 6.6667) < 0.001 && roundUpHalf(cov(1000, 2)) === 7, `${round2(cov(1000, 2))} → ${roundUpHalf(cov(1000, 2))}`);
+ok('500 sqft @ 4" → 6.67 raw → rounds UP (0.5 step) to 7.0', Math.abs(cov(500, 4) - 6.6667) < 0.001 && roundUpHalf(cov(500, 4)) === 7, `${round2(cov(500, 4))} → ${roundUpHalf(cov(500, 4))}`);
+// A coverage-derived qty prices IDENTICALLY to a manually-typed qty.
+const qManual = computeQuote(sodSvc, [{ materialId: 'mat-soil', qty: 10 }], 5, rates);
+const qCov = computeQuote(sodSvc, [{ materialId: 'mat-soil', qty: roundUpHalf(cov(1000, 3)), area: 1000, depthInches: 3, coverageNote: '1000 sqft @ 3" → 10 yd' }], 5, rates);
+ok('coverage qty (10 yd) → same $500 soil charge as manual qty 10', qCov.materialsCharged === 500 && qCov.materialsCharged === qManual.materialsCharged, `${qCov.materialsCharged} == ${qManual.materialsCharged}`);
+ok('coverage working carried onto the line detail (snapshotted)', qCov.lines[0].coverageNote === '1000 sqft @ 3" → 10 yd', qCov.lines[0].coverageNote);
 
 console.log('\n=== two-way manipulation ===');
 // Direction A: nudge price +$1000 → BH recomputes (precise), quote lands exactly.

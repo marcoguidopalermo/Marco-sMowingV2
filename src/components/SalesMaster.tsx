@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
-import { Calculator, Sliders, Plus, Trash2, DollarSign, TrendingUp, Info, RotateCcw, Save, FilePlus, Search, FolderOpen } from 'lucide-react';
+import { Calculator, Sliders, Plus, Trash2, DollarSign, TrendingUp, Info, RotateCcw, Save, FilePlus, Search, FolderOpen, Ruler } from 'lucide-react';
 import { SalesRates, SalesService, SalesMaterial, SalesMaterialUnit, SalesQuote } from '../types';
 import {
   computeQuote, computeProfitTable, bhFromPrice, labourCostFor, money, buildQuoteSnapshot, MaterialLine, round2,
+  coverageQty, roundUpHalf, hasCoverage, coverageWorking,
 } from '../lib/salesMaster';
 
 interface Props {
@@ -16,7 +17,7 @@ interface Props {
 }
 
 const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-const UNITS: SalesMaterialUnit[] = ['sqft', 'yard', 'load', 'each'];
+const UNITS: SalesMaterialUnit[] = ['sqft', 'yard', 'load', 'each', 'tonne'];
 const fmtWhen = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 
 export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSaveRates, onSaveQuote, onDeleteQuote }: Props) {
@@ -31,6 +32,18 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
   const [priceInput, setPriceInput] = useState('');
   const [loadedQuoteId, setLoadedQuoteId] = useState<string | null>(null);
   const [loadedQuoteName, setLoadedQuoteName] = useState<string>('');
+  const [calcLineIdx, setCalcLineIdx] = useState<number | null>(null);
+
+  // Coverage calc: area + depth → qty (rounded up to 0.5), stamped with the
+  // working note. Live-recomputes as area/depth change.
+  const applyCoverage = (i: number, area: number, depthInches: number) => setLines(ls => ls.map((l, j) => {
+    if (j !== i) return l;
+    const m = rates.materials.find(x => x.id === l.materialId);
+    const raw = m ? coverageQty(m, area, depthInches) : null;
+    if (raw == null) return { ...l, area: area || undefined, depthInches: depthInches || undefined };
+    const qty = roundUpHalf(raw);
+    return { ...l, area, depthInches, qty, coverageNote: coverageWorking(m!.unit, area, depthInches, qty) };
+  }));
 
   const service = rates.services.find(s => s.id === serviceId);
   const q = useMemo(() => computeQuote(service, lines, bh, rates), [service, lines, bh, rates]);
@@ -69,7 +82,7 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
   };
   const loadQuote = (sq: SalesQuote) => {
     setServiceId(sq.serviceId);
-    setLines(sq.lines.map(l => ({ materialId: l.materialId, qty: l.qty })));
+    setLines(sq.lines.map(l => ({ materialId: l.materialId, qty: l.qty, coverageNote: l.coverageNote, area: l.area, depthInches: l.depthInches })));
     setBh(sq.bh); setBaselineBH(sq.bh); setPriceInput('');
     setLoadedQuoteId(sq.id); setLoadedQuoteName(sq.name);
     setTab('calculator');
@@ -124,14 +137,30 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
                     {lines.length === 0 && <div className="text-[12px] text-slate-400 italic">No materials — labour-only job.</div>}
                     {lines.map((ln, i) => {
                       const m = rates.materials.find(x => x.id === ln.materialId);
+                      const coverable = hasCoverage(m);
+                      const calcOpen = calcLineIdx === i && coverable;
+                      const effDepth = ln.depthInches ?? (m?.coverageDepthInches ?? 0);
                       return (
-                        <div key={i} className="flex items-center gap-2">
-                          <select value={ln.materialId} onChange={e => setLines(ls => ls.map((l, j) => j === i ? { ...l, materialId: e.target.value } : l))} className="flex-1 min-w-0 border border-slate-300 rounded-lg p-2 text-sm font-medium bg-white">
-                            {materialOptions(ln.materialId).map(x => <option key={x.id} value={x.id}>{x.name} ({x.unit}){x.active ? '' : ' (inactive)'}</option>)}
-                          </select>
-                          <input type="number" value={ln.qty || ''} placeholder="qty" onChange={e => setLines(ls => ls.map((l, j) => j === i ? { ...l, qty: Number(e.target.value) || 0 } : l))} className="w-20 border border-slate-300 rounded-lg p-2 text-sm text-right" />
-                          <span className="text-[11px] text-slate-400 w-16 text-right">{m ? money(round2((ln.qty || 0) * m.chargePerUnit)) : ''}</span>
-                          <button onClick={() => setLines(ls => ls.filter((_, j) => j !== i))} className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
+                        <div key={i} className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <select value={ln.materialId} onChange={e => { setLines(ls => ls.map((l, j) => j === i ? { ...l, materialId: e.target.value, coverageNote: undefined, area: undefined, depthInches: undefined } : l)); if (calcLineIdx === i) setCalcLineIdx(null); }} className="flex-1 min-w-0 border border-slate-300 rounded-lg p-2 text-sm font-medium bg-white">
+                              {materialOptions(ln.materialId).map(x => <option key={x.id} value={x.id}>{x.name} ({x.unit}){x.active ? '' : ' (inactive)'}</option>)}
+                            </select>
+                            <input type="number" value={ln.qty || ''} placeholder="qty" onChange={e => setLines(ls => ls.map((l, j) => j === i ? { ...l, qty: Number(e.target.value) || 0, coverageNote: undefined, area: undefined, depthInches: undefined } : l))} className="w-20 border border-slate-300 rounded-lg p-2 text-sm text-right" />
+                            <span className="text-[11px] text-slate-400 w-16 text-right">{m ? money(round2((ln.qty || 0) * m.chargePerUnit)) : ''}</span>
+                            {coverable && <button onClick={() => setCalcLineIdx(calcOpen ? null : i)} title="Calculate qty from area + depth" className={`shrink-0 ${calcOpen ? 'text-emerald-600' : 'text-slate-300 hover:text-slate-600'}`}><Ruler className="w-4 h-4" /></button>}
+                            <button onClick={() => { setLines(ls => ls.filter((_, j) => j !== i)); setCalcLineIdx(null); }} className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
+                          </div>
+                          {calcOpen && m && (
+                            <div className="flex items-center gap-1.5 flex-wrap bg-slate-50 border border-slate-200 rounded-lg p-2 text-[12px]">
+                              <input type="number" value={ln.area ?? ''} placeholder="area" onChange={e => applyCoverage(i, Number(e.target.value) || 0, effDepth)} className="w-20 border border-slate-300 rounded px-2 py-1 text-right" />
+                              <span className="text-slate-500">sqft @</span>
+                              <input type="number" value={ln.depthInches ?? m.coverageDepthInches ?? ''} onChange={e => applyCoverage(i, ln.area ?? 0, Number(e.target.value) || 0)} className="w-14 border border-slate-300 rounded px-2 py-1 text-right" />
+                              <span className="text-slate-500">"</span>
+                              <span className="text-[10px] text-slate-400 ml-1">rule: {m.coverageSqft} sqft @ {m.coverageDepthInches}" / {m.unit}</span>
+                            </div>
+                          )}
+                          {ln.coverageNote && <div className="text-[10px] text-slate-500 pl-1 font-medium">{ln.coverageNote}</div>}
                         </div>
                       );
                     })}
@@ -218,7 +247,7 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
                       <tr className="border-t border-slate-700"><td className="text-left font-sans font-black text-emerald-400 py-2 pr-4">Gross profit</td>{profit.cols.map(c => <td key={c.eff} className="text-right font-black text-emerald-400 text-base px-4">{money(c.gp)}</td>)}</tr>
                       <tr><td className="text-left font-sans text-slate-400 pb-2 text-[12px] pr-4">margin</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-400 text-[12px] px-4">{c.margin.toFixed(1)}%</td>)}</tr>
                       {profit.hasOverhead && (<>
-                        <tr className="border-t border-slate-700"><td className="text-left font-sans text-slate-400 py-2 pr-4">Overhead ({bhDisp}×{money(profit.overheadPerBH)})</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-200 px-4">{money(profit.overhead)}</td>)}</tr>
+                        <tr className="border-t border-slate-700"><td className="text-left font-sans text-slate-400 py-2 pr-4">Overhead (actual hrs × {money(profit.overheadPerBH)})</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-200 px-4">{money(c.overhead)}</td>)}</tr>
                         <tr><td className="text-left font-sans font-black text-amber-400 py-2 pr-4">Net after overhead</td>{profit.cols.map(c => <td key={c.eff} className="text-right font-black text-amber-400 text-base px-4">{money(c.net)}</td>)}</tr>
                         <tr><td className="text-left font-sans text-slate-400 text-[12px] pr-4">margin</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-400 text-[12px] px-4">{c.netMargin.toFixed(1)}%</td>)}</tr>
                       </>)}
@@ -238,7 +267,7 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
                         <span className="text-emerald-400 font-sans font-black border-t border-slate-700 pt-1">Gross profit</span><span className="text-right text-emerald-400 font-black border-t border-slate-700 pt-1">{money(c.gp)}</span>
                         <span className="text-slate-400 font-sans text-[11px]">margin</span><span className="text-right text-slate-400 text-[11px]">{c.margin.toFixed(1)}%</span>
                         {profit.hasOverhead && (<>
-                          <span className="text-slate-400 font-sans border-t border-slate-700 pt-1">Overhead</span><span className="text-right text-slate-200 border-t border-slate-700 pt-1">{money(profit.overhead)}</span>
+                          <span className="text-slate-400 font-sans border-t border-slate-700 pt-1">Overhead</span><span className="text-right text-slate-200 border-t border-slate-700 pt-1">{money(c.overhead)}</span>
                           <span className="text-amber-400 font-sans font-black">Net after ovhd</span><span className="text-right text-amber-400 font-black">{money(c.net)}</span>
                           <span className="text-slate-400 font-sans text-[11px]">margin</span><span className="text-right text-slate-400 text-[11px]">{c.netMargin.toFixed(1)}%</span>
                         </>)}
@@ -364,8 +393,8 @@ function RatesEditor({ rates, onSave }: { rates: SalesRates; onSave: (r: SalesRa
           <button onClick={() => commit({ ...r, materials: [...r.materials, { id: uid('mat'), name: 'New material', unit: 'each', costPerUnit: 0, chargePerUnit: 0, active: true }] })} className="text-[11px] font-bold text-emerald-700 inline-flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Add material</button>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[600px]">
-            <thead><tr className="text-[10px] font-black uppercase tracking-widest text-slate-400 text-left"><th className="py-1">Name</th><th className="py-1">Unit</th><th className="py-1 text-right">Cost / unit</th><th className="py-1 text-right">Charge / unit</th><th className="py-1 text-center">Active</th><th className="py-1" /></tr></thead>
+          <table className="w-full text-sm min-w-[760px]">
+            <thead><tr className="text-[10px] font-black uppercase tracking-widest text-slate-400 text-left"><th className="py-1">Name</th><th className="py-1">Unit</th><th className="py-1 text-right">Cost / unit</th><th className="py-1 text-right">Charge / unit</th><th className="py-1 text-right" title="One unit covers this many sqft…">Covers sqft</th><th className="py-1 text-right" title="…at this depth in inches">@ depth&quot;</th><th className="py-1 text-center">Active</th><th className="py-1" /></tr></thead>
             <tbody>
               {r.materials.map((m, i) => (
                 <tr key={m.id} className="border-t border-slate-50">
@@ -373,6 +402,8 @@ function RatesEditor({ rates, onSave }: { rates: SalesRates; onSave: (r: SalesRa
                   <td className="py-1 px-1"><select value={m.unit} onChange={e => commit({ ...r, materials: r.materials.map((x, j) => j === i ? { ...x, unit: e.target.value as SalesMaterialUnit } : x) })} className="border border-slate-200 rounded px-2 py-1">{UNITS.map(u => <option key={u} value={u}>{u}</option>)}</select></td>
                   <td className="py-1 px-1"><input type="number" step="0.01" value={m.costPerUnit} onChange={e => patchMat(i, { costPerUnit: num(e.target.value) })} onBlur={persist} className="w-24 border border-slate-200 rounded px-2 py-1 text-right font-mono" /></td>
                   <td className="py-1 px-1"><input type="number" step="0.01" value={m.chargePerUnit} onChange={e => patchMat(i, { chargePerUnit: num(e.target.value) })} onBlur={persist} className="w-24 border border-slate-200 rounded px-2 py-1 text-right font-mono" /></td>
+                  <td className="py-1 px-1"><input type="number" value={m.coverageSqft ?? ''} placeholder="—" onChange={e => patchMat(i, { coverageSqft: e.target.value === '' ? undefined : num(e.target.value) })} onBlur={persist} className="w-20 border border-slate-200 rounded px-2 py-1 text-right font-mono" /></td>
+                  <td className="py-1 px-1"><input type="number" step="0.5" value={m.coverageDepthInches ?? ''} placeholder="—" onChange={e => patchMat(i, { coverageDepthInches: e.target.value === '' ? undefined : num(e.target.value) })} onBlur={persist} className="w-16 border border-slate-200 rounded px-2 py-1 text-right font-mono" /></td>
                   <td className="py-1 text-center"><input type="checkbox" checked={m.active} onChange={e => commit({ ...r, materials: r.materials.map((x, j) => j === i ? { ...x, active: e.target.checked } : x) })} /></td>
                   <td className="py-1 text-right"><button onClick={() => { if (window.confirm(`Delete material "${m.name}"?`)) commit({ ...r, materials: r.materials.filter((_, j) => j !== i) }); }} title="Delete material" className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button></td>
                 </tr>

@@ -20,7 +20,7 @@ export const DEFAULT_SALES_RATES: SalesRates = {
   ],
   materials: [
     { id: 'mat-sod', name: 'Sod', unit: 'sqft', costPerUnit: 0.43, chargePerUnit: 0.50, active: true },
-    { id: 'mat-soil', name: 'Soil', unit: 'yard', costPerUnit: 35, chargePerUnit: 50, active: true },
+    { id: 'mat-soil', name: 'Soil', unit: 'yard', costPerUnit: 35, chargePerUnit: 50, active: true, coverageSqft: 100, coverageDepthInches: 3 },
     { id: 'mat-disposal', name: 'Disposal', unit: 'load', costPerUnit: 50, chargePerUnit: 100, active: true },
   ],
 };
@@ -38,11 +38,40 @@ export function ratesOrDefault(rates?: SalesRates | null): SalesRates {
 
 export const round2 = (n: number): number => Math.round((Number(n) || 0) * 100) / 100;
 
-export interface MaterialLine { materialId: string; qty: number; }
+export interface MaterialLine {
+  materialId: string; qty: number;
+  // Coverage-calc provenance (optional).
+  coverageNote?: string; area?: number; depthInches?: number;
+}
 export interface MaterialLineDetail {
   materialId: string; name: string; unit: string; qty: number;
   chargePerUnit: number; lineCharge: number;
   costPerUnit: number; lineCost: number;   // cost fields — admin display only
+  coverageNote?: string; area?: number; depthInches?: number;
+}
+
+// Coverage rule: "one <unit> covers coverageSqft at coverageDepthInches"."
+// qty scales linearly with depth: qty = (area × depth) ÷ (coverageSqft ×
+// coverageDepthInches). null when the material has no coverage rule / bad input.
+export function coverageQty(m: Pick<SalesMaterial, 'coverageSqft' | 'coverageDepthInches'>, area: number, depthInches: number): number | null {
+  const cSqft = Number(m.coverageSqft) || 0;
+  const cDepth = Number(m.coverageDepthInches) || 0;
+  const a = Number(area) || 0;
+  const d = Number(depthInches) || 0;
+  if (!(cSqft > 0) || !(cDepth > 0) || !(a > 0) || !(d > 0)) return null;
+  return (a * d) / (cSqft * cDepth);
+}
+// Round UP to the next 0.5 increment (you order 10 yd, not 9.83).
+export function roundUpHalf(n: number): number {
+  return Math.ceil((Number(n) || 0) / 0.5) * 0.5;
+}
+export function hasCoverage(m: Pick<SalesMaterial, 'coverageSqft' | 'coverageDepthInches'> | undefined): boolean {
+  return !!m && (Number(m.coverageSqft) || 0) > 0 && (Number(m.coverageDepthInches) || 0) > 0;
+}
+// Inline working, e.g. `1000 sqft @ 3" → 10 yd`.
+export function coverageWorking(unit: string, area: number, depthInches: number, qty: number): string {
+  const abbr: Record<string, string> = { yard: 'yd', sqft: 'sqft', load: 'load', each: 'each', tonne: 't' };
+  return `${area} sqft @ ${depthInches}" → ${qty} ${abbr[unit] || unit}`;
 }
 
 export interface QuoteBreakdown {
@@ -75,7 +104,7 @@ export function computeQuote(
     const lineCost = round2(qty * (Number(m.costPerUnit) || 0));
     materialsCharged += lineCharge;
     materialsCost += lineCost;
-    details.push({ materialId: m.id, name: m.name, unit: m.unit, qty, chargePerUnit: m.chargePerUnit, lineCharge, costPerUnit: m.costPerUnit, lineCost });
+    details.push({ materialId: m.id, name: m.name, unit: m.unit, qty, chargePerUnit: m.chargePerUnit, lineCharge, costPerUnit: m.costPerUnit, lineCost, coverageNote: ln.coverageNote, area: ln.area, depthInches: ln.depthInches });
   }
   materialsCharged = round2(materialsCharged);
   materialsCost = round2(materialsCost);
@@ -138,29 +167,31 @@ export interface ProfitCol {
   labourCost: number;
   materialCost: number;
   gp: number; margin: number;
+  overhead: number;             // actual hours × overheadPerBH (per column)
   net: number; netMargin: number;
 }
 export interface ProfitTable {
   overheadPerBH: number;
-  overhead: number;             // BH × overheadPerBH (constant)
   hasOverhead: boolean;         // false when overheadPerBH is 0/unset → hide net rows
   cols: ProfitCol[];
 }
 export function computeProfitTable(q: QuoteBreakdown, service: SalesService | undefined, rates: SalesRates): ProfitTable {
   const cost = labourCostFor(service, rates);
   const overheadPerBH = Number(rates.overheadPerBH) || 0;
-  const overhead = round2(q.bh * overheadPerBH);
   const cols: ProfitCol[] = PROFIT_EFFS.map(eff => {
     const hoursPrecise = q.bh / eff;
     const labourCost = round2(hoursPrecise * cost);
     const materialCost = q.materialsCost;
     const gp = round2(q.quoteTotal - (materialCost + labourCost));
     const margin = q.quoteTotal > 0 ? round2((gp / q.quoteTotal) * 100) : 0;
+    // Overhead burns per ACTUAL shop-hour — a slower job consumes more shop
+    // time, so it scales with actual hours (BH ÷ eff), not budgeted BH.
+    const overhead = round2(hoursPrecise * overheadPerBH);
     const net = round2(gp - overhead);
     const netMargin = q.quoteTotal > 0 ? round2((net / q.quoteTotal) * 100) : 0;
-    return { eff, actualHours: round2(hoursPrecise), labourCost, materialCost, gp, margin, net, netMargin };
+    return { eff, actualHours: round2(hoursPrecise), labourCost, materialCost, gp, margin, overhead, net, netMargin };
   });
-  return { overheadPerBH, overhead, hasOverhead: overheadPerBH > 0, cols };
+  return { overheadPerBH, hasOverhead: overheadPerBH > 0, cols };
 }
 
 export const money = (n: number): string => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -174,7 +205,7 @@ export function buildQuoteSnapshot(id: string, name: string, service: SalesServi
     serviceId: service?.id || '',
     serviceName: service?.name || '',
     serviceChargeRate: q.serviceRate,
-    lines: q.lines.map(l => ({ materialId: l.materialId, name: l.name, unit: l.unit, qty: l.qty, chargePerUnit: l.chargePerUnit })),
+    lines: q.lines.map(l => ({ materialId: l.materialId, name: l.name, unit: l.unit, qty: l.qty, chargePerUnit: l.chargePerUnit, coverageNote: l.coverageNote, area: l.area, depthInches: l.depthInches })),
     bh: q.bh,
     materialsCharged: q.materialsCharged,
     labourCharge: q.labourCharge,

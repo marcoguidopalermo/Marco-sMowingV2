@@ -853,7 +853,7 @@ export interface AppSettings {
 
 // ── SalesMaster (v1) — pricing rates sheet. Bounded data (small fixed set),
 // admin-only editing. Actual COST fields are admin-only at the UI layer.
-export type SalesMaterialUnit = 'sqft' | 'yard' | 'load' | 'each';
+export type SalesMaterialUnit = 'sqft' | 'yard' | 'load' | 'each' | 'tonne';
 export interface SalesService {
   id: string;
   name: string;
@@ -869,6 +869,11 @@ export interface SalesMaterial {
   costPerUnit: number;          // internal cost (admin-only)
   chargePerUnit: number;        // client-facing charge
   active: boolean;
+  // Optional coverage rule: "one <unit> covers <coverageSqft> sqft at
+  // <coverageDepthInches> inches." Lets the calculator convert area + depth →
+  // quantity. Absent → plain qty entry (unchanged).
+  coverageSqft?: number;
+  coverageDepthInches?: number;
 }
 export interface SalesRates {
   labourCostPerHrDefault: number;   // internal labour cost when a service has no override
@@ -885,6 +890,8 @@ export interface SalesRates {
 // Own subcollection salesMasterQuotes/{id} — this list GROWS.
 export interface SalesQuoteLine {
   materialId: string; name: string; unit: string; qty: number; chargePerUnit: number;
+  // Coverage-calc provenance (when qty was computed from area + depth).
+  coverageNote?: string; area?: number; depthInches?: number;
 }
 export interface SalesQuote {
   id: string;
