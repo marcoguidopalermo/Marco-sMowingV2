@@ -1,6 +1,6 @@
 // Verify SalesMaster math against the exact worked sod example.
 // Run: npx tsx scripts/verify-salesmaster.ts
-import { DEFAULT_SALES_RATES, computeQuote, computeProfit, bhFromPrice, priceFromBH, round2 } from '../src/lib/salesMaster';
+import { DEFAULT_SALES_RATES, computeQuote, computeProfit, bhFromPrice, priceFromBH, round2, buildQuoteSnapshot } from '../src/lib/salesMaster';
 
 const rates = DEFAULT_SALES_RATES;
 const sodSvc = rates.services.find(s => s.id === 'svc-sod')!;
@@ -41,6 +41,17 @@ ok('  → displayed delta = +$1,000.00 (from quote diff)', round2(qAfter.quoteTo
 // Direction B: set a target BH → price recomputes the other way.
 const priceFor25 = priceFromBH(25, q.materialsCharged, q.serviceRate);
 ok('set target BH 25 → price $4,000 (25×120+1000)', priceFor25 === 4000, priceFor25);
+
+console.log('\n=== saved-quote snapshot immutability (rate change must NOT rewrite it) ===');
+const snap = buildQuoteSnapshot('q1', 'Project - Job #132', sodSvc, q);
+ok('snapshot total = $3,400 · BH 20 · charge-side only (no cost fields)', snap.quoteTotal === 3400 && snap.bh === 20 && !('costPerUnit' in (snap.lines[0] as any)) && !('materialsCost' in (snap as any)), `${snap.quoteTotal}/${snap.bh}`);
+// Mutate the live rates AFTER snapshotting; the snapshot object is a plain
+// record of numbers, so it stays put.
+const mutated = JSON.parse(JSON.stringify(DEFAULT_SALES_RATES));
+mutated.services.find((s: any) => s.id === 'svc-sod').chargeRatePerHr = 200;
+const qNew = computeQuote(mutated.services.find((s: any) => s.id === 'svc-sod'), lines, 20, mutated);
+ok('live recompute changes ($5,000 at $200/hr: 1000 + 20×200) …', qNew.quoteTotal === 5000, qNew.quoteTotal);
+ok('… but the SAVED snapshot is unchanged ($3,400)', snap.quoteTotal === 3400 && snap.serviceChargeRate === 120, `${snap.quoteTotal} @ ${snap.serviceChargeRate}/hr`);
 
 console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

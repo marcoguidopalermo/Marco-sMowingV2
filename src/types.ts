@@ -876,6 +876,31 @@ export interface SalesRates {
   materials: SalesMaterial[];
 }
 
+// A SAVED QUOTE. Stores CHARGE-SIDE snapshot numbers + BH only — never cost
+// fields (the GP panel is computed live, admin-only, never stored, so a
+// manager viewing a saved quote sees no cost data). Rates are snapshotted at
+// save time so a later rate change never silently rewrites an old quote.
+// Own subcollection salesMasterQuotes/{id} — this list GROWS.
+export interface SalesQuoteLine {
+  materialId: string; name: string; unit: string; qty: number; chargePerUnit: number;
+}
+export interface SalesQuote {
+  id: string;
+  name: string;
+  serviceId: string;
+  serviceName: string;          // snapshot
+  serviceChargeRate: number;    // snapshot
+  lines: SalesQuoteLine[];      // charge-side snapshot
+  bh: number;
+  materialsCharged: number;     // snapshot
+  labourCharge: number;         // snapshot
+  quoteTotal: number;           // snapshot
+  createdBy?: { email: string; name: string };
+  createdAt?: number;
+  updatedBy?: { email: string; name: string };
+  updatedAt?: number;
+}
+
 export type BulletinAudienceRole = 'admin' | 'manager' | 'foreman' | 'mechanic' | 'worker';
 
 // TaskMaster — admin-assigned tasks for employees. Distinct from
@@ -1221,6 +1246,7 @@ export interface AppData {
   roleMasterResponsibilities?: Record<string, RoleMasterResponsibility>;
   roleMasterTemplates?: Record<string, RoleMasterTemplate>;
   roleMasterPolicies?: Record<string, RoleMasterPolicy>;
+  salesMasterQuotes?: Record<string, SalesQuote>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of

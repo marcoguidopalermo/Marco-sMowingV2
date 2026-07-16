@@ -2,7 +2,7 @@
 // contact with PerformanceMaster's live BH/pay data. The BH identity mirrors
 // PerformanceMaster's formula (BH = (quote − materials) ÷ serviceRate) for
 // consistency only — this is a pre-job estimator.
-import { SalesRates, SalesService, SalesMaterial } from '../types';
+import { SalesRates, SalesService, SalesMaterial, SalesQuote } from '../types';
 
 // ── SEED (the coded default when settings.salesMaster is absent). Admins add
 // the rest in-app. Real numbers only — no placeholder costs.
@@ -126,20 +126,20 @@ export function computeProfit(q: QuoteBreakdown, service: SalesService | undefin
 
 export const money = (n: number): string => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-// Plain-text quote for copy-to-clipboard (client-facing; NO cost/GP).
-export function quoteText(serviceName: string, q: QuoteBreakdown): string {
-  const bhDisp = round2(q.bh);
-  const lines = q.lines.map(l => `  ${l.name}: ${l.qty} ${l.unit} × ${money(l.chargePerUnit)} = ${money(l.lineCharge)}`);
-  return [
-    `Quote — ${serviceName}`,
-    ``,
-    `Materials:`,
-    ...(lines.length ? lines : ['  (none)']),
-    `  Material subtotal: ${money(q.materialsCharged)}`,
-    ``,
-    `Labour: ${bhDisp} BH × ${money(q.serviceRate)}/hr = ${money(q.labourCharge)}`,
-    ``,
-    `QUOTE TOTAL: ${money(q.quoteTotal)}`,
-    `Budgeted BH: ${bhDisp}`,
-  ].join('\n');
+// Snapshot the current calculator state into a saveable quote. CHARGE-SIDE
+// ONLY — no cost fields (managers never see cost; GP stays live/admin-only).
+// Rates are captured here so a later rate change never rewrites this quote.
+export function buildQuoteSnapshot(id: string, name: string, service: SalesService | undefined, q: QuoteBreakdown): SalesQuote {
+  return {
+    id, name,
+    serviceId: service?.id || '',
+    serviceName: service?.name || '',
+    serviceChargeRate: q.serviceRate,
+    lines: q.lines.map(l => ({ materialId: l.materialId, name: l.name, unit: l.unit, qty: l.qty, chargePerUnit: l.chargePerUnit })),
+    bh: q.bh,
+    materialsCharged: q.materialsCharged,
+    labourCharge: q.labourCharge,
+    quoteTotal: q.quoteTotal,
+  };
 }
+
