@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Calculator, Sliders, Plus, Trash2, DollarSign, TrendingUp, Info, RotateCcw, Save, FilePlus, Search, FolderOpen } from 'lucide-react';
 import { SalesRates, SalesService, SalesMaterial, SalesMaterialUnit, SalesQuote } from '../types';
 import {
-  computeQuote, computeProfit, bhFromPrice, labourCostFor, money, buildQuoteSnapshot, MaterialLine, round2,
+  computeQuote, computeProfitTable, bhFromPrice, labourCostFor, money, buildQuoteSnapshot, MaterialLine, round2,
 } from '../lib/salesMaster';
 
 interface Props {
@@ -34,7 +34,7 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
 
   const service = rates.services.find(s => s.id === serviceId);
   const q = useMemo(() => computeQuote(service, lines, bh, rates), [service, lines, bh, rates]);
-  const profit = useMemo(() => computeProfit(q, service, rates), [q, service, rates]);
+  const profit = useMemo(() => computeProfitTable(q, service, rates), [q, service, rates]);
   // BH is kept full-precision internally; round only for display. The price
   // delta reads from the quote difference so a +$1000 nudge shows exactly.
   const bhDisp = round2(q.bh);
@@ -64,7 +64,7 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
     const name = (window.prompt(asNew ? 'Save as — quote name:' : 'Quote name:', suggested || '') || '').trim();
     if (!name) return;
     const id = (!asNew && loadedQuoteId) ? loadedQuoteId : `quote-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    onSaveQuote(buildQuoteSnapshot(id, name, service, q));
+    onSaveQuote(buildQuoteSnapshot(id, name, service, q, rates));
     setLoadedQuoteId(id); setLoadedQuoteName(name);
   };
   const loadQuote = (sq: SalesQuote) => {
@@ -192,26 +192,31 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
                 <div className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1"><Info className="w-3 h-3" /> Internal pricing workbench — build the client quote in Jobber. Saved quotes store charge-side numbers + BH only.</div>
               </div>
 
-              {/* ADMIN-ONLY PROFIT PANEL */}
+              {/* ADMIN-ONLY PROFIT PANEL — three efficiency scenarios. */}
               {isAdmin && (
                 <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-sm p-4 text-slate-100">
-                  <div className="text-[11px] font-black uppercase tracking-widest text-amber-400 mb-2 flex items-center gap-1.5"><TrendingUp className="w-3.5 h-3.5" /> Profit (admin only)</div>
-                  <div className="space-y-1 text-sm">
-                    <div className="flex justify-between text-slate-300"><span>Material cost</span><span className="font-mono">{money(profit.materialsCost)}</span></div>
-                    <div className="flex justify-between text-slate-300"><span>Labour cost @ budget ({bhDisp} × {money(labourCostFor(service, rates))})</span><span className="font-mono">{money(profit.labourCostBudget)}</span></div>
-                    <div className="flex justify-between text-slate-400 text-[13px]"><span>Labour cost @ 80% eff ({round2(q.bh / 0.8)} × {money(labourCostFor(service, rates))})</span><span className="font-mono">{money(profit.labourCost80)}</span></div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 mt-3">
-                    <div className="bg-slate-800 rounded-lg p-2 text-center">
-                      <div className="text-[10px] uppercase tracking-widest text-slate-400">GP @ 100%</div>
-                      <div className="text-lg font-black text-emerald-400">{money(profit.gpBudget)}</div>
-                      <div className="text-[11px] text-slate-400">{profit.marginBudget}% margin</div>
-                    </div>
-                    <div className="bg-slate-800 rounded-lg p-2 text-center">
-                      <div className="text-[10px] uppercase tracking-widest text-slate-400">GP @ 80%</div>
-                      <div className="text-lg font-black text-amber-400">{money(profit.gp80)}</div>
-                      <div className="text-[11px] text-slate-400">{profit.margin80}% margin</div>
-                    </div>
+                  <div className="text-[11px] font-black uppercase tracking-widest text-amber-400 mb-2 flex items-center gap-1.5"><TrendingUp className="w-3.5 h-3.5" /> Profit (admin only) · labour {money(labourCostFor(service, rates))}/hr{profit.hasOverhead ? ` · overhead ${money(profit.overheadPerBH)}/BH` : ''}</div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[13px] font-mono">
+                      <thead>
+                        <tr className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                          <th className="text-left font-sans py-1">Efficiency</th>
+                          {profit.cols.map(c => <th key={c.eff} className="text-right py-1">{Math.round(c.eff * 100)}%</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr><td className="text-left font-sans text-slate-400 py-0.5">Actual hours</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-300">{c.actualHours}</td>)}</tr>
+                        <tr><td className="text-left font-sans text-slate-400 py-0.5">Labour cost</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-300">{money(c.labourCost)}</td>)}</tr>
+                        <tr><td className="text-left font-sans text-slate-400 py-0.5">Material cost</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-300">{money(c.materialCost)}</td>)}</tr>
+                        <tr className="border-t border-slate-700"><td className="text-left font-sans font-black text-emerald-400 py-1">Gross profit</td>{profit.cols.map(c => <td key={c.eff} className="text-right font-black text-emerald-400">{money(c.gp)}</td>)}</tr>
+                        <tr><td className="text-left font-sans text-slate-400 pb-1 text-[11px]">margin</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-400 text-[11px]">{c.margin.toFixed(1)}%</td>)}</tr>
+                        {profit.hasOverhead && (<>
+                          <tr className="border-t border-slate-700"><td className="text-left font-sans text-slate-400 py-1">Overhead ({bhDisp}×{money(profit.overheadPerBH)})</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-300">{money(profit.overhead)}</td>)}</tr>
+                          <tr><td className="text-left font-sans font-black text-amber-400 py-1">Net after overhead</td>{profit.cols.map(c => <td key={c.eff} className="text-right font-black text-amber-400">{money(c.net)}</td>)}</tr>
+                          <tr><td className="text-left font-sans text-slate-400 text-[11px]">margin</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-400 text-[11px]">{c.netMargin.toFixed(1)}%</td>)}</tr>
+                        </>)}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
@@ -285,11 +290,21 @@ function RatesEditor({ rates, onSave }: { rates: SalesRates; onSave: (r: SalesRa
     <div className="space-y-4">
       <div className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-1.5 inline-flex items-center gap-1.5"><Info className="w-3.5 h-3.5" /> Changes save automatically as you edit.</div>
 
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">Global labour cost / hr (default)</span>
+          <span className="text-[11px] font-black uppercase tracking-widest text-slate-500 w-48">Global labour cost / hr (default)</span>
           <span className="text-slate-400"><DollarSign className="w-4 h-4 inline" /></span>
           <input type="number" value={r.labourCostPerHrDefault} onChange={e => setR(s => ({ ...s, labourCostPerHrDefault: num(e.target.value) }))} onBlur={persist} className="w-24 border border-slate-300 rounded-lg p-1.5 text-sm text-right font-mono" />
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-[11px] font-black uppercase tracking-widest text-slate-500 w-48">Overhead / budgeted BH</span>
+          <span className="text-slate-400"><DollarSign className="w-4 h-4 inline" /></span>
+          <input type="number" value={r.overheadPerBH ?? 0} onChange={e => setR(s => ({ ...s, overheadPerBH: num(e.target.value) }))} onBlur={persist} className="w-24 border border-slate-300 rounded-lg p-1.5 text-sm text-right font-mono" />
+          <span className="text-[10px] text-slate-400">0 = hide the net-after-overhead rows</span>
+        </div>
+        <div>
+          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Overhead note — how it was derived / last reviewed</label>
+          <input value={r.overheadNote || ''} onChange={e => setR(s => ({ ...s, overheadNote: e.target.value }))} onBlur={persist} className="w-full border border-slate-300 rounded-lg p-1.5 text-sm" placeholder="e.g. placeholder — pending QBO-derived calculation" />
         </div>
       </div>
 

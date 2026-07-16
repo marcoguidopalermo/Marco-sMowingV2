@@ -8,6 +8,8 @@ import { SalesRates, SalesService, SalesMaterial, SalesQuote } from '../types';
 // the rest in-app. Real numbers only — no placeholder costs.
 export const DEFAULT_SALES_RATES: SalesRates = {
   labourCostPerHrDefault: 25,
+  overheadPerBH: 30,
+  overheadNote: 'placeholder — pending QBO-derived calculation',
   services: [
     { id: 'svc-stump', name: 'Stump Grinding', chargeRatePerHr: 150, active: true },
     { id: 'svc-mowing', name: 'Mowing', chargeRatePerHr: 100, active: true },
@@ -27,6 +29,8 @@ export function ratesOrDefault(rates?: SalesRates | null): SalesRates {
   if (!rates || !Array.isArray(rates.services) || !Array.isArray(rates.materials)) return DEFAULT_SALES_RATES;
   return {
     labourCostPerHrDefault: Number(rates.labourCostPerHrDefault) || DEFAULT_SALES_RATES.labourCostPerHrDefault,
+    overheadPerBH: rates.overheadPerBH != null ? Number(rates.overheadPerBH) || 0 : DEFAULT_SALES_RATES.overheadPerBH,
+    overheadNote: rates.overheadNote,
     services: rates.services,
     materials: rates.materials,
   };
@@ -124,12 +128,47 @@ export function computeProfit(q: QuoteBreakdown, service: SalesService | undefin
   return { materialsCost: q.materialsCost, labourCostBudget, labourCost80, totalCostBudget, totalCost80, gpBudget, marginBudget, gp80, margin80 };
 }
 
+// Three-scenario profit table (100% / 80% / 60% efficiency). Actual hours =
+// BH ÷ eff; labour cost scales with actual hours; material cost is constant;
+// overhead is per BUDGETED BH (BH × overheadPerBH — constant across columns).
+export const PROFIT_EFFS = [1.0, 0.8, 0.6] as const;
+export interface ProfitCol {
+  eff: number;
+  actualHours: number;
+  labourCost: number;
+  materialCost: number;
+  gp: number; margin: number;
+  net: number; netMargin: number;
+}
+export interface ProfitTable {
+  overheadPerBH: number;
+  overhead: number;             // BH × overheadPerBH (constant)
+  hasOverhead: boolean;         // false when overheadPerBH is 0/unset → hide net rows
+  cols: ProfitCol[];
+}
+export function computeProfitTable(q: QuoteBreakdown, service: SalesService | undefined, rates: SalesRates): ProfitTable {
+  const cost = labourCostFor(service, rates);
+  const overheadPerBH = Number(rates.overheadPerBH) || 0;
+  const overhead = round2(q.bh * overheadPerBH);
+  const cols: ProfitCol[] = PROFIT_EFFS.map(eff => {
+    const hoursPrecise = q.bh / eff;
+    const labourCost = round2(hoursPrecise * cost);
+    const materialCost = q.materialsCost;
+    const gp = round2(q.quoteTotal - (materialCost + labourCost));
+    const margin = q.quoteTotal > 0 ? round2((gp / q.quoteTotal) * 100) : 0;
+    const net = round2(gp - overhead);
+    const netMargin = q.quoteTotal > 0 ? round2((net / q.quoteTotal) * 100) : 0;
+    return { eff, actualHours: round2(hoursPrecise), labourCost, materialCost, gp, margin, net, netMargin };
+  });
+  return { overheadPerBH, overhead, hasOverhead: overheadPerBH > 0, cols };
+}
+
 export const money = (n: number): string => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // Snapshot the current calculator state into a saveable quote. CHARGE-SIDE
 // ONLY — no cost fields (managers never see cost; GP stays live/admin-only).
 // Rates are captured here so a later rate change never rewrites this quote.
-export function buildQuoteSnapshot(id: string, name: string, service: SalesService | undefined, q: QuoteBreakdown): SalesQuote {
+export function buildQuoteSnapshot(id: string, name: string, service: SalesService | undefined, q: QuoteBreakdown, rates: SalesRates): SalesQuote {
   return {
     id, name,
     serviceId: service?.id || '',
@@ -140,6 +179,7 @@ export function buildQuoteSnapshot(id: string, name: string, service: SalesServi
     materialsCharged: q.materialsCharged,
     labourCharge: q.labourCharge,
     quoteTotal: q.quoteTotal,
+    overheadPerBH: Number(rates.overheadPerBH) || 0,
   };
 }
 

@@ -872,6 +872,8 @@ export interface SalesMaterial {
 }
 export interface SalesRates {
   labourCostPerHrDefault: number;   // internal labour cost when a service has no override
+  overheadPerBH?: number;           // internal overhead allocated per BUDGETED BH
+  overheadNote?: string;            // how it was derived / last reviewed
   services: SalesService[];
   materials: SalesMaterial[];
 }
@@ -895,6 +897,7 @@ export interface SalesQuote {
   materialsCharged: number;     // snapshot
   labourCharge: number;         // snapshot
   quoteTotal: number;           // snapshot
+  overheadPerBH?: number;       // snapshot of the overhead rate at save time
   createdBy?: { email: string; name: string };
   createdAt?: number;
   updatedBy?: { email: string; name: string };
