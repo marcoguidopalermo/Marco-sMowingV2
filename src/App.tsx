@@ -23,7 +23,7 @@ import {
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary,
-  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, SalesQuote, RoleTaskInstance
+  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, RoleTaskInstance
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
@@ -202,6 +202,7 @@ export default function App() {
   const subRoleMasterResponsibilitiesRef = useRef<Record<string, RoleMasterResponsibility>>({});
   const subRoleMasterTemplatesRef = useRef<Record<string, RoleMasterTemplate>>({});
   const subRoleMasterPoliciesRef = useRef<Record<string, RoleMasterPolicy>>({});
+  const subRoleMasterPolicyRequestsRef = useRef<Record<string, RoleMasterPolicyRequest>>({});
   const subSalesMasterQuotesRef = useRef<Record<string, SalesQuote>>({});
   const subRoleTaskInstancesRef = useRef<Record<string, RoleTaskInstance>>({});
   const mergePerformance = (
@@ -873,6 +874,7 @@ export default function App() {
           roleMasterResponsibilities: subRoleMasterResponsibilitiesRef.current,
           roleMasterTemplates: subRoleMasterTemplatesRef.current,
           roleMasterPolicies: subRoleMasterPoliciesRef.current,
+          roleMasterPolicyRequests: subRoleMasterPolicyRequestsRef.current,
           salesMasterQuotes: subSalesMasterQuotesRef.current,
           roleTaskInstances: subRoleTaskInstancesRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
@@ -1148,7 +1150,8 @@ export default function App() {
     const u5 = mk('roleMasterTemplates', subRoleMasterTemplatesRef, 'roleMasterTemplates');
     const u6 = mk('roleMasterPolicies', subRoleMasterPoliciesRef, 'roleMasterPolicies');
     const u7 = mk('salesMasterQuotes', subSalesMasterQuotesRef, 'salesMasterQuotes');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); };
+    const u8 = mk('roleMasterPolicyRequests', subRoleMasterPolicyRequestsRef, 'roleMasterPolicyRequests');
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); };
   }, [user]);
 
   useEffect(() => {
@@ -2109,6 +2112,38 @@ export default function App() {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
     await deleteDoc(doc(roleColl('roleMasterPolicies'), id));
     showToastMsg('Policy deleted.');
+  };
+  // Policy change requests — managers + admins create/edit-own-open; admin
+  // resolves. Never deleted (input record). Own subcollection.
+  const reqCreatorId = () => displayEmail.toLowerCase();
+  const saveRoleMasterPolicyRequest = async (id: string, policyId: string, text: string) => {
+    if (!isManager) { showToastMsg(PERMISSION_DENIED); return; }
+    const existing = appData.roleMasterPolicyRequests?.[id];
+    if (existing) {
+      // Edit allowed only by the creator while still OPEN.
+      if (existing.status !== 'open' || (existing.createdBy?.id || '') !== reqCreatorId()) { showToastMsg(PERMISSION_DENIED); return; }
+      await setDoc(doc(roleColl('roleMasterPolicyRequests'), id), cleanRM({ ...existing, text }));
+      showToastMsg('Request updated.');
+      return;
+    }
+    const rec: RoleMasterPolicyRequest = {
+      id, policyId, text,
+      createdBy: { id: reqCreatorId(), name: displayName },
+      createdAt: Date.now(), status: 'open',
+    };
+    await setDoc(doc(roleColl('roleMasterPolicyRequests'), id), cleanRM(rec));
+    showToastMsg('Change request submitted.');
+  };
+  const resolveRoleMasterPolicyRequest = async (id: string, note: string) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    const existing = appData.roleMasterPolicyRequests?.[id];
+    if (!existing) return;
+    await setDoc(doc(roleColl('roleMasterPolicyRequests'), id), cleanRM({
+      ...existing, status: 'resolved',
+      resolvedBy: { id: reqCreatorId(), name: displayName },
+      resolvedAt: Date.now(), resolutionNote: note.trim() || undefined,
+    }));
+    showToastMsg('Request resolved.');
   };
   // SalesMaster rates — bounded, admin-only, stored in the settings doc.
   const saveSalesRates = async (r: import('./types').SalesRates) => {
@@ -4378,10 +4413,12 @@ export default function App() {
           responsibilities={appData.roleMasterResponsibilities || {}}
           templates={appData.roleMasterTemplates || {}}
           policies={appData.roleMasterPolicies || {}}
+          policyRequests={appData.roleMasterPolicyRequests || {}}
           instances={appData.roleTaskInstances || {}}
           employees={appData.employees || []}
           isAdmin={isAdmin}
           isManager={isManager}
+          currentUser={{ id: displayEmail.toLowerCase(), name: displayName }}
           uploadedBy={{ email: displayEmail, name: displayName }}
           masterEnabled={!!appData.settings?.roleMasterGenerationEnabled}
           onSetMasterEnabled={setRoleMasterMaster}
@@ -4392,6 +4429,8 @@ export default function App() {
           onDeleteTemplate={deleteRoleMasterTemplate}
           onSavePolicy={saveRoleMasterPolicy}
           onDeletePolicy={deleteRoleMasterPolicy}
+          onSavePolicyRequest={saveRoleMasterPolicyRequest}
+          onResolvePolicyRequest={resolveRoleMasterPolicyRequest}
           categoryColors={appData.settings?.roleMasterCategoryColors || {}}
           onSetCategoryColor={setRoleCategoryColor}
         />

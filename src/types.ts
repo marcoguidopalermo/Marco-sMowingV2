@@ -1039,6 +1039,21 @@ export interface RoleMasterPolicy {
   active: boolean;
 }
 
+// A change request against a (read-only-to-managers) policy. Managers submit
+// input; admins resolve with a note. Never deleted — it's an input record.
+// Own subcollection roleMasterPolicyRequests/{id} (grows).
+export interface RoleMasterPolicyRequest {
+  id: string;
+  policyId: string;
+  text: string;
+  createdBy: { id: string; name: string };
+  createdAt: number;
+  status: 'open' | 'resolved';
+  resolvedBy?: { id: string; name: string };
+  resolvedAt?: number;
+  resolutionNote?: string;
+}
+
 export interface RoleMasterDuty {
   id: string;
   name: string;
@@ -1256,6 +1271,7 @@ export interface AppData {
   roleMasterResponsibilities?: Record<string, RoleMasterResponsibility>;
   roleMasterTemplates?: Record<string, RoleMasterTemplate>;
   roleMasterPolicies?: Record<string, RoleMasterPolicy>;
+  roleMasterPolicyRequests?: Record<string, RoleMasterPolicyRequest>;
   salesMasterQuotes?: Record<string, SalesQuote>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by

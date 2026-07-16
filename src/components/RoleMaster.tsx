@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { ClipboardList, Plus, Power, ChevronDown, ChevronRight, Pencil, UserCog, History, Layers, Search } from 'lucide-react';
 import {
-  Employee, RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleTaskInstance, RoleRecurrence, RoleInstanceStatus,
+  Employee, RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, RoleTaskInstance, RoleRecurrence, RoleInstanceStatus,
 } from '../types';
 import { categoryColor, CATEGORY_PALETTE } from '../lib/roleCategories';
 import { dutyChip, responsibilityColor } from '../lib/roleResponsibilities';
@@ -25,12 +25,16 @@ interface RoleMasterProps {
   onSaveResponsibility: (r: RoleMasterResponsibility) => void;
   templates: Record<string, RoleMasterTemplate>;
   policies: Record<string, RoleMasterPolicy>;
+  policyRequests: Record<string, RoleMasterPolicyRequest>;
   isManager: boolean;
+  currentUser: { id: string; name: string };
   uploadedBy: { email: string; name: string };
   onSaveTemplate: (t: RoleMasterTemplate) => void;
   onDeleteTemplate: (id: string) => void;
   onSavePolicy: (p: RoleMasterPolicy) => void;
   onDeletePolicy: (id: string) => void;
+  onSavePolicyRequest: (id: string, policyId: string, text: string) => void;
+  onResolvePolicyRequest: (id: string, note: string) => void;
   categoryColors: Record<string, string>;
   onSetCategoryColor: (category: string, colorKey: string) => void;
 }
@@ -64,7 +68,7 @@ const statusChip = (s: RoleInstanceStatus): string => ({
 
 export default function RoleMaster({
   roles, duties, responsibilities, instances, employees, isAdmin, masterEnabled, onSetMasterEnabled, onSaveRole, onSaveDuty, onSaveResponsibility,
-  templates, policies, isManager, uploadedBy, onSaveTemplate, onDeleteTemplate, onSavePolicy, onDeletePolicy,
+  templates, policies, policyRequests, isManager, currentUser, uploadedBy, onSaveTemplate, onDeleteTemplate, onSavePolicy, onDeletePolicy, onSavePolicyRequest, onResolvePolicyRequest,
   categoryColors, onSetCategoryColor,
 }: RoleMasterProps) {
   const [tab, setTab] = useState<'directory' | 'responsibilities' | 'duties' | 'library' | 'manage' | 'history'>('directory');
@@ -336,11 +340,12 @@ export default function RoleMaster({
 
         {tab === 'library' && (
           <RoleLibrary
-            templates={templates} policies={policies}
-            isAdmin={isAdmin} isManager={isManager} uploadedBy={uploadedBy}
+            templates={templates} policies={policies} policyRequests={policyRequests}
+            isAdmin={isAdmin} isManager={isManager} currentUser={currentUser} uploadedBy={uploadedBy}
             categoryColors={categoryColors}
             onSaveTemplate={onSaveTemplate} onDeleteTemplate={onDeleteTemplate}
             onSavePolicy={onSavePolicy} onDeletePolicy={onDeletePolicy}
+            onSavePolicyRequest={onSavePolicyRequest} onResolvePolicyRequest={onResolvePolicyRequest}
           />
         )}
 

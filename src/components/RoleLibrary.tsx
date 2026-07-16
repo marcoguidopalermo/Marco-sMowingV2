@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
-import { Search, Plus, Pencil, Trash2, Copy, Check, X, FileText, ExternalLink, Loader2, ClipboardList, FileUp, ArchiveRestore } from 'lucide-react';
-import { RoleMasterTemplate, RoleMasterPolicy, StoredFile } from '../types';
+import { Search, Plus, Pencil, Trash2, Copy, Check, X, FileText, ExternalLink, Loader2, ClipboardList, FileUp, ArchiveRestore, MessageSquarePlus, CheckCircle2 } from 'lucide-react';
+import { RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, StoredFile } from '../types';
 import { categoryColor } from '../lib/roleCategories';
 import { uploadFile, deleteFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
@@ -28,17 +28,23 @@ async function copyToClipboard(text: string): Promise<boolean> {
 interface Props {
   templates: Record<string, RoleMasterTemplate>;
   policies: Record<string, RoleMasterPolicy>;
+  policyRequests: Record<string, RoleMasterPolicyRequest>;
   isAdmin: boolean;
-  isManager: boolean;                 // admin OR manager — can edit templates
+  isManager: boolean;                 // admin OR manager — can edit templates + request changes
+  currentUser: { id: string; name: string };
   uploadedBy: { email: string; name: string };
   categoryColors: Record<string, string>;
   onSaveTemplate: (t: RoleMasterTemplate) => void;
   onDeleteTemplate: (id: string) => void;
   onSavePolicy: (p: RoleMasterPolicy) => void;
   onDeletePolicy: (id: string) => void;
+  onSavePolicyRequest: (id: string, policyId: string, text: string) => void;
+  onResolvePolicyRequest: (id: string, note: string) => void;
 }
 
 const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+const fmtWhen = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+const Badge = ({ n }: { n: number }) => n > 0 ? <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-black">{n}</span> : null;
 
 // "Updated Jul 15, 2026 · Marco" from the latest save stamp. Null when there's
 // no updatedAt (no createdAt field exists to fall back to → omit the line).
@@ -49,11 +55,20 @@ function updatedLine(r: { updatedAt?: number; updatedBy?: { name: string } }): s
 }
 
 export default function RoleLibrary({
-  templates, policies, isAdmin, isManager, uploadedBy, categoryColors,
-  onSaveTemplate, onDeleteTemplate, onSavePolicy, onDeletePolicy,
+  templates, policies, policyRequests, isAdmin, isManager, currentUser, uploadedBy, categoryColors,
+  onSaveTemplate, onDeleteTemplate, onSavePolicy, onDeletePolicy, onSavePolicyRequest, onResolvePolicyRequest,
 }: Props) {
   const [section, setSection] = useState<'templates' | 'policies'>('templates');
+  const [detailPolicyId, setDetailPolicyId] = useState<string | null>(null);
   const canEditTemplates = isManager;   // admin OR manager
+
+  // Open-request counts: per policy + total. Visible to admins + managers.
+  const openReqByPolicy = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const r of Object.values(policyRequests)) if (r.status === 'open') m[r.policyId] = (m[r.policyId] || 0) + 1;
+    return m;
+  }, [policyRequests]);
+  const totalOpenReq = useMemo(() => Object.values(openReqByPolicy).reduce((s, n) => s + n, 0), [openReqByPolicy]);
   const canManagePolicies = isAdmin;
 
   const [tQuery, setTQuery] = useState('');
@@ -93,7 +108,7 @@ export default function RoleLibrary({
     <div className="space-y-3">
       <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm w-fit">
         <button onClick={() => setSection('templates')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${section === 'templates' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Templates</button>
-        <button onClick={() => setSection('policies')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${section === 'policies' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Policies &amp; Documents</button>
+        <button onClick={() => setSection('policies')} className={`px-3 py-1.5 text-sm font-bold rounded-md inline-flex items-center gap-1.5 ${section === 'policies' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Policies &amp; Documents {isManager && <Badge n={totalOpenReq} />}</button>
       </div>
 
       {section === 'templates' && (
@@ -158,16 +173,17 @@ export default function RoleLibrary({
                 const cc = p.category ? categoryColor(p.category, categoryColors) : null;
                 return (
                   <div key={p.id} className={`bg-white rounded-xl border shadow-sm p-3 flex items-center justify-between gap-3 ${p.active ? 'border-slate-200' : 'border-slate-200 opacity-60'}`}>
-                    <div className="min-w-0 flex-1">
+                    <button onClick={() => setDetailPolicyId(p.id)} className="min-w-0 flex-1 text-left">
                       <div className="flex items-center gap-2 flex-wrap">
                         {p.file ? <FileText className="w-4 h-4 text-slate-400 shrink-0" /> : <ExternalLink className="w-4 h-4 text-slate-400 shrink-0" />}
                         <span className="font-bold text-slate-800 truncate">{p.title}</span>
                         {cc && <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${cc.chip}`}>{p.category}</span>}
                         {!p.active && <span className="text-[9px] font-black uppercase bg-slate-200 text-slate-500 px-1 rounded">Inactive</span>}
+                        {isManager && <Badge n={openReqByPolicy[p.id] || 0} />}
                       </div>
                       {p.description && <div className="text-[12px] text-slate-500 mt-0.5">{p.description}</div>}
                       {updatedLine(p) && <div className="text-[10px] text-slate-400 mt-0.5">{updatedLine(p)}</div>}
-                    </div>
+                    </button>
                     <div className="flex items-center gap-2 shrink-0">
                       {p.file ? (
                         <button onClick={() => setViewer({ files: [p.file as StoredFile], idx: 0 })} className="text-[11px] font-black uppercase tracking-widest bg-slate-900 text-white px-3 py-1.5 rounded-lg inline-flex items-center gap-1"><FileText className="w-3.5 h-3.5" /> View</button>
@@ -197,6 +213,19 @@ export default function RoleLibrary({
       )}
       {editTemplate && <TemplateEditor template={editTemplate} onClose={() => setEditTemplate(null)} onSave={(t) => { onSaveTemplate(t); setEditTemplate(null); }} />}
       {editPolicy && <PolicyEditor policy={editPolicy} uploadedBy={uploadedBy} onClose={() => setEditPolicy(null)} onSave={(p) => { onSavePolicy(p); setEditPolicy(null); }} onDelete={isAdmin ? () => { if (confirm(`Delete "${editPolicy.title}"?`)) { onDeletePolicy(editPolicy.id); setEditPolicy(null); } } : undefined} />}
+      {detailPolicyId && policies[detailPolicyId] && (
+        <PolicyDetail
+          policy={policies[detailPolicyId]}
+          requests={Object.values(policyRequests).filter(r => r.policyId === detailPolicyId)}
+          categoryColors={categoryColors}
+          isAdmin={isAdmin} isManager={isManager} currentUser={currentUser}
+          onView={(f) => setViewer({ files: [f], idx: 0 })}
+          onSubmitRequest={(text) => onSavePolicyRequest(uid('req'), detailPolicyId, text)}
+          onEditRequest={(id, text) => onSavePolicyRequest(id, detailPolicyId, text)}
+          onResolve={onResolvePolicyRequest}
+          onClose={() => setDetailPolicyId(null)}
+        />
+      )}
       {viewer && <PhotoViewer files={viewer.files} startIndex={viewer.idx} onClose={() => setViewer(null)} />}
     </div>
   );
@@ -325,6 +354,105 @@ function PolicyEditor({ policy, uploadedBy, onClose, onSave, onDelete }: { polic
           <button onClick={onClose} className="px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-100 rounded-lg">Cancel</button>
           <button onClick={() => onSave({ ...p, link: mode === 'link' ? p.link : undefined, file: mode === 'file' ? p.file : undefined })} disabled={!valid || busy} className="px-5 py-2 text-sm font-black uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg disabled:bg-slate-300">Save</button>
         </div>
+      </div>
+    </LibModal>
+  );
+}
+
+// ── Policy detail — view/download + change requests ───────────────────────
+function PolicyDetail({ policy, requests, categoryColors, isAdmin, isManager, currentUser, onView, onSubmitRequest, onEditRequest, onResolve, onClose }: {
+  policy: RoleMasterPolicy; requests: RoleMasterPolicyRequest[]; categoryColors: Record<string, string>;
+  isAdmin: boolean; isManager: boolean; currentUser: { id: string; name: string };
+  onView: (f: StoredFile) => void;
+  onSubmitRequest: (text: string) => void; onEditRequest: (id: string, text: string) => void; onResolve: (id: string, note: string) => void;
+  onClose: () => void;
+}) {
+  const cc = policy.category ? categoryColor(policy.category, categoryColors) : null;
+  const [showForm, setShowForm] = useState(false);
+  const [text, setText] = useState('');
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+  const [resolveId, setResolveId] = useState<string | null>(null);
+  const [resolveNote, setResolveNote] = useState('');
+  const open = requests.filter(r => r.status === 'open').sort((a, b) => b.createdAt - a.createdAt);
+  const resolved = requests.filter(r => r.status === 'resolved').sort((a, b) => (b.resolvedAt || 0) - (a.resolvedAt || 0));
+
+  return (
+    <LibModal title={policy.title} onClose={onClose}>
+      <div className="flex items-center gap-2 flex-wrap mb-2">
+        {cc && <span className={`text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${cc.chip}`}>{policy.category}</span>}
+        {!policy.active && <span className="text-[9px] font-black uppercase bg-slate-200 text-slate-500 px-1 rounded">Inactive</span>}
+      </div>
+      {policy.description && <div className="text-sm text-slate-600 mb-2">{policy.description}</div>}
+      {policy.file ? (
+        <button onClick={() => onView(policy.file as StoredFile)} className="min-h-[40px] inline-flex items-center gap-1.5 px-3 rounded-xl bg-slate-900 text-white text-xs font-black uppercase tracking-widest"><FileText className="w-4 h-4" /> View / download</button>
+      ) : policy.link ? (
+        <a href={policy.link} target="_blank" rel="noopener noreferrer" className="min-h-[40px] inline-flex items-center gap-1.5 px-3 rounded-xl bg-slate-900 text-white text-xs font-black uppercase tracking-widest"><ExternalLink className="w-4 h-4" /> Open link</a>
+      ) : null}
+      {updatedLine(policy) && <div className="text-[10px] text-slate-400 mt-1.5">{updatedLine(policy)}</div>}
+
+      {/* CHANGE REQUESTS */}
+      <div className="mt-4 border-t border-slate-100 pt-3">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 inline-flex items-center gap-1.5">Change requests {open.length > 0 && <Badge n={open.length} />}</div>
+          {isManager && !showForm && <button onClick={() => { setShowForm(true); setText(''); }} className="text-[11px] font-bold text-emerald-700 inline-flex items-center gap-1"><MessageSquarePlus className="w-3.5 h-3.5" /> Request a change</button>}
+        </div>
+        {showForm && (
+          <div className="mb-3 space-y-2">
+            <textarea value={text} onChange={e => setText(e.target.value)} rows={3} placeholder="Describe the change you'd like…" className="w-full border border-slate-300 rounded-lg p-2 text-sm outline-none" />
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowForm(false)} className="px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-lg">Cancel</button>
+              <button onClick={() => { if (text.trim()) { onSubmitRequest(text.trim()); setShowForm(false); setText(''); } }} disabled={!text.trim()} className="px-4 py-1.5 text-xs font-black uppercase tracking-widest bg-emerald-600 text-white rounded-lg disabled:bg-slate-300">Submit</button>
+            </div>
+          </div>
+        )}
+
+        {open.length === 0 && !showForm && <div className="text-xs text-slate-400 italic">No open requests.</div>}
+        <div className="space-y-2">
+          {open.map(r => (
+            <div key={r.id} className="border border-slate-200 rounded-lg p-2 bg-white">
+              {editId === r.id ? (
+                <div className="space-y-2">
+                  <textarea value={editText} onChange={e => setEditText(e.target.value)} rows={3} className="w-full border border-slate-300 rounded-lg p-2 text-sm outline-none" />
+                  <div className="flex gap-2 justify-end">
+                    <button onClick={() => setEditId(null)} className="px-3 py-1 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-lg">Cancel</button>
+                    <button onClick={() => { if (editText.trim()) { onEditRequest(r.id, editText.trim()); setEditId(null); } }} disabled={!editText.trim()} className="px-3 py-1 text-xs font-black uppercase tracking-widest bg-emerald-600 text-white rounded-lg disabled:bg-slate-300">Save</button>
+                  </div>
+                </div>
+              ) : (<>
+                <div className="text-sm text-slate-700 whitespace-pre-wrap">{r.text}</div>
+                <div className="text-[10px] text-slate-400 mt-1">{r.createdBy?.name} · {fmtWhen(r.createdAt)} · <span className="font-bold text-amber-600 uppercase">Open</span></div>
+                <div className="flex gap-2 mt-1.5 flex-wrap">
+                  {r.createdBy?.id === currentUser.id && <button onClick={() => { setEditId(r.id); setEditText(r.text); }} className="text-[11px] font-bold text-slate-500 hover:text-slate-800 inline-flex items-center gap-1"><Pencil className="w-3 h-3" /> Edit</button>}
+                  {isAdmin && (resolveId === r.id ? (
+                    <div className="flex items-center gap-1.5 flex-1 min-w-[200px]">
+                      <input value={resolveNote} onChange={e => setResolveNote(e.target.value)} placeholder="Resolution note (optional)" className="flex-1 border border-slate-300 rounded px-2 py-1 text-xs" />
+                      <button onClick={() => { onResolve(r.id, resolveNote); setResolveId(null); setResolveNote(''); }} className="text-[11px] font-black uppercase tracking-widest bg-emerald-600 text-white px-2 py-1 rounded">Resolve</button>
+                      <button onClick={() => { setResolveId(null); setResolveNote(''); }} className="text-slate-400"><X className="w-4 h-4" /></button>
+                    </div>
+                  ) : (
+                    <button onClick={() => { setResolveId(r.id); setResolveNote(''); }} className="text-[11px] font-bold text-emerald-700 hover:text-emerald-900 inline-flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Mark resolved</button>
+                  ))}
+                </div>
+              </>)}
+            </div>
+          ))}
+        </div>
+
+        {resolved.length > 0 && (
+          <details className="mt-3">
+            <summary className="text-[11px] font-black uppercase tracking-widest text-slate-400 cursor-pointer">Resolved ({resolved.length})</summary>
+            <div className="space-y-2 mt-2">
+              {resolved.map(r => (
+                <div key={r.id} className="border border-slate-100 rounded-lg p-2 bg-slate-50/60 opacity-80">
+                  <div className="text-[13px] text-slate-600 whitespace-pre-wrap">{r.text}</div>
+                  <div className="text-[10px] text-slate-400 mt-1">{r.createdBy?.name} · {fmtWhen(r.createdAt)}</div>
+                  <div className="text-[10px] text-emerald-700 mt-0.5 font-medium">✓ Resolved by {r.resolvedBy?.name || '—'} · {fmtWhen(r.resolvedAt)}{r.resolutionNote ? ` — “${r.resolutionNote}”` : ''}</div>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
       </div>
     </LibModal>
   );
