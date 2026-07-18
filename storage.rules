@@ -56,6 +56,15 @@ service firebase.storage {
       allow delete: if signedIn();
     }
 
+    // ContractingMaster (Palermo's) — receipt/material photos and work-order
+    // photos. Namespaced under contracting/ (e.g. contracting/{projectId}/...
+    // and contracting/wo-{workOrderId}/...). Own tenant, same auth gate.
+    match /contracting/{scope}/{fileName} {
+      allow read: if signedIn();
+      allow write: if signedIn() && validUpload();
+      allow delete: if signedIn();
+    }
+
     // Everything else: locked down.
     match /{allPaths=**} {
       allow read, write: if false;

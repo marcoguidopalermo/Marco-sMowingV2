@@ -2572,7 +2572,7 @@ export default function PerformanceBoard({
                             e.target.value = "";
                           }} defaultValue="" className="w-full text-xs font-bold text-green-600 border border-dashed border-green-300 rounded p-2 hover:bg-green-50 outline-none cursor-pointer text-center appearance-none disabled:opacity-40 disabled:cursor-not-allowed">
                             <option value="" disabled>+ Add Unscheduled Employee</option>
-                            {employees.filter(e => !log.employeeAH.hasOwnProperty(e.id)).map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                            {employees.filter(e => e.systemRole !== 'contractor' && !log.employeeAH.hasOwnProperty(e.id)).map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
                           </select>
                         </div>
                       </div>

@@ -23,7 +23,8 @@ import {
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary,
-  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, RoleTaskInstance
+  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, RoleTaskInstance,
+  ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingRateCard
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
@@ -61,6 +62,8 @@ import CreateTaskModal, { type CreateTaskSubmit } from './components/CreateTaskM
 import TaskDetailModal from './components/TaskDetailModal';
 import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
+import ContractingMaster from './components/ContractingMaster';
+import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES } from './lib/contracting';
 import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
 import RequestTimeOffModal, { type RequestTimeOffSubmit } from './components/RequestTimeOffModal';
@@ -205,6 +208,13 @@ export default function App() {
   const subRoleMasterPolicyRequestsRef = useRef<Record<string, RoleMasterPolicyRequest>>({});
   const subSalesMasterQuotesRef = useRef<Record<string, SalesQuote>>({});
   const subRoleTaskInstancesRef = useRef<Record<string, RoleTaskInstance>>({});
+  // ContractingMaster (Palermo's) — namespaced subcollections, own tenant.
+  const subContractingProjectsRef = useRef<Record<string, ContractingProject>>({});
+  const subContractingTimeEntriesRef = useRef<Record<string, ContractingTimeEntry>>({});
+  const subContractingProgressReportsRef = useRef<Record<string, ContractingProgressReport>>({});
+  const subContractingInvoicesRef = useRef<Record<string, ContractingInvoice>>({});
+  const subContractingWorkOrdersRef = useRef<Record<string, ContractingWorkOrder>>({});
+  const subContractingShoppingListRef = useRef<Record<string, ContractingShoppingItem>>({});
   const mergePerformance = (
     docPerf: Record<string, Record<string, PerformanceLog>>,
     monthOverlay: Record<string, Record<string, PerformanceLog>>,
@@ -444,6 +454,9 @@ export default function App() {
   const isAdmin = effectiveRole === 'admin';
   const isManager = effectiveRole === 'admin' || effectiveRole === 'manager';
   const isRealAdmin = realCurrentUserRole === 'admin';
+  // ContractingMaster (Palermo's) — full-manage is admin OR the contracting
+  // manager flag (Tony). Regular contractors (Kris) only view + clock + WO/shop.
+  const canManageContracting = isAdmin || !!currentUserEmployee?.contractingManager;
 
   // Real CrewMaster employees an admin can impersonate — sourced from
   // appData.employees (the actual personnel roster), NOT Jobber users.
@@ -877,6 +890,13 @@ export default function App() {
           roleMasterPolicyRequests: subRoleMasterPolicyRequestsRef.current,
           salesMasterQuotes: subSalesMasterQuotesRef.current,
           roleTaskInstances: subRoleTaskInstancesRef.current,
+          // ContractingMaster — overlaid from namespaced subcollections.
+          contractingProjects: subContractingProjectsRef.current,
+          contractingTimeEntries: subContractingTimeEntriesRef.current,
+          contractingProgressReports: subContractingProgressReportsRef.current,
+          contractingInvoices: subContractingInvoicesRef.current,
+          contractingWorkOrders: subContractingWorkOrdersRef.current,
+          contractingShoppingList: subContractingShoppingListRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -1151,7 +1171,14 @@ export default function App() {
     const u6 = mk('roleMasterPolicies', subRoleMasterPoliciesRef, 'roleMasterPolicies');
     const u7 = mk('salesMasterQuotes', subSalesMasterQuotesRef, 'salesMasterQuotes');
     const u8 = mk('roleMasterPolicyRequests', subRoleMasterPolicyRequestsRef, 'roleMasterPolicyRequests');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); };
+    // ContractingMaster (Palermo's) — namespaced subcollections.
+    const c1 = mk('contractingProjects', subContractingProjectsRef, 'contractingProjects');
+    const c2 = mk('contractingTimeEntries', subContractingTimeEntriesRef, 'contractingTimeEntries');
+    const c3 = mk('contractingProgressReports', subContractingProgressReportsRef, 'contractingProgressReports');
+    const c4 = mk('contractingInvoices', subContractingInvoicesRef, 'contractingInvoices');
+    const c5 = mk('contractingWorkOrders', subContractingWorkOrdersRef, 'contractingWorkOrders');
+    const c6 = mk('contractingShoppingList', subContractingShoppingListRef, 'contractingShoppingList');
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); c1(); c2(); c3(); c4(); c5(); c6(); };
   }, [user]);
 
   useEffect(() => {
@@ -2179,6 +2206,95 @@ export default function App() {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
     await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), roleMasterGenerationEnabled: enabled } });
     showToastMsg(enabled ? 'Duty generation ON.' : 'Duty generation OFF.');
+  };
+
+  // ── ContractingMaster (Palermo's) handlers ─────────────────────────────
+  // A separate tenant: writes ONLY to contracting-namespaced subcollections,
+  // never appData performance/BH/bonus/pay. Manage actions require
+  // canManageContracting (admin or Tony); clocking + work orders + shopping
+  // are open to any contractor.
+  const contractingUser = { id: currentUserEmployee?.id || displayEmail, name: displayName };
+  const contractingRates: ContractingRateCard = contractingRatesOrDefault(appData.settings?.contractingRates);
+  const saveContractingRates = async (r: ContractingRateCard) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingRates: r } });
+    showToastMsg('Rate card saved.');
+  };
+  const saveContractingProject = async (p: ContractingProject) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    await setDoc(doc(roleColl('contractingProjects'), p.id), cleanRM(p));
+  };
+  const saveContractingTimeEntry = async (t: ContractingTimeEntry) => {
+    // Any contractor may clock; managers may add/edit. Guard: contractors can
+    // only write their own entries.
+    if (!canManageContracting && t.contractorId !== contractingUser.id) { showToastMsg(PERMISSION_DENIED); return; }
+    await setDoc(doc(roleColl('contractingTimeEntries'), t.id), cleanRM(t));
+  };
+  const saveContractingReport = async (r: ContractingProgressReport) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    await setDoc(doc(roleColl('contractingProgressReports'), r.id), cleanRM(r));
+  };
+  // Open the first/next billing period for a T&M phase. Start at the previous
+  // report's endAt, else the phase's tmStartAt, else now — no gaps/overlaps.
+  const openContractingReport = async (projectId: string, phaseId: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const all = Object.values(subContractingProgressReportsRef.current);
+    if (all.some(r => r.projectId === projectId && r.phaseId === phaseId && r.status === 'open')) { showToastMsg('A billing period is already open.'); return; }
+    const prior = all.filter(r => r.projectId === projectId && r.phaseId === phaseId);
+    const lastEnd = prior.reduce((m, r) => Math.max(m, r.endAt || 0), 0);
+    const phase = subContractingProjectsRef.current[projectId]?.phases.find(ph => ph.id === phaseId);
+    const startAt = lastEnd || phase?.tmStartAt || Date.now();
+    const reportNumber = prior.reduce((m, r) => Math.max(m, r.reportNumber), 0) + 1;
+    const rep: ContractingProgressReport = { id: `crep-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, projectId, phaseId, startAt, status: 'open', reportNumber, receipts: [], manualTime: [], createdAt: Date.now(), updatedAt: Date.now() };
+    await setDoc(doc(roleColl('contractingProgressReports'), rep.id), cleanRM(rep));
+    showToastMsg('Billing period opened.');
+  };
+  // End an open report: snapshot the lines, mint the sequential PROG invoice,
+  // mark attached time invoiced, then auto-open the next period. All within
+  // the contracting namespace.
+  const endContractingReport = async (reportId: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const report = subContractingProgressReportsRef.current[reportId];
+    if (!report || report.status !== 'open') { showToastMsg('Report not open.'); return; }
+    const now = Date.now();
+    const ended: ContractingProgressReport = { ...report, endAt: now };
+    const labour = labourForReport(ended, Object.values(subContractingTimeEntriesRef.current), now);
+    const snapshot = computeReportTotals(labour, report.receipts, contractingRates);
+    // Which clock entries got billed → mark invoiced (freeze).
+    const billedEntries = Object.values(subContractingTimeEntriesRef.current).filter(te =>
+      !te.manual && te.phaseId === report.phaseId && te.status === 'open' && te.clockIn >= report.startAt && te.clockIn < now && te.clockOut);
+    const number = nextProgNumber(Object.values(subContractingInvoicesRef.current));
+    const project = subContractingProjectsRef.current[report.projectId];
+    const phase = project?.phases.find(ph => ph.id === report.phaseId);
+    const invoice: ContractingInvoice = {
+      id: `cinv-${now}-${Math.random().toString(36).slice(2, 6)}`, number, projectId: report.projectId, phaseId: report.phaseId, kind: 'tm',
+      periodStart: report.startAt, periodEnd: now, amountPreHst: snapshot.subtotalPreHst, hst: snapshot.hst, total: snapshot.total,
+      reportId: report.id, scopeDescription: phase ? `${phase.name} — labour and materials, ${new Date(report.startAt).toLocaleDateString('en-CA')} to ${new Date(now).toLocaleDateString('en-CA')}.` : undefined,
+      issuedAt: now, dueAt: now + 14 * 86400000, paid: false, createdBy: contractingUser, createdAt: now,
+    };
+    // Persist: frozen report, invoice, time entries invoiced, next open period.
+    await setDoc(doc(roleColl('contractingProgressReports'), report.id), cleanRM({ ...ended, status: 'invoiced', snapshot, updatedAt: now }));
+    await setDoc(doc(roleColl('contractingInvoices'), invoice.id), cleanRM(invoice));
+    for (const te of billedEntries) await setDoc(doc(roleColl('contractingTimeEntries'), te.id), cleanRM({ ...te, status: 'invoiced', reportId: report.id }));
+    const nextNo = report.reportNumber + 1;
+    const next: ContractingProgressReport = { id: `crep-${now}-${Math.random().toString(36).slice(2, 6)}`, projectId: report.projectId, phaseId: report.phaseId, startAt: now, status: 'open', reportNumber: nextNo, receipts: [], manualTime: [], createdAt: now, updatedAt: now };
+    await setDoc(doc(roleColl('contractingProgressReports'), next.id), cleanRM(next));
+    showToastMsg(`Invoice ${number} minted · ${next ? 'next period open' : ''}`);
+  };
+  const saveContractingInvoice = async (inv: ContractingInvoice) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    await setDoc(doc(roleColl('contractingInvoices'), inv.id), cleanRM(inv));
+  };
+  const deleteContractingInvoice = async (id: string) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    await deleteDoc(doc(roleColl('contractingInvoices'), id));
+    showToastMsg('Invoice deleted.');
+  };
+  const saveContractingWorkOrder = async (w: ContractingWorkOrder) => {
+    await setDoc(doc(roleColl('contractingWorkOrders'), w.id), cleanRM(w));
+  };
+  const saveContractingShoppingItem = async (s: ContractingShoppingItem) => {
+    await setDoc(doc(roleColl('contractingShoppingList'), s.id), cleanRM(s));
   };
   const [roleInstanceModalId, setRoleInstanceModalId] = useState<string | null>(null);
   const resolveInstance = async (id: string, patch: Partial<RoleTaskInstance>) => {
@@ -3926,6 +4042,11 @@ export default function App() {
                 <Calculator className="w-4 h-4" /> SalesMaster
               </button>
             )}
+            {canAccessView('contracting', effectiveRole) && (
+              <button onClick={() => setCurrentView('contracting')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'contracting' ? 'shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`} style={currentView === 'contracting' ? { backgroundColor: '#2E4053', color: '#B7950B' } : undefined}>
+                <Hammer className="w-4 h-4" /> Palermo's
+              </button>
+            )}
             {canAccessView('schedule', effectiveRole) && canEditSchedule && (
               <button
                 onClick={() => {
@@ -4443,6 +4564,31 @@ export default function App() {
           onSaveRates={saveSalesRates}
           onSaveQuote={saveSalesQuote}
           onDeleteQuote={deleteSalesQuote}
+        />
+      ) : currentView === 'contracting' ? (
+        <ContractingMaster
+          projects={appData.contractingProjects || {}}
+          timeEntries={appData.contractingTimeEntries || {}}
+          reports={appData.contractingProgressReports || {}}
+          invoices={appData.contractingInvoices || {}}
+          workOrders={appData.contractingWorkOrders || {}}
+          shoppingList={appData.contractingShoppingList || {}}
+          employees={appData.employees || []}
+          rates={contractingRates}
+          currentUser={contractingUser}
+          isAdmin={isAdmin}
+          canManage={canManageContracting}
+          uploadedBy={{ email: displayEmail, name: displayName }}
+          onSaveRates={saveContractingRates}
+          onSaveProject={saveContractingProject}
+          onSaveTimeEntry={saveContractingTimeEntry}
+          onOpenReport={openContractingReport}
+          onEndReport={endContractingReport}
+          onSaveReport={saveContractingReport}
+          onSaveInvoice={saveContractingInvoice}
+          onDeleteInvoice={deleteContractingInvoice}
+          onSaveWorkOrder={saveContractingWorkOrder}
+          onSaveShoppingItem={saveContractingShoppingItem}
         />
       ) : (
         <ScheduleBoard

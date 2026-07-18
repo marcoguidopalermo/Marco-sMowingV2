@@ -486,6 +486,9 @@ export default function ScheduleBoard({
     type EmpOpt = { emp: Employee; avail: ReturnType<typeof getResourceAvailability> };
     type FleetOpt = { f: FleetItem; avail: ReturnType<typeof getResourceAvailability> };
     const empOptions: EmpOpt[] = appData.employees
+      // Palermo's contractors are a separate tenant — never assignable to
+      // Marco's crews (keeps them out of all performance/BH/bonus/pay).
+      .filter(e => e.systemRole !== 'contractor')
       .filter(e => !crew.employees.includes(e.id))
       .map(e => ({ emp: e, avail: getResourceAvailability(e.id, 'employee', dateString, appData) }))
       .sort((a, b) => Number(a.avail.status !== 'available') - Number(b.avail.status !== 'available'));

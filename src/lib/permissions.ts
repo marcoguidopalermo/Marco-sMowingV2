@@ -64,6 +64,8 @@ export const ROLE_PERMISSIONS = {
     canViewSalesMaster: true,
     canApproveTimeOff: true,
     canViewDashboard: true,
+    canViewContracting: true,
+    canManageContracting: true,
   },
   manager: {
     canViewSchedule: true,
@@ -130,6 +132,8 @@ export const ROLE_PERMISSIONS = {
     canViewSalesMaster: true,
     canApproveTimeOff: false,
     canViewDashboard: true,
+    canViewContracting: false,
+    canManageContracting: false,
   },
   foreman: {
     canViewSchedule: true,
@@ -194,6 +198,8 @@ export const ROLE_PERMISSIONS = {
     canViewSalesMaster: false,
     canApproveTimeOff: false,
     canViewDashboard: false,
+    canViewContracting: false,
+    canManageContracting: false,
   },
   worker: {
     canViewSchedule: true,
@@ -258,6 +264,8 @@ export const ROLE_PERMISSIONS = {
     canViewSalesMaster: false,
     canApproveTimeOff: false,
     canViewDashboard: false,
+    canViewContracting: false,
+    canManageContracting: false,
   },
   mechanic: {
     canViewSchedule: false,
@@ -324,6 +332,74 @@ export const ROLE_PERMISSIONS = {
     canViewSalesMaster: false,
     canApproveTimeOff: false,
     canViewDashboard: false,
+    canViewContracting: false,
+    canManageContracting: false,
+  },
+  contractor: {
+    canViewSchedule: false,
+    canCreateCrews: false,
+    canEditAnyCrew: false,
+    canEditOwnCrew: false,
+    canDispatchAnyCrew: false,
+    canDispatchOwnCrew: false,
+    canDeleteCrews: false,
+    canOverrideWarnings: false,
+    canCopyDay: false,
+    canCloseOutCrew: false,
+    canCloseOutOwnCrew: false,
+    canViewMechanicMaster: false,
+    canCreateRepairs: false,
+    canEditRepairs: false,
+    canCompleteRepairs: false,
+    canDeleteRepairs: false,
+    canDeleteMechanicTask: false,
+    canDeleteRepairLog: false,
+    canDeleteInspectionLog: false,
+    canAddTaskNotes: false,
+    canDeleteAnyTaskNote: false,
+    canViewPerformance: false,
+    canEditAnyPerformance: false,
+    canEditOwnPerformance: false,
+    canApprovePerformance: false,
+    canAddUnscheduledCrew: false,
+    canAddDeductions: false,
+    canAddDeductionsOwnCrew: false,
+    canViewAdvancedReports: false,
+    canViewAllTimeMaster: false,
+    canViewOwnTimeMaster: false,
+    canEditAnyTimeEntry: false,
+    canExportTimeCSV: false,
+    canClockInOut: false,
+    canPostBulletins: false,
+    canDeleteBulletins: false,
+    canViewBulletins: false,
+    canUseAIInsight: false,
+    canViewManageResources: false,
+    canEditPersonnel: false,
+    canEditFleet: false,
+    canDeleteFleet: false,
+    canEditInventory: false,
+    canEditAppSettings: false,
+    canSubmitInspections: false,
+    canViewInspectionLog: false,
+    canViewAllInspections: false,
+    canPrintInspections: false,
+    canManageJobberIntegration: false,
+    canTriggerJobberSync: false,
+    canViewOwnCrewLive: false,
+    canMarkMultiDayCompletion: false,
+    canOverrideJobType: false,
+    canViewMultiDayHistory: false,
+    canViewPerfActivityLog: false,
+    canViewTaskMaster: false,
+    canCreateTasks: false,
+    canViewRoleMaster: false,
+    canManageRoleMaster: false,
+    canViewSalesMaster: false,
+    canApproveTimeOff: false,
+    canViewDashboard: false,
+    canViewContracting: true,
+    canManageContracting: false,
   },
 } as const;
 
@@ -379,9 +455,9 @@ export function resolveRole(employee: Employee | null | undefined): UserRole {
   return employee.systemRole || 'worker';
 }
 
-export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'dashboard' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster' | 'rolemaster' | 'salesmaster';
+export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'dashboard' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster' | 'rolemaster' | 'salesmaster' | 'contracting';
 
-export const APP_VIEW_ORDER: AppView[] = ['schedule', 'mechanic', 'mymechanic', 'performance', 'dashboard', 'mycrew', 'timemaster', 'bulletins', 'taskmaster', 'rolemaster', 'salesmaster'];
+export const APP_VIEW_ORDER: AppView[] = ['schedule', 'mechanic', 'mymechanic', 'performance', 'dashboard', 'mycrew', 'timemaster', 'bulletins', 'taskmaster', 'rolemaster', 'salesmaster', 'contracting'];
 
 export function canAccessView(view: AppView, role: UserRole | null | undefined): boolean {
   switch (view) {
@@ -406,6 +482,7 @@ export function canAccessView(view: AppView, role: UserRole | null | undefined):
     case 'taskmaster': return can('canViewTaskMaster', role);
     case 'rolemaster': return can('canViewRoleMaster', role);
     case 'salesmaster': return can('canViewSalesMaster', role);
+    case 'contracting': return can('canViewContracting', role);
   }
 }
 
@@ -421,6 +498,9 @@ export function defaultLandingView(role: UserRole | null | undefined): AppView {
       // Mechanics land on MyMechanic (pay-chunk home). They can still
       // navigate to MechanicMaster for repair work.
       return 'mymechanic';
+    case 'contractor':
+      // Palermo's contractors only ever see ContractingMaster.
+      return 'contracting';
     default:
       return 'schedule';
   }

@@ -1,4 +1,4 @@
-export type UserRole = 'admin' | 'manager' | 'foreman' | 'worker' | 'mechanic';
+export type UserRole = 'admin' | 'manager' | 'foreman' | 'worker' | 'mechanic' | 'contractor';
 
 export type ManagedDivision = 'lawn' | 'small' | 'large' | 'all';
 
@@ -24,6 +24,13 @@ export interface Employee {
   // hours yields $1,000 of accountability — drives the pay-chunk
   // state machine. Only meaningful for systemRole === 'mechanic'.
   hoursPer1000?: number;
+  // ContractingMaster (Palermo's) billing role → T&M rate. Only meaningful
+  // for systemRole === 'contractor'. Never touches Marco's pay math.
+  contractingBillingRole?: ContractingBillingRole;
+  // Contracting MANAGER (Tony) — full ContractingMaster (projects, reports,
+  // invoices, assignment). Regular contractors (Kris) create work orders +
+  // shopping items + clock, but don't mint invoices.
+  contractingManager?: boolean;
   // Sentinel Employee record auto-bootstrapped on first load so an
   // admin can "View As: Test User" and exercise every non-admin
   // surface without signing into a real account. Exactly one
@@ -849,6 +856,142 @@ export interface AppSettings {
   // SalesMaster rates sheet — bounded (a handful of services + materials),
   // admin-edited. Absent → the coded DEFAULT_SALES_RATES seed is used.
   salesMaster?: SalesRates;
+  // ContractingMaster T&M rate card (bounded). Absent → DEFAULT_CONTRACTING_RATES.
+  contractingRates?: ContractingRateCard;
+}
+
+// ══ ContractingMaster (Palermo's Contracting) types ═══════════════════════
+export type ContractingBillingRole = 'gc_pm' | 'skilled_carpenter' | 'general_labour';
+export interface ContractingRateCard { gc_pm: number; skilled_carpenter: number; general_labour: number; }
+
+export type ContractingPhaseType = 'fixed' | 'tm';
+export type ContractingStatus = 'planned' | 'in_progress' | 'on_hold' | 'complete' | 'closed';
+export interface ContractingChecklistItem { id: string; text: string; required: boolean; done: boolean; doneBy?: string; doneAt?: number; }
+export interface ContractingPhase {
+  id: string;
+  name: string;
+  type: ContractingPhaseType;
+  fixedPrice?: number;            // pre-HST (fixed phases)
+  status: ContractingStatus;
+  description?: string;
+  checklist: ContractingChecklistItem[];
+  tmStartAt?: number;             // T&M clock start → seeds the first open report
+  note?: string;                  // e.g. window-package approval note
+}
+export interface ContractingProject {
+  id: string;
+  name: string;
+  client?: { name: string; contact?: string };
+  propertyRef?: string;
+  status: ContractingStatus;
+  notes?: string;                 // INTERNAL — never client-facing
+  phases: ContractingPhase[];
+  createdBy?: { id: string; name: string };
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface ContractingTimeEntry {
+  id: string;
+  projectId: string;
+  phaseId: string;
+  contractorId: string;
+  contractorName: string;
+  billingRole: ContractingBillingRole;
+  clockIn: number;                // ms; for manual lines, the day it applies
+  clockOut?: number;
+  manual?: boolean;               // manually-added billable line
+  hours?: number;                 // explicit hours (manual) — else derived from clock
+  reportId?: string;              // attached open report
+  status: 'open' | 'invoiced';
+  createdBy?: { id: string; name: string };
+  createdAt?: number;
+}
+
+export interface ContractingReceipt {
+  id: string;
+  description: string;
+  cost: number;                   // INTERNAL — never client-facing
+  markupPct: number;              // INTERNAL — never client-facing
+  billed: number;                 // cost × (1 + markupPct/100)
+  photo?: StoredFile;
+  preApprovedRef?: string;
+  addedBy?: { id: string; name: string };
+  addedAt?: number;
+}
+export interface ContractingLabourLine { contractorId: string; name: string; billingRole: ContractingBillingRole; hours: number; rate: number; amount: number; }
+export interface ContractingReportSnapshot {
+  labourLines: ContractingLabourLine[];
+  labourSubtotal: number;
+  materialLines: { description: string; billed: number }[];  // client-safe (no cost/markup)
+  materialsSubtotal: number;
+  subtotalPreHst: number;
+  hst: number;
+  total: number;
+}
+export interface ContractingProgressReport {
+  id: string;
+  projectId: string;
+  phaseId: string;
+  startAt: number;
+  endAt?: number;
+  status: 'open' | 'invoiced';
+  reportNumber: number;
+  receipts: ContractingReceipt[];
+  manualTime: ContractingTimeEntry[];   // manual billable time lines on this report
+  snapshot?: ContractingReportSnapshot;  // frozen at invoicing
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export type ContractingInvoiceKind = 'tm' | 'retainer' | 'completion' | 'historical';
+export interface ContractingInvoice {
+  id: string;
+  number: string;                 // PROG-00N or manual
+  projectId: string;
+  phaseId?: string;
+  kind: ContractingInvoiceKind;
+  periodStart?: number;
+  periodEnd?: number;
+  amountPreHst: number;
+  hst: number;
+  total: number;
+  reportId?: string;
+  scopeDescription?: string;      // client-facing scope text
+  issuedAt?: number;
+  dueAt?: number;
+  paid?: boolean;
+  paidAt?: number;
+  paidBy?: string;
+  createdBy?: { id: string; name: string };
+  createdAt?: number;
+}
+
+export type ContractingWorkOrderStatus = 'open' | 'in_progress' | 'done';
+export interface ContractingWorkOrder {
+  id: string;
+  property: string;
+  title: string;
+  description?: string;
+  priority: 'low' | 'normal' | 'high';
+  status: ContractingWorkOrderStatus;
+  photos?: StoredFile[];
+  completionNote?: string;
+  createdBy?: { id: string; name: string };
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface ContractingShoppingItem {
+  id: string;
+  item: string;
+  qty?: string;
+  projectTag?: string;
+  addedBy?: { id: string; name: string };
+  addedAt?: number;
+  purchased?: boolean;
+  purchasedBy?: string;
+  purchasedAt?: number;
 }
 
 // ── SalesMaster (v1) — pricing rates sheet. Bounded data (small fixed set),
@@ -1273,6 +1416,14 @@ export interface AppData {
   roleMasterPolicies?: Record<string, RoleMasterPolicy>;
   roleMasterPolicyRequests?: Record<string, RoleMasterPolicyRequest>;
   salesMasterQuotes?: Record<string, SalesQuote>;
+  // ── ContractingMaster (Palermo's) — namespaced subcollections, overlaid
+  // live. ZERO contact with performance/BH/bonus/pay. Never in the main doc.
+  contractingProjects?: Record<string, ContractingProject>;
+  contractingTimeEntries?: Record<string, ContractingTimeEntry>;
+  contractingProgressReports?: Record<string, ContractingProgressReport>;
+  contractingInvoices?: Record<string, ContractingInvoice>;
+  contractingWorkOrders?: Record<string, ContractingWorkOrder>;
+  contractingShoppingList?: Record<string, ContractingShoppingItem>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of

@@ -1349,7 +1349,9 @@ export default function TimeMaster({
                   >
                     <option value="">— pick an employee —</option>
                     {appData.employees
-                      .filter(e => e.status === 'Active' && (e.linkedUserEmail || e.email))
+                      // Palermo's contractors clock inside ContractingMaster,
+                      // never Marco's TimeMaster — keep them out of this picker.
+                      .filter(e => e.systemRole !== 'contractor' && e.status === 'Active' && (e.linkedUserEmail || e.email))
                       .sort((a, b) => a.name.localeCompare(b.name))
                       .map(e => {
                         const em = (e.linkedUserEmail || e.email || '').toLowerCase();
