@@ -366,9 +366,10 @@ export const ROLE_PERMISSIONS = {
     canAddDeductionsOwnCrew: false,
     canViewAdvancedReports: false,
     canViewAllTimeMaster: false,
-    // Contractors clock their own time in regular TimeMaster (payroll-side
-    // reference; does NOT flow to ContractingMaster reports). v1.8.
-    canViewOwnTimeMaster: true,
+    // Contractors get NO TimeMaster page — only a minimal clock in/out surface
+    // in the Palermo's portal. Their punches land in the same payroll time data
+    // (they appear in Dave's period views, contractor-badged). v1.9.
+    canViewOwnTimeMaster: false,
     canEditAnyTimeEntry: false,
     canExportTimeCSV: false,
     canClockInOut: true,

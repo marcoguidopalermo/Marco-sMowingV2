@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { AppData, TimeEntry, TimeEntryNote, TimeOffRequest, UserRole, DeletionAuditEntry } from '../types';
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto } from '../lib/dateUtils';
+import { payPeriodSettings, currentPayPeriod, previousPayPeriod, stepPeriod, periodOfYmd, periodRangeLabel, payDateLabel, PayPeriod } from '../lib/payPeriods';
 import { chunksForMechanic, computeHoursWorkedBetween } from '../lib/payChunkUtils';
 import TimeOffApprovalPage from './TimeOffApprovalPage';
 
@@ -121,6 +122,7 @@ export default function TimeMaster({
   // sit beneath the All Users list. Icon in the card header opens
   // this; date range + Export button live inside.
   const [isExportOpen, setIsExportOpen] = useState(false);
+  const [payEditOpen, setPayEditOpen] = useState(false);
 
   // Manual entry modal — for missed punches. Admin / manager can
   // file one against any employee; everyone else is locked to
@@ -210,6 +212,16 @@ export default function TimeMaster({
   const monthHours = sumHours(filterRange(ownerEntries, ...monthRange()));
   const filteredOwnerEntries = filterByDateFilter(ownerEntries);
 
+  // ── Bi-weekly pay periods (display + range selection only) ────────────────
+  const payCfg = payPeriodSettings(appData.settings);
+  const curPeriod = currentPayPeriod(payCfg, now.getTime());
+  const payrollPeriod = previousPayPeriod(payCfg, now.getTime());   // the one being paid ("Payroll period")
+  const applyPeriod = (p: PayPeriod) => { setDateFilter('custom'); setCustomStart(p.start); setCustomEnd(p.end); };
+  const stepCustomPeriod = (dir: 1 | -1) => { const base = dateFilter === 'custom' ? periodOfYmd(customStart, payCfg) : curPeriod; applyPeriod(stepPeriod(base, payCfg, dir)); };
+  const isPeriodSelected = (p: PayPeriod) => dateFilter === 'custom' && customStart === p.start && customEnd === p.end;
+  const payrollHours = sumHours(filterRange(ownerEntries, payrollPeriod.startMs, payrollPeriod.endMs));
+  const currentPeriodHours = sumHours(filterRange(ownerEntries, curPeriod.startMs, curPeriod.endMs));
+
   // Deleted time entries for this owner, surfaced as read-only audit
   // rows in the log so a hard-delete still leaves a visible "who/when"
   // trace (the entry itself is gone from timeEntries — and from pay).
@@ -241,16 +253,19 @@ export default function TimeMaster({
       const today = sumHours(filterRange(entries, tS, tE));
       const week = sumHours(filterRange(entries, wS, wE));
       const month = sumHours(filterRange(entries, mS, mE));
+      const payroll = sumHours(filterRange(entries, payrollPeriod.startMs, payrollPeriod.endMs));
+      const current = sumHours(filterRange(entries, curPeriod.startMs, curPeriod.endMs));
+      const isContractor = (appData.employees || []).some(emp => (emp.linkedUserEmail || emp.email || '').toLowerCase() === (u.email || '').toLowerCase() && emp.systemRole === 'contractor');
       const lastPunchTs = entries.reduce((latest, e) => {
         const t = new Date(e.clockOut || e.clockIn).getTime();
         return t > latest ? t : latest;
       }, 0);
       const active = entries.some(e => !e.clockOut && !isUnclosed(e));
       const hasUnclosed = entries.some(e => isUnclosed(e));
-      return { ...u, today, week, month, lastPunchTs, active, hasUnclosed };
+      return { ...u, today, week, month, payroll, current, isContractor, lastPunchTs, active, hasUnclosed };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allUsers, appData.timeEntries, now]);
+  }, [allUsers, appData.timeEntries, appData.employees, now, payrollPeriod.startMs, curPeriod.startMs]);
 
   // Timeline computation: 6 AM (360 min) to 10 PM (1320 min) = 960 min span
   const TL_START_MIN = 6 * 60;
@@ -612,6 +627,59 @@ export default function TimeMaster({
     </div>
   );
 
+  // One-tap pay-period buttons + steppers (+ admin anchor editor). Selecting a
+  // period just sets the custom range — no hours/pay math changes.
+  const renderPayPeriods = () => (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3 mb-3">
+      <div className="flex flex-wrap items-stretch gap-2">
+        {/* Payroll period — emphasized (Dave's Monday button) */}
+        <button onClick={() => applyPeriod(payrollPeriod)} className={`flex-1 min-w-[150px] text-left px-3 py-2 rounded-lg border-2 transition-colors ${isPeriodSelected(payrollPeriod) ? 'border-slate-800 bg-slate-800 text-white' : 'border-slate-300 bg-slate-50 text-slate-800 hover:border-slate-800'}`}>
+          <div className="text-[9px] font-black uppercase tracking-widest opacity-80">Payroll period</div>
+          <div className="font-black text-sm leading-tight">{periodRangeLabel(payrollPeriod)}</div>
+          <div className="text-[10px] opacity-90">pay date {payDateLabel(payrollPeriod)}</div>
+        </button>
+        {/* Current period */}
+        <button onClick={() => applyPeriod(curPeriod)} className={`flex-1 min-w-[150px] text-left px-3 py-2 rounded-lg border transition-colors ${isPeriodSelected(curPeriod) ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:border-emerald-600'}`}>
+          <div className="text-[9px] font-black uppercase tracking-widest opacity-80">Current period</div>
+          <div className="font-black text-sm leading-tight">{periodRangeLabel(curPeriod)}</div>
+          <div className="text-[10px] opacity-90">pays {payDateLabel(curPeriod)}</div>
+        </button>
+        <div className="flex items-center gap-1">
+          <button onClick={() => stepCustomPeriod(-1)} title="Previous period" className="px-2 py-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 font-black">◀</button>
+          <button onClick={() => stepCustomPeriod(1)} title="Next period" className="px-2 py-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 font-black">▶</button>
+          {isAdmin && <button onClick={() => setPayEditOpen(o => !o)} title="Pay-period settings" className="px-2 py-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-500">⚙</button>}
+        </div>
+      </div>
+      {payEditOpen && isAdmin && (
+        <div className="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-end gap-3">
+          <label className="text-[10px] font-black uppercase tracking-widest text-gray-500">Anchor (period start, Mon)
+            <input type="date" defaultValue={payCfg.anchorStart} onChange={e => e.target.value && syncToCloud({ ...appData, settings: { ...(appData.settings || {}), payPeriod: { ...payCfg, anchorStart: e.target.value } } })} className="block mt-1 border border-gray-300 rounded p-1.5 text-sm font-normal normal-case tracking-normal" /></label>
+          <label className="text-[10px] font-black uppercase tracking-widest text-gray-500">Length (days)
+            <input type="number" min={1} defaultValue={payCfg.lengthDays} onBlur={e => syncToCloud({ ...appData, settings: { ...(appData.settings || {}), payPeriod: { ...payCfg, lengthDays: Number(e.target.value) || 14 } } })} className="block mt-1 w-20 border border-gray-300 rounded p-1.5 text-sm font-normal tracking-normal" /></label>
+          <label className="text-[10px] font-black uppercase tracking-widest text-gray-500">Pay lag (days)
+            <input type="number" min={0} defaultValue={payCfg.payLagDays} onBlur={e => syncToCloud({ ...appData, settings: { ...(appData.settings || {}), payPeriod: { ...payCfg, payLagDays: Number(e.target.value) || 0 } } })} className="block mt-1 w-20 border border-gray-300 rounded p-1.5 text-sm font-normal tracking-normal" /></label>
+          <div className="text-[11px] text-gray-500">Pay date = period end (Sun) + lag.</div>
+        </div>
+      )}
+    </div>
+  );
+
+  // Owner's own two-period totals (the pay-period lens over their own hours).
+  const renderOwnerPeriods = () => (
+    <div className="grid grid-cols-2 gap-3 mb-4">
+      <div className="bg-white rounded-xl shadow-sm border-2 border-slate-200 p-3">
+        <div className="text-[9px] font-black uppercase tracking-widest text-slate-500">Payroll period · {periodRangeLabel(payrollPeriod)}</div>
+        <div className="text-2xl font-black text-slate-800">{formatHM(payrollHours)}</div>
+        <div className="text-[10px] text-slate-400">pay date {payDateLabel(payrollPeriod)}</div>
+      </div>
+      <div className="bg-white rounded-xl shadow-sm border border-emerald-200 p-3">
+        <div className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Current · {periodRangeLabel(curPeriod)}</div>
+        <div className="text-2xl font-black text-emerald-700">{formatHM(currentPeriodHours)}</div>
+        <div className="text-[10px] text-emerald-500/80">in progress · pays {payDateLabel(curPeriod)}</div>
+      </div>
+    </div>
+  );
+
   const renderDateFilter = () => (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3 mb-4 flex flex-wrap items-center gap-2">
       {(['today', 'week', 'month', 'custom'] as const).map(f => (
@@ -924,7 +992,14 @@ export default function TimeMaster({
       <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto">
         <table className="w-full text-left">
           <thead className="sticky top-0 bg-gray-50 z-10">
-            <tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase"><th className="px-2 py-1.5">User</th><th className="px-2 py-1.5 text-right">Today</th><th className="px-2 py-1.5 text-right">Week</th><th className="px-2 py-1.5 text-right">Month</th><th className="px-2 py-1.5">Last Punch</th><th className="px-2 py-1.5 text-right">Status</th></tr>
+            <tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase">
+              <th className="px-2 py-1.5">User</th>
+              <th className="px-2 py-1.5 text-right bg-slate-100 text-slate-700" title={`Pay date ${payDateLabel(payrollPeriod)}`}>Payroll<div className="normal-case font-normal text-[8px] tracking-normal">{periodRangeLabel(payrollPeriod)} · pay {payDateLabel(payrollPeriod)}</div></th>
+              <th className="px-2 py-1.5 text-right bg-emerald-50 text-emerald-700" title={`Pays ${payDateLabel(curPeriod)}`}>Current<div className="normal-case font-normal text-[8px] tracking-normal">{periodRangeLabel(curPeriod)} · pays {payDateLabel(curPeriod)}</div></th>
+              <th className="px-2 py-1.5 text-right">Today</th>
+              <th className="px-2 py-1.5">Last Punch</th>
+              <th className="px-2 py-1.5 text-right">Status</th>
+            </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {userSummaries.length === 0 ? (
@@ -933,12 +1008,12 @@ export default function TimeMaster({
               userSummaries.map(u => (
                 <tr key={u.email} className="hover:bg-slate-50 cursor-pointer transition-colors" onClick={() => setDrilledUserEmail(u.email)}>
                   <td className="px-2 py-1.5">
-                    <div className="font-bold text-slate-800 text-xs leading-tight">{u.name}</div>
+                    <div className="font-bold text-slate-800 text-xs leading-tight flex items-center gap-1">{u.name}{u.isContractor && <span className="text-[8px] font-black uppercase tracking-widest px-1 py-0.5 rounded" style={{ backgroundColor: '#2E4053', color: '#B7950B' }}>contractor</span>}</div>
                     <div className="text-[9px] text-slate-400 font-medium leading-tight truncate max-w-[180px]" title={u.email}>{u.email}</div>
                   </td>
-                  <td className="px-2 py-1.5 text-right font-mono font-bold text-emerald-700 text-xs">{formatHM(u.today)}</td>
-                  <td className="px-2 py-1.5 text-right font-mono font-bold text-emerald-700 text-xs">{formatHM(u.week)}</td>
-                  <td className="px-2 py-1.5 text-right font-mono font-bold text-emerald-700 text-xs">{formatHM(u.month)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono font-black text-slate-800 text-xs bg-slate-50">{formatHM(u.payroll)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono font-black text-emerald-700 text-xs bg-emerald-50/40">{formatHM(u.current)}</td>
+                  <td className="px-2 py-1.5 text-right font-mono font-bold text-gray-500 text-xs">{formatHM(u.today)}</td>
                   <td className="px-2 py-1.5 text-[11px] text-slate-600 whitespace-nowrap">{u.lastPunchTs ? new Date(u.lastPunchTs).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'}</td>
                   <td className="px-2 py-1.5 text-right">
                     {u.hasUnclosed ? (
@@ -1138,12 +1213,15 @@ export default function TimeMaster({
           {!drilledUserEmail && renderMyTimeOff()}
           {showAdminAllUsers ? (
             <>
+              {renderPayPeriods()}
               {renderTimeline()}
               {renderUsersTable()}
             </>
           ) : (
             <>
+              {renderOwnerPeriods()}
               {renderStatCards()}
+              {renderPayPeriods()}
               {renderDateFilter()}
               {renderLog(drilledUserEmail ? `${effectiveOwnerName}'s Time Log` : 'My Time Log')}
             </>

@@ -870,6 +870,9 @@ export interface AppSettings {
   // ContractingMaster audit trail for project delete/archive/restore (bounded,
   // newest last, capped in the handler).
   contractingAuditLog?: { action: string; detail: string; by: string; at: number }[];
+  // TimeMaster bi-weekly pay-period anchor/cadence (admin-editable). Absent →
+  // DEFAULT_PAY_PERIOD from lib/payPeriods. Display/range-selection only.
+  payPeriod?: { anchorStart: string; lengthDays: number; payLagDays: number };
 }
 
 // ══ ContractingMaster (Palermo's Contracting) types ═══════════════════════

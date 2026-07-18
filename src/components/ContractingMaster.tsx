@@ -6,7 +6,7 @@ import {
   ContractingProject, ContractingPhase, ContractingChecklistItem, ContractingTimeEntry,
   ContractingProgressReport, ContractingReceipt, ContractingInvoice, ContractingWorkOrder,
   ContractingShoppingItem, ContractingRateCard, ContractingBillingRole, ContractingStatus,
-  ContractingProperty, ContractingSupplier, ContractingPhaseType, Employee, StoredFile,
+  ContractingProperty, ContractingSupplier, ContractingPhaseType, Employee, StoredFile, TimeEntry,
 } from '../types';
 import {
   HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled,
@@ -50,6 +50,12 @@ interface Props {
   onSaveWorkOrder: (w: ContractingWorkOrder) => void;
   onDeleteWorkOrder: (id: string) => void;
   onSaveShoppingItem: (s: ContractingShoppingItem) => void;
+  onDeleteShoppingItem: (id: string) => void;
+  // Contractor clock-in/out (minimal surface; writes to payroll time data).
+  myActivePunch: TimeEntry | null;
+  myTodayPunches: TimeEntry[];
+  onClockIn: () => void;
+  onClockOut: () => void;
 }
 
 // Cross-tab navigation actions threaded to tabs that link elsewhere.
@@ -71,14 +77,14 @@ const dateInputVal = (ms: number) => { const d = new Date(ms); return `${d.getFu
 const dateFromInput = (s: string) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0).getTime(); };
 const STATUS_LABEL: Record<ContractingStatus, string> = { planned: 'Planned', in_progress: 'In Progress', on_hold: 'On Hold', complete: 'Complete', closed: 'Closed' };
 
-type Tab = 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
+type Tab = 'clock' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
 
 export default function ContractingMaster(props: Props) {
   const { canManage, isAdmin, currentUser } = props;
   const rates = ratesOrDefault(props.rates);
-  // Contractors get Work Orders + Shopping (they clock in regular TimeMaster,
-  // not here). Managers open on Projects.
-  const [tab, setTab] = useState<Tab>(canManage ? 'projects' : 'workorders');
+  // Contractors get Clock (in/out) + Work Orders + Material. Managers open on
+  // Projects (they use full TimeMaster, not the portal clock).
+  const [tab, setTab] = useState<Tab>(canManage ? 'projects' : 'clock');
 
   const projects = useMemo(() => Object.values(props.projects).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)), [props.projects]);
   const invoices = useMemo(() => Object.values(props.invoices), [props.invoices]);
@@ -104,11 +110,12 @@ export default function ContractingMaster(props: Props) {
   // FINANCIALS (projects, reports, invoices, billables, rate card) are
   // admin + contracting-manager ONLY — enforced by absence (not rendered).
   const tabs: { id: Tab; label: string; show: boolean }[] = [
+    { id: 'clock', label: 'Clock', show: !canManage },
     { id: 'projects', label: 'Projects', show: canManage },
     { id: 'reports', label: 'Reports', show: canManage },
     { id: 'invoices', label: 'Invoices', show: canManage },
     { id: 'workorders', label: 'Work Orders', show: true },
-    { id: 'shopping', label: 'Shopping', show: true },
+    { id: 'shopping', label: 'Material', show: true },
     { id: 'properties', label: 'Properties', show: canManage },
     { id: 'rates', label: 'Rates', show: canManage },
   ];
@@ -125,7 +132,7 @@ export default function ContractingMaster(props: Props) {
           <div className="w-9 h-9 rounded flex items-center justify-center font-black text-lg" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>P</div>
           <div>
             <div className="text-white font-bold text-lg leading-tight">Palermo's Contracting</div>
-            <div className="text-xs" style={{ color: PALERMO.gold }}>{canManage ? 'ContractingMaster · T&M + fixed billing' : 'Work Orders · Shopping'}</div>
+            <div className="text-xs" style={{ color: PALERMO.gold }}>{canManage ? 'ContractingMaster · T&M + fixed billing' : 'Work Orders · Material'}</div>
           </div>
         </div>
       </div>
@@ -148,6 +155,7 @@ export default function ContractingMaster(props: Props) {
         {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} projects={projects} reports={reports} timeEntries={timeEntries} rateOverrides={rateOverrides} nav={nav} focusProjectId={focusProjectId} onConsumeFocus={() => setFocusProjectId(null)} />}
         {tab === 'reports' && canManage && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} invoices={invoices} rateOverrides={rateOverrides} nav={nav} />}
         {tab === 'invoices' && canManage && <InvoicesTab {...props} invoices={invoices} reports={reports} projects={projects} nav={nav} initialFilter={invoiceFilter} />}
+        {tab === 'clock' && !canManage && <ContractorClockTab active={props.myActivePunch} today={props.myTodayPunches} onIn={props.onClockIn} onOut={props.onClockOut} name={currentUser.name} />}
         {tab === 'workorders' && <WorkOrdersTab {...props} />}
         {tab === 'shopping' && <ShoppingTab {...props} />}
         {tab === 'properties' && canManage && <PropertiesTab properties={props.properties} onSaveProperties={props.onSaveProperties} />}
@@ -169,6 +177,46 @@ export default function ContractingMaster(props: Props) {
           onGoToReports={viewedInvoice.reportId ? () => { setViewInvoiceId(null); nav.goToReports(); } : undefined}
         />
       )}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────── CLOCK ──────
+// Minimal contractor clock in/out — big buttons, current status, today's
+// punches. Writes to payroll time data (no hours review / periods / rates).
+function ContractorClockTab({ active, today, onIn, onOut, name }: { active: TimeEntry | null; today: TimeEntry[]; onIn: () => void; onOut: () => void; name: string }) {
+  const [, force] = useState(0);
+  useEffect(() => { const id = setInterval(() => force(n => n + 1), 30000); return () => clearInterval(id); }, []);
+  const elapsed = active ? Math.max(0, (Date.now() - new Date(active.clockIn).getTime()) / 3600000) : 0;
+  const hm = (h: number) => `${Math.floor(h)}h ${Math.round((h - Math.floor(h)) * 60)}m`;
+  const t = (iso?: string) => iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '—';
+  return (
+    <div className="max-w-sm mx-auto">
+      <div className="text-center text-sm text-gray-500 mb-3">{name}</div>
+      {active ? (
+        <div className="rounded-2xl p-5 text-center text-white" style={{ backgroundColor: PALERMO.slate }}>
+          <div className="inline-flex items-center gap-2 text-xs font-black uppercase tracking-widest" style={{ color: PALERMO.gold }}>
+            <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: PALERMO.gold }} /><span className="relative inline-flex rounded-full h-2.5 w-2.5" style={{ backgroundColor: PALERMO.gold }} /></span>
+            Clocked in
+          </div>
+          <div className="text-4xl font-black my-2">{hm(elapsed)}</div>
+          <div className="text-xs opacity-80 mb-4">since {t(active.clockIn)}</div>
+          <button onClick={onOut} className="w-full py-4 rounded-xl font-black text-lg" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>Clock out</button>
+        </div>
+      ) : (
+        <button onClick={onIn} className="w-full py-6 rounded-2xl font-black text-2xl text-white shadow" style={{ backgroundColor: PALERMO.gold }}>Clock in</button>
+      )}
+      <div className="mt-5">
+        <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Today's punches</div>
+        <div className="space-y-1">
+          {today.map(e => (
+            <div key={e.id} className="bg-white rounded border p-2 text-sm flex items-center justify-between">
+              <span>{t(e.clockIn)} → {e.clockOut ? t(e.clockOut) : <span className="text-emerald-600 font-semibold">active</span>}</span>
+            </div>
+          ))}
+          {today.length === 0 && <div className="text-gray-400 text-sm">No punches yet today.</div>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -706,8 +754,11 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
   const [editManual, setEditManual] = useState<ContractingTimeEntry | null>(null);
   const [addingMaterial, setAddingMaterial] = useState(false);
   const [editReceipt, setEditReceipt] = useState<ContractingReceipt | null>(null);
+  const [editingStart, setEditingStart] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [viewPhotos, setViewPhotos] = useState<StoredFile[] | null>(null);
+  // End of the previous invoiced period on this phase (for gap/overlap check).
+  const prevEnd = p.reports.filter(r => r.id !== report.id && r.projectId === report.projectId && r.phaseId === report.phaseId && r.endAt).reduce((m, r) => Math.max(m, r.endAt || 0), 0);
 
   const saveReport = (patch: Partial<ContractingProgressReport>) => p.onSaveReport({ ...report, ...patch, updatedAt: Date.now() });
   const removeReceipt = (r: ContractingReceipt) => { saveReport({ receipts: report.receipts.filter(x => x.id !== r.id) }); p.onLogEdit(`Deleted material "${r.description}" (${money(r.billed)}) on report #${report.reportNumber}`); };
@@ -717,7 +768,7 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
     <div className="mt-2 border-t pt-2">
       <div className="flex items-center justify-between">
         <span className="text-xs text-gray-500">Report #{report.reportNumber}</span>
-        <span className="text-xs text-gray-400">open since {fmtDate(report.startAt)}</span>
+        <span className="text-xs text-gray-400">open since {fmtDate(report.startAt)}{canManage && <button onClick={() => setEditingStart(true)} className="ml-1 underline decoration-dotted" style={{ color: PALERMO.slate }}>edit</button>}</span>
       </div>
 
       {/* Labour — batch "+ Add hours" lines (editable workbench) */}
@@ -740,7 +791,7 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
       <div className="mt-2">
         <div className="flex items-center justify-between">
           <div className="text-[11px] font-semibold text-gray-500 uppercase">Materials (billed — cost/markup internal)</div>
-          {canManage && <button onClick={() => setAddingMaterial(true)} className="text-xs font-black px-2.5 py-1 rounded text-white" style={{ backgroundColor: PALERMO.gold }}>+ Add material</button>}
+          {canManage && <button onClick={() => setAddingMaterial(true)} className="text-xs font-black px-2.5 py-1 rounded text-white" style={{ backgroundColor: PALERMO.gold }}>+ Add billable material</button>}
         </div>
         {report.receipts.length === 0 && <div className="text-xs text-gray-400">No materials yet.</div>}
         {report.receipts.map(r => (
@@ -775,8 +826,26 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
       {addingMaterial && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} addAnother onClose={() => setAddingMaterial(false)} onSave={rc2 => saveReport({ receipts: [...report.receipts, rc2] })} />}
       {editReceipt && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} initial={editReceipt} onClose={() => setEditReceipt(null)} onSave={rc2 => { saveReport({ receipts: report.receipts.map(x => x.id === rc2.id ? rc2 : x) }); p.onLogEdit(`Edited material "${rc2.description}" on report #${report.reportNumber}`); setEditReceipt(null); }} />}
       {reviewing && <ReviewConfirm report={report} project={p.project} phase={p.phase} snap={snap} onClose={() => setReviewing(false)} onConfirm={() => { p.onEndReport(report.id); setReviewing(false); }} />}
+      {editingStart && <EditStartDateForm startAt={report.startAt} prevEnd={prevEnd} onClose={() => setEditingStart(false)} onSave={ms => { const from = fmtDate(report.startAt); saveReport({ startAt: ms }); p.onLogEdit(`Report #${report.reportNumber} start changed ${from} → ${fmtDate(ms)}`); setEditingStart(false); }} />}
       {viewPhotos && <PhotoViewer files={viewPhotos} onClose={() => setViewPhotos(null)} />}
     </div>
+  );
+}
+
+// Edit an OPEN report's start date. Warns (doesn't block) on a gap or overlap
+// against the previous invoiced period.
+function EditStartDateForm({ startAt, prevEnd, onClose, onSave }: { startAt: number; prevEnd: number; onClose: () => void; onSave: (ms: number) => void }) {
+  const [date, setDate] = useState(dateInputVal(startAt));
+  const picked = dateFromInput(date);
+  const gapDays = prevEnd ? Math.round((picked - prevEnd) / 86400000) : 0;
+  return (
+    <Modal title="Edit report start date" onClose={onClose}>
+      <Field label="Start date"><input className="inp" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+      {prevEnd ? <div className="text-xs text-gray-500 mb-2">Previous invoiced period ended {fmtDate(prevEnd)}.</div> : <div className="text-xs text-gray-500 mb-2">No previous invoiced period on this phase.</div>}
+      {gapDays > 0 && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FEF9E7', color: PALERMO.gold }}>⚠ Leaves a {gapDays}-day gap after the last period.</div>}
+      {gapDays < 0 && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FDEDEC', color: '#C0392B' }}>⚠ Starts before the last period ended — overlapping periods.</div>}
+      <ModalActions onClose={onClose} disabled={false} onSave={() => onSave(picked)} />
+    </Modal>
   );
 }
 
@@ -793,7 +862,7 @@ function ReceiptForm({ project, uploadedBy, currentUser, initial, addAnother, on
   const reset = () => { setDescription(''); setCost(''); setMarkup('0'); setRef(''); setPhoto(undefined); };
   const valid = !!description.trim() && !uploading;
   return (
-    <Modal title={initial ? 'Edit material' : 'Add material'} onClose={onClose}>
+    <Modal title={initial ? 'Edit billable material' : 'Add billable material'} onClose={onClose}>
       <Field label="Description"><input className="inp" value={description} onChange={e => setDescription(e.target.value)} /></Field>
       <div className="grid grid-cols-2 gap-2">
         <Field label="Cost (internal, pre-HST)"><input className="inp" type="number" value={cost} onChange={e => setCost(e.target.value)} /></Field>
@@ -1312,6 +1381,9 @@ function ShoppingTab(p: Props) {
     setItem(''); setQty('');   // keep supplier as the remembered default
   };
   const toggle = (i: ContractingShoppingItem) => p.onSaveShoppingItem({ ...i, purchased: !i.purchased, purchasedBy: !i.purchased ? p.currentUser.name : undefined, purchasedAt: !i.purchased ? Date.now() : undefined });
+  // Anyone deletes their OWN added items; Marco/Tony delete any.
+  const canDelete = (i: ContractingShoppingItem) => p.canManage || i.addedBy?.id === p.currentUser.id;
+  const del = (i: ContractingShoppingItem) => { if (confirm(`Delete "${i.item}"?`)) p.onDeleteShoppingItem(i.id); };
   const commitNewSupplier = () => {
     const name = newSupplier.trim(); if (!name) return;
     if (!p.suppliers.some(s => s.name.toLowerCase() === name.toLowerCase())) p.onSaveSuppliers([...p.suppliers, { id: uid('csup'), name, active: true }]);
@@ -1328,7 +1400,7 @@ function ShoppingTab(p: Props) {
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Shopping list</h2>
+        <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Material</h2>
         {p.canManage && <button onClick={() => setManageOpen(o => !o)} className="text-xs px-2 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Suppliers</button>}
       </div>
 
@@ -1353,7 +1425,7 @@ function ShoppingTab(p: Props) {
 
       {/* Two-tap add — item + Add. Supplier optional, remembers last used. */}
       <div className="bg-white rounded-lg border p-3 mb-3 sticky top-0">
-        <input className="inp text-base" style={{ minHeight: 48 }} placeholder="Add an item…" value={item} onChange={e => setItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
+        <input className="inp text-base" style={{ minHeight: 48 }} placeholder="Add material…" value={item} onChange={e => setItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
         <div className="flex gap-2 mt-2">
           <input className="inp w-20" placeholder="Qty" value={qty} onChange={e => setQty(e.target.value)} />
           {addingSupplier ? (
@@ -1381,10 +1453,13 @@ function ShoppingTab(p: Props) {
           </div>
           <div className="space-y-1.5">
             {g.items.map(i => (
-              <button key={i.id} onClick={() => toggle(i)} className="w-full flex items-center gap-3 bg-white rounded-lg border p-3 text-left" style={{ minHeight: 48 }}>
-                <span className="w-6 h-6 rounded border-2 shrink-0" style={{ borderColor: PALERMO.slate }} />
-                <span className="flex-1"><b>{i.item}</b>{i.qty ? ` · ${i.qty}` : ''}{i.projectTag ? <span className="text-xs text-gray-400"> · {i.projectTag}</span> : ''}</span>
-              </button>
+              <div key={i.id} className="w-full flex items-center gap-3 bg-white rounded-lg border p-3" style={{ minHeight: 48 }}>
+                <button onClick={() => toggle(i)} className="flex items-center gap-3 flex-1 text-left">
+                  <span className="w-6 h-6 rounded border-2 shrink-0" style={{ borderColor: PALERMO.slate }} />
+                  <span className="flex-1"><b>{i.item}</b>{i.qty ? ` · ${i.qty}` : ''}{i.projectTag ? <span className="text-xs text-gray-400"> · {i.projectTag}</span> : ''}</span>
+                </button>
+                {canDelete(i) && <button onClick={() => del(i)} className="text-red-400 text-lg px-1 shrink-0" title="Delete">×</button>}
+              </div>
             ))}
           </div>
         </div>
@@ -1396,11 +1471,14 @@ function ShoppingTab(p: Props) {
           <div className="text-xs font-semibold text-gray-400 uppercase mb-1">Recently purchased</div>
           <div className="space-y-1">
             {recent.map(i => (
-              <button key={i.id} onClick={() => toggle(i)} className="w-full flex items-center gap-3 bg-white/60 rounded-lg border p-2.5 text-left opacity-60" style={{ minHeight: 44 }}>
-                <span className="w-5 h-5 rounded flex items-center justify-center text-white shrink-0" style={{ backgroundColor: '#27AE60' }}>✓</span>
-                <span className="flex-1 line-through text-gray-500">{i.item}{i.qty ? ` · ${i.qty}` : ''}{i.supplier ? <span className="text-[10px] text-gray-400"> · {i.supplier}</span> : ''}</span>
-                <span className="text-[10px] text-gray-400">{i.purchasedBy}</span>
-              </button>
+              <div key={i.id} className="w-full flex items-center gap-3 bg-white/60 rounded-lg border p-2.5 opacity-60" style={{ minHeight: 44 }}>
+                <button onClick={() => toggle(i)} className="flex items-center gap-3 flex-1 text-left">
+                  <span className="w-5 h-5 rounded flex items-center justify-center text-white shrink-0" style={{ backgroundColor: '#27AE60' }}>✓</span>
+                  <span className="flex-1 line-through text-gray-500">{i.item}{i.qty ? ` · ${i.qty}` : ''}{i.supplier ? <span className="text-[10px] text-gray-400"> · {i.supplier}</span> : ''}</span>
+                  <span className="text-[10px] text-gray-400">{i.purchasedBy}</span>
+                </button>
+                {canDelete(i) && <button onClick={() => del(i)} className="text-red-400 text-lg px-1 shrink-0" title="Delete">×</button>}
+              </div>
             ))}
           </div>
         </div>

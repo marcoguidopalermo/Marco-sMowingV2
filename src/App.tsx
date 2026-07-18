@@ -24,7 +24,7 @@ import {
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary,
   RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, RoleTaskInstance,
-  ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingRateCard
+  ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingRateCard, TimeEntry
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
@@ -2215,6 +2215,21 @@ export default function App() {
   // canManageContracting (admin or Tony); clocking + work orders + shopping
   // are open to any contractor.
   const contractingUser = { id: currentUserEmployee?.id || displayEmail, name: displayName };
+  // Contractor clock-in/out (minimal surface in the portal). Punches land in
+  // the SAME payroll time data (appData.timeEntries) — contractors appear in
+  // Dave's TimeMaster period views. No hours review / periods here.
+  const myActivePunch: TimeEntry | null = (appData.timeEntries || []).find(e => e.userEmail === displayEmail && !e.clockOut) || null;
+  const myTodayPunches: TimeEntry[] = (appData.timeEntries || []).filter(e => e.userEmail === displayEmail && new Date(e.clockIn).toDateString() === new Date().toDateString()).sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
+  const contractorClockIn = () => {
+    const ne: TimeEntry = { id: `time-${Date.now()}`, userEmail: displayEmail, userName: displayName, clockIn: new Date().toISOString(), notes: [] };
+    syncToCloud({ ...appData, timeEntries: [ne, ...(appData.timeEntries || [])] });
+    showToastMsg('Clocked in.');
+  };
+  const contractorClockOut = () => {
+    if (!myActivePunch) return;
+    syncToCloud({ ...appData, timeEntries: (appData.timeEntries || []).map(e => e.id === myActivePunch.id ? { ...e, clockOut: new Date().toISOString() } : e) });
+    showToastMsg('Clocked out.');
+  };
   const contractingRates: ContractingRateCard = contractingRatesOrDefault(appData.settings?.contractingRates);
   const contractingProperties: ContractingProperty[] = propertiesOrDefault(appData.settings?.contractingProperties);
   const contractingSuppliers: ContractingSupplier[] = suppliersOrDefault(appData.settings?.contractingSuppliers);
@@ -2402,6 +2417,12 @@ export default function App() {
   };
   const saveContractingShoppingItem = async (s: ContractingShoppingItem) => {
     await setDoc(doc(roleColl('contractingShoppingList'), s.id), cleanRM(s));
+  };
+  const deleteContractingShoppingItem = async (id: string) => {
+    // Anyone deletes their own added items; managers delete any (enforced at UI).
+    const it = subContractingShoppingListRef.current[id];
+    if (!canManageContracting && it?.addedBy?.id !== contractingUser.id) { showToastMsg(PERMISSION_DENIED); return; }
+    await deleteDoc(doc(roleColl('contractingShoppingList'), id));
   };
   const [roleInstanceModalId, setRoleInstanceModalId] = useState<string | null>(null);
   const resolveInstance = async (id: string, patch: Partial<RoleTaskInstance>) => {
@@ -4717,6 +4738,11 @@ export default function App() {
           onSaveWorkOrder={saveContractingWorkOrder}
           onDeleteWorkOrder={deleteContractingWorkOrder}
           onSaveShoppingItem={saveContractingShoppingItem}
+          onDeleteShoppingItem={deleteContractingShoppingItem}
+          myActivePunch={myActivePunch}
+          myTodayPunches={myTodayPunches}
+          onClockIn={contractorClockIn}
+          onClockOut={contractorClockOut}
         />
       ) : (
         <ScheduleBoard
