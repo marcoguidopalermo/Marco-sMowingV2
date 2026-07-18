@@ -299,6 +299,18 @@ export function nextProgNumber(invoices: ContractingInvoice[]): string {
 
 export const withHst = (preHst: number) => ({ preHst: round2(preHst), hst: round2(preHst * HST_PCT), total: round2(preHst * (1 + HST_PCT)) });
 
+// Work-order assignees — read-time migration from the deprecated single
+// assigneeId → assigneeIds[]. No data loss; existing orders normalize on read
+// and persist the array shape on their next save.
+export function woAssignees(wo: { assigneeIds?: string[]; assigneeNames?: string[]; assigneeId?: string; assigneeName?: string }): { ids: string[]; names: string[] } {
+  if (wo.assigneeIds && wo.assigneeIds.length) return { ids: wo.assigneeIds, names: wo.assigneeNames || [] };
+  if (wo.assigneeId) return { ids: [wo.assigneeId], names: wo.assigneeName ? [wo.assigneeName] : [] };
+  return { ids: [], names: [] };
+}
+export function woIsAssignedTo(wo: { assigneeIds?: string[]; assigneeId?: string }, userId: string): boolean {
+  return woAssignees(wo).ids.includes(userId);
+}
+
 // The DEFAULT rental properties list (internal organization only). Corp badge
 // on SJ. Once edited in-app they persist to settings.contractingProperties.
 export const CONTRACTING_PROPERTIES: { name: string; corp?: boolean }[] = [

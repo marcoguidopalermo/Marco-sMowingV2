@@ -13,7 +13,7 @@ import {
   computeReportTotals, labourForReport, phaseBillables, phaseReadyToBill, withHst,
   PALERMO, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor,
   projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
-  projectBillables, projectCompletionPct,
+  projectBillables, projectCompletionPct, woAssignees, woIsAssignedTo,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
@@ -82,12 +82,12 @@ const dateInputVal = (ms: number) => { const d = new Date(ms); return `${d.getFu
 const dateFromInput = (s: string) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0).getTime(); };
 const STATUS_LABEL: Record<ContractingStatus, string> = { planned: 'Planned', in_progress: 'In Progress', on_hold: 'On Hold', complete: 'Complete', closed: 'Closed' };
 
-type Tab = 'home' | 'clock' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
+type Tab = 'home' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
 
 export default function ContractingMaster(props: Props) {
   const { canManage, isAdmin, currentUser } = props;
   const rates = ratesOrDefault(props.rates);
-  // Contractors land on HOME (hours + lists), then Clock · Work Orders ·
+  // Contractors land on HOME (clock + hours + lists), then Work Orders ·
   // Material. Managers open on Projects.
   const [tab, setTab] = useState<Tab>(canManage ? 'projects' : 'home');
 
@@ -123,7 +123,6 @@ export default function ContractingMaster(props: Props) {
   // admin + contracting-manager ONLY — enforced by absence (not rendered).
   const tabs: { id: Tab; label: string; show: boolean }[] = [
     { id: 'home', label: 'Home', show: true },
-    { id: 'clock', label: 'Clock', show: !canManage },
     { id: 'projects', label: 'Projects', show: canManage },
     { id: 'reports', label: 'Reports', show: canManage },
     { id: 'invoices', label: 'Invoices', show: canManage },
@@ -169,7 +168,6 @@ export default function ContractingMaster(props: Props) {
         {tab === 'reports' && canManage && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} invoices={invoices} rateOverrides={rateOverrides} nav={nav} />}
         {tab === 'invoices' && canManage && <InvoicesTab {...props} invoices={invoices} reports={reports} projects={projects} nav={nav} initialFilter={invoiceFilter} />}
         {tab === 'home' && <HomeTab {...props} hoursCards={props.hoursCards} personalItems={props.personalItems} shoppingList={props.shoppingList} workOrders={props.workOrders} onGoToMyWorkOrders={goToMyWorkOrders} />}
-        {tab === 'clock' && !canManage && <ContractorClockTab active={props.myActivePunch} today={props.myTodayPunches} onIn={props.onClockIn} onOut={props.onClockOut} name={currentUser.name} />}
         {tab === 'workorders' && <WorkOrdersTab {...props} mineOnly={woMineOnly} setMineOnly={setWoMineOnly} propFilter={woProperty} setPropFilter={setWoProperty} priorityFilter={woPriority} setPriorityFilter={setWoPriority} />}
         {tab === 'shopping' && <ShoppingTab {...props} />}
         {tab === 'properties' && canManage && <PropertiesTab properties={props.properties} onSaveProperties={props.onSaveProperties} />}
@@ -196,41 +194,43 @@ export default function ContractingMaster(props: Props) {
 }
 
 // ────────────────────────────────────────────────────────────── CLOCK ──────
-// Minimal contractor clock in/out — big buttons, current status, today's
-// punches. Writes to payroll time data (no hours review / periods / rates).
-function ContractorClockTab({ active, today, onIn, onOut, name }: { active: TimeEntry | null; today: TimeEntry[]; onIn: () => void; onOut: () => void; name: string }) {
+// Minimal contractor clock in/out (top of Home) — full-width big button, live
+// status, today's punches collapsible. Writes to payroll time data.
+function ContractorClockTab({ active, today, onIn, onOut }: { active: TimeEntry | null; today: TimeEntry[]; onIn: () => void; onOut: () => void }) {
   const [, force] = useState(0);
+  const [showPunches, setShowPunches] = useState(false);
   useEffect(() => { const id = setInterval(() => force(n => n + 1), 30000); return () => clearInterval(id); }, []);
   const elapsed = active ? Math.max(0, (Date.now() - new Date(active.clockIn).getTime()) / 3600000) : 0;
   const hm = (h: number) => `${Math.floor(h)}h ${Math.round((h - Math.floor(h)) * 60)}m`;
   const t = (iso?: string) => iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '—';
   return (
-    <div className="max-w-sm mx-auto">
-      <div className="text-center text-sm text-gray-500 mb-3">{name}</div>
+    <div>
       {active ? (
-        <div className="rounded-2xl p-5 text-center text-white" style={{ backgroundColor: PALERMO.slate }}>
-          <div className="inline-flex items-center gap-2 text-xs font-black uppercase tracking-widest" style={{ color: PALERMO.gold }}>
-            <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: PALERMO.gold }} /><span className="relative inline-flex rounded-full h-2.5 w-2.5" style={{ backgroundColor: PALERMO.gold }} /></span>
-            Clocked in
-          </div>
-          <div className="text-4xl font-black my-2">{hm(elapsed)}</div>
-          <div className="text-xs opacity-80 mb-4">since {t(active.clockIn)}</div>
-          <button onClick={onOut} className="w-full py-4 rounded-xl font-black text-lg" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>Clock out</button>
-        </div>
+        <button onClick={onOut} className="w-full rounded-2xl p-4 text-white flex items-center justify-between" style={{ backgroundColor: PALERMO.slate }}>
+          <span className="text-left">
+            <span className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-widest" style={{ color: PALERMO.gold }}>
+              <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: PALERMO.gold }} /><span className="relative inline-flex rounded-full h-2.5 w-2.5" style={{ backgroundColor: PALERMO.gold }} /></span>
+              Clocked in · {hm(elapsed)}
+            </span>
+            <span className="block text-[11px] opacity-70">since {t(active.clockIn)}</span>
+          </span>
+          <span className="px-4 py-3 rounded-xl font-black" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>Clock out</span>
+        </button>
       ) : (
         <button onClick={onIn} className="w-full py-6 rounded-2xl font-black text-2xl text-white shadow" style={{ backgroundColor: PALERMO.gold }}>Clock in</button>
       )}
-      <div className="mt-5">
-        <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Today's punches</div>
-        <div className="space-y-1">
-          {today.map(e => (
-            <div key={e.id} className="bg-white rounded border p-2 text-sm flex items-center justify-between">
-              <span>{t(e.clockIn)} → {e.clockOut ? t(e.clockOut) : <span className="text-emerald-600 font-semibold">active</span>}</span>
+      {today.length > 0 && (
+        <div className="mt-1.5 text-center">
+          <button onClick={() => setShowPunches(s => !s)} className="text-[11px] font-semibold text-gray-400 uppercase">{showPunches ? '▾ hide' : '▸'} today's punches ({today.length})</button>
+          {showPunches && (
+            <div className="space-y-1 mt-1 text-left">
+              {today.map(e => (
+                <div key={e.id} className="bg-white rounded border p-2 text-sm">{t(e.clockIn)} → {e.clockOut ? t(e.clockOut) : <span className="text-emerald-600 font-semibold">active</span>}</div>
+              ))}
             </div>
-          ))}
-          {today.length === 0 && <div className="text-gray-400 text-sm">No punches yet today.</div>}
+          )}
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -242,11 +242,14 @@ function HomeTab(p: Ctx & { hoursCards: Props['hoursCards']; personalItems: Reco
   const me = p.currentUser;
   const mine = Object.values(p.personalItems).filter(i => i.userId === me.id);
   // My assigned, non-completed, non-archived work orders — grouped by priority.
-  const myWos = Object.values(p.workOrders).filter(w => w.assigneeId === me.id && w.status !== 'done' && !w.archived);
+  const myWos = Object.values(p.workOrders).filter(w => woIsAssignedTo(w, me.id) && w.status !== 'done' && !w.archived);
   const priMeta = { high: { label: 'high priority', dot: '#C0392B', color: '#C0392B' }, normal: { label: 'normal', dot: '#2874A6', color: '#2874A6' }, low: { label: 'low', dot: '#7F8C8D', color: '#566573' } };
   const priRows = (['high', 'normal', 'low'] as const).map(pri => ({ pri, count: myWos.filter(w => w.priority === pri).length, ...priMeta[pri] })).filter(r => r.count > 0);
   return (
     <div className="max-w-md mx-auto space-y-5">
+      {/* CLOCK — big punch button on top (contractors) */}
+      {!p.canManage && <ContractorClockTab active={p.myActivePunch} today={p.myTodayPunches} onIn={p.onClockIn} onOut={p.onClockOut} />}
+
       {/* HOURS — hours only, never rates or pay amounts */}
       <div>
         <div className="text-xs font-black uppercase tracking-widest mb-1" style={{ color: PALERMO.slate }}>Hours</div>
@@ -1387,7 +1390,7 @@ function WorkOrdersTab(p: Props & { mineOnly: boolean; setMineOnly: (b: boolean)
   const contractors = p.employees.filter(e => e.systemRole === 'contractor');
   const meId = p.currentUser.id;
   const newest = (a: ContractingWorkOrder, b: ContractingWorkOrder) => (b.createdAt || 0) - (a.createdAt || 0);
-  const match = (w: ContractingWorkOrder) => (filter === 'All' || w.property === filter) && (!mineOnly || w.assigneeId === meId) && (priorityFilter === 'all' || w.priority === priorityFilter);
+  const match = (w: ContractingWorkOrder) => (filter === 'All' || w.property === filter) && (!mineOnly || woIsAssignedTo(w, meId)) && (priorityFilter === 'all' || w.priority === priorityFilter);
   const live = Object.values(p.workOrders).filter(w => !w.archived && match(w));
   const activeList = live.filter(w => w.status !== 'done').sort(newest);
   const doneList = live.filter(w => w.status === 'done').sort(newest);
@@ -1450,7 +1453,15 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
     p.onSaveProject({ id: uid('cproj'), name: wo.title, status: 'planned', propertyRef: wo.property, phases: [], notes: wo.description, createdBy: p.currentUser, createdAt: Date.now(), updatedAt: Date.now() });
     save({ status: 'done', completionNote: (wo.completionNote ? wo.completionNote + ' · ' : '') + 'Promoted to project' });
   };
-  const assign = (id: string) => { const c = p.contractors.find(x => x.id === id); save({ assigneeId: id || undefined, assigneeName: c?.name || undefined }); };
+  const { ids: assigneeIds, names: assigneeNames } = woAssignees(wo);
+  const nameOf = (id: string) => p.contractors.find(x => x.id === id)?.name || assigneeNames[assigneeIds.indexOf(id)] || id;
+  // Toggle one assignee on/off; write the array shape (migrates single → array).
+  const toggleAssignee = (id: string) => {
+    const has = assigneeIds.includes(id);
+    const nextIds = has ? assigneeIds.filter(x => x !== id) : [...assigneeIds, id];
+    save({ assigneeIds: nextIds, assigneeNames: nextIds.map(nameOf), assigneeId: undefined, assigneeName: undefined });
+  };
+  const [assignOpen, setAssignOpen] = useState(false);
   return (
     <div className="bg-white rounded-lg border p-3">
       <div className="flex items-center justify-between">
@@ -1460,13 +1471,37 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
         </div>
         <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: wo.priority === 'high' ? '#FADBD8' : wo.priority === 'normal' ? '#EBF5FB' : '#F8F9F9', color: wo.priority === 'high' ? '#C0392B' : '#555' }}>{wo.priority}</span>
       </div>
-      {/* Assignee — a clear chip, readable at a glance. */}
-      <div className="mt-1.5 flex items-center gap-2 flex-wrap">
-        <span className="inline-flex items-center gap-1.5 text-xs font-bold px-2 py-1 rounded-full" style={wo.assigneeName ? { backgroundColor: '#2E40531A', color: PALERMO.slate } : { backgroundColor: '#F2F3F4', color: '#909497' }}>
-          <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black text-white" style={{ backgroundColor: wo.assigneeName ? PALERMO.gold : '#B2BABB' }}>{wo.assigneeName ? wo.assigneeName.charAt(0).toUpperCase() : '?'}</span>
-          {wo.assigneeName || 'Unassigned'}
-        </span>
-        {canManage && <select className="inp text-xs py-0.5" style={{ width: 'auto' }} value={wo.assigneeId || ''} onChange={e => assign(e.target.value)}><option value="">Reassign…</option><option value="">Unassigned</option>{p.contractors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}
+      {/* Assignees — clear chips (all shown), readable at a glance. */}
+      <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+        {assigneeIds.length === 0 && (
+          <span className="inline-flex items-center gap-1.5 text-xs font-bold px-2 py-1 rounded-full" style={{ backgroundColor: '#F2F3F4', color: '#909497' }}>
+            <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black text-white" style={{ backgroundColor: '#B2BABB' }}>?</span>Unassigned
+          </span>
+        )}
+        {assigneeIds.map(id => (
+          <span key={id} className="inline-flex items-center gap-1.5 text-xs font-bold px-2 py-1 rounded-full" style={{ backgroundColor: '#2E40531A', color: PALERMO.slate }}>
+            <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black text-white" style={{ backgroundColor: PALERMO.gold }}>{nameOf(id).charAt(0).toUpperCase()}</span>
+            {nameOf(id)}
+          </span>
+        ))}
+        {canManage && (
+          <div className="relative">
+            <button onClick={() => setAssignOpen(o => !o)} className="text-xs px-2 py-1 rounded-full border font-semibold" style={{ color: PALERMO.slate }}>+ Assign</button>
+            {assignOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setAssignOpen(false)} />
+                <div className="absolute left-0 mt-1 bg-white border rounded-lg shadow-lg z-40 p-1 min-w-[160px]">
+                  {p.contractors.length === 0 && <div className="text-xs text-gray-400 p-2">No contractors.</div>}
+                  {p.contractors.map(c => (
+                    <label key={c.id} className="flex items-center gap-2 px-2 py-1.5 text-sm rounded hover:bg-slate-50 cursor-pointer">
+                      <input type="checkbox" checked={assigneeIds.includes(c.id)} onChange={() => toggleAssignee(c.id)} /> {c.name}
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
       {wo.description && <div className="text-sm text-gray-600 mt-1">{wo.description}</div>}
       {wo.completionNote && <div className="text-xs text-gray-500 mt-1 italic">✓ {wo.completionNote}</div>}
@@ -1489,7 +1524,7 @@ function WorkOrderForm({ currentUser, uploadedBy, properties, contractors, onClo
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<ContractingWorkOrder['priority']>('normal');
-  const [assigneeId, setAssigneeId] = useState('');
+  const [assigneeIds, setAssigneeIds] = useState<string[]>([]);
   const [photos, setPhotos] = useState<StoredFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const woId = uid('cwo');
@@ -1499,7 +1534,14 @@ function WorkOrderForm({ currentUser, uploadedBy, properties, contractors, onClo
       <Field label="Title"><input className="inp" value={title} onChange={e => setTitle(e.target.value)} /></Field>
       <Field label="Description"><textarea className="inp" rows={2} value={description} onChange={e => setDescription(e.target.value)} /></Field>
       <Field label="Priority"><div className="flex gap-2">{(['low', 'normal', 'high'] as const).map(pr => <button key={pr} onClick={() => setPriority(pr)} className="flex-1 py-1.5 rounded border text-sm capitalize" style={priority === pr ? { backgroundColor: PALERMO.slate, color: 'white' } : {}}>{pr}</button>)}</div></Field>
-      <Field label="Assign to (optional)"><select className="inp" value={assigneeId} onChange={e => setAssigneeId(e.target.value)}><option value="">Unassigned</option>{contractors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
+      <Field label="Assign to (optional)">
+        <div className="flex flex-wrap gap-1.5">
+          {contractors.map(c => { const on = assigneeIds.includes(c.id); return (
+            <button key={c.id} onClick={() => setAssigneeIds(ids => on ? ids.filter(x => x !== c.id) : [...ids, c.id])} className="text-sm px-2.5 py-1.5 rounded-full border font-semibold" style={on ? { backgroundColor: PALERMO.slate, color: 'white', borderColor: PALERMO.slate } : {}}>{c.name}</button>
+          ); })}
+          {contractors.length === 0 && <span className="text-xs text-gray-400">No contractors.</span>}
+        </div>
+      </Field>
       <Field label="Photos (optional)">
         <input type="file" accept="image/*,application/pdf" onChange={async e => {
           const f = e.target.files?.[0]; if (!f) return; setUploading(true);
@@ -1508,11 +1550,11 @@ function WorkOrderForm({ currentUser, uploadedBy, properties, contractors, onClo
         {uploading && <span className="text-xs text-gray-400">Uploading…</span>}
         {photos.length > 0 && <span className="text-xs text-green-600">✓ {photos.length}</span>}
       </Field>
-      <ModalActions onClose={onClose} disabled={!title.trim() || uploading} onSave={() => { const c = contractors.find(x => x.id === assigneeId); onSave({
+      <ModalActions onClose={onClose} disabled={!title.trim() || uploading} onSave={() => onSave({
         id: woId, property, title: title.trim(), description: description.trim() || undefined, priority, status: 'open',
-        assigneeId: assigneeId || undefined, assigneeName: c?.name || undefined,
+        assigneeIds: assigneeIds.length ? assigneeIds : undefined, assigneeNames: assigneeIds.length ? assigneeIds.map(id => contractors.find(c => c.id === id)?.name || id) : undefined,
         photos: photos.length ? photos : undefined, createdBy: currentUser, createdAt: Date.now(), updatedAt: Date.now(),
-      }); }} />
+      })} />
     </Modal>
   );
 }

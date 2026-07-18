@@ -1016,8 +1016,10 @@ export interface ContractingWorkOrder {
   status: ContractingWorkOrderStatus;
   photos?: StoredFile[];
   completionNote?: string;
-  assigneeId?: string;            // assigned contractor (Marco/Tony assign)
-  assigneeName?: string;
+  assigneeIds?: string[];         // assigned contractors (Marco/Tony assign)
+  assigneeNames?: string[];       // denormalized names (parallel to assigneeIds)
+  assigneeId?: string;            // DEPRECATED single-assignee (read-migrated → assigneeIds)
+  assigneeName?: string;          // DEPRECATED
   archived?: boolean;             // hidden from default list (declutter)
   createdBy?: { id: string; name: string };
   createdAt?: number;

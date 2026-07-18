@@ -1,6 +1,6 @@
 // Verify ContractingMaster billing math against the exact progress-report
 // example. Run: npx tsx scripts/verify-contracting.ts
-import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge, projectCompletionPct } from '../src/lib/contracting';
+import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge, projectCompletionPct, woAssignees, woIsAssignedTo } from '../src/lib/contracting';
 
 const rates = DEFAULT_CONTRACTING_RATES;
 let pass = 0, fail = 0;
@@ -167,6 +167,15 @@ ok('numbering still counts voided stub (PROG after voided PROG-002)', nextProgNu
 console.log('\n=== phase % completion (simple average blend) ===');
 ok('blended = average of phase %s', projectCompletionPct({ phases: [{ completionPct: 100 }, { completionPct: 50 }, { completionPct: 0 }] } as any) === 50, projectCompletionPct({ phases: [{ completionPct: 100 }, { completionPct: 50 }, { completionPct: 0 }] } as any));
 ok('missing % counts as 0', projectCompletionPct({ phases: [{ completionPct: 80 }, {}] } as any) === 40);
+
+console.log('\n=== work-order multi-assignee migration ===');
+const single: any = { assigneeId: 'k', assigneeName: 'Kris' };
+ok('legacy single assigneeId → array [k]', woAssignees(single).ids.join(',') === 'k' && woAssignees(single).names.join(',') === 'Kris');
+ok('legacy single: assigned-to-me matches k', woIsAssignedTo(single, 'k') === true && woIsAssignedTo(single, 'x') === false);
+const multi: any = { assigneeIds: ['k', 't'], assigneeNames: ['Kris', 'Tony'] };
+ok('array of two → [k,t]', woAssignees(multi).ids.join(',') === 'k,t');
+ok('assigned-to-me matches EITHER (k and t)', woIsAssignedTo(multi, 'k') && woIsAssignedTo(multi, 't') && !woIsAssignedTo(multi, 'z'));
+ok('empty → unassigned', woAssignees({} as any).ids.length === 0 && !woIsAssignedTo({} as any, 'k'));
 
 console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
