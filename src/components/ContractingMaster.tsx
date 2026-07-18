@@ -306,6 +306,10 @@ function PersonalList({ title, list, items, me, onSave, onDelete }: { title: str
   const done = items.filter(i => i.done && (i.doneAt || 0) > twoWeeks).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
   const add = () => { if (!text.trim()) return; onSave({ id: uid('cpi'), userId: me.id, list, text: text.trim(), createdBy: me, createdAt: Date.now() }); setText(''); };
   const toggle = (i: ContractingPersonalItem) => onSave({ ...i, done: !i.done, doneAt: !i.done ? Date.now() : undefined });
+  // One-tap move between the two personal lists (keeps text + createdAt).
+  const otherList: 'todo' | 'followup' = list === 'todo' ? 'followup' : 'todo';
+  const otherLabel = list === 'todo' ? 'Follow-up' : 'To-do';
+  const move = (i: ContractingPersonalItem) => onSave({ ...i, list: otherList, movedAt: Date.now() });
   return (
     <div>
       <div className="text-xs font-black uppercase tracking-widest mb-1" style={{ color: PALERMO.slate }}>{title} <span className="text-gray-400 font-semibold normal-case tracking-normal">· private</span></div>
@@ -320,6 +324,7 @@ function PersonalList({ title, list, items, me, onSave, onDelete }: { title: str
               <span className="w-5 h-5 rounded border-2 shrink-0" style={{ borderColor: PALERMO.slate }} />
               <span className="flex-1 text-sm">{i.text}</span>
             </button>
+            <button onClick={() => move(i)} title={`Move to ${otherLabel}`} aria-label={`Move to ${otherLabel}`} className="text-lg px-1.5 shrink-0" style={{ color: PALERMO.slate }}>⇄</button>
             <button onClick={() => onDelete(i.id)} className="text-red-400 text-lg px-1 shrink-0">×</button>
           </div>
         ))}

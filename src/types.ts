@@ -1034,6 +1034,7 @@ export interface ContractingPersonalItem {
   text: string;
   done?: boolean;
   doneAt?: number;
+  movedAt?: number;               // last To-Do ↔ Follow-Up move (no ceremony)
   createdBy?: { id: string; name: string };
   createdAt?: number;
 }
