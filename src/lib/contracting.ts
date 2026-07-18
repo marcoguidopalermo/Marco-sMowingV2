@@ -90,58 +90,15 @@ export function computeReportTotals(labour: LabourInput[], receipts: Contracting
   return { labourLines, labourSubtotal, materialLines, materialsSubtotal, subtotalPreHst, hst, total };
 }
 
-// Derive the labour inputs attached to an OPEN report: manual lines on the
-// report PLUS clock sessions on the same phase, captured either by explicit
-// attach (te.reportId === report.id) or by falling within the period window.
-// An entry attached to ANOTHER report is never counted (one-report-ever).
-export function labourForReport(
-  report: { id: string; phaseId: string; startAt: number; endAt?: number; manualTime?: ContractingTimeEntry[] },
-  timeEntries: ContractingTimeEntry[],
-  nowMs: number,
-): LabourInput[] {
-  const out: LabourInput[] = [];
-  for (const mt of report.manualTime || []) {
-    out.push({ contractorId: mt.contractorId, name: mt.contractorName, billingRole: mt.billingRole, hours: Number(mt.hours) || 0, rate: mt.rateOverride });
-  }
-  const end = report.endAt || nowMs;
-  for (const te of timeEntries) {
-    if (te.manual) continue;                              // manual lines handled above / on report
-    if (te.phaseId !== report.phaseId) continue;
-    if (te.status === 'invoiced') continue;
-    const attached = te.reportId === report.id;
-    if (te.reportId && !attached) continue;               // belongs to another report
-    if (!attached) {
-      if (te.detached) continue;                          // manually removed from its window report
-      if (te.clockIn < report.startAt || te.clockIn >= end) continue; // window
-    }
-    const outMs = te.clockOut || nowMs;
-    const rawHours = Math.max(0, (outMs - te.clockIn) / 3_600_000);
-    out.push({ contractorId: te.contractorId, name: te.contractorName, billingRole: te.billingRole, hours: roundVisitHours(rawHours) });
-  }
-  return out;
-}
-
-// UNBILLED labour for a project: completed clock sessions that are NOT
-// invoiced, NOT attached to any report, and NOT auto-captured by their phase's
-// currently-open report (clocked in a gap, or on a phase with no open report).
-// These are the entries a manager can pull into the open report.
-export interface UnbilledEntry { entry: ContractingTimeEntry; hours: number; amount: number; }
-export function unbilledLabour(projectId: string, timeEntries: ContractingTimeEntry[], reports: ContractingProgressReport[], rates: ContractingRateCard, nowMs: number, rateByContractor?: Record<string, number>): UnbilledEntry[] {
-  const out: UnbilledEntry[] = [];
-  for (const te of timeEntries) {
-    if (te.projectId !== projectId) continue;
-    if (te.manual) continue;
-    if (te.status === 'invoiced') continue;
-    if (te.reportId) continue;                            // already attached to a report
-    if (!te.clockOut) continue;                           // still clocked in
-    const open = reports.find(r => r.projectId === te.projectId && r.phaseId === te.phaseId && r.status === 'open');
-    const autoCaptured = !!open && te.clockIn >= open.startAt && te.clockIn < nowMs;
-    if (autoCaptured && !te.detached) continue;           // flowing into the open report (unless detached)
-    const hours = roundVisitHours(Math.max(0, (te.clockOut - te.clockIn) / 3_600_000));
-    const rate = rateByContractor?.[te.contractorId] ?? rateFor(te.billingRole, rates);
-    out.push({ entry: te, hours, amount: round2(hours * rate) });
-  }
-  return out.sort((a, b) => a.entry.clockIn - b.entry.clockIn);
+// Report labour = the batch "+ Add hours" manual lines on the report (v1.8:
+// contracting clock-in was removed; contractors use regular TimeMaster, which
+// is payroll-side and does not flow here). Each line bills at its rateOverride,
+// else the role/override rate resolved in computeReportTotals.
+export function labourForReport(report: { manualTime?: ContractingTimeEntry[] }): LabourInput[] {
+  return (report.manualTime || []).map(mt => ({
+    contractorId: mt.contractorId, name: mt.contractorName, billingRole: mt.billingRole,
+    hours: Number(mt.hours) || 0, rate: mt.rateOverride,
+  }));
 }
 
 // ── Billables per project/phase, derived from entered invoices (pre-HST) ────
@@ -152,6 +109,7 @@ export interface PhaseBillables {
 export function phaseBillables(projectId: string, phaseId: string | undefined, invoices: ContractingInvoice[]): PhaseBillables {
   let invoicedPreHst = 0, paidPreHst = 0, invoicedWithHst = 0, paidWithHst = 0;
   for (const inv of invoices) {
+    if (inv.voided) continue;                             // voided → zero to every total
     if (inv.projectId !== projectId) continue;
     if (phaseId && inv.phaseId && inv.phaseId !== phaseId) continue;
     if (phaseId && !inv.phaseId) continue;
@@ -180,6 +138,7 @@ export interface ProjectBillables {
 export function projectBillables(project: ContractingProject, invoices: ContractingInvoice[], reports: ContractingProgressReport[]): ProjectBillables {
   let invPre = 0, invFull = 0, colPre = 0, colFull = 0;
   for (const inv of invoices) {
+    if (inv.voided) continue;                             // voided → excluded from rollup
     if (inv.projectId !== project.id) continue;
     invPre += Number(inv.amountPreHst) || 0; invFull += Number(inv.total) || 0;
     if (inv.paid) { colPre += Number(inv.amountPreHst) || 0; colFull += Number(inv.total) || 0; }
@@ -279,14 +238,14 @@ export function phaseReadyToBill(phase: ContractingPhase): boolean {
 // A phase has invoiced billing if any invoice references it OR any progress
 // report on it has been invoiced. Guards fixed↔T&M switches and removal.
 export function phaseHasInvoicedBilling(projectId: string, phaseId: string, invoices: ContractingInvoice[], reports: ContractingProgressReport[]): boolean {
-  if (invoices.some(i => i.projectId === projectId && i.phaseId === phaseId)) return true;
+  if (invoices.some(i => !i.voided && i.projectId === projectId && i.phaseId === phaseId)) return true;
   if (reports.some(r => r.projectId === projectId && r.phaseId === phaseId && r.status === 'invoiced')) return true;
   return false;
 }
 // A phase can be safely REMOVED only when nothing is attached: no invoices,
 // no reports (open or closed), no time entries.
 export function phaseIsRemovable(projectId: string, phaseId: string, invoices: ContractingInvoice[], reports: ContractingProgressReport[], timeEntries: ContractingTimeEntry[]): boolean {
-  if (invoices.some(i => i.projectId === projectId && i.phaseId === phaseId)) return false;
+  if (invoices.some(i => !i.voided && i.projectId === projectId && i.phaseId === phaseId)) return false;
   if (reports.some(r => r.projectId === projectId && r.phaseId === phaseId)) return false;
   if (timeEntries.some(t => t.projectId === projectId && t.phaseId === phaseId)) return false;
   return true;
@@ -297,7 +256,7 @@ export function phaseIsRemovable(projectId: string, phaseId: string, invoices: C
 // promote-to-project copies, never references — so there's nothing to check.)
 // Anything attached → archive instead.
 export function projectIsRemovable(projectId: string, invoices: ContractingInvoice[], reports: ContractingProgressReport[], timeEntries: ContractingTimeEntry[]): boolean {
-  if (invoices.some(i => i.projectId === projectId)) return false;
+  if (invoices.some(i => !i.voided && i.projectId === projectId)) return false;
   if (reports.some(r => r.projectId === projectId)) return false;
   if (timeEntries.some(t => t.projectId === projectId)) return false;
   return true;

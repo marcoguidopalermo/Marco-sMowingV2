@@ -2232,22 +2232,6 @@ export default function App() {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingSuppliers: list } });
   };
-  // Attach unbilled time entries to an open report. GUARD: an entry that is
-  // already invoiced OR attached to any report is skipped — one report ever,
-  // no double-billing path.
-  const attachUnbilledLabour = async (reportId: string, entryIds: string[]) => {
-    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
-    const report = subContractingProgressReportsRef.current[reportId];
-    if (!report || report.status !== 'open') { showToastMsg('Report not open.'); return; }
-    let n = 0;
-    for (const id of entryIds) {
-      const te = subContractingTimeEntriesRef.current[id];
-      if (!te || te.status === 'invoiced' || te.reportId) continue;   // guard
-      await setDoc(doc(roleColl('contractingTimeEntries'), id), cleanRM({ ...te, reportId }));
-      n++;
-    }
-    showToastMsg(n ? `Attached ${n} entr${n === 1 ? 'y' : 'ies'} to the report.` : 'Nothing to attach.');
-  };
   const saveContractingProject = async (p: ContractingProject) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     await setDoc(doc(roleColl('contractingProjects'), p.id), cleanRM(p));
@@ -2306,12 +2290,6 @@ export default function App() {
     await appendContractingAudit(archived ? 'project.archive' : 'project.restore', `${proj.name}`);
     showToastMsg(archived ? 'Project archived.' : 'Project restored.');
   };
-  const saveContractingTimeEntry = async (t: ContractingTimeEntry) => {
-    // Any contractor may clock; managers may add/edit. Guard: contractors can
-    // only write their own entries.
-    if (!canManageContracting && t.contractorId !== contractingUser.id) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('contractingTimeEntries'), t.id), cleanRM(t));
-  };
   const saveContractingReport = async (r: ContractingProgressReport) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     await setDoc(doc(roleColl('contractingProgressReports'), r.id), cleanRM(r));
@@ -2331,30 +2309,14 @@ export default function App() {
     await setDoc(doc(roleColl('contractingProgressReports'), rep.id), cleanRM(rep));
     showToastMsg('Billing period opened.');
   };
-  // Detach a window-attached clock entry from its open report → back to
-  // UNBILLED labour (the underlying time record is preserved, not destroyed).
-  const detachContractingTimeEntry = async (entryId: string) => {
-    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
-    const te = subContractingTimeEntriesRef.current[entryId];
-    if (!te || te.status === 'invoiced') { showToastMsg('Cannot detach an invoiced entry.'); return; }
-    await setDoc(doc(roleColl('contractingTimeEntries'), entryId), cleanRM({ ...te, detached: true, reportId: null }));
-    await appendContractingAudit('report.detach', `${te.contractorName} time (${new Date(te.clockIn).toLocaleDateString('en-CA')}) → unbilled`);
-    showToastMsg('Moved to unbilled labour.');
-  };
-  // Close-without-invoicing (discard) an open report. If it holds materials or
-  // manual lines, require clearing them first (the open-report workbench makes
-  // that trivial) — nothing is silently destroyed. Attached clock time returns
-  // to unbilled. Audited.
+  // Close-without-invoicing (discard) an open report. Empty → delete outright;
+  // if it holds materials or manual lines, require clearing them first (the
+  // open-report workbench makes that trivial) — nothing is silently destroyed.
   const discardContractingReport = async (reportId: string) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     const report = subContractingProgressReportsRef.current[reportId];
     if (!report || report.status !== 'open') { showToastMsg('Report not open.'); return; }
-    if ((report.receipts || []).length || (report.manualTime || []).length) { showToastMsg('Clear this period’s material and manual lines first, then discard.'); return; }
-    // Any explicitly-attached clock entries → release to unbilled (window
-    // entries fall back automatically once the report is gone).
-    for (const te of Object.values(subContractingTimeEntriesRef.current)) {
-      if (te.reportId === reportId && te.status !== 'invoiced') await setDoc(doc(roleColl('contractingTimeEntries'), te.id), cleanRM({ ...te, reportId: null }));
-    }
+    if ((report.receipts || []).length || (report.manualTime || []).length) { showToastMsg('Clear this period’s material and hours lines first, then discard.'); return; }
     await deleteDoc(doc(roleColl('contractingProgressReports'), reportId));
     await appendContractingAudit('report.discard', `Report #${report.reportNumber} closed without invoicing (empty)`);
     showToastMsg('Period discarded.');
@@ -2373,18 +2335,10 @@ export default function App() {
     if (!report || report.status !== 'open') { showToastMsg('Report not open.'); return; }
     const now = Date.now();
     const ended: ContractingProgressReport = { ...report, endAt: now };
-    const labour = labourForReport(ended, Object.values(subContractingTimeEntriesRef.current), now);
+    // Labour = the report's batch "+ Add hours" lines (manual). Contracting
+    // clock-in was removed in v1.8 — nothing to auto-attach or freeze.
+    const labour = labourForReport(ended);
     const snapshot = computeReportTotals(labour, report.receipts, contractingRates, rateMapFor(appData.employees || [], contractingRates));
-    // Which clock entries got billed → mark invoiced (freeze). Matches
-    // labourForReport: explicitly-attached entries (reportId === this report)
-    // OR unattached entries inside the window. Entries on another report are
-    // never touched (one-report-ever).
-    const billedEntries = Object.values(subContractingTimeEntriesRef.current).filter(te => {
-      if (te.manual || te.status === 'invoiced' || te.phaseId !== report.phaseId) return false;
-      if (te.reportId === report.id) return true;
-      if (te.reportId) return false;
-      return !!te.clockOut && te.clockIn >= report.startAt && te.clockIn < now;
-    });
     const number = nextProgNumber(Object.values(subContractingInvoicesRef.current));
     const project = subContractingProjectsRef.current[report.projectId];
     const phase = project?.phases.find(ph => ph.id === report.phaseId);
@@ -2396,10 +2350,9 @@ export default function App() {
       // period end (= now) until then.
       issuedAt: now, dueAt: now + 14 * 86400000, awaitingSend: true, paid: false, createdBy: contractingUser, createdAt: now,
     };
-    // Persist: frozen report, invoice, time entries invoiced, next open period.
+    // Persist: frozen report + minted invoice, then auto-open the next period.
     await setDoc(doc(roleColl('contractingProgressReports'), report.id), cleanRM({ ...ended, status: 'invoiced', snapshot, updatedAt: now }));
     await setDoc(doc(roleColl('contractingInvoices'), invoice.id), cleanRM(invoice));
-    for (const te of billedEntries) await setDoc(doc(roleColl('contractingTimeEntries'), te.id), cleanRM({ ...te, status: 'invoiced', reportId: report.id }));
     const nextNo = report.reportNumber + 1;
     const next: ContractingProgressReport = { id: `crep-${now}-${Math.random().toString(36).slice(2, 6)}`, projectId: report.projectId, phaseId: report.phaseId, startAt: now, status: 'open', reportNumber: nextNo, receipts: [], manualTime: [], createdAt: now, updatedAt: now };
     await setDoc(doc(roleColl('contractingProgressReports'), next.id), cleanRM(next));
@@ -2409,13 +2362,43 @@ export default function App() {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     await setDoc(doc(roleColl('contractingInvoices'), inv.id), cleanRM(inv));
   };
-  const deleteContractingInvoice = async (id: string) => {
-    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('contractingInvoices'), id));
-    showToastMsg('Invoice deleted.');
+  // VOID an invoice (never hard-delete): it contributes zero to every total
+  // and is hidden from default views, surviving as an accounted stub so PROG
+  // numbering stays sequential. Voiding RELEASES the backing report's lines
+  // back to billable — the report reopens (or, if the phase already has an open
+  // period, its labour + materials fold into that one) so the work re-invoices.
+  const voidContractingInvoice = async (id: string, reason: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const inv = subContractingInvoicesRef.current[id];
+    if (!inv || inv.voided) return;
+    const now = Date.now();
+    if (inv.reportId) {
+      const R = subContractingProgressReportsRef.current[inv.reportId];
+      if (R) {
+        const otherOpen = Object.values(subContractingProgressReportsRef.current).find(r => r.id !== R.id && r.projectId === R.projectId && r.phaseId === R.phaseId && r.status === 'open');
+        if (otherOpen) {
+          // Fold the voided report's lines into the existing open period, drop R.
+          await setDoc(doc(roleColl('contractingProgressReports'), otherOpen.id), cleanRM({ ...otherOpen, manualTime: [...(otherOpen.manualTime || []), ...(R.manualTime || [])], receipts: [...(otherOpen.receipts || []), ...(R.receipts || [])], updatedAt: now }));
+          await deleteDoc(doc(roleColl('contractingProgressReports'), R.id));
+        } else {
+          // Reopen the backing report → its lines are billable again.
+          await setDoc(doc(roleColl('contractingProgressReports'), R.id), cleanRM({ ...R, status: 'open', endAt: null, snapshot: null, updatedAt: now }));
+        }
+      }
+    }
+    await setDoc(doc(roleColl('contractingInvoices'), id), cleanRM({ ...inv, voided: true, voidReason: reason, voidedBy: displayName, voidedAt: now, paid: false, paidAt: null }));
+    await appendContractingAudit('invoice.void', `${inv.number} (${inv.total ? '$' + inv.total : ''}) voided — ${reason}`);
+    showToastMsg(`${inv.number} voided.`);
   };
   const saveContractingWorkOrder = async (w: ContractingWorkOrder) => {
     await setDoc(doc(roleColl('contractingWorkOrders'), w.id), cleanRM(w));
+  };
+  const deleteContractingWorkOrder = async (id: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const w = subContractingWorkOrdersRef.current[id];
+    await deleteDoc(doc(roleColl('contractingWorkOrders'), id));
+    await appendContractingAudit('workorder.delete', `${w?.title || id}${w?.property ? ` @ ${w.property}` : ''}`);
+    showToastMsg('Work order deleted.');
   };
   const saveContractingShoppingItem = async (s: ContractingShoppingItem) => {
     await setDoc(doc(roleColl('contractingShoppingList'), s.id), cleanRM(s));
@@ -4720,21 +4703,19 @@ export default function App() {
           onSaveRates={saveContractingRates}
           onSaveProperties={saveContractingProperties}
           onSaveSuppliers={saveContractingSuppliers}
-          onAttachUnbilled={attachUnbilledLabour}
-          onDetachTimeEntry={detachContractingTimeEntry}
           onDiscardReport={discardContractingReport}
           onLogEdit={logContractingEdit}
           onSaveProject={saveContractingProject}
           onDeleteProject={deleteContractingProject}
           onArchiveProject={archiveContractingProject}
           onMergePhases={mergeContractingPhases}
-          onSaveTimeEntry={saveContractingTimeEntry}
           onOpenReport={openContractingReport}
           onEndReport={endContractingReport}
           onSaveReport={saveContractingReport}
           onSaveInvoice={saveContractingInvoice}
-          onDeleteInvoice={deleteContractingInvoice}
+          onVoidInvoice={voidContractingInvoice}
           onSaveWorkOrder={saveContractingWorkOrder}
+          onDeleteWorkOrder={deleteContractingWorkOrder}
           onSaveShoppingItem={saveContractingShoppingItem}
         />
       ) : (

@@ -9,10 +9,10 @@ import {
   ContractingProperty, ContractingSupplier, ContractingPhaseType, Employee, StoredFile,
 } from '../types';
 import {
-  HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled, roundVisitHours,
+  HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled,
   computeReportTotals, labourForReport, phaseBillables, phaseReadyToBill, withHst,
-  PALERMO, reportDayN, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor, contractorRate,
-  unbilledLabour, UnbilledEntry, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
+  PALERMO, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor,
+  projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
   projectBillables, projectCompletionPct,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
@@ -36,21 +36,19 @@ interface Props {
   onSaveRates: (r: ContractingRateCard) => void;
   onSaveProperties: (list: ContractingProperty[]) => void;
   onSaveSuppliers: (list: ContractingSupplier[]) => void;
-  onAttachUnbilled: (reportId: string, entryIds: string[]) => void;
-  onDetachTimeEntry: (entryId: string) => void;
   onDiscardReport: (reportId: string) => void;
   onLogEdit: (detail: string) => void;
   onSaveProject: (p: ContractingProject) => void;
   onDeleteProject: (id: string) => void;
   onArchiveProject: (id: string, archived: boolean) => void;
   onMergePhases: (projectId: string, sourceId: string, targetId: string, mergedName?: string) => void;
-  onSaveTimeEntry: (t: ContractingTimeEntry) => void;
   onOpenReport: (projectId: string, phaseId: string, startAt?: number) => void;
   onEndReport: (reportId: string) => void;
   onSaveReport: (r: ContractingProgressReport) => void;
   onSaveInvoice: (inv: ContractingInvoice) => void;
-  onDeleteInvoice: (id: string) => void;
+  onVoidInvoice: (id: string, reason: string) => void;
   onSaveWorkOrder: (w: ContractingWorkOrder) => void;
+  onDeleteWorkOrder: (id: string) => void;
   onSaveShoppingItem: (s: ContractingShoppingItem) => void;
 }
 
@@ -73,13 +71,14 @@ const dateInputVal = (ms: number) => { const d = new Date(ms); return `${d.getFu
 const dateFromInput = (s: string) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0).getTime(); };
 const STATUS_LABEL: Record<ContractingStatus, string> = { planned: 'Planned', in_progress: 'In Progress', on_hold: 'On Hold', complete: 'Complete', closed: 'Closed' };
 
-type Tab = 'mytime' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
+type Tab = 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
 
 export default function ContractingMaster(props: Props) {
   const { canManage, isAdmin, currentUser } = props;
   const rates = ratesOrDefault(props.rates);
-  // Contractors (no financials) open on My Time; managers open on Projects.
-  const [tab, setTab] = useState<Tab>(canManage ? 'projects' : 'mytime');
+  // Contractors get Work Orders + Shopping (they clock in regular TimeMaster,
+  // not here). Managers open on Projects.
+  const [tab, setTab] = useState<Tab>(canManage ? 'projects' : 'workorders');
 
   const projects = useMemo(() => Object.values(props.projects).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)), [props.projects]);
   const invoices = useMemo(() => Object.values(props.invoices), [props.invoices]);
@@ -105,7 +104,6 @@ export default function ContractingMaster(props: Props) {
   // FINANCIALS (projects, reports, invoices, billables, rate card) are
   // admin + contracting-manager ONLY — enforced by absence (not rendered).
   const tabs: { id: Tab; label: string; show: boolean }[] = [
-    { id: 'mytime', label: 'My Time', show: true },
     { id: 'projects', label: 'Projects', show: canManage },
     { id: 'reports', label: 'Reports', show: canManage },
     { id: 'invoices', label: 'Invoices', show: canManage },
@@ -127,7 +125,7 @@ export default function ContractingMaster(props: Props) {
           <div className="w-9 h-9 rounded flex items-center justify-center font-black text-lg" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>P</div>
           <div>
             <div className="text-white font-bold text-lg leading-tight">Palermo's Contracting</div>
-            <div className="text-xs" style={{ color: PALERMO.gold }}>{canManage ? 'ContractingMaster · T&M + fixed billing' : 'Time · Work Orders · Shopping'}</div>
+            <div className="text-xs" style={{ color: PALERMO.gold }}>{canManage ? 'ContractingMaster · T&M + fixed billing' : 'Work Orders · Shopping'}</div>
           </div>
         </div>
       </div>
@@ -147,7 +145,6 @@ export default function ContractingMaster(props: Props) {
           and an open keyboard. */}
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
       <div className="p-3 md:p-4 max-w-5xl mx-auto pb-24 md:pb-8">
-        {tab === 'mytime' && <MyTimeTab {...props} rates={rates} timeEntries={timeEntries} projects={projects} />}
         {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} projects={projects} reports={reports} timeEntries={timeEntries} rateOverrides={rateOverrides} nav={nav} focusProjectId={focusProjectId} onConsumeFocus={() => setFocusProjectId(null)} />}
         {tab === 'reports' && canManage && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} invoices={invoices} rateOverrides={rateOverrides} nav={nav} />}
         {tab === 'invoices' && canManage && <InvoicesTab {...props} invoices={invoices} reports={reports} projects={projects} nav={nav} initialFilter={invoiceFilter} />}
@@ -172,38 +169,6 @@ export default function ContractingMaster(props: Props) {
           onGoToReports={viewedInvoice.reportId ? () => { setViewInvoiceId(null); nav.goToReports(); } : undefined}
         />
       )}
-    </div>
-  );
-}
-
-// ──────────────────────────────────────────────────────────── MY TIME ──────
-// Clock in/out against a project + T&M phase. Visible to ALL contracting
-// users; shows NO dollar figures unless the viewer is a manager.
-function MyTimeTab(p: Ctx & { rates: ContractingRateCard; timeEntries: ContractingTimeEntry[]; projects: ContractingProject[] }) {
-  const me = p.currentUser;
-  const mine = p.timeEntries.filter(t => t.contractorId === me.id).sort((a, b) => b.clockIn - a.clockIn).slice(0, 12);
-  const projName = (id: string) => p.projects.find(x => x.id === id)?.name || '—';
-  const phaseName = (pid: string, phid: string) => p.projects.find(x => x.id === pid)?.phases.find(ph => ph.id === phid)?.name || '—';
-  return (
-    <div>
-      <h2 className="font-bold text-lg mb-2" style={{ color: PALERMO.slate }}>My time</h2>
-      <ClockPanel {...p} timeEntries={p.timeEntries} />
-      <div className="mt-4">
-        <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Recent sessions</div>
-        <div className="space-y-1">
-          {mine.map(t => (
-            <div key={t.id} className="bg-white rounded border p-2 text-sm flex items-center justify-between">
-              <span>{projName(t.projectId)} · {phaseName(t.projectId, t.phaseId)}</span>
-              <span className="text-gray-500">
-                {new Date(t.clockIn).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}
-                {t.clockOut ? ` · ${((t.clockOut - t.clockIn) / 3600000).toFixed(2)}h` : ' · open'}
-                {t.status === 'invoiced' && <span className="ml-1 text-[10px] px-1 rounded bg-slate-100">billed</span>}
-              </span>
-            </div>
-          ))}
-          {mine.length === 0 && <div className="text-gray-400 text-sm">No sessions yet.</div>}
-        </div>
-      </div>
     </div>
   );
 }
@@ -312,8 +277,6 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
   const [editing, setEditing] = useState(false);
   const save = (updater: (proj: ContractingProject) => ContractingProject) => p.onSaveProject({ ...updater(project), updatedAt: Date.now() });
   const removePhase = (phaseId: string) => save(pr => ({ ...pr, phases: pr.phases.filter(x => x.id !== phaseId) }));
-  const unbilled = unbilledLabour(project.id, p.timeEntries, p.reports, p.rates, Date.now(), p.rateOverrides);
-  const phaseName = (id: string) => project.phases.find(ph => ph.id === id)?.name || '—';
   const [deleting, setDeleting] = useState(false);
   const [merging, setMerging] = useState(false);
   const removable = projectIsRemovable(project.id, p.invoices, p.reports, p.timeEntries);
@@ -398,27 +361,6 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
         ))}
         {project.phases.length === 0 && <div className="text-gray-500 text-sm">No phases yet.</div>}
       </div>
-
-      {/* Unbilled labour — completed sessions not captured by any invoiced or
-          open report (clocked in a gap / on a phase with no open period). Pull
-          them into an open report from the Reports tab. */}
-      {unbilled.length > 0 && (
-        <div className="mt-5">
-          <div className="flex items-center justify-between mb-1">
-            <h3 className="font-semibold text-sm uppercase" style={{ color: '#C0392B' }}>Unbilled labour</h3>
-            <span className="text-xs text-gray-500">{unbilled.length} entr{unbilled.length === 1 ? 'y' : 'ies'} · {round2(unbilled.reduce((s, u) => s + u.hours, 0))} hrs · {money(unbilled.reduce((s, u) => s + u.amount, 0))}</span>
-          </div>
-          <div className="bg-white rounded-lg border divide-y">
-            {unbilled.map(u => (
-              <div key={u.entry.id} className="p-2 flex items-center justify-between text-sm">
-                <span>{u.entry.contractorName} <span className="text-gray-400">· {phaseName(u.entry.phaseId)} · {fmtDate(u.entry.clockIn)}</span></span>
-                <span className="text-gray-600">{u.hours}h · <b style={{ color: PALERMO.slate }}>{money(u.amount)}</b></span>
-              </div>
-            ))}
-          </div>
-          <button onClick={() => p.nav.goToReports()} className="text-xs mt-1" style={{ color: PALERMO.slate }}>Attach from an open report →</button>
-        </div>
-      )}
 
       {addingPhase && <PhaseForm onClose={() => setAddingPhase(false)} onSave={ph => { save(pr => ({ ...pr, phases: [...pr.phases, ph] })); setAddingPhase(false); }} />}
     </div>
@@ -522,14 +464,12 @@ function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProje
   const ready = phaseReadyToBill(phase);
   const [newItem, setNewItem] = useState('');
   const [editing, setEditing] = useState(false);
-  const [batchOpen, setBatchOpen] = useState(false);
+  const [creatingInvoice, setCreatingInvoice] = useState(false);
   const hasBilling = phaseHasInvoicedBilling(project.id, phase.id, p.invoices, p.reports);
   const removable = phaseIsRemovable(project.id, phase.id, p.invoices, p.reports, p.timeEntries);
-  // This phase's invoices + reports, for two-way linkage.
-  const phaseInvoices = p.invoices.filter(i => i.projectId === project.id && i.phaseId === phase.id).sort((a, b2) => (a.issuedAt || 0) - (b2.issuedAt || 0));
+  // This phase's invoices (non-voided) + reports, for two-way linkage.
+  const phaseInvoices = p.invoices.filter(i => i.projectId === project.id && i.phaseId === phase.id && !i.voided).sort((a, b2) => (a.issuedAt || 0) - (b2.issuedAt || 0));
   const phaseReports = p.reports.filter(r => r.projectId === project.id && r.phaseId === phase.id).sort((a, b2) => a.reportNumber - b2.reportNumber);
-  const openReport = phaseReports.find(r => r.status === 'open');
-  const contractors = p.employees.filter(e => e.systemRole === 'contractor');
   const pct = Math.max(0, Math.min(100, Number(phase.completionPct) || 0));
 
   const toggleDone = (item: ContractingChecklistItem) => {
@@ -551,7 +491,7 @@ function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProje
           <span className="text-xs font-bold" style={{ color: PALERMO.gold }}>{pct}%</span>
         </div>
         <div className="flex items-center gap-2">
-          {canManage && openReport && <button onClick={() => setBatchOpen(true)} className="text-xs px-2 py-0.5 rounded text-white font-black" style={{ backgroundColor: PALERMO.gold }}>+ Hours</button>}
+          {canManage && <button onClick={() => setCreatingInvoice(true)} className="text-xs px-2 py-0.5 rounded text-white font-black" style={{ backgroundColor: PALERMO.gold }}>+ Invoice</button>}
           {canManage
             ? <StatusSelect value={phase.status} onChange={s => p.onUpdatePhase({ ...phase, status: s })} small />
             : <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100">{STATUS_LABEL[phase.status]}</span>}
@@ -569,7 +509,7 @@ function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProje
         onClose={() => setEditing(false)}
         onSave={np => { p.onUpdatePhase(np); setEditing(false); }}
         onRemove={() => { p.onRemovePhase(); setEditing(false); }} />}
-      {batchOpen && openReport && <BatchHoursForm report={openReport} contractors={contractors} rates={ratesOrDefault(p.rates)} rateOverrides={p.rateOverrides} currentUser={currentUser} onClose={() => setBatchOpen(false)} onSave={rows => { p.onSaveReport({ ...openReport, manualTime: [...openReport.manualTime, ...rows], updatedAt: Date.now() }); p.onLogEdit(`Batch-added ${rows.length} hours line(s) to report #${openReport.reportNumber}`); setBatchOpen(false); }} />}
+      {creatingInvoice && <CreateInvoiceForm projects={[project]} presetProjectId={project.id} presetPhaseId={phase.id} currentUser={currentUser} onClose={() => setCreatingInvoice(false)} onSave={inv => { p.onSaveInvoice(inv); setCreatingInvoice(false); }} />}
       {phase.description && <div className="text-sm text-gray-600 mt-1">{phase.description}</div>}
       {phase.note && <div className="text-xs mt-1 px-2 py-1 rounded" style={{ backgroundColor: '#FEF9E7', color: PALERMO.gold }}>⚑ {phase.note}</div>}
 
@@ -755,127 +695,63 @@ function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingP
   );
 }
 
-function ClockPanel(p: Ctx & { projects: ContractingProject[]; timeEntries: ContractingTimeEntry[] }) {
-  const me = p.currentUser;
-  const myOpen = p.timeEntries.find(t => t.contractorId === me.id && !t.manual && !t.clockOut && t.status === 'open');
-  const [projectId, setProjectId] = useState('');
-  const [phaseId, setPhaseId] = useState('');
-  const myEmp = p.employees.find(e => e.id === me.id);
-  const myRole = (myEmp?.contractingBillingRole || 'general_labour') as ContractingBillingRole;
-  const proj = p.projects.find(x => x.id === projectId);
-  const tmPhases = proj?.phases.filter(ph => ph.type === 'tm') || [];
-
-  if (myOpen) {
-    const proj2 = p.projects.find(x => x.id === myOpen.projectId);
-    const ph2 = proj2?.phases.find(x => x.id === myOpen.phaseId);
-    return (
-      <div className="rounded-lg p-3 text-white flex items-center justify-between" style={{ backgroundColor: PALERMO.slate }}>
-        <div>
-          <div className="text-xs" style={{ color: PALERMO.gold }}>Clocked in · {proj2?.name} · {ph2?.name}</div>
-          <div className="text-sm">Since {new Date(myOpen.clockIn).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' })}</div>
-        </div>
-        <button onClick={() => p.onSaveTimeEntry({ ...myOpen, clockOut: Date.now() })} className="px-4 py-2 rounded font-bold" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>Clock out</button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-lg border bg-white p-3">
-      <div className="text-xs font-semibold text-gray-500 uppercase mb-1">My clock · {ROLE_LABEL[myRole]}{p.canManage ? ` @ ${money(contractorRate(myEmp, ratesOrDefault(p.rates)))}/hr` : ''}</div>
-      <div className="flex flex-wrap gap-2">
-        <select className="inp flex-1 min-w-[130px]" value={projectId} onChange={e => { setProjectId(e.target.value); setPhaseId(''); }}>
-          <option value="">Project…</option>
-          {p.projects.map(pr => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
-        </select>
-        <select className="inp flex-1 min-w-[130px]" value={phaseId} onChange={e => setPhaseId(e.target.value)} disabled={!projectId}>
-          <option value="">T&M phase…</option>
-          {tmPhases.map(ph => <option key={ph.id} value={ph.id}>{ph.name}</option>)}
-        </select>
-        <button disabled={!projectId || !phaseId} onClick={() => {
-          p.onSaveTimeEntry({ id: uid('cte'), projectId, phaseId, contractorId: me.id, contractorName: me.name, billingRole: myRole, clockIn: Date.now(), status: 'open', createdBy: me, createdAt: Date.now() });
-          setProjectId(''); setPhaseId('');
-        }} className="px-4 py-2 rounded font-bold text-white disabled:opacity-40" style={{ backgroundColor: PALERMO.gold }}>Clock in</button>
-      </div>
-    </div>
-  );
-}
-
 function OpenReport(p: Ctx & { report: ContractingProgressReport; project: ContractingProject; phase: ContractingPhase; rates: ContractingRateCard; timeEntries: ContractingTimeEntry[]; reports: ContractingProgressReport[]; contractors: Employee[]; rateOverrides: Record<string, number>; nav: Nav }) {
   const { report, canManage } = p;
-  const now = Date.now();
   const rc = ratesOrDefault(p.rates);
-  const labour = labourForReport(report, p.timeEntries, now);
+  const labour = labourForReport(report);
   const snap = computeReportTotals(labour, report.receipts, p.rates, p.rateOverrides);
-  const dayN = reportDayN(report.startAt, now);
-  const unbilled = unbilledLabour(report.projectId, p.timeEntries, p.reports, p.rates, now, p.rateOverrides).filter(u => u.entry.phaseId === report.phaseId);
-  // Individual clock sessions flowing into this report (for detach control).
-  const attachedClock = p.timeEntries.filter(te => !te.manual && te.status !== 'invoiced' && te.phaseId === report.phaseId && !te.detached && (te.reportId === report.id || (!te.reportId && !!te.clockOut && te.clockIn >= report.startAt && te.clockIn < now)));
   const manualRate = (t: ContractingTimeEntry) => (t.rateOverride != null && t.rateOverride > 0) ? t.rateOverride : (p.rateOverrides[t.contractorId] ?? rateFor(t.billingRole, rc));
-  const clockRate = (te: ContractingTimeEntry) => p.rateOverrides[te.contractorId] ?? rateFor(te.billingRole, rc);
-  const clockHours = (te: ContractingTimeEntry) => roundVisitHours(Math.max(0, ((te.clockOut || now) - te.clockIn) / 3_600_000));
 
   const [batchOpen, setBatchOpen] = useState(false);
   const [editManual, setEditManual] = useState<ContractingTimeEntry | null>(null);
-  const [addingReceipt, setAddingReceipt] = useState(false);
+  const [addingMaterial, setAddingMaterial] = useState(false);
   const [editReceipt, setEditReceipt] = useState<ContractingReceipt | null>(null);
-  const [attaching, setAttaching] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [viewPhotos, setViewPhotos] = useState<StoredFile[] | null>(null);
 
   const saveReport = (patch: Partial<ContractingProgressReport>) => p.onSaveReport({ ...report, ...patch, updatedAt: Date.now() });
   const removeReceipt = (r: ContractingReceipt) => { saveReport({ receipts: report.receipts.filter(x => x.id !== r.id) }); p.onLogEdit(`Deleted material "${r.description}" (${money(r.billed)}) on report #${report.reportNumber}`); };
-  const removeManual = (t: ContractingTimeEntry) => { saveReport({ manualTime: report.manualTime.filter(x => x.id !== t.id) }); p.onLogEdit(`Deleted ${t.contractorName} ${t.hours}h manual line on report #${report.reportNumber}`); };
+  const removeManual = (t: ContractingTimeEntry) => { saveReport({ manualTime: report.manualTime.filter(x => x.id !== t.id) }); p.onLogEdit(`Deleted ${t.contractorName} ${t.hours}h hours line on report #${report.reportNumber}`); };
 
   return (
     <div className="mt-2 border-t pt-2">
       <div className="flex items-center justify-between">
-        <span className="text-xs text-gray-500">Report #{report.reportNumber} · since {fmtDate(report.startAt)}</span>
-        <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={dayN >= 14 ? { backgroundColor: '#F39C12', color: 'white' } : { backgroundColor: '#EBF5FB', color: '#2874A6' }}>Day {dayN} of 14{dayN >= 14 ? ' — time to bill' : ''}</span>
+        <span className="text-xs text-gray-500">Report #{report.reportNumber}</span>
+        <span className="text-xs text-gray-400">open since {fmtDate(report.startAt)}</span>
       </div>
 
-      {/* Labour — itemized, editable workbench */}
+      {/* Labour — batch "+ Add hours" lines (editable workbench) */}
       <div className="mt-2">
         <div className="flex items-center justify-between">
           <div className="text-[11px] font-semibold text-gray-500 uppercase">Labour</div>
           {canManage && <button onClick={() => setBatchOpen(true)} className="text-xs font-black px-2.5 py-1 rounded text-white" style={{ backgroundColor: PALERMO.gold }}>+ Add hours</button>}
         </div>
-        {report.manualTime.length === 0 && attachedClock.length === 0 && <div className="text-xs text-gray-400">No time yet.</div>}
-        {/* Manual / batch entries — "Jul 18 — Tony · 10 hr @ $150 = $1,500" */}
+        {report.manualTime.length === 0 && <div className="text-xs text-gray-400">No hours yet.</div>}
+        {/* "Jul 18 — Tony · 10 hr @ $150 = $1,500" */}
         {report.manualTime.map(t => { const r = manualRate(t); return (
           <div key={t.id} className="flex justify-between text-sm items-center">
             <span>{fmtShort(t.clockIn)} — {t.contractorName} · {t.hours} hr @ {money(r)}{t.rateOverride != null ? <span className="text-[9px] ml-1 px-1 rounded bg-amber-100 text-amber-700">rate override</span> : ''}</span>
             <span className="flex items-center gap-2"><b>{money((Number(t.hours) || 0) * r)}</b>{canManage && <><button onClick={() => setEditManual(t)} className="text-[11px]" style={{ color: PALERMO.slate }}>edit</button><button onClick={() => removeManual(t)} className="text-red-400 text-sm">×</button></>}</span>
           </div>
         ); })}
-        {/* Auto-attached clock sessions — detach returns them to unbilled. */}
-        {attachedClock.map(te => (
-          <div key={te.id} className="flex justify-between text-sm items-center text-gray-600">
-            <span>{fmtShort(te.clockIn)} — {te.contractorName} · {clockHours(te)} hr @ {money(clockRate(te))} <span className="text-[9px] px-1 rounded bg-slate-100">clock</span></span>
-            <span className="flex items-center gap-2"><b>{money(clockHours(te) * clockRate(te))}</b>{canManage && <button onClick={() => p.onDetachTimeEntry(te.id)} title="Move to unbilled labour" className="text-amber-600 text-[11px]">detach</button>}</span>
-          </div>
-        ))}
-        {canManage && unbilled.length > 0 && (
-          <div className="mt-1 text-[11px] px-2 py-1 rounded flex items-center justify-between" style={{ backgroundColor: '#FDEDEC', color: '#C0392B' }}>
-            <span>{unbilled.length} unbilled entr{unbilled.length === 1 ? 'y' : 'ies'} · {round2(unbilled.reduce((s, u) => s + u.hours, 0))} hrs</span>
-            <button onClick={() => setAttaching(true)} className="underline font-semibold">add unbilled →</button>
-          </div>
-        )}
       </div>
 
       {/* Materials */}
       <div className="mt-2">
-        <div className="text-[11px] font-semibold text-gray-500 uppercase">Materials (billed — cost/markup internal)</div>
-        {report.receipts.length === 0 && <div className="text-xs text-gray-400">No receipts yet.</div>}
+        <div className="flex items-center justify-between">
+          <div className="text-[11px] font-semibold text-gray-500 uppercase">Materials (billed — cost/markup internal)</div>
+          {canManage && <button onClick={() => setAddingMaterial(true)} className="text-xs font-black px-2.5 py-1 rounded text-white" style={{ backgroundColor: PALERMO.gold }}>+ Add material</button>}
+        </div>
+        {report.receipts.length === 0 && <div className="text-xs text-gray-400">No materials yet.</div>}
         {report.receipts.map(r => (
           <div key={r.id} className="flex justify-between text-sm items-center">
-            <span>{r.description}
+            <span>{fmtShort(r.addedAt)} — {r.description}
               {canManage && <span className="text-[10px] text-gray-400"> · cost {money(r.cost)} +{r.markupPct}%</span>}
               {r.photo && <button onClick={() => setViewPhotos([r.photo!])} className="text-[10px] ml-1" style={{ color: PALERMO.gold }}>📷</button>}
             </span>
             <span className="flex items-center gap-2"><b>{money(r.billed)}</b>{canManage && <><button onClick={() => setEditReceipt(r)} className="text-[11px]" style={{ color: PALERMO.slate }}>edit</button><button onClick={() => removeReceipt(r)} className="text-red-400 text-sm">×</button></>}</span>
           </div>
         ))}
-        {canManage && <button onClick={() => setAddingReceipt(true)} className="text-xs mt-1" style={{ color: PALERMO.slate }}>+ Receipt</button>}
       </div>
 
       {/* Live preview */}
@@ -890,31 +766,34 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
       {canManage && (
         <div className="flex gap-2 mt-2">
           <button onClick={() => setReviewing(true)} disabled={snap.subtotalPreHst <= 0} className="flex-1 py-2 rounded text-white font-bold disabled:opacity-40" style={{ backgroundColor: PALERMO.slate }}>End report &amp; bill →</button>
-          <button onClick={() => confirm('Discard this open period without invoicing? Empty periods are removed; clock time returns to unbilled.') && p.onDiscardReport(report.id)} className="px-3 py-2 rounded border font-semibold text-red-600 border-red-200">Discard</button>
+          <button onClick={() => confirm('Discard this open period without invoicing? (Only empty periods are removed.)') && p.onDiscardReport(report.id)} className="px-3 py-2 rounded border font-semibold text-red-600 border-red-200">Discard</button>
         </div>
       )}
 
-      {batchOpen && <BatchHoursForm report={report} contractors={p.contractors} rates={rc} rateOverrides={p.rateOverrides} currentUser={p.currentUser} onClose={() => setBatchOpen(false)} onSave={rows => { saveReport({ manualTime: [...report.manualTime, ...rows] }); p.onLogEdit(`Batch-added ${rows.length} hours line(s) to report #${report.reportNumber}`); setBatchOpen(false); }} />}
-      {editManual && <ManualLineEditForm line={editManual} rates={rc} rateOverrides={p.rateOverrides} onClose={() => setEditManual(null)} onSave={upd => { saveReport({ manualTime: report.manualTime.map(x => x.id === upd.id ? upd : x) }); p.onLogEdit(`Edited ${upd.contractorName} manual line on report #${report.reportNumber}`); setEditManual(null); }} />}
-      {addingReceipt && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} onClose={() => setAddingReceipt(false)} onSave={rc2 => { saveReport({ receipts: [...report.receipts, rc2] }); setAddingReceipt(false); }} />}
+      {batchOpen && <BatchHoursForm report={report} contractors={p.contractors} rates={rc} rateOverrides={p.rateOverrides} currentUser={p.currentUser} onClose={() => setBatchOpen(false)} onSave={rows => { saveReport({ manualTime: [...report.manualTime, ...rows] }); p.onLogEdit(`Added ${rows.length} hours line(s) to report #${report.reportNumber}`); setBatchOpen(false); }} />}
+      {editManual && <ManualLineEditForm line={editManual} rates={rc} rateOverrides={p.rateOverrides} onClose={() => setEditManual(null)} onSave={upd => { saveReport({ manualTime: report.manualTime.map(x => x.id === upd.id ? upd : x) }); p.onLogEdit(`Edited ${upd.contractorName} hours line on report #${report.reportNumber}`); setEditManual(null); }} />}
+      {addingMaterial && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} addAnother onClose={() => setAddingMaterial(false)} onSave={rc2 => saveReport({ receipts: [...report.receipts, rc2] })} />}
       {editReceipt && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} initial={editReceipt} onClose={() => setEditReceipt(null)} onSave={rc2 => { saveReport({ receipts: report.receipts.map(x => x.id === rc2.id ? rc2 : x) }); p.onLogEdit(`Edited material "${rc2.description}" on report #${report.reportNumber}`); setEditReceipt(null); }} />}
-      {attaching && <AttachUnbilledForm unbilled={unbilled} onClose={() => setAttaching(false)} onAttach={ids => { p.onAttachUnbilled(report.id, ids); setAttaching(false); }} />}
       {reviewing && <ReviewConfirm report={report} project={p.project} phase={p.phase} snap={snap} onClose={() => setReviewing(false)} onConfirm={() => { p.onEndReport(report.id); setReviewing(false); }} />}
       {viewPhotos && <PhotoViewer files={viewPhotos} onClose={() => setViewPhotos(null)} />}
     </div>
   );
 }
 
-function ReceiptForm({ project, uploadedBy, currentUser, initial, onClose, onSave }: { project: ContractingProject; uploadedBy: { email: string; name: string }; currentUser: { id: string; name: string }; initial?: ContractingReceipt; onClose: () => void; onSave: (r: ContractingReceipt) => void }) {
+function ReceiptForm({ project, uploadedBy, currentUser, initial, addAnother, onClose, onSave }: { project: ContractingProject; uploadedBy: { email: string; name: string }; currentUser: { id: string; name: string }; initial?: ContractingReceipt; addAnother?: boolean; onClose: () => void; onSave: (r: ContractingReceipt) => void }) {
   const [description, setDescription] = useState(initial?.description || '');
   const [cost, setCost] = useState(initial ? String(initial.cost) : '');
   const [markup, setMarkup] = useState(initial ? String(initial.markupPct) : '0');
   const [ref, setRef] = useState(initial?.preApprovedRef || '');
   const [photo, setPhoto] = useState<StoredFile | undefined>(initial?.photo);
   const [uploading, setUploading] = useState(false);
+  const [added, setAdded] = useState(0);
   const billed = receiptBilled(Number(cost) || 0, Number(markup) || 0);
+  const build = (): ContractingReceipt => ({ id: initial?.id || uid('crc'), description: description.trim(), cost: Number(cost) || 0, markupPct: Number(markup) || 0, billed, photo, preApprovedRef: ref.trim() || undefined, addedBy: initial?.addedBy || currentUser, addedAt: initial?.addedAt || Date.now() });
+  const reset = () => { setDescription(''); setCost(''); setMarkup('0'); setRef(''); setPhoto(undefined); };
+  const valid = !!description.trim() && !uploading;
   return (
-    <Modal title={initial ? 'Edit material' : 'Add receipt / material'} onClose={onClose}>
+    <Modal title={initial ? 'Edit material' : 'Add material'} onClose={onClose}>
       <Field label="Description"><input className="inp" value={description} onChange={e => setDescription(e.target.value)} /></Field>
       <div className="grid grid-cols-2 gap-2">
         <Field label="Cost (internal, pre-HST)"><input className="inp" type="number" value={cost} onChange={e => setCost(e.target.value)} /></Field>
@@ -930,10 +809,14 @@ function ReceiptForm({ project, uploadedBy, currentUser, initial, onClose, onSav
         {uploading && <span className="text-xs text-gray-400">Uploading…</span>}
         {photo && <span className="text-xs text-green-600">✓ attached</span>}
       </Field>
-      <ModalActions onClose={onClose} disabled={!description.trim() || uploading} onSave={() => onSave({
-        id: initial?.id || uid('crc'), description: description.trim(), cost: Number(cost) || 0, markupPct: Number(markup) || 0, billed,
-        photo, preApprovedRef: ref.trim() || undefined, addedBy: initial?.addedBy || currentUser, addedAt: initial?.addedAt || Date.now(),
-      })} />
+      {addAnother && !initial ? (
+        <div className="flex gap-2 mt-2">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded border font-semibold">Done{added ? ` (${added} added)` : ''}</button>
+          <button onClick={() => { if (!valid) return; onSave(build()); setAdded(a => a + 1); reset(); }} disabled={!valid} className="flex-1 py-2.5 rounded text-white font-bold disabled:opacity-40" style={{ backgroundColor: PALERMO.gold }}>Add &amp; another</button>
+        </div>
+      ) : (
+        <ModalActions onClose={onClose} disabled={!valid} onSave={() => onSave(build())} />
+      )}
     </Modal>
   );
 }
@@ -1029,37 +912,9 @@ function OpenPeriodForm({ proj, ph, lastEnd, onClose, onOpen }: { proj: Contract
       <Field label="Start date"><input className="inp" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
       {lastEnd ? <div className="text-xs text-gray-500 mb-2">Last invoiced period ended {fmtDate(lastEnd)}. Contiguous start keeps periods gap-free.</div>
         : <div className="text-xs text-gray-500 mb-2">First period on this phase.</div>}
-      {gapDays > 0 && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FEF9E7', color: PALERMO.gold }}>⚠ Leaves a {gapDays}-day gap after the last period — time clocked in that gap won't auto-attach (it'll surface as unbilled labour).</div>}
+      {gapDays > 0 && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FEF9E7', color: PALERMO.gold }}>⚠ Leaves a {gapDays}-day gap after the last invoiced period.</div>}
       {gapDays < 0 && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FDEDEC', color: '#C0392B' }}>⚠ Starts before the last period ended — overlapping periods.</div>}
       <ModalActions onClose={onClose} disabled={false} onSave={() => onOpen(picked)} />
-    </Modal>
-  );
-}
-
-// Pick unbilled clock sessions to attach to the current open report. Attached
-// entries flow into the preview/invoice; each can attach to ONE report ever.
-function AttachUnbilledForm({ unbilled, onClose, onAttach }: { unbilled: UnbilledEntry[]; onClose: () => void; onAttach: (ids: string[]) => void }) {
-  const [sel, setSel] = useState<Record<string, boolean>>(() => Object.fromEntries(unbilled.map(u => [u.entry.id, true])));
-  const chosen = unbilled.filter(u => sel[u.entry.id]);
-  const totalHours = round2(chosen.reduce((s, u) => s + u.hours, 0));
-  const totalVal = round2(chosen.reduce((s, u) => s + u.amount, 0));
-  return (
-    <Modal title="Add unbilled labour" onClose={onClose}>
-      <div className="text-xs text-gray-500 mb-2">These completed sessions weren't captured by any period. Selected entries attach to this report and bill with it.</div>
-      <div className="border rounded divide-y">
-        {unbilled.map(u => (
-          <label key={u.entry.id} className="flex items-center gap-2 p-2 text-sm">
-            <input type="checkbox" checked={!!sel[u.entry.id]} onChange={e => setSel(s => ({ ...s, [u.entry.id]: e.target.checked }))} />
-            <span className="flex-1">{u.entry.contractorName} <span className="text-gray-400">· {fmtDate(u.entry.clockIn)}</span></span>
-            <span>{u.hours}h · <b>{money(u.amount)}</b></span>
-          </label>
-        ))}
-      </div>
-      <div className="text-sm mt-2">Attaching <b>{chosen.length}</b> · {totalHours} hrs · <b style={{ color: PALERMO.gold }}>{money(totalVal)}</b></div>
-      <div className="flex gap-2 mt-3">
-        <button onClick={onClose} className="flex-1 py-2.5 rounded border font-semibold">Cancel</button>
-        <button onClick={() => onAttach(chosen.map(u => u.entry.id))} disabled={chosen.length === 0} className="flex-1 py-2.5 rounded text-white font-bold disabled:opacity-40" style={{ backgroundColor: PALERMO.gold }}>Attach {chosen.length || ''}</button>
-      </div>
     </Modal>
   );
 }
@@ -1090,22 +945,24 @@ function ReviewConfirm({ report, project, phase, snap, onClose, onConfirm }: { r
 
 // ─────────────────────────────────────────────────────────── INVOICES ──────
 function InvoicesTab(p: Ctx & { invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; projects: ContractingProject[]; nav: Nav; initialFilter: { projectId?: string; phaseId?: string } }) {
-  const { canManage, isAdmin, nav } = p;
+  const { canManage, nav } = p;
   const [adding, setAdding] = useState(false);
+  const [showVoided, setShowVoided] = useState(false);
   const [projectId, setProjectId] = useState(p.initialFilter.projectId || '');
   const [phaseId, setPhaseId] = useState(p.initialFilter.phaseId || '');
   const proj = p.projects.find(x => x.id === projectId);
   const projName = (id: string) => p.projects.find(x => x.id === id)?.name || '—';
   const phaseName = (pid: string, phid?: string) => phid ? (p.projects.find(x => x.id === pid)?.phases.find(ph => ph.id === phid)?.name || '—') : 'Whole project';
-  const list = [...p.invoices]
-    .filter(inv => (!projectId || inv.projectId === projectId) && (!phaseId || inv.phaseId === phaseId))
-    .sort((a, b) => (b.issuedAt || b.createdAt || 0) - (a.issuedAt || a.createdAt || 0));
+  const matches = (inv: ContractingInvoice) => (!projectId || inv.projectId === projectId) && (!phaseId || inv.phaseId === phaseId);
+  const list = [...p.invoices].filter(inv => !inv.voided && matches(inv)).sort((a, b) => (b.issuedAt || b.createdAt || 0) - (a.issuedAt || a.createdAt || 0));
+  const voidedList = [...p.invoices].filter(inv => inv.voided && matches(inv)).sort((a, b) => (b.voidedAt || 0) - (a.voidedAt || 0));
+  const voidInvoice = (inv: ContractingInvoice) => { const reason = prompt(`Void ${inv.number}? This releases its work back to billable. Reason:`); if (reason && reason.trim()) p.onVoidInvoice(inv.id, reason.trim()); };
 
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
         <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Invoices</h2>
-        {canManage && <button onClick={() => setAdding(true)} className="px-3 py-1.5 rounded text-white text-sm font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Historical invoice</button>}
+        {canManage && <button onClick={() => setAdding(true)} className="px-3 py-1.5 rounded text-white text-sm font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Create invoice</button>}
       </div>
       {/* Filter by project + phase */}
       <div className="flex gap-2 mb-3">
@@ -1147,51 +1004,86 @@ function InvoicesTab(p: Ctx & { invoices: ContractingInvoice[]; reports: Contrac
                 <button onClick={() => nav.openInvoice(inv.id)} className="text-xs px-2 py-1 rounded border">View</button>
                 {canManage && stage === 'minted' && <button onClick={() => p.onSaveInvoice({ ...inv, awaitingSend: false, sentAt: Date.now(), sentBy: p.currentUser.name, dueAt: Date.now() + 14 * 86400000 })} className="text-xs px-2 py-1 rounded text-white" style={{ backgroundColor: PALERMO.slate }}>Mark sent</button>}
                 {canManage && !inv.paid && <button onClick={() => p.onSaveInvoice({ ...inv, paid: true, paidAt: Date.now(), paidBy: p.currentUser.name })} className="text-xs px-2 py-1 rounded text-white" style={{ backgroundColor: PALERMO.gold }}>Mark paid</button>}
-                {isAdmin && <button onClick={() => confirm(`Delete ${inv.number}?`) && p.onDeleteInvoice(inv.id)} className="text-xs px-2 py-1 rounded text-red-500">Delete</button>}
+                {canManage && <button onClick={() => voidInvoice(inv)} className="text-xs px-2 py-1 rounded text-red-500">Void</button>}
               </div>
             </div>
           );
         })}
         {list.length === 0 && <div className="text-gray-500 text-sm">No invoices{projectId ? ' for this filter' : ''}.</div>}
       </div>
-      {adding && <HistoricalInvoiceForm projects={p.projects} currentUser={p.currentUser} onClose={() => setAdding(false)} onSave={inv => { p.onSaveInvoice(inv); setAdding(false); }} />}
+
+      {/* Voided — accounted stubs, zero to every total, collapsed by default. */}
+      {voidedList.length > 0 && (
+        <div className="mt-4">
+          <button onClick={() => setShowVoided(s => !s)} className="text-xs font-semibold text-gray-500 uppercase">{showVoided ? '▾' : '▸'} Voided ({voidedList.length})</button>
+          {showVoided && (
+            <div className="space-y-1 mt-2">
+              {voidedList.map(inv => (
+                <div key={inv.id} className="bg-white/60 rounded border p-2 text-sm opacity-70">
+                  <div className="flex items-center justify-between">
+                    <span className="line-through" style={{ color: PALERMO.slate }}><b>{inv.number}</b> · {money(inv.total)}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700">VOID</span>
+                  </div>
+                  <div className="text-[11px] text-gray-500">{projName(inv.projectId)} · voided{inv.voidedBy ? ` by ${inv.voidedBy}` : ''}{inv.voidedAt ? ` · ${fmtDate(inv.voidedAt)}` : ''} — {inv.voidReason}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {adding && <CreateInvoiceForm projects={p.projects} currentUser={p.currentUser} onClose={() => setAdding(false)} onSave={inv => { p.onSaveInvoice(inv); setAdding(false); }} />}
     </div>
   );
 }
 
-function HistoricalInvoiceForm({ projects, currentUser, onClose, onSave }: { projects: ContractingProject[]; currentUser: { id: string; name: string }; onClose: () => void; onSave: (i: ContractingInvoice) => void }) {
+// One CREATE INVOICE flow — covers past and new invoices. Launchable from a
+// phase card (phase pre-filled) or the Invoices tab (phase picked here).
+function CreateInvoiceForm({ projects, presetProjectId, presetPhaseId, currentUser, onClose, onSave }: { projects: ContractingProject[]; presetProjectId?: string; presetPhaseId?: string; currentUser: { id: string; name: string }; onClose: () => void; onSave: (i: ContractingInvoice) => void }) {
   const [number, setNumber] = useState('');
-  const [projectId, setProjectId] = useState(projects[0]?.id || '');
-  const [phaseId, setPhaseId] = useState('');
-  const [kind, setKind] = useState<ContractingInvoice['kind']>('historical');
+  const [projectId, setProjectId] = useState(presetProjectId || projects[0]?.id || '');
+  const [phaseId, setPhaseId] = useState(presetPhaseId || '');
+  const [kind, setKind] = useState<ContractingInvoice['kind']>(presetPhaseId ? 'completion' : 'historical');
+  const [dateStr, setDateStr] = useState(dateInputVal(Date.now()));
   const [amount, setAmount] = useState('');
   const [scope, setScope] = useState('');
-  const [paid, setPaid] = useState(false);
+  const [status, setStatus] = useState<'sent' | 'paid'>('sent');
   const proj = projects.find(x => x.id === projectId);
+  const lockPhase = !!presetPhaseId;
   const pre = Number(amount) || 0;
   const w = withHst(pre);
   return (
-    <Modal title="Enter historical invoice" onClose={onClose}>
+    <Modal title="Create invoice" onClose={onClose}>
       <div className="grid grid-cols-2 gap-2">
-        <Field label="Invoice #"><input className="inp" value={number} onChange={e => setNumber(e.target.value)} placeholder="PROG-001" /></Field>
+        <Field label="Invoice #"><input className="inp" value={number} onChange={e => setNumber(e.target.value)} placeholder="e.g. INV-1004" /></Field>
         <Field label="Kind">
           <select className="inp" value={kind} onChange={e => setKind(e.target.value as ContractingInvoice['kind'])}>
             {(['historical', 'retainer', 'completion', 'tm'] as const).map(k => <option key={k} value={k}>{k}</option>)}
           </select>
         </Field>
       </div>
-      <Field label="Project"><select className="inp" value={projectId} onChange={e => { setProjectId(e.target.value); setPhaseId(''); }}>{projects.map(pr => <option key={pr.id} value={pr.id}>{pr.name}</option>)}</select></Field>
-      <Field label="Phase (optional)"><select className="inp" value={phaseId} onChange={e => setPhaseId(e.target.value)}><option value="">— whole project —</option>{proj?.phases.map(ph => <option key={ph.id} value={ph.id}>{ph.name}</option>)}</select></Field>
-      <Field label="Amount (pre-HST)"><input className="inp" type="number" value={amount} onChange={e => setAmount(e.target.value)} /></Field>
+      {!presetProjectId && <Field label="Project"><select className="inp" value={projectId} onChange={e => { setProjectId(e.target.value); setPhaseId(''); }}>{projects.map(pr => <option key={pr.id} value={pr.id}>{pr.name}</option>)}</select></Field>}
+      <Field label="Phase">
+        {lockPhase
+          ? <div className="inp bg-slate-50">{proj?.phases.find(ph => ph.id === phaseId)?.name || '—'}</div>
+          : <select className="inp" value={phaseId} onChange={e => setPhaseId(e.target.value)}><option value="">— whole project —</option>{proj?.phases.map(ph => <option key={ph.id} value={ph.id}>{ph.name}</option>)}</select>}
+      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Date"><input className="inp" type="date" value={dateStr} onChange={e => setDateStr(e.target.value)} /></Field>
+        <Field label="Amount (pre-HST)"><input className="inp" type="number" value={amount} onChange={e => setAmount(e.target.value)} /></Field>
+      </div>
       <div className="text-sm mb-2">{money(w.preHst)} + {money(w.hst)} HST = <b>{money(w.total)}</b></div>
-      <Field label="Scope description (client-facing)"><textarea className="inp" rows={2} value={scope} onChange={e => setScope(e.target.value)} /></Field>
-      <label className="flex items-center gap-2 text-sm mb-2"><input type="checkbox" checked={paid} onChange={e => setPaid(e.target.checked)} /> Already paid</label>
-      <ModalActions onClose={onClose} disabled={!number.trim() || !projectId || pre <= 0} onSave={() => onSave({
+      <Field label="Period / description (client-facing)"><textarea className="inp" rows={2} value={scope} onChange={e => setScope(e.target.value)} /></Field>
+      <Field label="Status">
+        <div className="flex gap-2">
+          {(['sent', 'paid'] as const).map(s => <button key={s} onClick={() => setStatus(s)} className="flex-1 py-1.5 rounded border text-sm capitalize font-semibold" style={status === s ? { backgroundColor: PALERMO.slate, color: 'white' } : {}}>{s}</button>)}
+        </div>
+      </Field>
+      <ModalActions onClose={onClose} disabled={!number.trim() || !projectId || pre <= 0} onSave={() => { const at = dateFromInput(dateStr); onSave({
         id: uid('cinv'), number: number.trim(), projectId, phaseId: phaseId || undefined, kind,
         amountPreHst: w.preHst, hst: w.hst, total: w.total, scopeDescription: scope.trim() || undefined,
-        issuedAt: Date.now(), dueAt: Date.now() + 14 * 86400000, paid, paidAt: paid ? Date.now() : undefined, paidBy: paid ? currentUser.name : undefined,
+        issuedAt: at, dueAt: at + 14 * 86400000, sentAt: at, paid: status === 'paid', paidAt: status === 'paid' ? at : undefined, paidBy: status === 'paid' ? currentUser.name : undefined,
         createdBy: currentUser, createdAt: Date.now(),
-      })} />
+      }); }} />
     </Modal>
   );
 }
@@ -1270,9 +1162,19 @@ function InvoiceView({ invoice, project, report, canSeeInternal, onClose, onGoTo
 // ────────────────────────────────────────────────────────── WORK ORDERS ────
 function WorkOrdersTab(p: Props) {
   const [filter, setFilter] = useState<string>('All');
+  const [mineOnly, setMineOnly] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [adding, setAdding] = useState(false);
   const activeProps = p.properties.filter(x => x.active !== false);
-  const list = Object.values(p.workOrders).filter(w => filter === 'All' || w.property === filter).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const contractors = p.employees.filter(e => e.systemRole === 'contractor');
+  const meId = p.currentUser.id;
+  const newest = (a: ContractingWorkOrder, b: ContractingWorkOrder) => (b.createdAt || 0) - (a.createdAt || 0);
+  const match = (w: ContractingWorkOrder) => (filter === 'All' || w.property === filter) && (!mineOnly || w.assigneeId === meId);
+  const live = Object.values(p.workOrders).filter(w => !w.archived && match(w));
+  const activeList = live.filter(w => w.status !== 'done').sort(newest);
+  const doneList = live.filter(w => w.status === 'done').sort(newest);
+  const archivedList = Object.values(p.workOrders).filter(w => w.archived && match(w)).sort(newest);
 
   return (
     <div>
@@ -1281,30 +1183,49 @@ function WorkOrdersTab(p: Props) {
         <button onClick={() => setAdding(true)} className="px-3 py-1.5 rounded text-white text-sm font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Work order</button>
       </div>
       <div className="flex gap-1 overflow-x-auto pb-2">
+        {/* Default view is everyone/all — "Assigned to me" is opt-in. */}
+        <button onClick={() => setMineOnly(m => !m)} className="px-2.5 py-1 rounded-full text-xs whitespace-nowrap font-semibold border" style={mineOnly ? { backgroundColor: PALERMO.gold, color: 'white', borderColor: PALERMO.gold } : {}}>Assigned to me</button>
         {['All', ...activeProps.map(x => x.name)].map(name => {
           const corp = activeProps.find(x => x.name === name)?.corp;
           return <button key={name} onClick={() => setFilter(name)} className="px-2.5 py-1 rounded-full text-xs whitespace-nowrap font-semibold border" style={filter === name ? { backgroundColor: PALERMO.slate, color: 'white' } : corp ? { borderColor: PALERMO.gold, color: PALERMO.gold } : {}}>{corp ? '★ ' : ''}{name}</button>;
         })}
       </div>
       <div className="space-y-2">
-        {list.map(w => <WorkOrderCard key={w.id} wo={w} {...p} />)}
-        {list.length === 0 && <div className="text-gray-500 text-sm">No work orders{filter !== 'All' ? ` for ${filter}` : ''}.</div>}
+        {activeList.map(w => <WorkOrderCard key={w.id} wo={w} contractors={contractors} {...p} />)}
+        {activeList.length === 0 && <div className="text-gray-500 text-sm">No open work orders{filter !== 'All' ? ` for ${filter}` : ''}{mineOnly ? ' assigned to you' : ''}.</div>}
       </div>
-      {adding && <WorkOrderForm currentUser={p.currentUser} uploadedBy={p.uploadedBy} properties={activeProps} onClose={() => setAdding(false)} onSave={w => { p.onSaveWorkOrder(w); setAdding(false); }} defaultProperty={filter === 'All' ? (activeProps[0]?.name || '') : filter} />}
+
+      {/* Completed — dimmed, collapsed. */}
+      {doneList.length > 0 && (
+        <div className="mt-4">
+          <button onClick={() => setShowCompleted(s => !s)} className="text-xs font-semibold text-gray-500 uppercase">{showCompleted ? '▾' : '▸'} Completed ({doneList.length})</button>
+          {showCompleted && <div className="space-y-2 mt-2 opacity-70">{doneList.map(w => <WorkOrderCard key={w.id} wo={w} contractors={contractors} {...p} />)}</div>}
+        </div>
+      )}
+      {/* Archived — hidden by default. */}
+      {archivedList.length > 0 && (
+        <div className="mt-3">
+          <button onClick={() => setShowArchived(s => !s)} className="text-xs font-semibold text-gray-400 uppercase">{showArchived ? '▾' : '▸'} Archived ({archivedList.length})</button>
+          {showArchived && <div className="space-y-2 mt-2 opacity-60">{archivedList.map(w => <WorkOrderCard key={w.id} wo={w} contractors={contractors} {...p} />)}</div>}
+        </div>
+      )}
+      {adding && <WorkOrderForm currentUser={p.currentUser} uploadedBy={p.uploadedBy} properties={activeProps} contractors={contractors} onClose={() => setAdding(false)} onSave={w => { p.onSaveWorkOrder(w); setAdding(false); }} defaultProperty={filter === 'All' ? (activeProps[0]?.name || '') : filter} />}
     </div>
   );
 }
 
-function WorkOrderCard(p: Props & { wo: ContractingWorkOrder }) {
+function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Employee[] }) {
   const { wo, canManage } = p;
   const [viewPhotos, setViewPhotos] = useState<StoredFile[] | null>(null);
   const corp = p.properties.find(x => x.name === wo.property)?.corp;
   const cycle: ContractingWorkOrder['status'][] = ['open', 'in_progress', 'done'];
   const nextStatus = () => cycle[(cycle.indexOf(wo.status) + 1) % 3];
+  const save = (patch: Partial<ContractingWorkOrder>) => p.onSaveWorkOrder({ ...wo, ...patch, updatedAt: Date.now() });
   const promote = () => {
     p.onSaveProject({ id: uid('cproj'), name: wo.title, status: 'planned', propertyRef: wo.property, phases: [], notes: wo.description, createdBy: p.currentUser, createdAt: Date.now(), updatedAt: Date.now() });
-    p.onSaveWorkOrder({ ...wo, status: 'done', completionNote: (wo.completionNote ? wo.completionNote + ' · ' : '') + 'Promoted to project', updatedAt: Date.now() });
+    save({ status: 'done', completionNote: (wo.completionNote ? wo.completionNote + ' · ' : '') + 'Promoted to project' });
   };
+  const assign = (id: string) => { const c = p.contractors.find(x => x.id === id); save({ assigneeId: id || undefined, assigneeName: c?.name || undefined }); };
   return (
     <div className="bg-white rounded-lg border p-3">
       <div className="flex items-center justify-between">
@@ -1315,24 +1236,34 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder }) {
         <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: wo.priority === 'high' ? '#FADBD8' : wo.priority === 'normal' ? '#EBF5FB' : '#F8F9F9', color: wo.priority === 'high' ? '#C0392B' : '#555' }}>{wo.priority}</span>
       </div>
       {wo.description && <div className="text-sm text-gray-600 mt-1">{wo.description}</div>}
+      {/* Assignee — shown on the row; picker for Marco/Tony. */}
+      <div className="text-xs mt-1 flex items-center gap-2">
+        <span className="text-gray-400">Assignee:</span>
+        {canManage
+          ? <select className="inp text-xs py-0.5" style={{ width: 'auto' }} value={wo.assigneeId || ''} onChange={e => assign(e.target.value)}><option value="">Unassigned</option>{p.contractors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+          : <span className="font-semibold" style={{ color: PALERMO.slate }}>{wo.assigneeName || 'Unassigned'}</span>}
+      </div>
       {wo.completionNote && <div className="text-xs text-gray-500 mt-1 italic">✓ {wo.completionNote}</div>}
       {wo.photos && wo.photos.length > 0 && <button onClick={() => setViewPhotos(wo.photos!)} className="text-xs mt-1" style={{ color: PALERMO.gold }}>📷 {wo.photos.length} photo(s)</button>}
       <div className="flex items-center gap-2 mt-2 flex-wrap">
-        <button onClick={() => p.onSaveWorkOrder({ ...wo, status: nextStatus(), updatedAt: Date.now() })} className="text-xs px-2.5 py-1.5 rounded text-white font-semibold" style={{ backgroundColor: wo.status === 'done' ? '#27AE60' : PALERMO.slate }}>
+        <button onClick={() => save({ status: nextStatus() })} className="text-xs px-2.5 py-1.5 rounded text-white font-semibold" style={{ backgroundColor: wo.status === 'done' ? '#27AE60' : PALERMO.slate }}>
           {wo.status === 'open' ? 'Start' : wo.status === 'in_progress' ? 'Mark done' : '✓ Done (reopen)'}
         </button>
-        {canManage && wo.status !== 'done' && <button onClick={promote} className="text-xs px-2.5 py-1.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>Promote to project</button>}
+        {canManage && wo.status !== 'done' && <button onClick={promote} className="text-xs px-2.5 py-1.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>Promote</button>}
+        {canManage && <button onClick={() => save({ archived: !wo.archived })} className="text-xs px-2.5 py-1.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>{wo.archived ? 'Unarchive' : 'Archive'}</button>}
+        {canManage && <button onClick={() => confirm(`Delete work order "${wo.title}"?`) && p.onDeleteWorkOrder(wo.id)} className="text-xs px-2.5 py-1.5 rounded text-red-500 font-semibold ml-auto">Delete</button>}
       </div>
       {viewPhotos && <PhotoViewer files={viewPhotos} onClose={() => setViewPhotos(null)} />}
     </div>
   );
 }
 
-function WorkOrderForm({ currentUser, uploadedBy, properties, onClose, onSave, defaultProperty }: { currentUser: { id: string; name: string }; uploadedBy: { email: string; name: string }; properties: ContractingProperty[]; onClose: () => void; onSave: (w: ContractingWorkOrder) => void; defaultProperty: string }) {
+function WorkOrderForm({ currentUser, uploadedBy, properties, contractors, onClose, onSave, defaultProperty }: { currentUser: { id: string; name: string }; uploadedBy: { email: string; name: string }; properties: ContractingProperty[]; contractors: Employee[]; onClose: () => void; onSave: (w: ContractingWorkOrder) => void; defaultProperty: string }) {
   const [property, setProperty] = useState(defaultProperty);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<ContractingWorkOrder['priority']>('normal');
+  const [assigneeId, setAssigneeId] = useState('');
   const [photos, setPhotos] = useState<StoredFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const woId = uid('cwo');
@@ -1342,6 +1273,7 @@ function WorkOrderForm({ currentUser, uploadedBy, properties, onClose, onSave, d
       <Field label="Title"><input className="inp" value={title} onChange={e => setTitle(e.target.value)} /></Field>
       <Field label="Description"><textarea className="inp" rows={2} value={description} onChange={e => setDescription(e.target.value)} /></Field>
       <Field label="Priority"><div className="flex gap-2">{(['low', 'normal', 'high'] as const).map(pr => <button key={pr} onClick={() => setPriority(pr)} className="flex-1 py-1.5 rounded border text-sm capitalize" style={priority === pr ? { backgroundColor: PALERMO.slate, color: 'white' } : {}}>{pr}</button>)}</div></Field>
+      <Field label="Assign to (optional)"><select className="inp" value={assigneeId} onChange={e => setAssigneeId(e.target.value)}><option value="">Unassigned</option>{contractors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
       <Field label="Photos (optional)">
         <input type="file" accept="image/*,application/pdf" onChange={async e => {
           const f = e.target.files?.[0]; if (!f) return; setUploading(true);
@@ -1350,10 +1282,11 @@ function WorkOrderForm({ currentUser, uploadedBy, properties, onClose, onSave, d
         {uploading && <span className="text-xs text-gray-400">Uploading…</span>}
         {photos.length > 0 && <span className="text-xs text-green-600">✓ {photos.length}</span>}
       </Field>
-      <ModalActions onClose={onClose} disabled={!title.trim() || uploading} onSave={() => onSave({
+      <ModalActions onClose={onClose} disabled={!title.trim() || uploading} onSave={() => { const c = contractors.find(x => x.id === assigneeId); onSave({
         id: woId, property, title: title.trim(), description: description.trim() || undefined, priority, status: 'open',
+        assigneeId: assigneeId || undefined, assigneeName: c?.name || undefined,
         photos: photos.length ? photos : undefined, createdBy: currentUser, createdAt: Date.now(), updatedAt: Date.now(),
-      })} />
+      }); }} />
     </Modal>
   );
 }

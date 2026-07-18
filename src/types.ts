@@ -993,6 +993,12 @@ export interface ContractingInvoice {
   paid?: boolean;
   paidAt?: number;
   paidBy?: string;
+  // VOID (not hard-delete): contributes zero to every total, hidden from
+  // default views, kept as an accounted stub so numbering stays sequential.
+  voided?: boolean;
+  voidReason?: string;
+  voidedBy?: string;
+  voidedAt?: number;
   createdBy?: { id: string; name: string };
   createdAt?: number;
 }
@@ -1007,6 +1013,9 @@ export interface ContractingWorkOrder {
   status: ContractingWorkOrderStatus;
   photos?: StoredFile[];
   completionNote?: string;
+  assigneeId?: string;            // assigned contractor (Marco/Tony assign)
+  assigneeName?: string;
+  archived?: boolean;             // hidden from default list (declutter)
   createdBy?: { id: string; name: string };
   createdAt?: number;
   updatedAt?: number;

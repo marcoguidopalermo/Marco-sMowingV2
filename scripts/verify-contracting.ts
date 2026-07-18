@@ -1,6 +1,6 @@
 // Verify ContractingMaster billing math against the exact progress-report
 // example. Run: npx tsx scripts/verify-contracting.ts
-import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, unbilledLabour, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge, projectCompletionPct } from '../src/lib/contracting';
+import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge, projectCompletionPct } from '../src/lib/contracting';
 
 const rates = DEFAULT_CONTRACTING_RATES;
 let pass = 0, fail = 0;
@@ -45,33 +45,16 @@ console.log('\n=== sequential invoice numbering ===');
 ok('after PROG-001 → PROG-002', nextProgNumber([{ number: 'PROG-001' } as any]) === 'PROG-002', nextProgNumber([{ number: 'PROG-001' } as any]));
 ok('after PROG-001..004 → PROG-005', nextProgNumber(['PROG-001', 'PROG-004', 'PROG-002'].map(n => ({ number: n } as any))) === 'PROG-005', nextProgNumber(['PROG-001', 'PROG-004', 'PROG-002'].map(n => ({ number: n } as any))));
 
-console.log('\n=== T&M flow: auto-attach · unbilled · attach · one-report-ever ===');
-const H = 3_600_000;
-const R1: any = { id: 'r1', projectId: 'p', phaseId: 'ph', startAt: 100 * H, status: 'open', receipts: [], manualTime: [] };
-const R2: any = { id: 'r2', projectId: 'p', phaseId: 'ph', startAt: 200 * H, status: 'open', receipts: [], manualTime: [] };
-const NOW = 210 * H;
-// A: clocked INSIDE R1's window → auto-attaches, no reportId needed.
-const A: any = { id: 'A', projectId: 'p', phaseId: 'ph', contractorId: 'kris', contractorName: 'Kris', billingRole: 'skilled_carpenter', clockIn: 101 * H, clockOut: 103 * H, status: 'open' };
-// B: clocked BEFORE R1 opened (a gap) → unbilled until explicitly attached.
-const B: any = { id: 'B', projectId: 'p', phaseId: 'ph', contractorId: 'kris', contractorName: 'Kris', billingRole: 'skilled_carpenter', clockIn: 50 * H, clockOut: 53 * H, status: 'open' };
-let lab = labourForReport(R1, [A, B], NOW);
-ok('A auto-attaches to R1 by window', lab.some(l => l.hours === 2) && lab.length === 1, JSON.stringify(lab.map(l => l.hours)));
-let unb = unbilledLabour('p', [A, B], [R1], DEFAULT_CONTRACTING_RATES, NOW);
-ok('B surfaces as UNBILLED (gap before R1)', unb.length === 1 && unb[0].entry.id === 'B', unb.map(u => u.entry.id).join(','));
-ok('B unbilled value = 3h × $120 = $360', unb[0]?.amount === 360, unb[0]?.amount);
-ok('A is NOT unbilled (auto-captured by R1)', !unb.some(u => u.entry.id === 'A'));
-// Attach B to R1 (sets reportId).
-const Battached = { ...B, reportId: 'r1' };
-lab = labourForReport(R1, [A, Battached], NOW);
-ok('after attach, R1 includes A + B (5h total)', lab.reduce((s, l) => s + l.hours, 0) === 5, lab.reduce((s, l) => s + l.hours, 0));
-unb = unbilledLabour('p', [A, Battached], [R1], DEFAULT_CONTRACTING_RATES, NOW);
-ok('B leaves the unbilled list once attached', unb.length === 0, unb.length);
-// One-report-ever: B attached to R1 must NOT bleed into R2.
-const labR2 = labourForReport(R2, [Battached], NOW);
-ok('B does NOT appear on another report (one-report-ever)', labR2.length === 0, labR2.length);
-// Invoiced entries are frozen out entirely.
-const Binv = { ...B, reportId: 'r1', status: 'invoiced' };
-ok('invoiced entry never re-bills or re-lists', labourForReport(R1, [Binv], NOW).length === 0 && unbilledLabour('p', [Binv], [R1], DEFAULT_CONTRACTING_RATES, NOW).length === 0);
+console.log('\n=== report labour = manual "+ Add hours" lines only (v1.8) ===');
+const rpt: any = { id: 'r1', projectId: 'p', phaseId: 'ph', startAt: 0, status: 'open', receipts: [], manualTime: [
+  { id: 'm1', contractorId: 'tony', contractorName: 'Tony', billingRole: 'gc_pm', hours: 10, clockIn: 100 },
+  { id: 'm2', contractorId: 'kris', contractorName: 'Kris', billingRole: 'skilled_carpenter', hours: 10, rateOverride: 130, clockIn: 100 },
+] };
+const rlab = labourForReport(rpt);
+ok('labour = the manual lines (2)', rlab.length === 2, rlab.length);
+ok('manual rate override carried through', rlab.find(l => l.contractorId === 'kris')?.rate === 130, rlab.find(l => l.contractorId === 'kris')?.rate);
+const rsnap = computeReportTotals(rlab, [], DEFAULT_CONTRACTING_RATES);
+ok('Tony 10×150 + Kris 10×130 = $2,800', rsnap.labourSubtotal === 2800, rsnap.labourSubtotal);
 
 console.log('\n=== project delete guard ===');
 const inv1: any = { id: 'i', projectId: 'p', total: 100 };
@@ -170,13 +153,16 @@ ok('override line bills at $200 (5×200=1000)', !!ov.labourLines.find(l => l.rat
 ok('role line unaffected ($1,500)', !!ov.labourLines.find(l => l.rate === 150 && l.amount === 1500));
 ok('override total = $2,500', ov.labourSubtotal === 2500, ov.labourSubtotal);
 
-console.log('\n=== detach: clock entry → unbilled, not destroyed ===');
-const Rz: any = { id: 'rz', projectId: 'p', phaseId: 'ph', startAt: 0, status: 'open', receipts: [], manualTime: [] };
-const clk: any = { id: 'c1', projectId: 'p', phaseId: 'ph', contractorId: 'kris', contractorName: 'Kris', billingRole: 'skilled_carpenter', clockIn: 3600000, clockOut: 3600000 * 3, status: 'open' };
-ok('attached before detach (in preview)', labourForReport(Rz, [clk], 3600000 * 10).length === 1);
-const detached = { ...clk, detached: true };
-ok('detached entry leaves the report', labourForReport(Rz, [detached], 3600000 * 10).length === 0);
-ok('detached entry appears in UNBILLED', unbilledLabour('p', [detached], [Rz], DEFAULT_CONTRACTING_RATES, 3600000 * 10).length === 1);
+console.log('\n=== voided invoices → zero in every total ===');
+const vproj: any = { id: 'vp', name: 'V', status: 'in_progress', phases: [{ id: 'ph1', type: 'tm', checklist: [] }] };
+const vinvs: any[] = [
+  { id: 'i1', projectId: 'vp', phaseId: 'ph1', amountPreHst: 1000, total: 1130, paid: true },
+  { id: 'i2', projectId: 'vp', phaseId: 'ph1', amountPreHst: 500, total: 565, paid: false, voided: true, voidReason: 'mistake' },
+];
+const vrb = projectBillables(vproj, vinvs, []);
+ok('rollup excludes the voided invoice (invoiced $1,000)', vrb.invoicedPreHst === 1000, vrb.invoicedPreHst);
+ok('rollup collected = $1,000 (voided not counted)', vrb.collectedPreHst === 1000, vrb.collectedPreHst);
+ok('numbering still counts voided stub (PROG after voided PROG-002)', nextProgNumber([{ number: 'PROG-002', voided: true } as any]) === 'PROG-003', nextProgNumber([{ number: 'PROG-002', voided: true } as any]));
 
 console.log('\n=== phase % completion (simple average blend) ===');
 ok('blended = average of phase %s', projectCompletionPct({ phases: [{ completionPct: 100 }, { completionPct: 50 }, { completionPct: 0 }] } as any) === 50, projectCompletionPct({ phases: [{ completionPct: 100 }, { completionPct: 50 }, { completionPct: 0 }] } as any));

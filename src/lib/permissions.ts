@@ -366,10 +366,12 @@ export const ROLE_PERMISSIONS = {
     canAddDeductionsOwnCrew: false,
     canViewAdvancedReports: false,
     canViewAllTimeMaster: false,
-    canViewOwnTimeMaster: false,
+    // Contractors clock their own time in regular TimeMaster (payroll-side
+    // reference; does NOT flow to ContractingMaster reports). v1.8.
+    canViewOwnTimeMaster: true,
     canEditAnyTimeEntry: false,
     canExportTimeCSV: false,
-    canClockInOut: false,
+    canClockInOut: true,
     canPostBulletins: false,
     canDeleteBulletins: false,
     canViewBulletins: false,
