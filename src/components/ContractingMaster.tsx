@@ -112,6 +112,13 @@ export default function ContractingMaster(props: Props) {
   };
   const viewedInvoice = viewInvoiceId ? props.invoices[viewInvoiceId] : null;
 
+  // Work Orders filter state — LIFTED so the Home "My Work Orders" card can
+  // pre-filter it on tap (same state the Work Orders tab reads).
+  const [woMineOnly, setWoMineOnly] = useState(false);
+  const [woProperty, setWoProperty] = useState('All');
+  const [woPriority, setWoPriority] = useState<'all' | 'low' | 'normal' | 'high'>('all');
+  const goToMyWorkOrders = (priority: 'all' | 'low' | 'normal' | 'high' = 'all') => { setWoMineOnly(true); setWoProperty('All'); setWoPriority(priority); setTab('workorders'); };
+
   // FINANCIALS (projects, reports, invoices, billables, rate card) are
   // admin + contracting-manager ONLY — enforced by absence (not rendered).
   const tabs: { id: Tab; label: string; show: boolean }[] = [
@@ -161,9 +168,9 @@ export default function ContractingMaster(props: Props) {
         {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} projects={projects} reports={reports} timeEntries={timeEntries} rateOverrides={rateOverrides} nav={nav} focusProjectId={focusProjectId} onConsumeFocus={() => setFocusProjectId(null)} />}
         {tab === 'reports' && canManage && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} invoices={invoices} rateOverrides={rateOverrides} nav={nav} />}
         {tab === 'invoices' && canManage && <InvoicesTab {...props} invoices={invoices} reports={reports} projects={projects} nav={nav} initialFilter={invoiceFilter} />}
-        {tab === 'home' && <HomeTab {...props} hoursCards={props.hoursCards} personalItems={props.personalItems} shoppingList={props.shoppingList} />}
+        {tab === 'home' && <HomeTab {...props} hoursCards={props.hoursCards} personalItems={props.personalItems} shoppingList={props.shoppingList} workOrders={props.workOrders} onGoToMyWorkOrders={goToMyWorkOrders} />}
         {tab === 'clock' && !canManage && <ContractorClockTab active={props.myActivePunch} today={props.myTodayPunches} onIn={props.onClockIn} onOut={props.onClockOut} name={currentUser.name} />}
-        {tab === 'workorders' && <WorkOrdersTab {...props} />}
+        {tab === 'workorders' && <WorkOrdersTab {...props} mineOnly={woMineOnly} setMineOnly={setWoMineOnly} propFilter={woProperty} setPropFilter={setWoProperty} priorityFilter={woPriority} setPriorityFilter={setWoPriority} />}
         {tab === 'shopping' && <ShoppingTab {...props} />}
         {tab === 'properties' && canManage && <PropertiesTab properties={props.properties} onSaveProperties={props.onSaveProperties} />}
         {tab === 'rates' && canManage && <RatesTab rates={rates} onSaveRates={props.onSaveRates} />}
@@ -231,9 +238,13 @@ function ContractorClockTab({ active, today, onIn, onOut, name }: { active: Time
 // ─────────────────────────────────────────────────────────────── HOME ──────
 // Contractor landing page: own-hours cards (pay-period lens) + three simple
 // lists (private To-do, private Follow-up, shared Material).
-function HomeTab(p: Ctx & { hoursCards: Props['hoursCards']; personalItems: Record<string, ContractingPersonalItem>; shoppingList: Record<string, ContractingShoppingItem> }) {
+function HomeTab(p: Ctx & { hoursCards: Props['hoursCards']; personalItems: Record<string, ContractingPersonalItem>; shoppingList: Record<string, ContractingShoppingItem>; workOrders: Record<string, ContractingWorkOrder>; onGoToMyWorkOrders: (priority?: 'all' | 'low' | 'normal' | 'high') => void }) {
   const me = p.currentUser;
   const mine = Object.values(p.personalItems).filter(i => i.userId === me.id);
+  // My assigned, non-completed, non-archived work orders — grouped by priority.
+  const myWos = Object.values(p.workOrders).filter(w => w.assigneeId === me.id && w.status !== 'done' && !w.archived);
+  const priMeta = { high: { label: 'high priority', dot: '#C0392B', color: '#C0392B' }, normal: { label: 'normal', dot: '#2874A6', color: '#2874A6' }, low: { label: 'low', dot: '#7F8C8D', color: '#566573' } };
+  const priRows = (['high', 'normal', 'low'] as const).map(pri => ({ pri, count: myWos.filter(w => w.priority === pri).length, ...priMeta[pri] })).filter(r => r.count > 0);
   return (
     <div className="max-w-md mx-auto space-y-5">
       {/* HOURS — hours only, never rates or pay amounts */}
@@ -244,6 +255,26 @@ function HomeTab(p: Ctx & { hoursCards: Props['hoursCards']; personalItems: Reco
           <HoursCard label="This paycheque" data={p.hoursCards.current} verb="pays" inProgress />
         </div>
       </div>
+
+      {/* MY WORK ORDERS — counts by priority, tap-through to the pre-filtered list */}
+      <div className="bg-white rounded-xl border">
+        <button onClick={() => p.onGoToMyWorkOrders('all')} className="w-full flex items-center justify-between px-3 py-2 border-b text-left">
+          <span className="text-xs font-black uppercase tracking-widest" style={{ color: PALERMO.slate }}>My work orders</span>
+          <span className="text-xs text-gray-400">{myWos.length} open →</span>
+        </button>
+        <div className="divide-y">
+          {priRows.map(r => (
+            <button key={r.pri} onClick={() => p.onGoToMyWorkOrders(r.pri)} className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-slate-50" style={{ minHeight: 44 }}>
+              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: r.dot }} />
+              <span className="font-black text-lg" style={{ color: r.color }}>{r.count}</span>
+              <span className="text-sm text-gray-600 flex-1">{r.label}</span>
+              <span className="text-gray-300">›</span>
+            </button>
+          ))}
+          {priRows.length === 0 && <div className="px-3 py-3 text-sm text-gray-400">No open work orders</div>}
+        </div>
+      </div>
+
       {/* MY LISTS */}
       <PersonalList title="To-do" list="todo" items={mine.filter(i => i.list === 'todo')} me={me} onSave={p.onSavePersonalItem} onDelete={p.onDeletePersonalItem} />
       <PersonalList title="Follow-up" list="followup" items={mine.filter(i => i.list === 'followup')} me={me} onSave={p.onSavePersonalItem} onDelete={p.onDeletePersonalItem} />
@@ -1346,9 +1377,9 @@ function InvoiceView({ invoice, project, report, canSeeInternal, onClose, onGoTo
 }
 
 // ────────────────────────────────────────────────────────── WORK ORDERS ────
-function WorkOrdersTab(p: Props) {
-  const [filter, setFilter] = useState<string>('All');
-  const [mineOnly, setMineOnly] = useState(false);
+function WorkOrdersTab(p: Props & { mineOnly: boolean; setMineOnly: (b: boolean) => void; propFilter: string; setPropFilter: (s: string) => void; priorityFilter: 'all' | 'low' | 'normal' | 'high'; setPriorityFilter: (v: 'all' | 'low' | 'normal' | 'high') => void }) {
+  const { mineOnly, setMineOnly, priorityFilter, setPriorityFilter } = p;
+  const filter = p.propFilter; const setFilter = p.setPropFilter;
   const [showCompleted, setShowCompleted] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -1356,7 +1387,7 @@ function WorkOrdersTab(p: Props) {
   const contractors = p.employees.filter(e => e.systemRole === 'contractor');
   const meId = p.currentUser.id;
   const newest = (a: ContractingWorkOrder, b: ContractingWorkOrder) => (b.createdAt || 0) - (a.createdAt || 0);
-  const match = (w: ContractingWorkOrder) => (filter === 'All' || w.property === filter) && (!mineOnly || w.assigneeId === meId);
+  const match = (w: ContractingWorkOrder) => (filter === 'All' || w.property === filter) && (!mineOnly || w.assigneeId === meId) && (priorityFilter === 'all' || w.priority === priorityFilter);
   const live = Object.values(p.workOrders).filter(w => !w.archived && match(w));
   const activeList = live.filter(w => w.status !== 'done').sort(newest);
   const doneList = live.filter(w => w.status === 'done').sort(newest);
@@ -1374,12 +1405,15 @@ function WorkOrdersTab(p: Props) {
         <button onClick={() => setMineOnly(true)} className="py-3 rounded-lg font-black text-sm uppercase tracking-wide border-2" style={mineOnly ? { backgroundColor: PALERMO.gold, color: 'white', borderColor: PALERMO.gold } : { color: PALERMO.slate, borderColor: '#D5DBDB' }}>Assigned to me</button>
       </div>
       {/* Property filter — compact dropdown (was a chip row). */}
-      <div className="flex items-center gap-2 mb-3 text-sm">
+      <div className="flex items-center gap-2 mb-3 text-sm flex-wrap">
         <span className="text-gray-500 font-semibold">Property:</span>
-        <select className="inp flex-1" style={{ maxWidth: 260 }} value={filter} onChange={e => setFilter(e.target.value)}>
+        <select className="inp" style={{ maxWidth: 220 }} value={filter} onChange={e => setFilter(e.target.value)}>
           <option value="All">All</option>
           {activeProps.map(x => <option key={x.id} value={x.name}>{x.corp ? '★ ' : ''}{x.name}</option>)}
         </select>
+        {priorityFilter !== 'all' && (
+          <button onClick={() => setPriorityFilter('all')} className="inline-flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-full" style={{ backgroundColor: priorityFilter === 'high' ? '#FADBD8' : priorityFilter === 'normal' ? '#EBF5FB' : '#F8F9F9', color: priorityFilter === 'high' ? '#C0392B' : '#555' }}>{priorityFilter} priority ✕</button>
+        )}
       </div>
       <div className="space-y-2">
         {activeList.map(w => <WorkOrderCard key={w.id} wo={w} contractors={contractors} {...p} />)}
