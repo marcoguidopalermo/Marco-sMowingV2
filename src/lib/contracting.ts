@@ -3,7 +3,7 @@
 import {
   ContractingRateCard, ContractingBillingRole, ContractingReceipt, ContractingLabourLine,
   ContractingReportSnapshot, ContractingProject, ContractingPhase, ContractingInvoice, ContractingTimeEntry,
-  ContractingProperty, ContractingProgressReport, Employee,
+  ContractingProperty, ContractingProgressReport, ContractingSupplier, Employee,
 } from '../types';
 
 export const HST_PCT = 0.13;
@@ -90,8 +90,9 @@ export function computeReportTotals(labour: LabourInput[], receipts: Contracting
 }
 
 // Derive the labour inputs attached to an OPEN report: manual lines on the
-// report PLUS clock sessions (contractingTimeEntries) that started at/after
-// the report's startAt on the same phase. Each clock session is rounded.
+// report PLUS clock sessions on the same phase, captured either by explicit
+// attach (te.reportId === report.id) or by falling within the period window.
+// An entry attached to ANOTHER report is never counted (one-report-ever).
 export function labourForReport(
   report: { id: string; phaseId: string; startAt: number; endAt?: number; manualTime?: ContractingTimeEntry[] },
   timeEntries: ContractingTimeEntry[],
@@ -106,12 +107,37 @@ export function labourForReport(
     if (te.manual) continue;                              // manual lines handled above / on report
     if (te.phaseId !== report.phaseId) continue;
     if (te.status === 'invoiced') continue;
-    if (te.clockIn < report.startAt || te.clockIn >= end) continue; // attaches by start instant
+    const attached = te.reportId === report.id;
+    if (te.reportId && !attached) continue;               // belongs to another report
+    if (!attached && (te.clockIn < report.startAt || te.clockIn >= end)) continue; // window
     const outMs = te.clockOut || nowMs;
     const rawHours = Math.max(0, (outMs - te.clockIn) / 3_600_000);
     out.push({ contractorId: te.contractorId, name: te.contractorName, billingRole: te.billingRole, hours: roundVisitHours(rawHours) });
   }
   return out;
+}
+
+// UNBILLED labour for a project: completed clock sessions that are NOT
+// invoiced, NOT attached to any report, and NOT auto-captured by their phase's
+// currently-open report (clocked in a gap, or on a phase with no open report).
+// These are the entries a manager can pull into the open report.
+export interface UnbilledEntry { entry: ContractingTimeEntry; hours: number; amount: number; }
+export function unbilledLabour(projectId: string, timeEntries: ContractingTimeEntry[], reports: ContractingProgressReport[], rates: ContractingRateCard, nowMs: number, rateByContractor?: Record<string, number>): UnbilledEntry[] {
+  const out: UnbilledEntry[] = [];
+  for (const te of timeEntries) {
+    if (te.projectId !== projectId) continue;
+    if (te.manual) continue;
+    if (te.status === 'invoiced') continue;
+    if (te.reportId) continue;                            // already attached to a report
+    if (!te.clockOut) continue;                           // still clocked in
+    const open = reports.find(r => r.projectId === te.projectId && r.phaseId === te.phaseId && r.status === 'open');
+    const autoCaptured = !!open && te.clockIn >= open.startAt && te.clockIn < nowMs;
+    if (autoCaptured) continue;                           // already flowing into the open report
+    const hours = roundVisitHours(Math.max(0, (te.clockOut - te.clockIn) / 3_600_000));
+    const rate = rateByContractor?.[te.contractorId] ?? rateFor(te.billingRole, rates);
+    out.push({ entry: te, hours, amount: round2(hours * rate) });
+  }
+  return out.sort((a, b) => a.entry.clockIn - b.entry.clockIn);
 }
 
 // ── Billables per project/phase, derived from entered invoices (pre-HST) ────
@@ -186,6 +212,15 @@ export function defaultProperties(): ContractingProperty[] {
 // Resolve the live property list: settings override, else the default seed.
 export function propertiesOrDefault(list?: ContractingProperty[] | null): ContractingProperty[] {
   return (list && list.length) ? list : defaultProperties();
+}
+
+// Shopping suppliers — editable; default seed covers the common stores.
+export const DEFAULT_SUPPLIERS = ['Home Depot', 'Rona', 'Everlast'];
+export function defaultSuppliers(): ContractingSupplier[] {
+  return DEFAULT_SUPPLIERS.map((n, i) => ({ id: `csup-default-${i}`, name: n, active: true }));
+}
+export function suppliersOrDefault(list?: ContractingSupplier[] | null): ContractingSupplier[] {
+  return (list && list.length) ? list : defaultSuppliers();
 }
 
 // Palermo's brand tokens — visibly NOT Marco's green.

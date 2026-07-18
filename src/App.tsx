@@ -63,8 +63,8 @@ import TaskDetailModal from './components/TaskDetailModal';
 import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
-import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault } from './lib/contracting';
-import type { ContractingProperty } from './types';
+import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault } from './lib/contracting';
+import type { ContractingProperty, ContractingSupplier } from './types';
 import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
 import RequestTimeOffModal, { type RequestTimeOffSubmit } from './components/RequestTimeOffModal';
@@ -2217,6 +2217,7 @@ export default function App() {
   const contractingUser = { id: currentUserEmployee?.id || displayEmail, name: displayName };
   const contractingRates: ContractingRateCard = contractingRatesOrDefault(appData.settings?.contractingRates);
   const contractingProperties: ContractingProperty[] = propertiesOrDefault(appData.settings?.contractingProperties);
+  const contractingSuppliers: ContractingSupplier[] = suppliersOrDefault(appData.settings?.contractingSuppliers);
   const saveContractingRates = async (r: ContractingRateCard) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingRates: r } });
@@ -2226,6 +2227,26 @@ export default function App() {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingProperties: list } });
     showToastMsg('Properties saved.');
+  };
+  const saveContractingSuppliers = async (list: ContractingSupplier[]) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingSuppliers: list } });
+  };
+  // Attach unbilled time entries to an open report. GUARD: an entry that is
+  // already invoiced OR attached to any report is skipped — one report ever,
+  // no double-billing path.
+  const attachUnbilledLabour = async (reportId: string, entryIds: string[]) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const report = subContractingProgressReportsRef.current[reportId];
+    if (!report || report.status !== 'open') { showToastMsg('Report not open.'); return; }
+    let n = 0;
+    for (const id of entryIds) {
+      const te = subContractingTimeEntriesRef.current[id];
+      if (!te || te.status === 'invoiced' || te.reportId) continue;   // guard
+      await setDoc(doc(roleColl('contractingTimeEntries'), id), cleanRM({ ...te, reportId }));
+      n++;
+    }
+    showToastMsg(n ? `Attached ${n} entr${n === 1 ? 'y' : 'ies'} to the report.` : 'Nothing to attach.');
   };
   const saveContractingProject = async (p: ContractingProject) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
@@ -2267,9 +2288,16 @@ export default function App() {
     const ended: ContractingProgressReport = { ...report, endAt: now };
     const labour = labourForReport(ended, Object.values(subContractingTimeEntriesRef.current), now);
     const snapshot = computeReportTotals(labour, report.receipts, contractingRates, rateMapFor(appData.employees || [], contractingRates));
-    // Which clock entries got billed → mark invoiced (freeze).
-    const billedEntries = Object.values(subContractingTimeEntriesRef.current).filter(te =>
-      !te.manual && te.phaseId === report.phaseId && te.status === 'open' && te.clockIn >= report.startAt && te.clockIn < now && te.clockOut);
+    // Which clock entries got billed → mark invoiced (freeze). Matches
+    // labourForReport: explicitly-attached entries (reportId === this report)
+    // OR unattached entries inside the window. Entries on another report are
+    // never touched (one-report-ever).
+    const billedEntries = Object.values(subContractingTimeEntriesRef.current).filter(te => {
+      if (te.manual || te.status === 'invoiced' || te.phaseId !== report.phaseId) return false;
+      if (te.reportId === report.id) return true;
+      if (te.reportId) return false;
+      return !!te.clockOut && te.clockIn >= report.startAt && te.clockIn < now;
+    });
     const number = nextProgNumber(Object.values(subContractingInvoicesRef.current));
     const project = subContractingProjectsRef.current[report.projectId];
     const phase = project?.phases.find(ph => ph.id === report.phaseId);
@@ -4595,12 +4623,15 @@ export default function App() {
           employees={appData.employees || []}
           rates={contractingRates}
           properties={contractingProperties}
+          suppliers={contractingSuppliers}
           currentUser={contractingUser}
           isAdmin={isAdmin}
           canManage={canManageContracting}
           uploadedBy={{ email: displayEmail, name: displayName }}
           onSaveRates={saveContractingRates}
           onSaveProperties={saveContractingProperties}
+          onSaveSuppliers={saveContractingSuppliers}
+          onAttachUnbilled={attachUnbilledLabour}
           onSaveProject={saveContractingProject}
           onSaveTimeEntry={saveContractingTimeEntry}
           onOpenReport={openContractingReport}

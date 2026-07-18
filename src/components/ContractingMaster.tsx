@@ -1,17 +1,18 @@
 // ContractingMaster — Palermo's Contracting portal. A separate tenant inside
 // CrewMaster: slate/gold branding, its own namespaced data, ZERO contact with
 // Marco's performance/BH/bonus/pay. All billing math comes from lib/contracting.
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ContractingProject, ContractingPhase, ContractingChecklistItem, ContractingTimeEntry,
   ContractingProgressReport, ContractingReceipt, ContractingInvoice, ContractingWorkOrder,
   ContractingShoppingItem, ContractingRateCard, ContractingBillingRole, ContractingStatus,
-  ContractingProperty, ContractingPhaseType, Employee, StoredFile,
+  ContractingProperty, ContractingSupplier, ContractingPhaseType, Employee, StoredFile,
 } from '../types';
 import {
   HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled,
   computeReportTotals, labourForReport, phaseBillables, phaseReadyToBill, withHst,
   PALERMO, reportDayN, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor, contractorRate,
+  unbilledLabour, UnbilledEntry,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
@@ -26,12 +27,15 @@ interface Props {
   employees: Employee[];
   rates: ContractingRateCard;
   properties: ContractingProperty[];
+  suppliers: ContractingSupplier[];
   currentUser: { id: string; name: string };
   isAdmin: boolean;
   canManage: boolean;
   uploadedBy: { email: string; name: string };
   onSaveRates: (r: ContractingRateCard) => void;
   onSaveProperties: (list: ContractingProperty[]) => void;
+  onSaveSuppliers: (list: ContractingSupplier[]) => void;
+  onAttachUnbilled: (reportId: string, entryIds: string[]) => void;
   onSaveProject: (p: ContractingProject) => void;
   onSaveTimeEntry: (t: ContractingTimeEntry) => void;
   onOpenReport: (projectId: string, phaseId: string) => void;
@@ -41,6 +45,14 @@ interface Props {
   onDeleteInvoice: (id: string) => void;
   onSaveWorkOrder: (w: ContractingWorkOrder) => void;
   onSaveShoppingItem: (s: ContractingShoppingItem) => void;
+}
+
+// Cross-tab navigation actions threaded to tabs that link elsewhere.
+interface Nav {
+  openInvoice: (invoiceId: string) => void;
+  goToPhase: (projectId: string, phaseId?: string) => void;
+  goToReports: () => void;
+  goToInvoices: (projectId?: string, phaseId?: string) => void;
 }
 
 // Base context (handlers + identity) minus the collection maps — inner
@@ -67,6 +79,18 @@ export default function ContractingMaster(props: Props) {
   // Per-contractor rate override map — honored by the live preview so it
   // matches what the invoice will freeze.
   const rateOverrides = useMemo(() => rateMapFor(props.employees, rates), [props.employees, rates]);
+
+  // ── Cross-tab navigation (phase ↔ report ↔ invoice, both directions) ─────
+  const [viewInvoiceId, setViewInvoiceId] = useState<string | null>(null);
+  const [focusProjectId, setFocusProjectId] = useState<string | null>(null);
+  const [invoiceFilter, setInvoiceFilter] = useState<{ projectId?: string; phaseId?: string }>({});
+  const nav: Nav = {
+    openInvoice: (id) => setViewInvoiceId(id),
+    goToPhase: (projectId) => { setFocusProjectId(projectId); setTab('projects'); },
+    goToReports: () => setTab('reports'),
+    goToInvoices: (projectId, phaseId) => { setInvoiceFilter({ projectId, phaseId }); setTab('invoices'); },
+  };
+  const viewedInvoice = viewInvoiceId ? props.invoices[viewInvoiceId] : null;
 
   // FINANCIALS (projects, reports, invoices, billables, rate card) are
   // admin + contracting-manager ONLY — enforced by absence (not rendered).
@@ -107,9 +131,9 @@ export default function ContractingMaster(props: Props) {
 
       <div className="p-3 md:p-4 max-w-5xl mx-auto">
         {tab === 'mytime' && <MyTimeTab {...props} rates={rates} timeEntries={timeEntries} projects={projects} />}
-        {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} projects={projects} reports={reports} timeEntries={timeEntries} />}
-        {tab === 'reports' && canManage && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} rateOverrides={rateOverrides} />}
-        {tab === 'invoices' && canManage && <InvoicesTab {...props} invoices={invoices} reports={reports} projects={projects} />}
+        {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} projects={projects} reports={reports} timeEntries={timeEntries} rateOverrides={rateOverrides} nav={nav} focusProjectId={focusProjectId} onConsumeFocus={() => setFocusProjectId(null)} />}
+        {tab === 'reports' && canManage && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} invoices={invoices} rateOverrides={rateOverrides} nav={nav} />}
+        {tab === 'invoices' && canManage && <InvoicesTab {...props} invoices={invoices} reports={reports} projects={projects} nav={nav} initialFilter={invoiceFilter} />}
         {tab === 'workorders' && <WorkOrdersTab {...props} />}
         {tab === 'shopping' && <ShoppingTab {...props} />}
         {tab === 'properties' && canManage && <PropertiesTab properties={props.properties} onSaveProperties={props.onSaveProperties} />}
@@ -118,6 +142,18 @@ export default function ContractingMaster(props: Props) {
       <div className="text-center text-[11px] text-gray-400 pb-4">
         {isAdmin ? 'Admin' : canManage ? 'Contracting Manager' : 'Contractor'} · {currentUser.name}
       </div>
+      {/* Invoice viewer — opened from any tab (Invoices, a phase, a report). */}
+      {viewedInvoice && canManage && (
+        <InvoiceView
+          invoice={viewedInvoice}
+          project={props.projects[viewedInvoice.projectId]}
+          report={viewedInvoice.reportId ? props.reports[viewedInvoice.reportId] : undefined}
+          canSeeInternal={canManage}
+          onClose={() => setViewInvoiceId(null)}
+          onGoToPhase={viewedInvoice.phaseId ? () => { setViewInvoiceId(null); nav.goToPhase(viewedInvoice.projectId, viewedInvoice.phaseId); } : undefined}
+          onGoToReports={viewedInvoice.reportId ? () => { setViewInvoiceId(null); nav.goToReports(); } : undefined}
+        />
+      )}
     </div>
   );
 }
@@ -155,11 +191,13 @@ function MyTimeTab(p: Ctx & { rates: ContractingRateCard; timeEntries: Contracti
 }
 
 // ─────────────────────────────────────────────────────────── PROJECTS ──────
-function ProjectsTab(p: Ctx & { rates: ContractingRateCard; invoices: ContractingInvoice[]; projects: ContractingProject[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[] }) {
+function ProjectsTab(p: Ctx & { rates: ContractingRateCard; invoices: ContractingInvoice[]; projects: ContractingProject[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; focusProjectId: string | null; onConsumeFocus: () => void }) {
   // Board opens to the only active client project (Feaver Rd) by default.
   const feaver = p.projects.find(x => /feaver/i.test(x.name)) || (p.projects.filter(x => x.status !== 'closed').length === 1 ? p.projects.find(x => x.status !== 'closed') : undefined);
-  const [selId, setSelId] = useState<string | null>(feaver?.id || null);
+  const [selId, setSelId] = useState<string | null>(p.focusProjectId || feaver?.id || null);
   const [adding, setAdding] = useState(false);
+  // A cross-tab jump (e.g. from an invoice's phase link) focuses a project.
+  useEffect(() => { if (p.focusProjectId) { setSelId(p.focusProjectId); p.onConsumeFocus(); } }, [p.focusProjectId]); // eslint-disable-line react-hooks/exhaustive-deps
   const sel = selId ? p.projects.find(x => x.id === selId) : null;
 
   if (sel) return <ProjectDetail project={sel} {...p} onBack={() => setSelId(null)} />;
@@ -211,12 +249,14 @@ function ProjectForm({ onClose, onSave, currentUser }: { onClose: () => void; on
   );
 }
 
-function ProjectDetail(p: Ctx & { project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; onBack: () => void }) {
+function ProjectDetail(p: Ctx & { project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; onBack: () => void }) {
   const { project, canManage } = p;
   const [addingPhase, setAddingPhase] = useState(false);
   const [editing, setEditing] = useState(false);
   const save = (updater: (proj: ContractingProject) => ContractingProject) => p.onSaveProject({ ...updater(project), updatedAt: Date.now() });
   const removePhase = (phaseId: string) => save(pr => ({ ...pr, phases: pr.phases.filter(x => x.id !== phaseId) }));
+  const unbilled = unbilledLabour(project.id, p.timeEntries, p.reports, p.rates, Date.now(), p.rateOverrides);
+  const phaseName = (id: string) => project.phases.find(ph => ph.id === id)?.name || '—';
 
   return (
     <div>
@@ -260,6 +300,27 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
         ))}
         {project.phases.length === 0 && <div className="text-gray-500 text-sm">No phases yet.</div>}
       </div>
+
+      {/* Unbilled labour — completed sessions not captured by any invoiced or
+          open report (clocked in a gap / on a phase with no open period). Pull
+          them into an open report from the Reports tab. */}
+      {unbilled.length > 0 && (
+        <div className="mt-5">
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="font-semibold text-sm uppercase" style={{ color: '#C0392B' }}>Unbilled labour</h3>
+            <span className="text-xs text-gray-500">{unbilled.length} entr{unbilled.length === 1 ? 'y' : 'ies'} · {round2(unbilled.reduce((s, u) => s + u.hours, 0))} hrs · {money(unbilled.reduce((s, u) => s + u.amount, 0))}</span>
+          </div>
+          <div className="bg-white rounded-lg border divide-y">
+            {unbilled.map(u => (
+              <div key={u.entry.id} className="p-2 flex items-center justify-between text-sm">
+                <span>{u.entry.contractorName} <span className="text-gray-400">· {phaseName(u.entry.phaseId)} · {fmtDate(u.entry.clockIn)}</span></span>
+                <span className="text-gray-600">{u.hours}h · <b style={{ color: PALERMO.slate }}>{money(u.amount)}</b></span>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => p.nav.goToReports()} className="text-xs mt-1" style={{ color: PALERMO.slate }}>Attach from an open report →</button>
+        </div>
+      )}
 
       {addingPhase && <PhaseForm onClose={() => setAddingPhase(false)} onSave={ph => { save(pr => ({ ...pr, phases: [...pr.phases, ph] })); setAddingPhase(false); }} />}
     </div>
@@ -357,14 +418,17 @@ function PhaseEditForm({ phase, hasBilling, removable, currentUser, onClose, onS
   );
 }
 
-function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; onUpdatePhase: (ph: ContractingPhase) => void; onRemovePhase: () => void }) {
-  const { phase, project, canManage, currentUser } = p;
+function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; nav: Nav; onUpdatePhase: (ph: ContractingPhase) => void; onRemovePhase: () => void }) {
+  const { phase, project, canManage, currentUser, nav } = p;
   const b = phaseBillables(project.id, phase.id, p.invoices);
   const ready = phaseReadyToBill(phase);
   const [newItem, setNewItem] = useState('');
   const [editing, setEditing] = useState(false);
   const hasBilling = phaseHasInvoicedBilling(project.id, phase.id, p.invoices, p.reports);
   const removable = phaseIsRemovable(project.id, phase.id, p.invoices, p.reports, p.timeEntries);
+  // This phase's invoices + reports, for two-way linkage.
+  const phaseInvoices = p.invoices.filter(i => i.projectId === project.id && i.phaseId === phase.id).sort((a, b2) => (a.issuedAt || 0) - (b2.issuedAt || 0));
+  const phaseReports = p.reports.filter(r => r.projectId === project.id && r.phaseId === phase.id).sort((a, b2) => a.reportNumber - b2.reportNumber);
 
   const toggleDone = (item: ContractingChecklistItem) => {
     if (!canManage) return;
@@ -437,6 +501,30 @@ function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProje
           </div>
         )}
       </div>
+
+      {/* Linkage: this phase's invoices + reports, tap-through both ways. */}
+      {(phaseInvoices.length > 0 || phaseReports.length > 0) && (
+        <div className="mt-3 border-t pt-2">
+          <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Invoices & reports</div>
+          <div className="space-y-1">
+            {phaseInvoices.map(inv => (
+              <button key={inv.id} onClick={() => nav.openInvoice(inv.id)} className="w-full flex items-center justify-between text-sm px-2 py-1 rounded hover:bg-slate-50 text-left">
+                <span><b style={{ color: PALERMO.slate }}>{inv.number}</b> <span className="text-[10px] px-1 rounded bg-slate-100 uppercase">{inv.kind}</span> {inv.paid ? <span className="text-[10px] text-green-600">paid</span> : <span className="text-[10px] text-amber-600">outstanding</span>}</span>
+                <span>{money(inv.total)} →</span>
+              </button>
+            ))}
+            {phaseReports.map(r => {
+              const minted = r.status === 'invoiced' ? p.invoices.find(i => i.reportId === r.id) : undefined;
+              return (
+                <div key={r.id} className="flex items-center justify-between text-sm px-2 py-1">
+                  <span className="text-gray-600">Report #{r.reportNumber} · {r.status === 'open' ? <button onClick={() => nav.goToReports()} className="underline decoration-dotted" style={{ color: '#2874A6' }}>OPEN →</button> : `${fmtDate(r.startAt)}–${fmtDate(r.endAt)}`}</span>
+                  {minted && <button onClick={() => nav.openInvoice(minted.id)} className="text-xs underline decoration-dotted" style={{ color: PALERMO.slate }}>→ {minted.number}</button>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -452,8 +540,10 @@ function Billable({ label, pre, full, accent }: { label: string; pre: number; fu
 }
 
 // ──────────────────────────────────────────────────────────── REPORTS ──────
-function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; contractors: Employee[]; projects: ContractingProject[]; rateOverrides: Record<string, number> }) {
+function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; contractors: Employee[]; projects: ContractingProject[]; invoices: ContractingInvoice[]; rateOverrides: Record<string, number>; nav: Nav }) {
   const { canManage } = p;
+  // Minted invoice for a closed report (report → invoice linkage).
+  const invoiceForReport = (reportId: string) => p.invoices.find(i => i.reportId === reportId);
   // T&M phases across projects, with their open report (if any).
   const tmPhases = p.projects.flatMap(proj => proj.phases.filter(ph => ph.type === 'tm').map(ph => ({ proj, ph })));
   const openReportFor = (projectId: string, phaseId: string) => p.reports.find(r => r.projectId === projectId && r.phaseId === phaseId && r.status === 'open');
@@ -485,9 +575,10 @@ function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingP
           <div className="space-y-1">
             {p.reports.filter(r => r.status === 'invoiced').sort((a, b) => (b.endAt || 0) - (a.endAt || 0)).map(r => {
               const proj = p.projects.find(x => x.id === r.projectId);
+              const minted = invoiceForReport(r.id);
               return (
                 <div key={r.id} className="bg-white rounded border p-2 text-sm flex items-center justify-between">
-                  <span>{proj?.name} · Report #{r.reportNumber} · {fmtDate(r.startAt)}–{fmtDate(r.endAt)}</span>
+                  <span>{proj?.name} · Report #{r.reportNumber} · {fmtDate(r.startAt)}–{fmtDate(r.endAt)}{minted && <button onClick={() => p.nav.openInvoice(minted.id)} className="ml-2 text-xs underline decoration-dotted" style={{ color: PALERMO.slate }}>→ {minted.number}</button>}</span>
                   <b style={{ color: PALERMO.slate }}>{money(r.snapshot?.total || 0)}</b>
                 </div>
               );
@@ -544,14 +635,17 @@ function ClockPanel(p: Ctx & { projects: ContractingProject[]; timeEntries: Cont
   );
 }
 
-function OpenReport(p: Ctx & { report: ContractingProgressReport; project: ContractingProject; phase: ContractingPhase; rates: ContractingRateCard; timeEntries: ContractingTimeEntry[]; contractors: Employee[]; rateOverrides: Record<string, number> }) {
+function OpenReport(p: Ctx & { report: ContractingProgressReport; project: ContractingProject; phase: ContractingPhase; rates: ContractingRateCard; timeEntries: ContractingTimeEntry[]; reports: ContractingProgressReport[]; contractors: Employee[]; rateOverrides: Record<string, number>; nav: Nav }) {
   const { report, canManage } = p;
   const now = Date.now();
   const labour = labourForReport(report, p.timeEntries, now);
   const snap = computeReportTotals(labour, report.receipts, p.rates, p.rateOverrides);
   const dayN = reportDayN(report.startAt, now);
+  // Unbilled labour on THIS phase — the entries that can be pulled in.
+  const unbilled = unbilledLabour(report.projectId, p.timeEntries, p.reports, p.rates, now, p.rateOverrides).filter(u => u.entry.phaseId === report.phaseId);
   const [addingReceipt, setAddingReceipt] = useState(false);
   const [addingTime, setAddingTime] = useState(false);
+  const [attaching, setAttaching] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [viewPhotos, setViewPhotos] = useState<StoredFile[] | null>(null);
 
@@ -579,7 +673,13 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
         {canManage && report.manualTime.map(t => (
           <div key={t.id} className="text-[11px] text-gray-400 flex justify-between"><span>manual: {t.contractorName} {t.hours}h</span><button onClick={() => removeManual(t.id)} className="text-red-400">remove</button></div>
         ))}
-        {canManage && <button onClick={() => setAddingTime(true)} className="text-xs mt-1" style={{ color: PALERMO.slate }}>+ Manual time</button>}
+        {canManage && <div className="flex gap-3 mt-1"><button onClick={() => setAddingTime(true)} className="text-xs" style={{ color: PALERMO.slate }}>+ Manual time</button>{unbilled.length > 0 && <button onClick={() => setAttaching(true)} className="text-xs font-semibold" style={{ color: '#C0392B' }}>+ Add unbilled labour</button>}</div>}
+        {/* Cadence nudge for unbilled labour sitting on this phase. */}
+        {unbilled.length > 0 && (
+          <div className="mt-1 text-[11px] px-2 py-1 rounded" style={{ backgroundColor: '#FDEDEC', color: '#C0392B' }}>
+            {unbilled.length} unbilled entr{unbilled.length === 1 ? 'y' : 'ies'} · {round2(unbilled.reduce((s, u) => s + u.hours, 0))} hrs — <button onClick={() => setAttaching(true)} className="underline font-semibold">review</button>
+          </div>
+        )}
       </div>
 
       {/* Materials */}
@@ -615,6 +715,7 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
 
       {addingReceipt && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} onClose={() => setAddingReceipt(false)} onSave={rc => { p.onSaveReport({ ...report, receipts: [...report.receipts, rc], updatedAt: Date.now() }); setAddingReceipt(false); }} />}
       {addingTime && <ManualTimeForm report={report} contractors={p.contractors} rates={p.rates} currentUser={p.currentUser} onClose={() => setAddingTime(false)} onSave={t => { p.onSaveReport({ ...report, manualTime: [...report.manualTime, t], updatedAt: Date.now() }); setAddingTime(false); }} />}
+      {attaching && <AttachUnbilledForm unbilled={unbilled} onClose={() => setAttaching(false)} onAttach={ids => { p.onAttachUnbilled(report.id, ids); setAttaching(false); }} />}
       {reviewing && <ReviewConfirm report={report} project={p.project} phase={p.phase} snap={snap} onClose={() => setReviewing(false)} onConfirm={() => { p.onEndReport(report.id); setReviewing(false); }} />}
       {viewPhotos && <PhotoViewer files={viewPhotos} onClose={() => setViewPhotos(null)} />}
     </div>
@@ -676,6 +777,34 @@ function ManualTimeForm({ report, contractors, rates, currentUser, onClose, onSa
   );
 }
 
+// Pick unbilled clock sessions to attach to the current open report. Attached
+// entries flow into the preview/invoice; each can attach to ONE report ever.
+function AttachUnbilledForm({ unbilled, onClose, onAttach }: { unbilled: UnbilledEntry[]; onClose: () => void; onAttach: (ids: string[]) => void }) {
+  const [sel, setSel] = useState<Record<string, boolean>>(() => Object.fromEntries(unbilled.map(u => [u.entry.id, true])));
+  const chosen = unbilled.filter(u => sel[u.entry.id]);
+  const totalHours = round2(chosen.reduce((s, u) => s + u.hours, 0));
+  const totalVal = round2(chosen.reduce((s, u) => s + u.amount, 0));
+  return (
+    <Modal title="Add unbilled labour" onClose={onClose}>
+      <div className="text-xs text-gray-500 mb-2">These completed sessions weren't captured by any period. Selected entries attach to this report and bill with it.</div>
+      <div className="border rounded divide-y">
+        {unbilled.map(u => (
+          <label key={u.entry.id} className="flex items-center gap-2 p-2 text-sm">
+            <input type="checkbox" checked={!!sel[u.entry.id]} onChange={e => setSel(s => ({ ...s, [u.entry.id]: e.target.checked }))} />
+            <span className="flex-1">{u.entry.contractorName} <span className="text-gray-400">· {fmtDate(u.entry.clockIn)}</span></span>
+            <span>{u.hours}h · <b>{money(u.amount)}</b></span>
+          </label>
+        ))}
+      </div>
+      <div className="text-sm mt-2">Attaching <b>{chosen.length}</b> · {totalHours} hrs · <b style={{ color: PALERMO.gold }}>{money(totalVal)}</b></div>
+      <div className="flex gap-2 mt-3">
+        <button onClick={onClose} className="flex-1 py-2.5 rounded border font-semibold">Cancel</button>
+        <button onClick={() => onAttach(chosen.map(u => u.entry.id))} disabled={chosen.length === 0} className="flex-1 py-2.5 rounded text-white font-bold disabled:opacity-40" style={{ backgroundColor: PALERMO.gold }}>Attach {chosen.length || ''}</button>
+      </div>
+    </Modal>
+  );
+}
+
 function ReviewConfirm({ report, project, phase, snap, onClose, onConfirm }: { report: ContractingProgressReport; project: ContractingProject; phase: ContractingPhase; snap: ReturnType<typeof computeReportTotals>; onClose: () => void; onConfirm: () => void }) {
   return (
     <Modal title="Review & confirm billing" onClose={onClose}>
@@ -701,18 +830,34 @@ function ReviewConfirm({ report, project, phase, snap, onClose, onConfirm }: { r
 }
 
 // ─────────────────────────────────────────────────────────── INVOICES ──────
-function InvoicesTab(p: Ctx & { invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; projects: ContractingProject[] }) {
-  const { canManage, isAdmin } = p;
+function InvoicesTab(p: Ctx & { invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; projects: ContractingProject[]; nav: Nav; initialFilter: { projectId?: string; phaseId?: string } }) {
+  const { canManage, isAdmin, nav } = p;
   const [adding, setAdding] = useState(false);
-  const [view, setView] = useState<ContractingInvoice | null>(null);
-  const list = [...p.invoices].sort((a, b) => (b.issuedAt || b.createdAt || 0) - (a.issuedAt || a.createdAt || 0));
+  const [projectId, setProjectId] = useState(p.initialFilter.projectId || '');
+  const [phaseId, setPhaseId] = useState(p.initialFilter.phaseId || '');
+  const proj = p.projects.find(x => x.id === projectId);
   const projName = (id: string) => p.projects.find(x => x.id === id)?.name || '—';
+  const phaseName = (pid: string, phid?: string) => phid ? (p.projects.find(x => x.id === pid)?.phases.find(ph => ph.id === phid)?.name || '—') : 'Whole project';
+  const list = [...p.invoices]
+    .filter(inv => (!projectId || inv.projectId === projectId) && (!phaseId || inv.phaseId === phaseId))
+    .sort((a, b) => (b.issuedAt || b.createdAt || 0) - (a.issuedAt || a.createdAt || 0));
 
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
         <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Invoices</h2>
         {canManage && <button onClick={() => setAdding(true)} className="px-3 py-1.5 rounded text-white text-sm font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Historical invoice</button>}
+      </div>
+      {/* Filter by project + phase */}
+      <div className="flex gap-2 mb-3">
+        <select className="inp flex-1" value={projectId} onChange={e => { setProjectId(e.target.value); setPhaseId(''); }}>
+          <option value="">All projects</option>
+          {p.projects.map(pr => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
+        </select>
+        <select className="inp flex-1" value={phaseId} onChange={e => setPhaseId(e.target.value)} disabled={!projectId}>
+          <option value="">All phases</option>
+          {proj?.phases.map(ph => <option key={ph.id} value={ph.id}>{ph.name}</option>)}
+        </select>
       </div>
       <div className="space-y-2">
         {list.map(inv => {
@@ -728,20 +873,23 @@ function InvoicesTab(p: Ctx & { invoices: ContractingInvoice[]; reports: Contrac
                 </div>
                 <b style={{ color: PALERMO.slate }}>{money(inv.total)}</b>
               </div>
-              <div className="text-sm text-gray-600">{projName(inv.projectId)}{inv.periodStart ? ` · ${fmtDate(inv.periodStart)}–${fmtDate(inv.periodEnd)}` : ''}</div>
+              {/* Linkage: project · phase (tap → phase) · report/period (tap → reports) */}
+              <div className="text-sm text-gray-600 flex flex-wrap items-center gap-x-1">
+                <button onClick={() => nav.goToPhase(inv.projectId, inv.phaseId)} className="underline decoration-dotted" style={{ color: PALERMO.slate }}>{projName(inv.projectId)} › {phaseName(inv.projectId, inv.phaseId)}</button>
+                {inv.reportId && <button onClick={() => nav.goToReports()} className="text-xs underline decoration-dotted text-gray-500">· report period {fmtDate(inv.periodStart)}–{fmtDate(inv.periodEnd)} →</button>}
+              </div>
               <div className="text-xs text-gray-400">{money(inv.amountPreHst)} + {money(inv.hst)} HST · Net 14, due {fmtDate(inv.dueAt)}{inv.paid ? ` · paid ${fmtDate(inv.paidAt)}` : ''}</div>
               <div className="flex gap-2 mt-2 flex-wrap">
-                <button onClick={() => setView(inv)} className="text-xs px-2 py-1 rounded border">View</button>
+                <button onClick={() => nav.openInvoice(inv.id)} className="text-xs px-2 py-1 rounded border">View</button>
                 {canManage && !inv.paid && <button onClick={() => p.onSaveInvoice({ ...inv, paid: true, paidAt: Date.now(), paidBy: p.currentUser.name })} className="text-xs px-2 py-1 rounded text-white" style={{ backgroundColor: PALERMO.gold }}>Mark paid</button>}
                 {isAdmin && <button onClick={() => confirm(`Delete ${inv.number}?`) && p.onDeleteInvoice(inv.id)} className="text-xs px-2 py-1 rounded text-red-500">Delete</button>}
               </div>
             </div>
           );
         })}
-        {list.length === 0 && <div className="text-gray-500 text-sm">No invoices.</div>}
+        {list.length === 0 && <div className="text-gray-500 text-sm">No invoices{projectId ? ' for this filter' : ''}.</div>}
       </div>
       {adding && <HistoricalInvoiceForm projects={p.projects} currentUser={p.currentUser} onClose={() => setAdding(false)} onSave={inv => { p.onSaveInvoice(inv); setAdding(false); }} />}
-      {view && <InvoiceView invoice={view} project={p.projects.find(x => x.id === view.projectId)} report={p.reports.find(r => r.id === view.reportId)} canSeeInternal={canManage} onClose={() => setView(null)} />}
     </div>
   );
 }
@@ -783,11 +931,19 @@ function HistoricalInvoiceForm({ projects, currentUser, onClose, onSave }: { pro
   );
 }
 
-function InvoiceView({ invoice, project, report, canSeeInternal, onClose }: { invoice: ContractingInvoice; project?: ContractingProject; report?: ContractingProgressReport; canSeeInternal: boolean; onClose: () => void }) {
+function InvoiceView({ invoice, project, report, canSeeInternal, onClose, onGoToPhase, onGoToReports }: { invoice: ContractingInvoice; project?: ContractingProject; report?: ContractingProgressReport; canSeeInternal: boolean; onClose: () => void; onGoToPhase?: () => void; onGoToReports?: () => void }) {
   const [mode, setMode] = useState<'client' | 'internal'>(canSeeInternal ? 'internal' : 'client');
   const snap = report?.snapshot;
+  const phase = project?.phases.find(ph => ph.id === invoice.phaseId);
   return (
     <Modal title={`Invoice ${invoice.number}`} onClose={onClose}>
+      {/* Linkage (internal only): tap through to the phase or the report. */}
+      {canSeeInternal && (onGoToPhase || onGoToReports) && (
+        <div className="flex flex-wrap gap-2 mb-3">
+          {onGoToPhase && phase && <button onClick={onGoToPhase} className="text-xs px-2.5 py-1.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>→ {project?.name} · {phase.name}</button>}
+          {onGoToReports && report && <button onClick={onGoToReports} className="text-xs px-2.5 py-1.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>→ Report #{report.reportNumber}</button>}
+        </div>
+      )}
       {canSeeInternal && (
         <div className="flex gap-1 mb-3 rounded overflow-hidden border text-sm">
           {(['internal', 'client'] as const).map(m => (
@@ -929,10 +1085,15 @@ function WorkOrderForm({ currentUser, uploadedBy, properties, onClose, onSave, d
 }
 
 // ─────────────────────────────────────────────────────────── SHOPPING ──────
+const GENERAL_GROUP = 'General';
 function ShoppingTab(p: Props) {
+  const activeSuppliers = p.suppliers.filter(s => s.active !== false);
   const [item, setItem] = useState('');
   const [qty, setQty] = useState('');
-  const [tag, setTag] = useState('');
+  const [supplier, setSupplier] = useState('');   // remembered last-used default
+  const [newSupplier, setNewSupplier] = useState('');
+  const [addingSupplier, setAddingSupplier] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
   const items = Object.values(p.shoppingList);
   const active = items.filter(i => !i.purchased).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
   const weekAgo = Date.now() - 7 * 86400000;
@@ -940,33 +1101,88 @@ function ShoppingTab(p: Props) {
 
   const add = () => {
     if (!item.trim()) return;
-    p.onSaveShoppingItem({ id: uid('csh'), item: item.trim(), qty: qty.trim() || undefined, projectTag: tag.trim() || undefined, addedBy: p.currentUser, addedAt: Date.now() });
-    setItem(''); setQty('');
+    p.onSaveShoppingItem({ id: uid('csh'), item: item.trim(), qty: qty.trim() || undefined, supplier: supplier || undefined, addedBy: p.currentUser, addedAt: Date.now() });
+    setItem(''); setQty('');   // keep supplier as the remembered default
   };
   const toggle = (i: ContractingShoppingItem) => p.onSaveShoppingItem({ ...i, purchased: !i.purchased, purchasedBy: !i.purchased ? p.currentUser.name : undefined, purchasedAt: !i.purchased ? Date.now() : undefined });
+  const commitNewSupplier = () => {
+    const name = newSupplier.trim(); if (!name) return;
+    if (!p.suppliers.some(s => s.name.toLowerCase() === name.toLowerCase())) p.onSaveSuppliers([...p.suppliers, { id: uid('csup'), name, active: true }]);
+    setSupplier(name); setNewSupplier(''); setAddingSupplier(false);
+  };
+
+  // Group active items by supplier (untagged → General). Suppliers in list
+  // order first, then any ad-hoc supplier, then General last.
+  const groupsMap = new Map<string, ContractingShoppingItem[]>();
+  for (const i of active) { const k = i.supplier || GENERAL_GROUP; if (!groupsMap.has(k)) groupsMap.set(k, []); groupsMap.get(k)!.push(i); }
+  const order = [...activeSuppliers.map(s => s.name), ...[...groupsMap.keys()].filter(k => k !== GENERAL_GROUP && !activeSuppliers.some(s => s.name === k)), GENERAL_GROUP];
+  const groups = order.filter(k => groupsMap.has(k)).map(k => ({ supplier: k, items: groupsMap.get(k)! }));
 
   return (
     <div>
-      <h2 className="font-bold text-lg mb-2" style={{ color: PALERMO.slate }}>Shopping list</h2>
-      {/* Two-tap add, big targets */}
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Shopping list</h2>
+        {p.canManage && <button onClick={() => setManageOpen(o => !o)} className="text-xs px-2 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Suppliers</button>}
+      </div>
+
+      {/* Suppliers manager (Tony/admin) */}
+      {p.canManage && manageOpen && (
+        <div className="bg-white rounded-lg border p-3 mb-3">
+          <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Suppliers</div>
+          <div className="space-y-1">
+            {p.suppliers.map(s => (
+              <div key={s.id} className={`flex items-center gap-2 ${s.active === false ? 'opacity-50' : ''}`}>
+                <input className="inp flex-1 text-sm" defaultValue={s.name} onBlur={e => e.target.value.trim() && e.target.value !== s.name && p.onSaveSuppliers(p.suppliers.map(x => x.id === s.id ? { ...x, name: e.target.value.trim() } : x))} />
+                <button onClick={() => p.onSaveSuppliers(p.suppliers.map(x => x.id === s.id ? { ...x, active: x.active === false } : x))} className="text-xs px-2 py-1 rounded border">{s.active === false ? 'Reactivate' : 'Deactivate'}</button>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2 mt-2">
+            <input className="inp flex-1 text-sm" placeholder="New supplier" value={newSupplier} onChange={e => setNewSupplier(e.target.value)} onKeyDown={e => e.key === 'Enter' && commitNewSupplier()} />
+            <button onClick={commitNewSupplier} className="px-3 rounded text-white text-sm font-semibold" style={{ backgroundColor: PALERMO.slate }}>Add</button>
+          </div>
+        </div>
+      )}
+
+      {/* Two-tap add — item + Add. Supplier optional, remembers last used. */}
       <div className="bg-white rounded-lg border p-3 mb-3 sticky top-0">
         <input className="inp text-base" style={{ minHeight: 48 }} placeholder="Add an item…" value={item} onChange={e => setItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
         <div className="flex gap-2 mt-2">
           <input className="inp w-20" placeholder="Qty" value={qty} onChange={e => setQty(e.target.value)} />
-          <input className="inp flex-1" placeholder="Project tag (optional)" value={tag} onChange={e => setTag(e.target.value)} />
+          {addingSupplier ? (
+            <div className="flex gap-1 flex-1">
+              <input className="inp flex-1" placeholder="New supplier" value={newSupplier} onChange={e => setNewSupplier(e.target.value)} onKeyDown={e => e.key === 'Enter' && commitNewSupplier()} autoFocus />
+              <button onClick={commitNewSupplier} className="px-2 rounded text-white text-sm" style={{ backgroundColor: PALERMO.slate }}>OK</button>
+            </div>
+          ) : (
+            <select className="inp flex-1" value={supplier} onChange={e => { if (e.target.value === '__new') { setAddingSupplier(true); } else setSupplier(e.target.value); }}>
+              <option value="">Store (optional)</option>
+              {activeSuppliers.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+              <option value="__new">＋ New store…</option>
+            </select>
+          )}
           <button onClick={add} disabled={!item.trim()} className="px-5 rounded text-white font-bold disabled:opacity-40" style={{ backgroundColor: PALERMO.gold, minHeight: 48 }}>Add</button>
         </div>
       </div>
 
-      <div className="space-y-1.5">
-        {active.map(i => (
-          <button key={i.id} onClick={() => toggle(i)} className="w-full flex items-center gap-3 bg-white rounded-lg border p-3 text-left" style={{ minHeight: 48 }}>
-            <span className="w-6 h-6 rounded border-2 shrink-0" style={{ borderColor: PALERMO.slate }} />
-            <span className="flex-1"><b>{i.item}</b>{i.qty ? ` · ${i.qty}` : ''}{i.projectTag ? <span className="text-xs text-gray-400"> · {i.projectTag}</span> : ''}</span>
-          </button>
-        ))}
-        {active.length === 0 && <div className="text-gray-500 text-sm">Nothing to buy. 🎉</div>}
-      </div>
+      {/* Grouped by store — open a group, get everything for that trip. */}
+      {groups.map(g => (
+        <div key={g.supplier} className="mb-4">
+          <div className="text-xs font-black uppercase tracking-wide mb-1 flex items-center gap-2" style={{ color: PALERMO.slate }}>
+            <span className="px-2 py-0.5 rounded" style={{ backgroundColor: g.supplier === GENERAL_GROUP ? '#E5E7E9' : '#FEF9E7', color: g.supplier === GENERAL_GROUP ? '#566573' : PALERMO.gold }}>{g.supplier}</span>
+            <span className="text-gray-400 font-semibold">{g.items.length}</span>
+          </div>
+          <div className="space-y-1.5">
+            {g.items.map(i => (
+              <button key={i.id} onClick={() => toggle(i)} className="w-full flex items-center gap-3 bg-white rounded-lg border p-3 text-left" style={{ minHeight: 48 }}>
+                <span className="w-6 h-6 rounded border-2 shrink-0" style={{ borderColor: PALERMO.slate }} />
+                <span className="flex-1"><b>{i.item}</b>{i.qty ? ` · ${i.qty}` : ''}{i.projectTag ? <span className="text-xs text-gray-400"> · {i.projectTag}</span> : ''}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+      {active.length === 0 && <div className="text-gray-500 text-sm">Nothing to buy. 🎉</div>}
 
       {recent.length > 0 && (
         <div className="mt-5">
@@ -975,7 +1191,7 @@ function ShoppingTab(p: Props) {
             {recent.map(i => (
               <button key={i.id} onClick={() => toggle(i)} className="w-full flex items-center gap-3 bg-white/60 rounded-lg border p-2.5 text-left opacity-60" style={{ minHeight: 44 }}>
                 <span className="w-5 h-5 rounded flex items-center justify-center text-white shrink-0" style={{ backgroundColor: '#27AE60' }}>✓</span>
-                <span className="flex-1 line-through text-gray-500">{i.item}{i.qty ? ` · ${i.qty}` : ''}</span>
+                <span className="flex-1 line-through text-gray-500">{i.item}{i.qty ? ` · ${i.qty}` : ''}{i.supplier ? <span className="text-[10px] text-gray-400"> · {i.supplier}</span> : ''}</span>
                 <span className="text-[10px] text-gray-400">{i.purchasedBy}</span>
               </button>
             ))}

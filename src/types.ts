@@ -864,6 +864,9 @@ export interface AppSettings {
   // ContractingMaster rental properties (bounded, editable). Absent → the
   // default seed list from lib/contracting CONTRACTING_PROPERTIES.
   contractingProperties?: ContractingProperty[];
+  // ContractingMaster shopping suppliers (bounded, editable). Absent → the
+  // default list from lib/contracting.
+  contractingSuppliers?: ContractingSupplier[];
 }
 
 // ══ ContractingMaster (Palermo's Contracting) types ═══════════════════════
@@ -871,6 +874,7 @@ export type ContractingBillingRole = 'gc_pm' | 'skilled_carpenter' | 'general_la
 export interface ContractingRateCard { gc_pm: number; skilled_carpenter: number; general_labour: number; }
 
 export interface ContractingProperty { id: string; name: string; corp?: boolean; notes?: string; active?: boolean; }
+export interface ContractingSupplier { id: string; name: string; active?: boolean; }
 export type ContractingPhaseType = 'fixed' | 'tm';
 // Audit trail for a fixed-price change on a phase (who/when/from→to).
 export interface ContractingPriceAudit { at: number; by: string; from: number; to: number; }
@@ -997,6 +1001,8 @@ export interface ContractingShoppingItem {
   item: string;
   qty?: string;
   projectTag?: string;
+  supplier?: string;              // optional supplier tag → groups the list by store
+
   addedBy?: { id: string; name: string };
   addedAt?: number;
   purchased?: boolean;

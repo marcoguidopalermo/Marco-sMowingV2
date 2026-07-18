@@ -1,6 +1,6 @@
 // Verify ContractingMaster billing math against the exact progress-report
 // example. Run: npx tsx scripts/verify-contracting.ts
-import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber } from '../src/lib/contracting';
+import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, unbilledLabour } from '../src/lib/contracting';
 
 const rates = DEFAULT_CONTRACTING_RATES;
 let pass = 0, fail = 0;
@@ -44,6 +44,34 @@ ok('3.6 hr → 3.5', roundVisitHours(3.6) === 3.5, roundVisitHours(3.6));
 console.log('\n=== sequential invoice numbering ===');
 ok('after PROG-001 → PROG-002', nextProgNumber([{ number: 'PROG-001' } as any]) === 'PROG-002', nextProgNumber([{ number: 'PROG-001' } as any]));
 ok('after PROG-001..004 → PROG-005', nextProgNumber(['PROG-001', 'PROG-004', 'PROG-002'].map(n => ({ number: n } as any))) === 'PROG-005', nextProgNumber(['PROG-001', 'PROG-004', 'PROG-002'].map(n => ({ number: n } as any))));
+
+console.log('\n=== T&M flow: auto-attach · unbilled · attach · one-report-ever ===');
+const H = 3_600_000;
+const R1: any = { id: 'r1', projectId: 'p', phaseId: 'ph', startAt: 100 * H, status: 'open', receipts: [], manualTime: [] };
+const R2: any = { id: 'r2', projectId: 'p', phaseId: 'ph', startAt: 200 * H, status: 'open', receipts: [], manualTime: [] };
+const NOW = 210 * H;
+// A: clocked INSIDE R1's window → auto-attaches, no reportId needed.
+const A: any = { id: 'A', projectId: 'p', phaseId: 'ph', contractorId: 'kris', contractorName: 'Kris', billingRole: 'skilled_carpenter', clockIn: 101 * H, clockOut: 103 * H, status: 'open' };
+// B: clocked BEFORE R1 opened (a gap) → unbilled until explicitly attached.
+const B: any = { id: 'B', projectId: 'p', phaseId: 'ph', contractorId: 'kris', contractorName: 'Kris', billingRole: 'skilled_carpenter', clockIn: 50 * H, clockOut: 53 * H, status: 'open' };
+let lab = labourForReport(R1, [A, B], NOW);
+ok('A auto-attaches to R1 by window', lab.some(l => l.hours === 2) && lab.length === 1, JSON.stringify(lab.map(l => l.hours)));
+let unb = unbilledLabour('p', [A, B], [R1], DEFAULT_CONTRACTING_RATES, NOW);
+ok('B surfaces as UNBILLED (gap before R1)', unb.length === 1 && unb[0].entry.id === 'B', unb.map(u => u.entry.id).join(','));
+ok('B unbilled value = 3h × $120 = $360', unb[0]?.amount === 360, unb[0]?.amount);
+ok('A is NOT unbilled (auto-captured by R1)', !unb.some(u => u.entry.id === 'A'));
+// Attach B to R1 (sets reportId).
+const Battached = { ...B, reportId: 'r1' };
+lab = labourForReport(R1, [A, Battached], NOW);
+ok('after attach, R1 includes A + B (5h total)', lab.reduce((s, l) => s + l.hours, 0) === 5, lab.reduce((s, l) => s + l.hours, 0));
+unb = unbilledLabour('p', [A, Battached], [R1], DEFAULT_CONTRACTING_RATES, NOW);
+ok('B leaves the unbilled list once attached', unb.length === 0, unb.length);
+// One-report-ever: B attached to R1 must NOT bleed into R2.
+const labR2 = labourForReport(R2, [Battached], NOW);
+ok('B does NOT appear on another report (one-report-ever)', labR2.length === 0, labR2.length);
+// Invoiced entries are frozen out entirely.
+const Binv = { ...B, reportId: 'r1', status: 'invoiced' };
+ok('invoiced entry never re-bills or re-lists', labourForReport(R1, [Binv], NOW).length === 0 && unbilledLabour('p', [Binv], [R1], DEFAULT_CONTRACTING_RATES, NOW).length === 0);
 
 console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
