@@ -24,7 +24,7 @@ import {
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary,
   RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, RoleTaskInstance,
-  ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingRateCard, TimeEntry
+  ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
@@ -65,6 +65,7 @@ import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
 import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, planPhaseMerge } from './lib/contracting';
 import type { ContractingProperty, ContractingSupplier } from './types';
+import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabel, payDateLabel } from './lib/payPeriods';
 import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
 import RequestTimeOffModal, { type RequestTimeOffSubmit } from './components/RequestTimeOffModal';
@@ -216,6 +217,7 @@ export default function App() {
   const subContractingInvoicesRef = useRef<Record<string, ContractingInvoice>>({});
   const subContractingWorkOrdersRef = useRef<Record<string, ContractingWorkOrder>>({});
   const subContractingShoppingListRef = useRef<Record<string, ContractingShoppingItem>>({});
+  const subContractingPersonalItemsRef = useRef<Record<string, ContractingPersonalItem>>({});
   const mergePerformance = (
     docPerf: Record<string, Record<string, PerformanceLog>>,
     monthOverlay: Record<string, Record<string, PerformanceLog>>,
@@ -898,6 +900,7 @@ export default function App() {
           contractingInvoices: subContractingInvoicesRef.current,
           contractingWorkOrders: subContractingWorkOrdersRef.current,
           contractingShoppingList: subContractingShoppingListRef.current,
+          contractingPersonalItems: subContractingPersonalItemsRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -1179,7 +1182,8 @@ export default function App() {
     const c4 = mk('contractingInvoices', subContractingInvoicesRef, 'contractingInvoices');
     const c5 = mk('contractingWorkOrders', subContractingWorkOrdersRef, 'contractingWorkOrders');
     const c6 = mk('contractingShoppingList', subContractingShoppingListRef, 'contractingShoppingList');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); c1(); c2(); c3(); c4(); c5(); c6(); };
+    const c7 = mk('contractingPersonalItems', subContractingPersonalItemsRef, 'contractingPersonalItems');
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); };
   }, [user]);
 
   useEffect(() => {
@@ -2230,6 +2234,25 @@ export default function App() {
     syncToCloud({ ...appData, timeEntries: (appData.timeEntries || []).map(e => e.id === myActivePunch.id ? { ...e, clockOut: new Date().toISOString() } : e) });
     showToastMsg('Clocked out.');
   };
+  // Contractor home HOURS cards — the pay-period lens over THEIR OWN punches
+  // (hours only, never rates/pay). Display-only read of the payroll data.
+  const contractorHours = (() => {
+    const cfg = payPeriodSettings(appData.settings);
+    const nowMs = Date.now();
+    const cur = currentPayPeriod(cfg, nowMs);
+    const prev = previousPayPeriod(cfg, nowMs);
+    const mine = (appData.timeEntries || []).filter(e => e.userEmail === displayEmail);
+    const sum = (s: number, e: number) => mine.reduce((acc, x) => {
+      const t = new Date(x.clockIn).getTime();
+      if (t < s || t > e) return acc;
+      const out = x.clockOut ? new Date(x.clockOut).getTime() : nowMs;
+      return acc + Math.max(0, (out - t) / 3600000);
+    }, 0);
+    return {
+      last: { rangeLabel: periodRangeLabel(prev), payDate: payDateLabel(prev), hours: sum(prev.startMs, prev.endMs) },
+      current: { rangeLabel: periodRangeLabel(cur), payDate: payDateLabel(cur), hours: sum(cur.startMs, cur.endMs) },
+    };
+  })();
   const contractingRates: ContractingRateCard = contractingRatesOrDefault(appData.settings?.contractingRates);
   const contractingProperties: ContractingProperty[] = propertiesOrDefault(appData.settings?.contractingProperties);
   const contractingSuppliers: ContractingSupplier[] = suppliersOrDefault(appData.settings?.contractingSuppliers);
@@ -2423,6 +2446,16 @@ export default function App() {
     const it = subContractingShoppingListRef.current[id];
     if (!canManageContracting && it?.addedBy?.id !== contractingUser.id) { showToastMsg(PERMISSION_DENIED); return; }
     await deleteDoc(doc(roleColl('contractingShoppingList'), id));
+  };
+  // Personal TO-DO / FOLLOW-UP items — private per user (guard: own items only).
+  const saveContractingPersonalItem = async (it: ContractingPersonalItem) => {
+    if (it.userId !== contractingUser.id) { showToastMsg(PERMISSION_DENIED); return; }
+    await setDoc(doc(roleColl('contractingPersonalItems'), it.id), cleanRM(it));
+  };
+  const deleteContractingPersonalItem = async (id: string) => {
+    const it = subContractingPersonalItemsRef.current[id];
+    if (it && it.userId !== contractingUser.id) { showToastMsg(PERMISSION_DENIED); return; }
+    await deleteDoc(doc(roleColl('contractingPersonalItems'), id));
   };
   const [roleInstanceModalId, setRoleInstanceModalId] = useState<string | null>(null);
   const resolveInstance = async (id: string, patch: Partial<RoleTaskInstance>) => {
@@ -4739,6 +4772,10 @@ export default function App() {
           onDeleteWorkOrder={deleteContractingWorkOrder}
           onSaveShoppingItem={saveContractingShoppingItem}
           onDeleteShoppingItem={deleteContractingShoppingItem}
+          personalItems={appData.contractingPersonalItems || {}}
+          onSavePersonalItem={saveContractingPersonalItem}
+          onDeletePersonalItem={deleteContractingPersonalItem}
+          hoursCards={contractorHours}
           myActivePunch={myActivePunch}
           myTodayPunches={myTodayPunches}
           onClockIn={contractorClockIn}

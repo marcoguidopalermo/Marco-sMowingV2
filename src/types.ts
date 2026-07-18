@@ -1024,6 +1024,18 @@ export interface ContractingWorkOrder {
   updatedAt?: number;
 }
 
+// Personal TO-DO / FOLLOW-UP items — PRIVATE per user (filtered by userId).
+export interface ContractingPersonalItem {
+  id: string;
+  userId: string;
+  list: 'todo' | 'followup';
+  text: string;
+  done?: boolean;
+  doneAt?: number;
+  createdBy?: { id: string; name: string };
+  createdAt?: number;
+}
+
 export interface ContractingShoppingItem {
   id: string;
   item: string;
@@ -1468,6 +1480,7 @@ export interface AppData {
   contractingInvoices?: Record<string, ContractingInvoice>;
   contractingWorkOrders?: Record<string, ContractingWorkOrder>;
   contractingShoppingList?: Record<string, ContractingShoppingItem>;
+  contractingPersonalItems?: Record<string, ContractingPersonalItem>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of

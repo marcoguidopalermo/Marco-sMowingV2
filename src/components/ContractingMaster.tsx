@@ -6,7 +6,7 @@ import {
   ContractingProject, ContractingPhase, ContractingChecklistItem, ContractingTimeEntry,
   ContractingProgressReport, ContractingReceipt, ContractingInvoice, ContractingWorkOrder,
   ContractingShoppingItem, ContractingRateCard, ContractingBillingRole, ContractingStatus,
-  ContractingProperty, ContractingSupplier, ContractingPhaseType, Employee, StoredFile, TimeEntry,
+  ContractingProperty, ContractingSupplier, ContractingPersonalItem, ContractingPhaseType, Employee, StoredFile, TimeEntry,
 } from '../types';
 import {
   HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled,
@@ -56,6 +56,11 @@ interface Props {
   myTodayPunches: TimeEntry[];
   onClockIn: () => void;
   onClockOut: () => void;
+  // Home screen: personal (private) lists + own-hours cards.
+  personalItems: Record<string, ContractingPersonalItem>;
+  onSavePersonalItem: (it: ContractingPersonalItem) => void;
+  onDeletePersonalItem: (id: string) => void;
+  hoursCards: { last: { rangeLabel: string; payDate: string; hours: number }; current: { rangeLabel: string; payDate: string; hours: number } };
 }
 
 // Cross-tab navigation actions threaded to tabs that link elsewhere.
@@ -77,14 +82,14 @@ const dateInputVal = (ms: number) => { const d = new Date(ms); return `${d.getFu
 const dateFromInput = (s: string) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0).getTime(); };
 const STATUS_LABEL: Record<ContractingStatus, string> = { planned: 'Planned', in_progress: 'In Progress', on_hold: 'On Hold', complete: 'Complete', closed: 'Closed' };
 
-type Tab = 'clock' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
+type Tab = 'home' | 'clock' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
 
 export default function ContractingMaster(props: Props) {
   const { canManage, isAdmin, currentUser } = props;
   const rates = ratesOrDefault(props.rates);
-  // Contractors get Clock (in/out) + Work Orders + Material. Managers open on
-  // Projects (they use full TimeMaster, not the portal clock).
-  const [tab, setTab] = useState<Tab>(canManage ? 'projects' : 'clock');
+  // Contractors land on HOME (hours + lists), then Clock · Work Orders ·
+  // Material. Managers open on Projects.
+  const [tab, setTab] = useState<Tab>(canManage ? 'projects' : 'home');
 
   const projects = useMemo(() => Object.values(props.projects).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)), [props.projects]);
   const invoices = useMemo(() => Object.values(props.invoices), [props.invoices]);
@@ -110,6 +115,7 @@ export default function ContractingMaster(props: Props) {
   // FINANCIALS (projects, reports, invoices, billables, rate card) are
   // admin + contracting-manager ONLY — enforced by absence (not rendered).
   const tabs: { id: Tab; label: string; show: boolean }[] = [
+    { id: 'home', label: 'Home', show: true },
     { id: 'clock', label: 'Clock', show: !canManage },
     { id: 'projects', label: 'Projects', show: canManage },
     { id: 'reports', label: 'Reports', show: canManage },
@@ -155,6 +161,7 @@ export default function ContractingMaster(props: Props) {
         {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} projects={projects} reports={reports} timeEntries={timeEntries} rateOverrides={rateOverrides} nav={nav} focusProjectId={focusProjectId} onConsumeFocus={() => setFocusProjectId(null)} />}
         {tab === 'reports' && canManage && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} invoices={invoices} rateOverrides={rateOverrides} nav={nav} />}
         {tab === 'invoices' && canManage && <InvoicesTab {...props} invoices={invoices} reports={reports} projects={projects} nav={nav} initialFilter={invoiceFilter} />}
+        {tab === 'home' && <HomeTab {...props} hoursCards={props.hoursCards} personalItems={props.personalItems} shoppingList={props.shoppingList} />}
         {tab === 'clock' && !canManage && <ContractorClockTab active={props.myActivePunch} today={props.myTodayPunches} onIn={props.onClockIn} onOut={props.onClockOut} name={currentUser.name} />}
         {tab === 'workorders' && <WorkOrdersTab {...props} />}
         {tab === 'shopping' && <ShoppingTab {...props} />}
@@ -216,6 +223,116 @@ function ContractorClockTab({ active, today, onIn, onOut, name }: { active: Time
           ))}
           {today.length === 0 && <div className="text-gray-400 text-sm">No punches yet today.</div>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────── HOME ──────
+// Contractor landing page: own-hours cards (pay-period lens) + three simple
+// lists (private To-do, private Follow-up, shared Material).
+function HomeTab(p: Ctx & { hoursCards: Props['hoursCards']; personalItems: Record<string, ContractingPersonalItem>; shoppingList: Record<string, ContractingShoppingItem> }) {
+  const me = p.currentUser;
+  const mine = Object.values(p.personalItems).filter(i => i.userId === me.id);
+  return (
+    <div className="max-w-md mx-auto space-y-5">
+      {/* HOURS — hours only, never rates or pay amounts */}
+      <div>
+        <div className="text-xs font-black uppercase tracking-widest mb-1" style={{ color: PALERMO.slate }}>Hours</div>
+        <div className="grid grid-cols-2 gap-3">
+          <HoursCard label="Last paycheque" data={p.hoursCards.last} verb="paid" />
+          <HoursCard label="This paycheque" data={p.hoursCards.current} verb="pays" inProgress />
+        </div>
+      </div>
+      {/* MY LISTS */}
+      <PersonalList title="To-do" list="todo" items={mine.filter(i => i.list === 'todo')} me={me} onSave={p.onSavePersonalItem} onDelete={p.onDeletePersonalItem} />
+      <PersonalList title="Follow-up" list="followup" items={mine.filter(i => i.list === 'followup')} me={me} onSave={p.onSavePersonalItem} onDelete={p.onDeletePersonalItem} />
+      <MaterialMini items={Object.values(p.shoppingList)} me={me} canDeleteAny={p.canManage} onSave={p.onSaveShoppingItem} onDelete={p.onDeleteShoppingItem} />
+    </div>
+  );
+}
+
+function HoursCard({ label, data, verb, inProgress }: { label: string; data: { rangeLabel: string; payDate: string; hours: number }; verb: string; inProgress?: boolean }) {
+  const hm = `${Math.floor(data.hours)}h ${Math.round((data.hours - Math.floor(data.hours)) * 60)}m`;
+  return (
+    <div className={`bg-white rounded-xl border p-3 ${inProgress ? 'border-emerald-200' : 'border-slate-200'}`}>
+      <div className="text-[9px] font-black uppercase tracking-widest" style={{ color: inProgress ? '#1E8449' : PALERMO.slate }}>{label} · {data.rangeLabel}</div>
+      <div className="text-2xl font-black" style={{ color: inProgress ? '#1E8449' : PALERMO.slate }}>{hm}</div>
+      <div className="text-[10px] text-gray-400">{inProgress ? 'in progress · ' : ''}{verb} {data.payDate}</div>
+    </div>
+  );
+}
+
+// Personal (private) list — two-tap add, check → Done (collapsed; ~14-day auto-hide).
+function PersonalList({ title, list, items, me, onSave, onDelete }: { title: string; list: 'todo' | 'followup'; items: ContractingPersonalItem[]; me: { id: string; name: string }; onSave: (it: ContractingPersonalItem) => void; onDelete: (id: string) => void }) {
+  const [text, setText] = useState('');
+  const [showDone, setShowDone] = useState(false);
+  const active = items.filter(i => !i.done).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const twoWeeks = Date.now() - 14 * 86400000;
+  const done = items.filter(i => i.done && (i.doneAt || 0) > twoWeeks).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
+  const add = () => { if (!text.trim()) return; onSave({ id: uid('cpi'), userId: me.id, list, text: text.trim(), createdBy: me, createdAt: Date.now() }); setText(''); };
+  const toggle = (i: ContractingPersonalItem) => onSave({ ...i, done: !i.done, doneAt: !i.done ? Date.now() : undefined });
+  return (
+    <div>
+      <div className="text-xs font-black uppercase tracking-widest mb-1" style={{ color: PALERMO.slate }}>{title} <span className="text-gray-400 font-semibold normal-case tracking-normal">· private</span></div>
+      <div className="flex gap-2 mb-2">
+        <input className="inp flex-1" style={{ minHeight: 44 }} placeholder={`Add ${title.toLowerCase()}…`} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
+        <button onClick={add} disabled={!text.trim()} className="px-4 rounded text-white font-bold disabled:opacity-40" style={{ backgroundColor: PALERMO.gold, minHeight: 44 }}>Add</button>
+      </div>
+      <div className="space-y-1">
+        {active.map(i => (
+          <div key={i.id} className="flex items-center gap-3 bg-white rounded-lg border p-2.5" style={{ minHeight: 44 }}>
+            <button onClick={() => toggle(i)} className="flex items-center gap-3 flex-1 text-left">
+              <span className="w-5 h-5 rounded border-2 shrink-0" style={{ borderColor: PALERMO.slate }} />
+              <span className="flex-1 text-sm">{i.text}</span>
+            </button>
+            <button onClick={() => onDelete(i.id)} className="text-red-400 text-lg px-1 shrink-0">×</button>
+          </div>
+        ))}
+        {active.length === 0 && <div className="text-gray-400 text-sm">Nothing here.</div>}
+      </div>
+      {done.length > 0 && (
+        <div className="mt-1">
+          <button onClick={() => setShowDone(s => !s)} className="text-[11px] font-semibold text-gray-400 uppercase">{showDone ? '▾' : '▸'} Done ({done.length})</button>
+          {showDone && <div className="space-y-1 mt-1">{done.map(i => (
+            <div key={i.id} className="flex items-center gap-3 bg-white/60 rounded-lg border p-2 opacity-60" style={{ minHeight: 40 }}>
+              <button onClick={() => toggle(i)} className="flex items-center gap-3 flex-1 text-left">
+                <span className="w-4 h-4 rounded flex items-center justify-center text-white text-[10px] shrink-0" style={{ backgroundColor: '#27AE60' }}>✓</span>
+                <span className="flex-1 text-sm line-through text-gray-500">{i.text}</span>
+              </button>
+              <button onClick={() => onDelete(i.id)} className="text-red-400 text-lg px-1 shrink-0">×</button>
+            </div>
+          ))}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Shared company Material list, surfaced simply on Home (same data as the tab).
+function MaterialMini({ items, me, canDeleteAny, onSave, onDelete }: { items: ContractingShoppingItem[]; me: { id: string; name: string }; canDeleteAny: boolean; onSave: (s: ContractingShoppingItem) => void; onDelete: (id: string) => void }) {
+  const [text, setText] = useState('');
+  const active = items.filter(i => !i.purchased).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+  const add = () => { if (!text.trim()) return; onSave({ id: uid('csh'), item: text.trim(), addedBy: me, addedAt: Date.now() }); setText(''); };
+  const toggle = (i: ContractingShoppingItem) => onSave({ ...i, purchased: !i.purchased, purchasedBy: !i.purchased ? me.name : undefined, purchasedAt: !i.purchased ? Date.now() : undefined });
+  return (
+    <div>
+      <div className="text-xs font-black uppercase tracking-widest mb-1" style={{ color: PALERMO.slate }}>Material <span className="text-gray-400 font-semibold normal-case tracking-normal">· shared with the team</span></div>
+      <div className="flex gap-2 mb-2">
+        <input className="inp flex-1" style={{ minHeight: 44 }} placeholder="Add material, supply, or tool…" value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
+        <button onClick={add} disabled={!text.trim()} className="px-4 rounded text-white font-bold disabled:opacity-40" style={{ backgroundColor: PALERMO.gold, minHeight: 44 }}>Add</button>
+      </div>
+      <div className="space-y-1">
+        {active.map(i => (
+          <div key={i.id} className="flex items-center gap-3 bg-white rounded-lg border p-2.5" style={{ minHeight: 44 }}>
+            <button onClick={() => toggle(i)} className="flex items-center gap-3 flex-1 text-left">
+              <span className="w-5 h-5 rounded border-2 shrink-0" style={{ borderColor: PALERMO.slate }} />
+              <span className="flex-1 text-sm"><b>{i.item}</b>{i.qty ? ` · ${i.qty}` : ''}{i.supplier ? <span className="text-xs text-gray-400"> · {i.supplier}</span> : ''}</span>
+            </button>
+            {(canDeleteAny || i.addedBy?.id === me.id) && <button onClick={() => confirm(`Delete "${i.item}"?`) && onDelete(i.id)} className="text-red-400 text-lg px-1 shrink-0">×</button>}
+          </div>
+        ))}
+        {active.length === 0 && <div className="text-gray-400 text-sm">Nothing to buy. 🎉</div>}
       </div>
     </div>
   );
@@ -1251,13 +1368,18 @@ function WorkOrdersTab(p: Props) {
         <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Work orders <span className="text-xs font-normal text-gray-500">(rentals · internal)</span></h2>
         <button onClick={() => setAdding(true)} className="px-3 py-1.5 rounded text-white text-sm font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Work order</button>
       </div>
-      <div className="flex gap-1 overflow-x-auto pb-2">
-        {/* Default view is everyone/all — "Assigned to me" is opt-in. */}
-        <button onClick={() => setMineOnly(m => !m)} className="px-2.5 py-1 rounded-full text-xs whitespace-nowrap font-semibold border" style={mineOnly ? { backgroundColor: PALERMO.gold, color: 'white', borderColor: PALERMO.gold } : {}}>Assigned to me</button>
-        {['All', ...activeProps.map(x => x.name)].map(name => {
-          const corp = activeProps.find(x => x.name === name)?.corp;
-          return <button key={name} onClick={() => setFilter(name)} className="px-2.5 py-1 rounded-full text-xs whitespace-nowrap font-semibold border" style={filter === name ? { backgroundColor: PALERMO.slate, color: 'white' } : corp ? { borderColor: PALERMO.gold, color: PALERMO.gold } : {}}>{corp ? '★ ' : ''}{name}</button>;
-        })}
+      {/* Big segmented view toggle — the view that matters (default All). */}
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <button onClick={() => setMineOnly(false)} className="py-3 rounded-lg font-black text-sm uppercase tracking-wide border-2" style={!mineOnly ? { backgroundColor: PALERMO.slate, color: 'white', borderColor: PALERMO.slate } : { color: PALERMO.slate, borderColor: '#D5DBDB' }}>All</button>
+        <button onClick={() => setMineOnly(true)} className="py-3 rounded-lg font-black text-sm uppercase tracking-wide border-2" style={mineOnly ? { backgroundColor: PALERMO.gold, color: 'white', borderColor: PALERMO.gold } : { color: PALERMO.slate, borderColor: '#D5DBDB' }}>Assigned to me</button>
+      </div>
+      {/* Property filter — compact dropdown (was a chip row). */}
+      <div className="flex items-center gap-2 mb-3 text-sm">
+        <span className="text-gray-500 font-semibold">Property:</span>
+        <select className="inp flex-1" style={{ maxWidth: 260 }} value={filter} onChange={e => setFilter(e.target.value)}>
+          <option value="All">All</option>
+          {activeProps.map(x => <option key={x.id} value={x.name}>{x.corp ? '★ ' : ''}{x.name}</option>)}
+        </select>
       </div>
       <div className="space-y-2">
         {activeList.map(w => <WorkOrderCard key={w.id} wo={w} contractors={contractors} {...p} />)}
@@ -1304,14 +1426,15 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
         </div>
         <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: wo.priority === 'high' ? '#FADBD8' : wo.priority === 'normal' ? '#EBF5FB' : '#F8F9F9', color: wo.priority === 'high' ? '#C0392B' : '#555' }}>{wo.priority}</span>
       </div>
-      {wo.description && <div className="text-sm text-gray-600 mt-1">{wo.description}</div>}
-      {/* Assignee — shown on the row; picker for Marco/Tony. */}
-      <div className="text-xs mt-1 flex items-center gap-2">
-        <span className="text-gray-400">Assignee:</span>
-        {canManage
-          ? <select className="inp text-xs py-0.5" style={{ width: 'auto' }} value={wo.assigneeId || ''} onChange={e => assign(e.target.value)}><option value="">Unassigned</option>{p.contractors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-          : <span className="font-semibold" style={{ color: PALERMO.slate }}>{wo.assigneeName || 'Unassigned'}</span>}
+      {/* Assignee — a clear chip, readable at a glance. */}
+      <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+        <span className="inline-flex items-center gap-1.5 text-xs font-bold px-2 py-1 rounded-full" style={wo.assigneeName ? { backgroundColor: '#2E40531A', color: PALERMO.slate } : { backgroundColor: '#F2F3F4', color: '#909497' }}>
+          <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black text-white" style={{ backgroundColor: wo.assigneeName ? PALERMO.gold : '#B2BABB' }}>{wo.assigneeName ? wo.assigneeName.charAt(0).toUpperCase() : '?'}</span>
+          {wo.assigneeName || 'Unassigned'}
+        </span>
+        {canManage && <select className="inp text-xs py-0.5" style={{ width: 'auto' }} value={wo.assigneeId || ''} onChange={e => assign(e.target.value)}><option value="">Reassign…</option><option value="">Unassigned</option>{p.contractors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}
       </div>
+      {wo.description && <div className="text-sm text-gray-600 mt-1">{wo.description}</div>}
       {wo.completionNote && <div className="text-xs text-gray-500 mt-1 italic">✓ {wo.completionNote}</div>}
       {wo.photos && wo.photos.length > 0 && <button onClick={() => setViewPhotos(wo.photos!)} className="text-xs mt-1" style={{ color: PALERMO.gold }}>📷 {wo.photos.length} photo(s)</button>}
       <div className="flex items-center gap-2 mt-2 flex-wrap">
@@ -1400,8 +1523,8 @@ function ShoppingTab(p: Props) {
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Material</h2>
-        {p.canManage && <button onClick={() => setManageOpen(o => !o)} className="text-xs px-2 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Suppliers</button>}
+        <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Material / Supply / Tool Order</h2>
+        {p.canManage && <button onClick={() => setManageOpen(o => !o)} className="text-xs px-2 py-1 rounded border font-semibold shrink-0" style={{ color: PALERMO.slate }}>Suppliers</button>}
       </div>
 
       {/* Suppliers manager (Tony/admin) */}
@@ -1425,7 +1548,7 @@ function ShoppingTab(p: Props) {
 
       {/* Two-tap add — item + Add. Supplier optional, remembers last used. */}
       <div className="bg-white rounded-lg border p-3 mb-3 sticky top-0">
-        <input className="inp text-base" style={{ minHeight: 48 }} placeholder="Add material…" value={item} onChange={e => setItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
+        <input className="inp text-base" style={{ minHeight: 48 }} placeholder="Add material, supply, or tool…" value={item} onChange={e => setItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
         <div className="flex gap-2 mt-2">
           <input className="inp w-20" placeholder="Qty" value={qty} onChange={e => setQty(e.target.value)} />
           {addingSupplier ? (
