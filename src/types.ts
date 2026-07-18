@@ -31,6 +31,9 @@ export interface Employee {
   // invoices, assignment). Regular contractors (Kris) create work orders +
   // shopping items + clock, but don't mint invoices.
   contractingManager?: boolean;
+  // Custom hourly rate that overrides the billing-role rate card for this
+  // contractor. Only meaningful for systemRole === 'contractor'.
+  contractingHourlyOverride?: number;
   // Sentinel Employee record auto-bootstrapped on first load so an
   // admin can "View As: Test User" and exercise every non-admin
   // surface without signing into a real account. Exactly one
@@ -858,13 +861,19 @@ export interface AppSettings {
   salesMaster?: SalesRates;
   // ContractingMaster T&M rate card (bounded). Absent → DEFAULT_CONTRACTING_RATES.
   contractingRates?: ContractingRateCard;
+  // ContractingMaster rental properties (bounded, editable). Absent → the
+  // default seed list from lib/contracting CONTRACTING_PROPERTIES.
+  contractingProperties?: ContractingProperty[];
 }
 
 // ══ ContractingMaster (Palermo's Contracting) types ═══════════════════════
 export type ContractingBillingRole = 'gc_pm' | 'skilled_carpenter' | 'general_labour';
 export interface ContractingRateCard { gc_pm: number; skilled_carpenter: number; general_labour: number; }
 
+export interface ContractingProperty { id: string; name: string; corp?: boolean; notes?: string; active?: boolean; }
 export type ContractingPhaseType = 'fixed' | 'tm';
+// Audit trail for a fixed-price change on a phase (who/when/from→to).
+export interface ContractingPriceAudit { at: number; by: string; from: number; to: number; }
 export type ContractingStatus = 'planned' | 'in_progress' | 'on_hold' | 'complete' | 'closed';
 export interface ContractingChecklistItem { id: string; text: string; required: boolean; done: boolean; doneBy?: string; doneAt?: number; }
 export interface ContractingPhase {
@@ -877,6 +886,7 @@ export interface ContractingPhase {
   checklist: ContractingChecklistItem[];
   tmStartAt?: number;             // T&M clock start → seeds the first open report
   note?: string;                  // e.g. window-package approval note
+  priceAudit?: ContractingPriceAudit[];  // fixed-price change history (audited)
 }
 export interface ContractingProject {
   id: string;

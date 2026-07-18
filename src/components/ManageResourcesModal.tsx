@@ -9,7 +9,8 @@ import {
   AlertTriangle, CheckSquare, UserCircle, Clock, Sliders, Link2, Mail, FileText
 } from 'lucide-react';
 import { unitDocAlerts } from '../lib/fleetDocuments';
-import { Employee, FleetItem, InventoryItem, Job, AppSettings, RolePermissionsOverride, UserRole, JobberUser, PRIMARY_CREWS, EquipmentSubtypeDefinition, PartialTimeOff } from '../types';
+import { Employee, FleetItem, InventoryItem, Job, AppSettings, RolePermissionsOverride, UserRole, JobberUser, PRIMARY_CREWS, EquipmentSubtypeDefinition, PartialTimeOff, ContractingRateCard, ContractingBillingRole } from '../types';
+import { ratesOrDefault as contractingRatesOrDefault, ROLE_LABEL as CONTRACTING_ROLE_LABEL, money as contractingMoney } from '../lib/contracting';
 import { makeSubtypeId, fleetItemLabel } from '../lib/fleetUtils';
 import FleetGroupedList from './FleetGroupedList';
 import { DIVISIONS, CREW_NUMBERS, ROUTE_FREQUENCIES, DAYS_OF_WEEK, DEFAULT_EOD_REMINDER, DEFAULT_CREW_SIZE_ALLOWANCE } from '../constants';
@@ -49,6 +50,9 @@ interface ManageResourcesModalProps {
   // chunk" rollout form's visibility: shown only when a mechanic
   // has hoursPer1000 set and no open chunk for them yet.
   mechanicPayChunks: Record<string, import('../types').MechanicPayChunk>;
+  // ContractingMaster (Palermo's) rate card — drives the contractor billing-
+  // role rate labels in Personnel. Absent → default rates.
+  contractingRates?: ContractingRateCard;
   // Called when the manager submits the rollout form. App.tsx
   // creates a backfilled open chunk for this mechanic with the
   // provided startTimestamp + manualHoursOffset, and writes via
@@ -99,6 +103,7 @@ export default function ManageResourcesModal({
   onOpenUnitDocuments,
   mechanicPayChunks,
   onCreateInitialChunk,
+  contractingRates,
   localInventory,
   setLocalInventory,
   localSupplies,
@@ -376,6 +381,7 @@ export default function ManageResourcesModal({
                           <option value="foreman">Foreman</option>
                           <option value="worker">Worker</option>
                           <option value="mechanic">Mechanic</option>
+                          <option value="contractor">Contractor (Palermo's)</option>
                         </select>
                       </div>
                       <div className="w-44">
@@ -562,6 +568,55 @@ export default function ManageResourcesModal({
                       })()}
                     </div>
                   )}
+                  {sysRole === 'contractor' && (() => {
+                    const rc = contractingRatesOrDefault(contractingRates);
+                    const role = (emp.contractingBillingRole || 'general_labour') as ContractingBillingRole;
+                    const roleRate = role === 'gc_pm' ? rc.gc_pm : role === 'skilled_carpenter' ? rc.skilled_carpenter : rc.general_labour;
+                    const override = emp.contractingHourlyOverride;
+                    return (
+                      <div className="flex flex-col gap-2 p-3 rounded-lg border" style={{ backgroundColor: '#2E40530D', borderColor: '#2E405333' }}>
+                        <div className="text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5" style={{ color: '#2E4053' }}>
+                          <Hammer className="w-3.5 h-3.5" style={{ color: '#B7950B' }} /> Palermo's Contracting — billing
+                        </div>
+                        <div className="flex flex-wrap gap-3 items-end">
+                          <div className="w-56">
+                            <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 block mb-1">Billing role (rate card)</label>
+                            <select
+                              disabled={!isAdmin}
+                              value={role}
+                              onChange={e => { const ne = [...localEmployees]; ne[idx] = { ...ne[idx], contractingBillingRole: e.target.value as ContractingBillingRole }; setLocalEmployees(ne); }}
+                              className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm font-bold text-slate-800 outline-none focus:ring-2 disabled:bg-slate-50"
+                              style={{ ['--tw-ring-color' as any]: '#B7950B' }}
+                            >
+                              <option value="gc_pm">{CONTRACTING_ROLE_LABEL.gc_pm} — {contractingMoney(rc.gc_pm)}/hr</option>
+                              <option value="skilled_carpenter">{CONTRACTING_ROLE_LABEL.skilled_carpenter} — {contractingMoney(rc.skilled_carpenter)}/hr</option>
+                              <option value="general_labour">{CONTRACTING_ROLE_LABEL.general_labour} — {contractingMoney(rc.general_labour)}/hr</option>
+                            </select>
+                          </div>
+                          <div className="w-44">
+                            <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 block mb-1">Custom hourly (override)</label>
+                            <input
+                              type="number" min={0} step={5}
+                              disabled={!isAdmin}
+                              value={typeof override === 'number' ? override : ''}
+                              onChange={e => { const ne = [...localEmployees]; const v = e.target.value; ne[idx] = { ...ne[idx], contractingHourlyOverride: v === '' ? undefined : Number(v) }; setLocalEmployees(ne); }}
+                              placeholder={`role rate ${contractingMoney(roleRate)}`}
+                              className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm font-mono font-bold text-slate-800 outline-none focus:ring-2 disabled:bg-slate-50"
+                              style={{ ['--tw-ring-color' as any]: '#B7950B' }}
+                            />
+                          </div>
+                          <label className="flex items-center gap-2 text-sm font-bold text-slate-700 pb-2">
+                            <input type="checkbox" disabled={!isAdmin} checked={!!emp.contractingManager}
+                              onChange={e => { const ne = [...localEmployees]; ne[idx] = { ...ne[idx], contractingManager: e.target.checked || undefined }; setLocalEmployees(ne); }} />
+                            Contracting manager (Tony)
+                          </label>
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          Effective rate: <strong>{contractingMoney(override != null && override > 0 ? override : roleRate)}/hr</strong>. This contractor is a Palermo's-only user — excluded from every CrewMaster view and pay calc; managed here, read by ContractingMaster.
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               );})}
               <button onClick={() => setLocalEmployees([...localEmployees, { id: `e-${Date.now()}`, name: 'New Employee', status: 'Active', hasLicense: false, hasClassA: false, hasHeavyMachinery: false, awayDates: [] }])} className="w-full py-4 border-2 border-dashed border-green-300 text-green-600 rounded-xl font-bold hover:bg-green-50 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add Employee</button>

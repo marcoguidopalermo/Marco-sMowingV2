@@ -6,12 +6,12 @@ import {
   ContractingProject, ContractingPhase, ContractingChecklistItem, ContractingTimeEntry,
   ContractingProgressReport, ContractingReceipt, ContractingInvoice, ContractingWorkOrder,
   ContractingShoppingItem, ContractingRateCard, ContractingBillingRole, ContractingStatus,
-  Employee, StoredFile,
+  ContractingProperty, ContractingPhaseType, Employee, StoredFile,
 } from '../types';
 import {
   HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled,
   computeReportTotals, labourForReport, phaseBillables, phaseReadyToBill, withHst,
-  CONTRACTING_PROPERTIES, PALERMO, reportDayN,
+  PALERMO, reportDayN, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor, contractorRate,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
@@ -25,11 +25,13 @@ interface Props {
   shoppingList: Record<string, ContractingShoppingItem>;
   employees: Employee[];
   rates: ContractingRateCard;
+  properties: ContractingProperty[];
   currentUser: { id: string; name: string };
   isAdmin: boolean;
   canManage: boolean;
   uploadedBy: { email: string; name: string };
   onSaveRates: (r: ContractingRateCard) => void;
+  onSaveProperties: (list: ContractingProperty[]) => void;
   onSaveProject: (p: ContractingProject) => void;
   onSaveTimeEntry: (t: ContractingTimeEntry) => void;
   onOpenReport: (projectId: string, phaseId: string) => void;
@@ -49,25 +51,33 @@ const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slic
 const fmtDate = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 const STATUS_LABEL: Record<ContractingStatus, string> = { planned: 'Planned', in_progress: 'In Progress', on_hold: 'On Hold', complete: 'Complete', closed: 'Closed' };
 
-type Tab = 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'rates';
+type Tab = 'mytime' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
 
 export default function ContractingMaster(props: Props) {
   const { canManage, isAdmin, currentUser } = props;
   const rates = ratesOrDefault(props.rates);
-  const [tab, setTab] = useState<Tab>('projects');
+  // Contractors (no financials) open on My Time; managers open on Projects.
+  const [tab, setTab] = useState<Tab>(canManage ? 'projects' : 'mytime');
 
   const projects = useMemo(() => Object.values(props.projects).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)), [props.projects]);
   const invoices = useMemo(() => Object.values(props.invoices), [props.invoices]);
   const reports = useMemo(() => Object.values(props.reports), [props.reports]);
   const timeEntries = useMemo(() => Object.values(props.timeEntries), [props.timeEntries]);
   const contractors = useMemo(() => props.employees.filter(e => e.systemRole === 'contractor'), [props.employees]);
+  // Per-contractor rate override map — honored by the live preview so it
+  // matches what the invoice will freeze.
+  const rateOverrides = useMemo(() => rateMapFor(props.employees, rates), [props.employees, rates]);
 
+  // FINANCIALS (projects, reports, invoices, billables, rate card) are
+  // admin + contracting-manager ONLY — enforced by absence (not rendered).
   const tabs: { id: Tab; label: string; show: boolean }[] = [
-    { id: 'projects', label: 'Projects', show: true },
-    { id: 'reports', label: 'Reports', show: true },
-    { id: 'invoices', label: 'Invoices', show: true },
+    { id: 'mytime', label: 'My Time', show: true },
+    { id: 'projects', label: 'Projects', show: canManage },
+    { id: 'reports', label: 'Reports', show: canManage },
+    { id: 'invoices', label: 'Invoices', show: canManage },
     { id: 'workorders', label: 'Work Orders', show: true },
     { id: 'shopping', label: 'Shopping', show: true },
+    { id: 'properties', label: 'Properties', show: canManage },
     { id: 'rates', label: 'Rates', show: canManage },
   ];
 
@@ -79,7 +89,7 @@ export default function ContractingMaster(props: Props) {
           <div className="w-9 h-9 rounded flex items-center justify-center font-black text-lg" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>P</div>
           <div>
             <div className="text-white font-bold text-lg leading-tight">Palermo's Contracting</div>
-            <div className="text-xs" style={{ color: PALERMO.gold }}>ContractingMaster · T&amp;M + fixed billing</div>
+            <div className="text-xs" style={{ color: PALERMO.gold }}>{canManage ? 'ContractingMaster · T&M + fixed billing' : 'Time · Work Orders · Shopping'}</div>
           </div>
         </div>
       </div>
@@ -96,11 +106,13 @@ export default function ContractingMaster(props: Props) {
       </div>
 
       <div className="p-3 md:p-4 max-w-5xl mx-auto">
-        {tab === 'projects' && <ProjectsTab {...props} rates={rates} invoices={invoices} projects={projects} />}
-        {tab === 'reports' && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} />}
-        {tab === 'invoices' && <InvoicesTab {...props} invoices={invoices} reports={reports} projects={projects} />}
+        {tab === 'mytime' && <MyTimeTab {...props} rates={rates} timeEntries={timeEntries} projects={projects} />}
+        {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} projects={projects} reports={reports} timeEntries={timeEntries} />}
+        {tab === 'reports' && canManage && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} rateOverrides={rateOverrides} />}
+        {tab === 'invoices' && canManage && <InvoicesTab {...props} invoices={invoices} reports={reports} projects={projects} />}
         {tab === 'workorders' && <WorkOrdersTab {...props} />}
         {tab === 'shopping' && <ShoppingTab {...props} />}
+        {tab === 'properties' && canManage && <PropertiesTab properties={props.properties} onSaveProperties={props.onSaveProperties} />}
         {tab === 'rates' && canManage && <RatesTab rates={rates} onSaveRates={props.onSaveRates} />}
       </div>
       <div className="text-center text-[11px] text-gray-400 pb-4">
@@ -110,9 +122,43 @@ export default function ContractingMaster(props: Props) {
   );
 }
 
+// ──────────────────────────────────────────────────────────── MY TIME ──────
+// Clock in/out against a project + T&M phase. Visible to ALL contracting
+// users; shows NO dollar figures unless the viewer is a manager.
+function MyTimeTab(p: Ctx & { rates: ContractingRateCard; timeEntries: ContractingTimeEntry[]; projects: ContractingProject[] }) {
+  const me = p.currentUser;
+  const mine = p.timeEntries.filter(t => t.contractorId === me.id).sort((a, b) => b.clockIn - a.clockIn).slice(0, 12);
+  const projName = (id: string) => p.projects.find(x => x.id === id)?.name || '—';
+  const phaseName = (pid: string, phid: string) => p.projects.find(x => x.id === pid)?.phases.find(ph => ph.id === phid)?.name || '—';
+  return (
+    <div>
+      <h2 className="font-bold text-lg mb-2" style={{ color: PALERMO.slate }}>My time</h2>
+      <ClockPanel {...p} timeEntries={p.timeEntries} />
+      <div className="mt-4">
+        <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Recent sessions</div>
+        <div className="space-y-1">
+          {mine.map(t => (
+            <div key={t.id} className="bg-white rounded border p-2 text-sm flex items-center justify-between">
+              <span>{projName(t.projectId)} · {phaseName(t.projectId, t.phaseId)}</span>
+              <span className="text-gray-500">
+                {new Date(t.clockIn).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}
+                {t.clockOut ? ` · ${((t.clockOut - t.clockIn) / 3600000).toFixed(2)}h` : ' · open'}
+                {t.status === 'invoiced' && <span className="ml-1 text-[10px] px-1 rounded bg-slate-100">billed</span>}
+              </span>
+            </div>
+          ))}
+          {mine.length === 0 && <div className="text-gray-400 text-sm">No sessions yet.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────── PROJECTS ──────
-function ProjectsTab(p: Ctx & { rates: ContractingRateCard; invoices: ContractingInvoice[]; projects: ContractingProject[] }) {
-  const [selId, setSelId] = useState<string | null>(null);
+function ProjectsTab(p: Ctx & { rates: ContractingRateCard; invoices: ContractingInvoice[]; projects: ContractingProject[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[] }) {
+  // Board opens to the only active client project (Feaver Rd) by default.
+  const feaver = p.projects.find(x => /feaver/i.test(x.name)) || (p.projects.filter(x => x.status !== 'closed').length === 1 ? p.projects.find(x => x.status !== 'closed') : undefined);
+  const [selId, setSelId] = useState<string | null>(feaver?.id || null);
   const [adding, setAdding] = useState(false);
   const sel = selId ? p.projects.find(x => x.id === selId) : null;
 
@@ -165,21 +211,37 @@ function ProjectForm({ onClose, onSave, currentUser }: { onClose: () => void; on
   );
 }
 
-function ProjectDetail(p: Ctx & { project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; onBack: () => void }) {
+function ProjectDetail(p: Ctx & { project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; onBack: () => void }) {
   const { project, canManage } = p;
   const [addingPhase, setAddingPhase] = useState(false);
+  const [editing, setEditing] = useState(false);
   const save = (updater: (proj: ContractingProject) => ContractingProject) => p.onSaveProject({ ...updater(project), updatedAt: Date.now() });
+  const removePhase = (phaseId: string) => save(pr => ({ ...pr, phases: pr.phases.filter(x => x.id !== phaseId) }));
 
   return (
     <div>
       <button onClick={p.onBack} className="text-sm mb-2" style={{ color: PALERMO.slate }}>← All projects</button>
       <div className="bg-white rounded-lg border p-3 mb-3">
         <div className="flex items-center justify-between">
-          <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>{project.name}</h2>
-          {canManage && <StatusSelect value={project.status} onChange={s => save(pr => ({ ...pr, status: s }))} />}
+          {editing
+            ? <input className="inp font-bold text-lg flex-1 mr-2" defaultValue={project.name} onBlur={e => e.target.value.trim() && save(pr => ({ ...pr, name: e.target.value.trim() }))} />
+            : <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>{project.name}</h2>}
+          <div className="flex items-center gap-2">
+            {canManage && <StatusSelect value={project.status} onChange={s => save(pr => ({ ...pr, status: s }))} />}
+            {canManage && <button onClick={() => setEditing(e => !e)} className="text-xs px-2 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>{editing ? 'Done' : 'Edit'}</button>}
+          </div>
         </div>
-        {project.client && <div className="text-sm text-gray-700">{project.client.name}{project.client.contact ? ` · ${project.client.contact}` : ''}</div>}
-        {project.propertyRef && <div className="text-xs text-gray-500">Property: {project.propertyRef}</div>}
+        {editing ? (
+          <div className="grid grid-cols-2 gap-2 mt-2">
+            <input className="inp text-sm" placeholder="Client name" defaultValue={project.client?.name || ''} onBlur={e => save(pr => ({ ...pr, client: { name: e.target.value.trim(), contact: pr.client?.contact } }))} />
+            <input className="inp text-sm" placeholder="Client contact" defaultValue={project.client?.contact || ''} onBlur={e => save(pr => ({ ...pr, client: { name: pr.client?.name || '', contact: e.target.value.trim() || undefined } }))} />
+          </div>
+        ) : (
+          <>
+            {project.client && <div className="text-sm text-gray-700">{project.client.name}{project.client.contact ? ` · ${project.client.contact}` : ''}</div>}
+            {project.propertyRef && <div className="text-xs text-gray-500">Property: {project.propertyRef}</div>}
+          </>
+        )}
         {canManage && (
           <div className="mt-2">
             <label className="text-xs font-semibold text-gray-500">Internal notes (never client-facing)</label>
@@ -194,7 +256,7 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
       </div>
       <div className="space-y-3">
         {project.phases.map(phase => (
-          <PhaseCard key={phase.id} phase={phase} project={project} {...p} onUpdatePhase={np => save(pr => ({ ...pr, phases: pr.phases.map(x => x.id === np.id ? np : x) }))} />
+          <PhaseCard key={phase.id} phase={phase} project={project} {...p} onUpdatePhase={np => save(pr => ({ ...pr, phases: pr.phases.map(x => x.id === np.id ? np : x) }))} onRemovePhase={() => removePhase(phase.id)} />
         ))}
         {project.phases.length === 0 && <div className="text-gray-500 text-sm">No phases yet.</div>}
       </div>
@@ -231,11 +293,78 @@ function PhaseForm({ onClose, onSave }: { onClose: () => void; onSave: (p: Contr
   );
 }
 
-function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; onUpdatePhase: (ph: ContractingPhase) => void }) {
+// Edit an existing phase. GUARDS: fixed↔T&M is locked once the phase has
+// invoiced billing; a fixed-price change is audited (who/when/from→to);
+// removal is offered only when nothing is attached (else deactivate via status).
+function PhaseEditForm({ phase, hasBilling, removable, currentUser, onClose, onSave, onRemove }: {
+  phase: ContractingPhase; hasBilling: boolean; removable: boolean; currentUser: { id: string; name: string };
+  onClose: () => void; onSave: (p: ContractingPhase) => void; onRemove: () => void;
+}) {
+  const [name, setName] = useState(phase.name);
+  const [type, setType] = useState<ContractingPhaseType>(phase.type);
+  const [fixedPrice, setFixedPrice] = useState(phase.fixedPrice != null ? String(phase.fixedPrice) : '');
+  const [description, setDescription] = useState(phase.description || '');
+  const [note, setNote] = useState(phase.note || '');
+  const commit = () => {
+    const newPrice = type === 'fixed' ? (Number(fixedPrice) || 0) : undefined;
+    let priceAudit = phase.priceAudit;
+    // Audit a fixed-price change.
+    if (phase.type === 'fixed' && type === 'fixed' && (phase.fixedPrice || 0) !== (newPrice || 0)) {
+      priceAudit = [...(phase.priceAudit || []), { at: Date.now(), by: currentUser.name, from: phase.fixedPrice || 0, to: newPrice || 0 }];
+    }
+    onSave({
+      ...phase, name: name.trim() || phase.name,
+      type: hasBilling ? phase.type : type,   // locked when billed
+      fixedPrice: (hasBilling ? phase.type : type) === 'fixed' ? newPrice : undefined,
+      description: description.trim() || undefined, note: note.trim() || undefined, priceAudit,
+    });
+  };
+  return (
+    <Modal title={`Edit ${phase.name}`} onClose={onClose}>
+      <Field label="Phase name"><input className="inp" value={name} onChange={e => setName(e.target.value)} /></Field>
+      <Field label="Type">
+        {hasBilling ? (
+          <div className="text-sm px-3 py-2 rounded bg-slate-50 border">
+            <b>{phase.type === 'tm' ? 'Time & Materials' : 'Fixed price'}</b> — <span className="text-gray-500">locked (phase has invoiced billing)</span>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            {(['fixed', 'tm'] as const).map(t => (
+              <button key={t} onClick={() => setType(t)} className="flex-1 py-2 rounded border text-sm font-semibold" style={type === t ? { backgroundColor: PALERMO.slate, color: 'white' } : {}}>{t === 'fixed' ? 'Fixed price' : 'Time & Materials'}</button>
+            ))}
+          </div>
+        )}
+      </Field>
+      {(hasBilling ? phase.type : type) === 'fixed' && (
+        <Field label="Fixed price (pre-HST) — edits audited"><input className="inp" type="number" value={fixedPrice} onChange={e => setFixedPrice(e.target.value)} /></Field>
+      )}
+      <Field label="Description"><textarea className="inp" rows={2} value={description} onChange={e => setDescription(e.target.value)} /></Field>
+      <Field label="Note (e.g. approval)"><input className="inp" value={note} onChange={e => setNote(e.target.value)} /></Field>
+      {phase.priceAudit && phase.priceAudit.length > 0 && (
+        <div className="text-[11px] text-gray-400 mb-2">
+          <div className="font-semibold uppercase tracking-wide">Price history</div>
+          {phase.priceAudit.map((a, i) => <div key={i}>{money(a.from)} → {money(a.to)} · {a.by} · {fmtDate(a.at)}</div>)}
+        </div>
+      )}
+      <div className="flex gap-2 mt-2">
+        {removable
+          ? <button onClick={() => confirm(`Remove phase "${phase.name}"?`) && onRemove()} className="px-3 py-2.5 rounded border font-semibold text-red-600">Remove</button>
+          : <span className="text-[11px] text-gray-400 self-center flex-1">Has attached billing/time — can't remove; set status to On Hold/Closed instead.</span>}
+        <button onClick={onClose} className="flex-1 py-2.5 rounded border font-semibold">Cancel</button>
+        <button onClick={commit} disabled={!name.trim()} className="flex-1 py-2.5 rounded text-white font-bold disabled:opacity-40" style={{ backgroundColor: PALERMO.gold }}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; onUpdatePhase: (ph: ContractingPhase) => void; onRemovePhase: () => void }) {
   const { phase, project, canManage, currentUser } = p;
   const b = phaseBillables(project.id, phase.id, p.invoices);
   const ready = phaseReadyToBill(phase);
   const [newItem, setNewItem] = useState('');
+  const [editing, setEditing] = useState(false);
+  const hasBilling = phaseHasInvoicedBilling(project.id, phase.id, p.invoices, p.reports);
+  const removable = phaseIsRemovable(project.id, phase.id, p.invoices, p.reports, p.timeEntries);
 
   const toggleDone = (item: ContractingChecklistItem) => {
     if (!canManage) return;
@@ -252,10 +381,17 @@ function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProje
           <span className="font-semibold" style={{ color: PALERMO.slate }}>{phase.name}</span>
           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ backgroundColor: phase.type === 'tm' ? '#EBF5FB' : '#FEF9E7', color: phase.type === 'tm' ? '#2874A6' : PALERMO.gold }}>{phase.type === 'tm' ? 'T&M' : 'FIXED'}</span>
         </div>
-        {canManage
-          ? <StatusSelect value={phase.status} onChange={s => p.onUpdatePhase({ ...phase, status: s })} small />
-          : <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100">{STATUS_LABEL[phase.status]}</span>}
+        <div className="flex items-center gap-2">
+          {canManage
+            ? <StatusSelect value={phase.status} onChange={s => p.onUpdatePhase({ ...phase, status: s })} small />
+            : <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100">{STATUS_LABEL[phase.status]}</span>}
+          {canManage && <button onClick={() => setEditing(true)} className="text-xs px-2 py-0.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>Edit</button>}
+        </div>
       </div>
+      {editing && <PhaseEditForm phase={phase} hasBilling={hasBilling} removable={removable} currentUser={currentUser}
+        onClose={() => setEditing(false)}
+        onSave={np => { p.onUpdatePhase(np); setEditing(false); }}
+        onRemove={() => { p.onRemovePhase(); setEditing(false); }} />}
       {phase.description && <div className="text-sm text-gray-600 mt-1">{phase.description}</div>}
       {phase.note && <div className="text-xs mt-1 px-2 py-1 rounded" style={{ backgroundColor: '#FEF9E7', color: PALERMO.gold }}>⚑ {phase.note}</div>}
 
@@ -316,7 +452,7 @@ function Billable({ label, pre, full, accent }: { label: string; pre: number; fu
 }
 
 // ──────────────────────────────────────────────────────────── REPORTS ──────
-function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; contractors: Employee[]; projects: ContractingProject[] }) {
+function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; contractors: Employee[]; projects: ContractingProject[]; rateOverrides: Record<string, number> }) {
   const { canManage } = p;
   // T&M phases across projects, with their open report (if any).
   const tmPhases = p.projects.flatMap(proj => proj.phases.filter(ph => ph.type === 'tm').map(ph => ({ proj, ph })));
@@ -325,7 +461,6 @@ function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingP
   return (
     <div>
       <h2 className="font-bold text-lg mb-2" style={{ color: PALERMO.slate }}>Progress reports <span className="text-xs font-normal text-gray-500">(T&amp;M billing)</span></h2>
-      <ClockPanel {...p} />
       {tmPhases.length === 0 && <div className="text-gray-500 text-sm mt-3">No T&M phases. Add a Time &amp; Materials phase to a project to start billing periods.</div>}
       <div className="space-y-3 mt-3">
         {tmPhases.map(({ proj, ph }) => {
@@ -390,7 +525,7 @@ function ClockPanel(p: Ctx & { projects: ContractingProject[]; timeEntries: Cont
 
   return (
     <div className="rounded-lg border bg-white p-3">
-      <div className="text-xs font-semibold text-gray-500 uppercase mb-1">My clock · {ROLE_LABEL[myRole]} @ {money(rateFor(myRole, ratesOrDefault(p.rates)))}/hr</div>
+      <div className="text-xs font-semibold text-gray-500 uppercase mb-1">My clock · {ROLE_LABEL[myRole]}{p.canManage ? ` @ ${money(contractorRate(myEmp, ratesOrDefault(p.rates)))}/hr` : ''}</div>
       <div className="flex flex-wrap gap-2">
         <select className="inp flex-1 min-w-[130px]" value={projectId} onChange={e => { setProjectId(e.target.value); setPhaseId(''); }}>
           <option value="">Project…</option>
@@ -409,11 +544,11 @@ function ClockPanel(p: Ctx & { projects: ContractingProject[]; timeEntries: Cont
   );
 }
 
-function OpenReport(p: Ctx & { report: ContractingProgressReport; project: ContractingProject; phase: ContractingPhase; rates: ContractingRateCard; timeEntries: ContractingTimeEntry[]; contractors: Employee[] }) {
+function OpenReport(p: Ctx & { report: ContractingProgressReport; project: ContractingProject; phase: ContractingPhase; rates: ContractingRateCard; timeEntries: ContractingTimeEntry[]; contractors: Employee[]; rateOverrides: Record<string, number> }) {
   const { report, canManage } = p;
   const now = Date.now();
   const labour = labourForReport(report, p.timeEntries, now);
-  const snap = computeReportTotals(labour, report.receipts, p.rates);
+  const snap = computeReportTotals(labour, report.receipts, p.rates, p.rateOverrides);
   const dayN = reportDayN(report.startAt, now);
   const [addingReceipt, setAddingReceipt] = useState(false);
   const [addingTime, setAddingTime] = useState(false);
@@ -706,6 +841,7 @@ function InvoiceView({ invoice, project, report, canSeeInternal, onClose }: { in
 function WorkOrdersTab(p: Props) {
   const [filter, setFilter] = useState<string>('All');
   const [adding, setAdding] = useState(false);
+  const activeProps = p.properties.filter(x => x.active !== false);
   const list = Object.values(p.workOrders).filter(w => filter === 'All' || w.property === filter).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
   return (
@@ -715,8 +851,8 @@ function WorkOrdersTab(p: Props) {
         <button onClick={() => setAdding(true)} className="px-3 py-1.5 rounded text-white text-sm font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Work order</button>
       </div>
       <div className="flex gap-1 overflow-x-auto pb-2">
-        {['All', ...CONTRACTING_PROPERTIES.map(x => x.name)].map(name => {
-          const corp = CONTRACTING_PROPERTIES.find(x => x.name === name)?.corp;
+        {['All', ...activeProps.map(x => x.name)].map(name => {
+          const corp = activeProps.find(x => x.name === name)?.corp;
           return <button key={name} onClick={() => setFilter(name)} className="px-2.5 py-1 rounded-full text-xs whitespace-nowrap font-semibold border" style={filter === name ? { backgroundColor: PALERMO.slate, color: 'white' } : corp ? { borderColor: PALERMO.gold, color: PALERMO.gold } : {}}>{corp ? '★ ' : ''}{name}</button>;
         })}
       </div>
@@ -724,7 +860,7 @@ function WorkOrdersTab(p: Props) {
         {list.map(w => <WorkOrderCard key={w.id} wo={w} {...p} />)}
         {list.length === 0 && <div className="text-gray-500 text-sm">No work orders{filter !== 'All' ? ` for ${filter}` : ''}.</div>}
       </div>
-      {adding && <WorkOrderForm currentUser={p.currentUser} uploadedBy={p.uploadedBy} onClose={() => setAdding(false)} onSave={w => { p.onSaveWorkOrder(w); setAdding(false); }} defaultProperty={filter === 'All' ? CONTRACTING_PROPERTIES[0].name : filter} />}
+      {adding && <WorkOrderForm currentUser={p.currentUser} uploadedBy={p.uploadedBy} properties={activeProps} onClose={() => setAdding(false)} onSave={w => { p.onSaveWorkOrder(w); setAdding(false); }} defaultProperty={filter === 'All' ? (activeProps[0]?.name || '') : filter} />}
     </div>
   );
 }
@@ -732,7 +868,7 @@ function WorkOrdersTab(p: Props) {
 function WorkOrderCard(p: Props & { wo: ContractingWorkOrder }) {
   const { wo, canManage } = p;
   const [viewPhotos, setViewPhotos] = useState<StoredFile[] | null>(null);
-  const corp = CONTRACTING_PROPERTIES.find(x => x.name === wo.property)?.corp;
+  const corp = p.properties.find(x => x.name === wo.property)?.corp;
   const cycle: ContractingWorkOrder['status'][] = ['open', 'in_progress', 'done'];
   const nextStatus = () => cycle[(cycle.indexOf(wo.status) + 1) % 3];
   const promote = () => {
@@ -762,7 +898,7 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder }) {
   );
 }
 
-function WorkOrderForm({ currentUser, uploadedBy, onClose, onSave, defaultProperty }: { currentUser: { id: string; name: string }; uploadedBy: { email: string; name: string }; onClose: () => void; onSave: (w: ContractingWorkOrder) => void; defaultProperty: string }) {
+function WorkOrderForm({ currentUser, uploadedBy, properties, onClose, onSave, defaultProperty }: { currentUser: { id: string; name: string }; uploadedBy: { email: string; name: string }; properties: ContractingProperty[]; onClose: () => void; onSave: (w: ContractingWorkOrder) => void; defaultProperty: string }) {
   const [property, setProperty] = useState(defaultProperty);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -772,7 +908,7 @@ function WorkOrderForm({ currentUser, uploadedBy, onClose, onSave, defaultProper
   const woId = uid('cwo');
   return (
     <Modal title="New work order" onClose={onClose}>
-      <Field label="Property"><select className="inp" value={property} onChange={e => setProperty(e.target.value)}>{CONTRACTING_PROPERTIES.map(x => <option key={x.name} value={x.name}>{x.corp ? '★ ' : ''}{x.name}</option>)}</select></Field>
+      <Field label="Property"><select className="inp" value={property} onChange={e => setProperty(e.target.value)}>{properties.map(x => <option key={x.id} value={x.name}>{x.corp ? '★ ' : ''}{x.name}</option>)}</select></Field>
       <Field label="Title"><input className="inp" value={title} onChange={e => setTitle(e.target.value)} /></Field>
       <Field label="Description"><textarea className="inp" rows={2} value={description} onChange={e => setDescription(e.target.value)} /></Field>
       <Field label="Priority"><div className="flex gap-2">{(['low', 'normal', 'high'] as const).map(pr => <button key={pr} onClick={() => setPriority(pr)} className="flex-1 py-1.5 rounded border text-sm capitalize" style={priority === pr ? { backgroundColor: PALERMO.slate, color: 'white' } : {}}>{pr}</button>)}</div></Field>
@@ -845,6 +981,48 @@ function ShoppingTab(p: Props) {
             ))}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────── PROPERTIES ────
+function PropertiesTab({ properties, onSaveProperties }: { properties: ContractingProperty[]; onSaveProperties: (list: ContractingProperty[]) => void }) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState('');
+  const [corp, setCorp] = useState(false);
+  const [notes, setNotes] = useState('');
+  const update = (id: string, patch: Partial<ContractingProperty>) => onSaveProperties(properties.map(x => x.id === id ? { ...x, ...patch } : x));
+  const add = () => {
+    if (!name.trim()) return;
+    onSaveProperties([...properties, { id: uid('cprop'), name: name.trim(), corp, notes: notes.trim() || undefined, active: true }]);
+    setName(''); setCorp(false); setNotes(''); setAdding(false);
+  };
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Rental properties</h2>
+        <button onClick={() => setAdding(true)} className="px-3 py-1.5 rounded text-white text-sm font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Add property</button>
+      </div>
+      <div className="space-y-2">
+        {properties.map(pr => (
+          <div key={pr.id} className={`bg-white rounded-lg border p-3 ${pr.active === false ? 'opacity-50' : ''}`}>
+            <div className="flex items-center justify-between gap-2">
+              <input className="inp flex-1 font-semibold" defaultValue={pr.name} onBlur={e => e.target.value.trim() && e.target.value !== pr.name && update(pr.id, { name: e.target.value.trim() })} />
+              <label className="flex items-center gap-1 text-xs whitespace-nowrap"><input type="checkbox" checked={!!pr.corp} onChange={e => update(pr.id, { corp: e.target.checked })} /> ★ Corp</label>
+              <button onClick={() => update(pr.id, { active: pr.active === false })} className="text-xs px-2 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>{pr.active === false ? 'Reactivate' : 'Deactivate'}</button>
+            </div>
+            <input className="inp mt-2 text-sm" placeholder="Notes" defaultValue={pr.notes || ''} onBlur={e => update(pr.id, { notes: e.target.value.trim() || undefined })} />
+          </div>
+        ))}
+      </div>
+      {adding && (
+        <Modal title="Add property" onClose={() => setAdding(false)}>
+          <Field label="Name / address"><input className="inp" value={name} onChange={e => setName(e.target.value)} /></Field>
+          <label className="flex items-center gap-2 text-sm mb-2"><input type="checkbox" checked={corp} onChange={e => setCorp(e.target.checked)} /> Corporate property (★ badge)</label>
+          <Field label="Notes"><textarea className="inp" rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
+          <ModalActions onClose={() => setAdding(false)} disabled={!name.trim()} onSave={add} />
+        </Modal>
       )}
     </div>
   );

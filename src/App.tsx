@@ -63,7 +63,8 @@ import TaskDetailModal from './components/TaskDetailModal';
 import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
-import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES } from './lib/contracting';
+import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault } from './lib/contracting';
+import type { ContractingProperty } from './types';
 import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
 import RequestTimeOffModal, { type RequestTimeOffSubmit } from './components/RequestTimeOffModal';
@@ -2215,10 +2216,16 @@ export default function App() {
   // are open to any contractor.
   const contractingUser = { id: currentUserEmployee?.id || displayEmail, name: displayName };
   const contractingRates: ContractingRateCard = contractingRatesOrDefault(appData.settings?.contractingRates);
+  const contractingProperties: ContractingProperty[] = propertiesOrDefault(appData.settings?.contractingProperties);
   const saveContractingRates = async (r: ContractingRateCard) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingRates: r } });
     showToastMsg('Rate card saved.');
+  };
+  const saveContractingProperties = async (list: ContractingProperty[]) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingProperties: list } });
+    showToastMsg('Properties saved.');
   };
   const saveContractingProject = async (p: ContractingProject) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
@@ -2259,7 +2266,7 @@ export default function App() {
     const now = Date.now();
     const ended: ContractingProgressReport = { ...report, endAt: now };
     const labour = labourForReport(ended, Object.values(subContractingTimeEntriesRef.current), now);
-    const snapshot = computeReportTotals(labour, report.receipts, contractingRates);
+    const snapshot = computeReportTotals(labour, report.receipts, contractingRates, rateMapFor(appData.employees || [], contractingRates));
     // Which clock entries got billed → mark invoiced (freeze).
     const billedEntries = Object.values(subContractingTimeEntriesRef.current).filter(te =>
       !te.manual && te.phaseId === report.phaseId && te.status === 'open' && te.clockIn >= report.startAt && te.clockIn < now && te.clockOut);
@@ -4042,11 +4049,6 @@ export default function App() {
                 <Calculator className="w-4 h-4" /> SalesMaster
               </button>
             )}
-            {canAccessView('contracting', effectiveRole) && (
-              <button onClick={() => setCurrentView('contracting')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'contracting' ? 'shadow-sm' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`} style={currentView === 'contracting' ? { backgroundColor: '#2E4053', color: '#B7950B' } : undefined}>
-                <Hammer className="w-4 h-4" /> Palermo's
-              </button>
-            )}
             {canAccessView('schedule', effectiveRole) && canEditSchedule && (
               <button
                 onClick={() => {
@@ -4060,6 +4062,23 @@ export default function App() {
               </button>
             )}
           </div>
+          {/* Palermo's Contracting — a separate portal attached below the
+              CrewMaster nav, visually distinct (slate/gold). For contractor-
+              role users this is the ONLY nav block (the group above is empty). */}
+          {canAccessView('contracting', effectiveRole) && (
+            <div className="mt-3">
+              <div className="border-t-2 border-dashed border-gray-300 mb-2" />
+              <div className="rounded-lg p-1.5 shadow-sm" style={{ backgroundColor: '#2E4053' }}>
+                <div className="px-2 pt-0.5 pb-1 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5" style={{ color: '#B7950B' }}>
+                  <span className="w-4 h-4 rounded-sm flex items-center justify-center text-[10px] font-black" style={{ backgroundColor: '#B7950B', color: '#2E4053' }}>P</span>
+                  Palermo's Contracting
+                </div>
+                <button onClick={() => setCurrentView('contracting')} className="w-full flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all" style={currentView === 'contracting' ? { backgroundColor: '#B7950B', color: '#2E4053' } : { color: 'white' }}>
+                  <Hammer className="w-4 h-4" /> Contracting Portal
+                </button>
+              </div>
+            </div>
+          )}
           <button
             onClick={() => setIsSettingsModalOpen(true)}
             className="flex justify-center items-center gap-2 w-full bg-white border border-gray-300 hover:border-green-500 hover:text-green-600 text-gray-700 px-3 py-2 rounded-lg font-medium shadow-sm transition-all text-sm mt-2 min-h-[44px]"
@@ -4575,11 +4594,13 @@ export default function App() {
           shoppingList={appData.contractingShoppingList || {}}
           employees={appData.employees || []}
           rates={contractingRates}
+          properties={contractingProperties}
           currentUser={contractingUser}
           isAdmin={isAdmin}
           canManage={canManageContracting}
           uploadedBy={{ email: displayEmail, name: displayName }}
           onSaveRates={saveContractingRates}
+          onSaveProperties={saveContractingProperties}
           onSaveProject={saveContractingProject}
           onSaveTimeEntry={saveContractingTimeEntry}
           onOpenReport={openContractingReport}
@@ -4713,6 +4734,12 @@ export default function App() {
               isActive: currentView === 'taskmaster',
               onClick: () => setCurrentView('taskmaster'),
               visible: canAccessView('taskmaster', effectiveRole) },
+            // Palermo's Contracting portal — mobile entry (shopping list is
+            // phone-first, so contractors live here on their phones).
+            { key: 'contracting', label: "Palermo's", Icon: Hammer, badge: 0,
+              isActive: currentView === 'contracting',
+              onClick: () => setCurrentView('contracting'),
+              visible: canAccessView('contracting', effectiveRole) },
           ];
           return items.filter(i => i.visible).map(({ key, label, Icon, badge, isActive, onClick }) => (
             <button
@@ -4806,6 +4833,7 @@ export default function App() {
         persistedFleet={appData.fleet}
         onOpenUnitDocuments={(unitId) => setDocumentsUnitId(unitId)}
         mechanicPayChunks={appData.mechanicPayChunks || {}}
+        contractingRates={contractingRates}
         onCreateInitialChunk={(emp, hoursAlreadyWorked, startTimestamp) => {
           if (!isAdmin && !isManager) { showToastMsg(PERMISSION_DENIED); return; }
           const email = (emp.linkedUserEmail || '').toLowerCase();
