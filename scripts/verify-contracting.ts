@@ -1,6 +1,6 @@
 // Verify ContractingMaster billing math against the exact progress-report
 // example. Run: npx tsx scripts/verify-contracting.ts
-import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, unbilledLabour } from '../src/lib/contracting';
+import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, unbilledLabour, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS } from '../src/lib/contracting';
 
 const rates = DEFAULT_CONTRACTING_RATES;
 let pass = 0, fail = 0;
@@ -72,6 +72,30 @@ ok('B does NOT appear on another report (one-report-ever)', labR2.length === 0, 
 // Invoiced entries are frozen out entirely.
 const Binv = { ...B, reportId: 'r1', status: 'invoiced' };
 ok('invoiced entry never re-bills or re-lists', labourForReport(R1, [Binv], NOW).length === 0 && unbilledLabour('p', [Binv], [R1], DEFAULT_CONTRACTING_RATES, NOW).length === 0);
+
+console.log('\n=== project delete guard ===');
+const inv1: any = { id: 'i', projectId: 'p', total: 100 };
+ok('empty project IS removable', projectIsRemovable('p', [], [], []) === true);
+ok('project with an invoice is NOT removable', projectIsRemovable('p', [inv1], [], []) === false);
+ok('project with a report is NOT removable', projectIsRemovable('p', [], [{ projectId: 'p' } as any], []) === false);
+ok('project with a time entry is NOT removable', projectIsRemovable('p', [], [], [{ projectId: 'p' } as any]) === false);
+ok('other project\'s attachments do not block', projectIsRemovable('p', [{ projectId: 'other' } as any], [], []) === true);
+
+console.log('\n=== invoice lifecycle: minted → sent → paid + due date ===');
+const D2=86_400_000;
+const minted: any = { id: 'm', awaitingSend: true, periodEnd: 100 * D2, issuedAt: 100 * D2, dueAt: 100 * D2 + NET_TERMS_MS };
+ok('freshly minted → MINTED', invoiceStage(minted) === 'minted', invoiceStage(minted));
+ok('minted due reckons from period end (stored)', invoiceDueAt(minted) === 100 * D2 + NET_TERMS_MS, invoiceDueAt(minted));
+const sent = { ...minted, awaitingSend: false, sentAt: 110 * D2 };
+ok('after send → SENT', invoiceStage(sent) === 'sent', invoiceStage(sent));
+ok('due now reckons from SENT date (+14d)', invoiceDueAt(sent) === 110 * D2 + NET_TERMS_MS, invoiceDueAt(sent));
+const paid = { ...sent, paid: true };
+ok('after payment → PAID', invoiceStage(paid) === 'paid', invoiceStage(paid));
+const legacy: any = { id: 'l', issuedAt: 50 * D2, dueAt: 64 * D2 };  // no awaitingSend → seeded/historical
+ok('legacy/seeded invoice defaults to SENT', invoiceStage(legacy) === 'sent', invoiceStage(legacy));
+ok('late when past due + unpaid', invoiceIsLate(sent, 130 * D2) === true);
+ok('not late before due', invoiceIsLate(sent, 115 * D2) === false);
+ok('paid is never late', invoiceIsLate({ ...sent, paid: true }, 999 * D2) === false);
 
 console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -63,7 +63,7 @@ import TaskDetailModal from './components/TaskDetailModal';
 import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
-import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault } from './lib/contracting';
+import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable } from './lib/contracting';
 import type { ContractingProperty, ContractingSupplier } from './types';
 import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
@@ -2252,6 +2252,33 @@ export default function App() {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     await setDoc(doc(roleColl('contractingProjects'), p.id), cleanRM(p));
   };
+  // Bounded audit trail for project delete/archive/restore (settings doc).
+  const appendContractingAudit = async (action: string, detail: string) => {
+    const prev = appData.settings?.contractingAuditLog || [];
+    const next = [...prev, { action, detail, by: displayName, at: Date.now() }].slice(-200);
+    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingAuditLog: next } });
+  };
+  // Delete a project — ONLY when nothing is attached (guard mirrors phase
+  // removal). Anything attached must be archived instead. Confirm-gated at the
+  // UI; audited here.
+  const deleteContractingProject = async (id: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const proj = subContractingProjectsRef.current[id];
+    const removable = projectIsRemovable(id, Object.values(subContractingInvoicesRef.current), Object.values(subContractingProgressReportsRef.current), Object.values(subContractingTimeEntriesRef.current));
+    if (!removable) { showToastMsg('Project has attached billing/time — archive it instead.'); return; }
+    await appendContractingAudit('project.delete', `${proj?.name || id}`);
+    await deleteDoc(doc(roleColl('contractingProjects'), id));
+    showToastMsg('Project deleted.');
+  };
+  // Archive / restore a project (reversible; data intact). Audited.
+  const archiveContractingProject = async (id: string, archived: boolean) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const proj = subContractingProjectsRef.current[id];
+    if (!proj) return;
+    await setDoc(doc(roleColl('contractingProjects'), id), cleanRM({ ...proj, archived, archivedBy: archived ? displayName : undefined, archivedAt: archived ? Date.now() : undefined, updatedAt: Date.now() }));
+    await appendContractingAudit(archived ? 'project.archive' : 'project.restore', `${proj.name}`);
+    showToastMsg(archived ? 'Project archived.' : 'Project restored.');
+  };
   const saveContractingTimeEntry = async (t: ContractingTimeEntry) => {
     // Any contractor may clock; managers may add/edit. Guard: contractors can
     // only write their own entries.
@@ -2305,7 +2332,9 @@ export default function App() {
       id: `cinv-${now}-${Math.random().toString(36).slice(2, 6)}`, number, projectId: report.projectId, phaseId: report.phaseId, kind: 'tm',
       periodStart: report.startAt, periodEnd: now, amountPreHst: snapshot.subtotalPreHst, hst: snapshot.hst, total: snapshot.total,
       reportId: report.id, scopeDescription: phase ? `${phase.name} — labour and materials, ${new Date(report.startAt).toLocaleDateString('en-CA')} to ${new Date(now).toLocaleDateString('en-CA')}.` : undefined,
-      issuedAt: now, dueAt: now + 14 * 86400000, paid: false, createdBy: contractingUser, createdAt: now,
+      // Minted but not yet sent — awaits a "Mark sent" tap; due reckons from
+      // period end (= now) until then.
+      issuedAt: now, dueAt: now + 14 * 86400000, awaitingSend: true, paid: false, createdBy: contractingUser, createdAt: now,
     };
     // Persist: frozen report, invoice, time entries invoiced, next open period.
     await setDoc(doc(roleColl('contractingProgressReports'), report.id), cleanRM({ ...ended, status: 'invoiced', snapshot, updatedAt: now }));
@@ -4633,6 +4662,8 @@ export default function App() {
           onSaveSuppliers={saveContractingSuppliers}
           onAttachUnbilled={attachUnbilledLabour}
           onSaveProject={saveContractingProject}
+          onDeleteProject={deleteContractingProject}
+          onArchiveProject={archiveContractingProject}
           onSaveTimeEntry={saveContractingTimeEntry}
           onOpenReport={openContractingReport}
           onEndReport={endContractingReport}

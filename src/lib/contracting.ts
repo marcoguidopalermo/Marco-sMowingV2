@@ -185,6 +185,42 @@ export function phaseIsRemovable(projectId: string, phaseId: string, invoices: C
   return true;
 }
 
+// A project can be DELETED only when nothing is attached: no invoices, no
+// reports, no time entries. (Work orders have no project link in the model —
+// promote-to-project copies, never references — so there's nothing to check.)
+// Anything attached → archive instead.
+export function projectIsRemovable(projectId: string, invoices: ContractingInvoice[], reports: ContractingProgressReport[], timeEntries: ContractingTimeEntry[]): boolean {
+  if (invoices.some(i => i.projectId === projectId)) return false;
+  if (reports.some(r => r.projectId === projectId)) return false;
+  if (timeEntries.some(t => t.projectId === projectId)) return false;
+  return true;
+}
+
+// Invoice lifecycle stage. MINTED (awaitingSend, not yet sent) → SENT → PAID.
+// Legacy/seeded invoices (no awaitingSend flag) default to SENT — they were
+// issued.
+export type ContractingInvoiceStage = 'minted' | 'sent' | 'paid';
+export function invoiceStage(inv: ContractingInvoice): ContractingInvoiceStage {
+  if (inv.paid) return 'paid';
+  if (inv.sentAt) return 'sent';
+  if (inv.awaitingSend) return 'minted';
+  return 'sent';   // legacy / historical / seeded → treated as sent
+}
+export const NET_TERMS_MS = 14 * 86_400_000;
+// Effective Net-14 due date: reckons from the SENT date when present; before
+// sending, the stored due (period-end + 14 at mint, or the seeded value) stands.
+export function invoiceDueAt(inv: ContractingInvoice): number | undefined {
+  if (inv.sentAt) return inv.sentAt + NET_TERMS_MS;
+  if (inv.dueAt) return inv.dueAt;
+  if (inv.periodEnd) return inv.periodEnd + NET_TERMS_MS;
+  return inv.issuedAt ? inv.issuedAt + NET_TERMS_MS : undefined;
+}
+export function invoiceIsLate(inv: ContractingInvoice, nowMs: number): boolean {
+  if (inv.paid) return false;
+  const due = invoiceDueAt(inv);
+  return !!due && due < nowMs;
+}
+
 // Next sequential invoice number "PROG-00N" continuing from entered history.
 export function nextProgNumber(invoices: ContractingInvoice[]): string {
   let max = 0;

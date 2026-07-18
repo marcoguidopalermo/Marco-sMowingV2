@@ -12,7 +12,7 @@ import {
   HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled,
   computeReportTotals, labourForReport, phaseBillables, phaseReadyToBill, withHst,
   PALERMO, reportDayN, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor, contractorRate,
-  unbilledLabour, UnbilledEntry,
+  unbilledLabour, UnbilledEntry, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
@@ -37,6 +37,8 @@ interface Props {
   onSaveSuppliers: (list: ContractingSupplier[]) => void;
   onAttachUnbilled: (reportId: string, entryIds: string[]) => void;
   onSaveProject: (p: ContractingProject) => void;
+  onDeleteProject: (id: string) => void;
+  onArchiveProject: (id: string, archived: boolean) => void;
   onSaveTimeEntry: (t: ContractingTimeEntry) => void;
   onOpenReport: (projectId: string, phaseId: string) => void;
   onEndReport: (reportId: string) => void;
@@ -106,9 +108,13 @@ export default function ContractingMaster(props: Props) {
   ];
 
   return (
-    <div className="min-h-full" style={{ backgroundColor: '#F4F6F7' }}>
+    // Flex column that OWNS its scroll — the parent content area is
+    // h-full overflow-hidden (each view must scroll internally), which is why
+    // the old min-h-full root was clipped below the fold on mobile. Header +
+    // tabs stay put (shrink-0); the body scrolls (flex-1 min-h-0 overflow-y).
+    <div className="flex flex-col h-full" style={{ backgroundColor: '#F4F6F7' }}>
       {/* Palermo's brand header — slate with a gold accent */}
-      <div className="px-4 py-3 shadow-sm" style={{ backgroundColor: PALERMO.slate }}>
+      <div className="px-4 py-3 shadow-sm shrink-0" style={{ backgroundColor: PALERMO.slate }}>
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded flex items-center justify-center font-black text-lg" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>P</div>
           <div>
@@ -119,7 +125,7 @@ export default function ContractingMaster(props: Props) {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 px-2 pt-2 overflow-x-auto" style={{ backgroundColor: PALERMO.slate }}>
+      <div className="flex gap-1 px-2 pt-2 overflow-x-auto shrink-0" style={{ backgroundColor: PALERMO.slate }}>
         {tabs.filter(t => t.show).map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
             className="px-3 py-2 text-sm font-semibold rounded-t whitespace-nowrap"
@@ -129,7 +135,10 @@ export default function ContractingMaster(props: Props) {
         ))}
       </div>
 
-      <div className="p-3 md:p-4 max-w-5xl mx-auto">
+      {/* Scrolling body — extra bottom padding clears the mobile bottom nav
+          and an open keyboard. */}
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+      <div className="p-3 md:p-4 max-w-5xl mx-auto pb-24 md:pb-8">
         {tab === 'mytime' && <MyTimeTab {...props} rates={rates} timeEntries={timeEntries} projects={projects} />}
         {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} projects={projects} reports={reports} timeEntries={timeEntries} rateOverrides={rateOverrides} nav={nav} focusProjectId={focusProjectId} onConsumeFocus={() => setFocusProjectId(null)} />}
         {tab === 'reports' && canManage && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} invoices={invoices} rateOverrides={rateOverrides} nav={nav} />}
@@ -141,6 +150,7 @@ export default function ContractingMaster(props: Props) {
       </div>
       <div className="text-center text-[11px] text-gray-400 pb-4">
         {isAdmin ? 'Admin' : canManage ? 'Contracting Manager' : 'Contractor'} · {currentUser.name}
+      </div>
       </div>
       {/* Invoice viewer — opened from any tab (Invoices, a phase, a report). */}
       {viewedInvoice && canManage && (
@@ -196,9 +206,12 @@ function ProjectsTab(p: Ctx & { rates: ContractingRateCard; invoices: Contractin
   const feaver = p.projects.find(x => /feaver/i.test(x.name)) || (p.projects.filter(x => x.status !== 'closed').length === 1 ? p.projects.find(x => x.status !== 'closed') : undefined);
   const [selId, setSelId] = useState<string | null>(p.focusProjectId || feaver?.id || null);
   const [adding, setAdding] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   // A cross-tab jump (e.g. from an invoice's phase link) focuses a project.
   useEffect(() => { if (p.focusProjectId) { setSelId(p.focusProjectId); p.onConsumeFocus(); } }, [p.focusProjectId]); // eslint-disable-line react-hooks/exhaustive-deps
   const sel = selId ? p.projects.find(x => x.id === selId) : null;
+  const activeProjects = p.projects.filter(x => !x.archived);
+  const archivedProjects = p.projects.filter(x => x.archived);
 
   if (sel) return <ProjectDetail project={sel} {...p} onBack={() => setSelId(null)} />;
 
@@ -208,9 +221,9 @@ function ProjectsTab(p: Ctx & { rates: ContractingRateCard; invoices: Contractin
         <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Projects</h2>
         {p.canManage && <button onClick={() => setAdding(true)} className="px-3 py-1.5 rounded text-white text-sm font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ New project</button>}
       </div>
-      {p.projects.length === 0 && <div className="text-gray-500 text-sm">No projects yet.</div>}
+      {activeProjects.length === 0 && <div className="text-gray-500 text-sm">No active projects.</div>}
       <div className="space-y-2">
-        {p.projects.map(proj => {
+        {activeProjects.map(proj => {
           const b = phaseBillables(proj.id, undefined, p.invoices);
           return (
             <button key={proj.id} onClick={() => setSelId(proj.id)} className="w-full text-left bg-white rounded-lg border p-3 hover:shadow">
@@ -224,6 +237,26 @@ function ProjectsTab(p: Ctx & { rates: ContractingRateCard; invoices: Contractin
           );
         })}
       </div>
+
+      {/* Archived projects — hidden by default, restorable, data intact. */}
+      {archivedProjects.length > 0 && (
+        <div className="mt-4">
+          <button onClick={() => setShowArchived(s => !s)} className="text-xs font-semibold text-gray-500 uppercase">{showArchived ? '▾' : '▸'} Archived ({archivedProjects.length})</button>
+          {showArchived && (
+            <div className="space-y-2 mt-2">
+              {archivedProjects.map(proj => (
+                <div key={proj.id} className="bg-white/60 rounded-lg border p-3 opacity-70">
+                  <div className="flex items-center justify-between">
+                    <button onClick={() => setSelId(proj.id)} className="font-semibold text-left" style={{ color: PALERMO.slate }}>{proj.name}</button>
+                    <button onClick={() => p.onArchiveProject(proj.id, false)} className="text-xs px-2 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Restore</button>
+                  </div>
+                  <div className="text-[10px] text-gray-400">Archived{proj.archivedBy ? ` by ${proj.archivedBy}` : ''}{proj.archivedAt ? ` · ${fmtDate(proj.archivedAt)}` : ''}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {adding && <ProjectForm onClose={() => setAdding(false)} onSave={pr => { p.onSaveProject(pr); setAdding(false); }} currentUser={p.currentUser} />}
     </div>
   );
@@ -249,6 +282,22 @@ function ProjectForm({ onClose, onSave, currentUser }: { onClose: () => void; on
   );
 }
 
+// Delete confirm — a project is not a casual swipe-away: type its exact name.
+function DeleteProjectForm({ project, onClose, onDelete }: { project: ContractingProject; onClose: () => void; onDelete: () => void }) {
+  const [typed, setTyped] = useState('');
+  const match = typed.trim() === project.name;
+  return (
+    <Modal title="Delete project" onClose={onClose}>
+      <div className="text-sm text-gray-700 mb-2">This permanently deletes <b>{project.name}</b>. Only empty projects can be deleted (no invoices, reports, or time). This can't be undone.</div>
+      <Field label={`Type the project name to confirm`}><input className="inp" value={typed} onChange={e => setTyped(e.target.value)} placeholder={project.name} autoFocus /></Field>
+      <div className="flex gap-2 mt-2">
+        <button onClick={onClose} className="flex-1 py-2.5 rounded border font-semibold">Cancel</button>
+        <button onClick={onDelete} disabled={!match} className="flex-1 py-2.5 rounded text-white font-bold disabled:opacity-40" style={{ backgroundColor: '#C0392B' }}>Delete permanently</button>
+      </div>
+    </Modal>
+  );
+}
+
 function ProjectDetail(p: Ctx & { project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; onBack: () => void }) {
   const { project, canManage } = p;
   const [addingPhase, setAddingPhase] = useState(false);
@@ -257,6 +306,8 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
   const removePhase = (phaseId: string) => save(pr => ({ ...pr, phases: pr.phases.filter(x => x.id !== phaseId) }));
   const unbilled = unbilledLabour(project.id, p.timeEntries, p.reports, p.rates, Date.now(), p.rateOverrides);
   const phaseName = (id: string) => project.phases.find(ph => ph.id === id)?.name || '—';
+  const [deleting, setDeleting] = useState(false);
+  const removable = projectIsRemovable(project.id, p.invoices, p.reports, p.timeEntries);
 
   return (
     <div>
@@ -288,7 +339,18 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
             <textarea className="inp mt-1" rows={2} defaultValue={project.notes || ''} onBlur={e => save(pr => ({ ...pr, notes: e.target.value }))} />
           </div>
         )}
+        {/* Danger zone — archive (reversible) or delete (only when empty). */}
+        {canManage && editing && (
+          <div className="mt-3 pt-2 border-t flex items-center gap-2 flex-wrap">
+            <button onClick={() => p.onArchiveProject(project.id, true)} className="text-xs px-2.5 py-1.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>Archive</button>
+            {removable
+              ? <button onClick={() => setDeleting(true)} className="text-xs px-2.5 py-1.5 rounded border font-semibold text-red-600 border-red-300">Delete…</button>
+              : <span className="text-[11px] text-gray-400">Has attached billing/time — archive instead of deleting.</span>}
+          </div>
+        )}
       </div>
+
+      {deleting && <DeleteProjectForm project={project} onClose={() => setDeleting(false)} onDelete={() => { p.onDeleteProject(project.id); setDeleting(false); p.onBack(); }} />}
 
       <div className="flex items-center justify-between mb-2">
         <h3 className="font-semibold" style={{ color: PALERMO.slate }}>Phases</h3>
@@ -527,6 +589,13 @@ function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProje
       )}
     </div>
   );
+}
+
+function StageBadge({ stage }: { stage: 'minted' | 'sent' | 'paid' }) {
+  const cfg = stage === 'paid' ? { bg: '#D5F5E3', fg: '#1E8449', t: 'PAID' }
+    : stage === 'sent' ? { bg: '#EBF5FB', fg: '#2874A6', t: 'SENT' }
+    : { bg: '#FEF9E7', fg: '#B7950B', t: 'MINTED' };
+  return <span className="text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ backgroundColor: cfg.bg, color: cfg.fg }}>{cfg.t}</span>;
 }
 
 function Billable({ label, pre, full, accent }: { label: string; pre: number; full: number; accent?: boolean }) {
@@ -861,15 +930,17 @@ function InvoicesTab(p: Ctx & { invoices: ContractingInvoice[]; reports: Contrac
       </div>
       <div className="space-y-2">
         {list.map(inv => {
-          const late = !inv.paid && inv.dueAt && inv.dueAt < Date.now();
+          const late = invoiceIsLate(inv, Date.now());
+          const stage = invoiceStage(inv);
+          const due = invoiceDueAt(inv);
           return (
             <div key={inv.id} className="bg-white rounded-lg border p-3">
               <div className="flex items-center justify-between">
-                <div>
+                <div className="flex items-center flex-wrap gap-1">
                   <span className="font-bold" style={{ color: PALERMO.slate }}>{inv.number}</span>
-                  <span className="text-[10px] ml-2 px-1.5 py-0.5 rounded bg-slate-100 uppercase">{inv.kind}</span>
-                  {inv.paid && <span className="text-[10px] ml-1 px-1.5 py-0.5 rounded bg-green-100 text-green-700">PAID</span>}
-                  {late && <span className="text-[10px] ml-1 px-1.5 py-0.5 rounded bg-red-100 text-red-700">LATE</span>}
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 uppercase">{inv.kind}</span>
+                  <StageBadge stage={stage} />
+                  {late && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700">LATE</span>}
                 </div>
                 <b style={{ color: PALERMO.slate }}>{money(inv.total)}</b>
               </div>
@@ -878,9 +949,13 @@ function InvoicesTab(p: Ctx & { invoices: ContractingInvoice[]; reports: Contrac
                 <button onClick={() => nav.goToPhase(inv.projectId, inv.phaseId)} className="underline decoration-dotted" style={{ color: PALERMO.slate }}>{projName(inv.projectId)} › {phaseName(inv.projectId, inv.phaseId)}</button>
                 {inv.reportId && <button onClick={() => nav.goToReports()} className="text-xs underline decoration-dotted text-gray-500">· report period {fmtDate(inv.periodStart)}–{fmtDate(inv.periodEnd)} →</button>}
               </div>
-              <div className="text-xs text-gray-400">{money(inv.amountPreHst)} + {money(inv.hst)} HST · Net 14, due {fmtDate(inv.dueAt)}{inv.paid ? ` · paid ${fmtDate(inv.paidAt)}` : ''}</div>
+              {/* Lifecycle chain: Minted · Sent · Due (· Paid). */}
+              <div className="text-xs text-gray-400">
+                {money(inv.amountPreHst)} + {money(inv.hst)} HST · Minted {fmtDate(inv.issuedAt || inv.createdAt)}{inv.sentAt ? ` · Sent ${fmtDate(inv.sentAt)}` : (stage === 'sent' ? ' · Sent' : '')} · Net 14, due {fmtDate(due)}{inv.paid ? ` · Paid ${fmtDate(inv.paidAt)}` : ''}
+              </div>
               <div className="flex gap-2 mt-2 flex-wrap">
                 <button onClick={() => nav.openInvoice(inv.id)} className="text-xs px-2 py-1 rounded border">View</button>
+                {canManage && stage === 'minted' && <button onClick={() => p.onSaveInvoice({ ...inv, awaitingSend: false, sentAt: Date.now(), sentBy: p.currentUser.name, dueAt: Date.now() + 14 * 86400000 })} className="text-xs px-2 py-1 rounded text-white" style={{ backgroundColor: PALERMO.slate }}>Mark sent</button>}
                 {canManage && !inv.paid && <button onClick={() => p.onSaveInvoice({ ...inv, paid: true, paidAt: Date.now(), paidBy: p.currentUser.name })} className="text-xs px-2 py-1 rounded text-white" style={{ backgroundColor: PALERMO.gold }}>Mark paid</button>}
                 {isAdmin && <button onClick={() => confirm(`Delete ${inv.number}?`) && p.onDeleteInvoice(inv.id)} className="text-xs px-2 py-1 rounded text-red-500">Delete</button>}
               </div>
@@ -935,8 +1010,17 @@ function InvoiceView({ invoice, project, report, canSeeInternal, onClose, onGoTo
   const [mode, setMode] = useState<'client' | 'internal'>(canSeeInternal ? 'internal' : 'client');
   const snap = report?.snapshot;
   const phase = project?.phases.find(ph => ph.id === invoice.phaseId);
+  const stage = invoiceStage(invoice);
+  const due = invoiceDueAt(invoice);
   return (
     <Modal title={`Invoice ${invoice.number}`} onClose={onClose}>
+      {/* Lifecycle: Minted → Sent → Due (→ Paid). Internal only. */}
+      {canSeeInternal && (
+        <div className="flex items-center gap-2 mb-3 text-xs flex-wrap">
+          <StageBadge stage={stage} />
+          <span className="text-gray-500">Minted {fmtDate(invoice.issuedAt || invoice.createdAt)}{invoice.sentAt ? ` · Sent ${fmtDate(invoice.sentAt)}${invoice.sentBy ? ` by ${invoice.sentBy}` : ''}` : (stage === 'sent' ? ' · Sent' : '')} · Due {fmtDate(due)}{invoice.paid ? ` · Paid ${fmtDate(invoice.paidAt)}` : ''}</span>
+        </div>
+      )}
       {/* Linkage (internal only): tap through to the phase or the report. */}
       {canSeeInternal && (onGoToPhase || onGoToReports) && (
         <div className="flex flex-wrap gap-2 mb-3">
@@ -967,7 +1051,7 @@ function InvoiceView({ invoice, project, report, canSeeInternal, onClose, onGoTo
             <Row label="HST" val={invoice.hst} />
             <Row label="Total due" val={invoice.total} bold accent />
           </div>
-          <div className="text-xs text-gray-500 mt-2">Net 14 · due {fmtDate(invoice.dueAt)} · 2%/mo on overdue balances</div>
+          <div className="text-xs text-gray-500 mt-2">Net 14 · due {fmtDate(due)} · 2%/mo on overdue balances</div>
         </div>
       ) : (
         <div className="border rounded p-3 text-sm bg-white">

@@ -867,6 +867,9 @@ export interface AppSettings {
   // ContractingMaster shopping suppliers (bounded, editable). Absent → the
   // default list from lib/contracting.
   contractingSuppliers?: ContractingSupplier[];
+  // ContractingMaster audit trail for project delete/archive/restore (bounded,
+  // newest last, capped in the handler).
+  contractingAuditLog?: { action: string; detail: string; by: string; at: number }[];
 }
 
 // ══ ContractingMaster (Palermo's Contracting) types ═══════════════════════
@@ -900,6 +903,9 @@ export interface ContractingProject {
   status: ContractingStatus;
   notes?: string;                 // INTERNAL — never client-facing
   phases: ContractingPhase[];
+  archived?: boolean;             // hidden from the default board; restorable
+  archivedBy?: string;
+  archivedAt?: number;
   createdBy?: { id: string; name: string };
   createdAt?: number;
   updatedAt?: number;
@@ -974,6 +980,11 @@ export interface ContractingInvoice {
   scopeDescription?: string;      // client-facing scope text
   issuedAt?: number;
   dueAt?: number;
+  // Lifecycle: MINTED (awaitingSend) → SENT (sentAt) → PAID (paid). Freshly
+  // minted T&M invoices carry awaitingSend; legacy/seeded default to sent.
+  awaitingSend?: boolean;
+  sentAt?: number;
+  sentBy?: string;
   paid?: boolean;
   paidAt?: number;
   paidBy?: string;
