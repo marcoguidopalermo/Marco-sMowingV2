@@ -13,6 +13,7 @@ import {
   computeReportTotals, labourForReport, phaseBillables, phaseReadyToBill, withHst,
   PALERMO, reportDayN, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor, contractorRate,
   unbilledLabour, UnbilledEntry, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
+  projectBillables,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
@@ -39,6 +40,7 @@ interface Props {
   onSaveProject: (p: ContractingProject) => void;
   onDeleteProject: (id: string) => void;
   onArchiveProject: (id: string, archived: boolean) => void;
+  onMergePhases: (projectId: string, sourceId: string, targetId: string, mergedName?: string) => void;
   onSaveTimeEntry: (t: ContractingTimeEntry) => void;
   onOpenReport: (projectId: string, phaseId: string) => void;
   onEndReport: (reportId: string) => void;
@@ -307,7 +309,9 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
   const unbilled = unbilledLabour(project.id, p.timeEntries, p.reports, p.rates, Date.now(), p.rateOverrides);
   const phaseName = (id: string) => project.phases.find(ph => ph.id === id)?.name || '—';
   const [deleting, setDeleting] = useState(false);
+  const [merging, setMerging] = useState(false);
   const removable = projectIsRemovable(project.id, p.invoices, p.reports, p.timeEntries);
+  const rollup = projectBillables(project, p.invoices, p.reports);
 
   return (
     <div>
@@ -352,10 +356,27 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
 
       {deleting && <DeleteProjectForm project={project} onClose={() => setDeleting(false)} onDelete={() => { p.onDeleteProject(project.id); setDeleting(false); p.onBack(); }} />}
 
+      {/* Project billables rollup — sums ALL phases. Pre-HST with incl-HST. */}
+      <div className="rounded-lg border p-3 mb-3" style={{ backgroundColor: PALERMO.slate }}>
+        <div className="text-[10px] font-black uppercase tracking-widest mb-2" style={{ color: PALERMO.gold }}>Billables — whole project</div>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <RollupStat label="Invoiced" pre={rollup.invoicedPreHst} full={rollup.invoicedWithHst} />
+          <RollupStat label="Collected" pre={rollup.collectedPreHst} full={rollup.collectedWithHst} />
+          <RollupStat label="Outstanding" pre={rollup.outstandingPreHst} full={rollup.outstandingWithHst} accent />
+        </div>
+        <div className="mt-2 pt-2 border-t border-white/10 text-xs" style={{ color: '#D5DBDB' }}>
+          Remaining expected: <b style={{ color: 'white' }}>{money(rollup.remainingFixedPreHst)}</b> pre-HST <span className="opacity-70">({money(rollup.remainingFixedWithHst)} incl.)</span> in fixed completion balances{rollup.hasOpenTm ? ' · open T&M accrues on top' : ''}.
+        </div>
+      </div>
+
       <div className="flex items-center justify-between mb-2">
         <h3 className="font-semibold" style={{ color: PALERMO.slate }}>Phases</h3>
-        {canManage && <button onClick={() => setAddingPhase(true)} className="text-sm px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Phase</button>}
+        <div className="flex items-center gap-2">
+          {canManage && project.phases.length >= 2 && <button onClick={() => setMerging(true)} className="text-sm px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Merge phases</button>}
+          {canManage && <button onClick={() => setAddingPhase(true)} className="text-sm px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Phase</button>}
+        </div>
       </div>
+      {merging && <MergePhasesForm project={project} onClose={() => setMerging(false)} onMerge={(s, t, name) => { p.onMergePhases(project.id, s, t, name); setMerging(false); }} />}
       <div className="space-y-3">
         {project.phases.map(phase => (
           <PhaseCard key={phase.id} phase={phase} project={project} {...p} onUpdatePhase={np => save(pr => ({ ...pr, phases: pr.phases.map(x => x.id === np.id ? np : x) }))} onRemovePhase={() => removePhase(phase.id)} />
@@ -588,6 +609,46 @@ function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProje
         </div>
       )}
     </div>
+  );
+}
+
+function RollupStat({ label, pre, full, accent }: { label: string; pre: number; full: number; accent?: boolean }) {
+  return (
+    <div>
+      <div className="text-[9px] uppercase tracking-wide" style={{ color: '#AEB6BF' }}>{label}</div>
+      <div className="text-sm font-bold" style={{ color: accent ? PALERMO.gold : 'white' }}>{money(pre)}</div>
+      <div className="text-[9px]" style={{ color: '#85929E' }}>{money(full)} w/HST</div>
+    </div>
+  );
+}
+
+// Merge one phase into another (target survives). Same billing type only.
+function MergePhasesForm({ project, onClose, onMerge }: { project: ContractingProject; onClose: () => void; onMerge: (sourceId: string, targetId: string, mergedName?: string) => void }) {
+  const phases = project.phases;
+  const [target, setTarget] = useState(phases[0]?.id || '');
+  const [source, setSource] = useState(phases.find(p => p.id !== phases[0]?.id)?.id || '');
+  const [name, setName] = useState('');
+  const t = phases.find(p => p.id === target);
+  const s = phases.find(p => p.id === source);
+  const sameType = !!t && !!s && t.type === s.type;
+  const valid = sameType && source !== target;
+  return (
+    <Modal title="Merge phases" onClose={onClose}>
+      <div className="text-xs text-gray-500 mb-2">The KEEP phase survives (its invoices, reports, and time stay put); the folded-in phase's records re-point to it, and it's removed. Checklists and notes combine. Same billing type only.</div>
+      <Field label="Keep (target)">
+        <select className="inp" value={target} onChange={e => { setTarget(e.target.value); if (e.target.value === source) setSource(phases.find(p => p.id !== e.target.value)?.id || ''); }}>
+          {phases.map(ph => <option key={ph.id} value={ph.id}>{ph.name} ({ph.type === 'tm' ? 'T&M' : 'Fixed'})</option>)}
+        </select>
+      </Field>
+      <Field label="Fold in (source)">
+        <select className="inp" value={source} onChange={e => setSource(e.target.value)}>
+          {phases.filter(ph => ph.id !== target).map(ph => <option key={ph.id} value={ph.id}>{ph.name} ({ph.type === 'tm' ? 'T&M' : 'Fixed'})</option>)}
+        </select>
+      </Field>
+      {!sameType && s && t && <div className="text-xs text-red-600 mb-2">Phases must share a billing type (both Fixed or both T&M).</div>}
+      <Field label="Merged phase name"><input className="inp" value={name} onChange={e => setName(e.target.value)} placeholder={t?.name} /></Field>
+      <ModalActions onClose={onClose} disabled={!valid} onSave={() => onMerge(source, target, name.trim() || undefined)} />
+    </Modal>
   );
 }
 

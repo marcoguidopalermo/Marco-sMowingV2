@@ -1,6 +1,6 @@
 // Verify ContractingMaster billing math against the exact progress-report
 // example. Run: npx tsx scripts/verify-contracting.ts
-import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, unbilledLabour, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS } from '../src/lib/contracting';
+import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, unbilledLabour, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge } from '../src/lib/contracting';
 
 const rates = DEFAULT_CONTRACTING_RATES;
 let pass = 0, fail = 0;
@@ -96,6 +96,57 @@ ok('legacy/seeded invoice defaults to SENT', invoiceStage(legacy) === 'sent', in
 ok('late when past due + unpaid', invoiceIsLate(sent, 130 * D2) === true);
 ok('not late before due', invoiceIsLate(sent, 115 * D2) === false);
 ok('paid is never late', invoiceIsLate({ ...sent, paid: true }, 999 * D2) === false);
+
+console.log('\n=== Feaver Rd project billables rollup ===');
+// Rebuild Feaver's shape: P1 fixed 90805 (retainer 50k), P2 fixed 172400
+// (retainer 75k), P3 T&M (PROG-001 106,440), P4 T&M (windows 19,400).
+const feaver: any = { id: 'f', name: 'Feaver Rd', status: 'in_progress', phases: [
+  { id: 'p1', type: 'fixed', fixedPrice: 90805, checklist: [] },
+  { id: 'p2', type: 'fixed', fixedPrice: 172400, checklist: [] },
+  { id: 'p3', type: 'tm', checklist: [] },
+  { id: 'p4', type: 'tm', checklist: [], note: 'Window package $19,400 (Everlast) — payable before ordering.' },
+]};
+const finv: any[] = [
+  { id: 'i1', projectId: 'f', phaseId: 'p1', amountPreHst: 50000, total: 56500, paid: true },
+  { id: 'i2', projectId: 'f', phaseId: 'p2', amountPreHst: 75000, total: 84750, paid: true },
+  { id: 'i3', projectId: 'f', phaseId: 'p3', amountPreHst: 106440, total: 120277.20, paid: false },
+  { id: 'i4', projectId: 'f', phaseId: 'p4', amountPreHst: 19400, total: 21922, paid: false },
+];
+const freps: any[] = [{ id: 'r2', projectId: 'f', phaseId: 'p3', status: 'open' }];
+const rb = projectBillables(feaver, finv, freps);
+ok('rollup invoiced = $250,840', rb.invoicedPreHst === 250840, rb.invoicedPreHst);
+ok('rollup collected = $125,000', rb.collectedPreHst === 125000, rb.collectedPreHst);
+ok('rollup outstanding = $125,840', rb.outstandingPreHst === 125840, rb.outstandingPreHst);
+ok('rollup remaining fixed = $138,205 (40,805 P1 + 97,400 P2)', rb.remainingFixedPreHst === 138205, rb.remainingFixedPreHst);
+ok('rollup flags open T&M', rb.hasOpenTm === true);
+ok('rollup invoiced incl-HST = $283,449.20', rb.invoicedWithHst === 283449.20, rb.invoicedWithHst);
+
+console.log('\n=== merge Feaver P4 → P3 (references move, dollars do not) ===');
+const ftimes: any[] = [{ id: 't1', projectId: 'f', phaseId: 'p3', clockIn: 1, clockOut: 2 }];
+const plan = planPhaseMerge(feaver, 'p4', 'p3', 'Phase 3/4 — Interior Finishes & Exterior Envelope', finv, freps, ftimes);
+ok('merge plan re-points INV on p4 (i4)', plan.invoiceIds.join(',') === 'i4', plan.invoiceIds.join(','));
+ok('merge plan does NOT move p3 records', plan.reportIds.length === 0 && plan.timeEntryIds.length === 0);
+const mergedPhase = plan.mergedProject!.phases.find(p => p.id === 'p3')!;
+ok('merged phase renamed', mergedPhase.name === 'Phase 3/4 — Interior Finishes & Exterior Envelope', mergedPhase.name);
+ok('window note carried onto merged phase', /Everlast/.test(mergedPhase.note || ''), mergedPhase.note);
+ok('source phase p4 removed', !plan.mergedProject!.phases.some(p => p.id === 'p4'));
+ok('phase count 4 → 3', plan.mergedProject!.phases.length === 3, plan.mergedProject!.phases.length);
+// Rollup unchanged after applying the merge (re-point i4 to p3).
+const invMerged = finv.map(i => i.id === 'i4' ? { ...i, phaseId: 'p3' } : i);
+const rbAfter = projectBillables(plan.mergedProject!, invMerged, freps);
+ok('rollup UNCHANGED post-merge (invoiced)', rbAfter.invoicedPreHst === rb.invoicedPreHst, rbAfter.invoicedPreHst);
+ok('rollup UNCHANGED post-merge (outstanding)', rbAfter.outstandingPreHst === rb.outstandingPreHst, rbAfter.outstandingPreHst);
+ok('merge guard: different types refused', !!planPhaseMerge(feaver, 'p1', 'p3', undefined, finv, freps, ftimes).error);
+// Two open reports (target empty, source has a manual line) → keep TARGET's
+// as survivor and FOLD the source's manual line into it; delete the source's.
+const twoPhases = { ...feaver, phases: [{ id: 'p3', type: 'tm', checklist: [] }, { id: 'p4', type: 'tm', checklist: [] }] };
+const foldPlan = planPhaseMerge(twoPhases, 'p4', 'p3', undefined, [],
+  [{ id: 'r3', projectId: 'f', phaseId: 'p3', status: 'open', reportNumber: 2, startAt: 100, receipts: [], manualTime: [] } as any,
+   { id: 'r4', projectId: 'f', phaseId: 'p4', status: 'open', reportNumber: 1, startAt: 50, receipts: [], manualTime: [{ id: 'm1', hours: 3 }] } as any], []);
+ok('survivor is the TARGET report r3 (#2, from Jul 14 equiv)', foldPlan.keptReport?.id === 'r3', foldPlan.keptReport?.id);
+ok('source manual line folded into survivor', (foldPlan.keptReport?.manualTime || []).length === 1, (foldPlan.keptReport?.manualTime || []).length);
+ok('source duplicate open report deleted (r4)', foldPlan.deleteReportIds.join(',') === 'r4', foldPlan.deleteReportIds.join(','));
+ok('no orphan / no refusal', !foldPlan.error);
 
 console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

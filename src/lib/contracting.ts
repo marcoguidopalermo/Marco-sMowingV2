@@ -163,6 +163,101 @@ export function phaseBillables(projectId: string, phaseId: string | undefined, i
   };
 }
 
+// Project-level billables rollup across ALL phases. Invoiced/collected/
+// outstanding come straight from the project's invoices; remaining-expected is
+// the sum of unbilled FIXED completion balances (open T&M accrues separately).
+export interface ProjectBillables {
+  invoicedPreHst: number; invoicedWithHst: number;
+  collectedPreHst: number; collectedWithHst: number;
+  outstandingPreHst: number; outstandingWithHst: number;
+  remainingFixedPreHst: number; remainingFixedWithHst: number;
+  hasOpenTm: boolean;
+}
+export function projectBillables(project: ContractingProject, invoices: ContractingInvoice[], reports: ContractingProgressReport[]): ProjectBillables {
+  let invPre = 0, invFull = 0, colPre = 0, colFull = 0;
+  for (const inv of invoices) {
+    if (inv.projectId !== project.id) continue;
+    invPre += Number(inv.amountPreHst) || 0; invFull += Number(inv.total) || 0;
+    if (inv.paid) { colPre += Number(inv.amountPreHst) || 0; colFull += Number(inv.total) || 0; }
+  }
+  let remFixed = 0;
+  for (const ph of project.phases) {
+    if (ph.type !== 'fixed' || ph.fixedPrice == null) continue;
+    const billedPre = phaseBillables(project.id, ph.id, invoices).invoicedPreHst;
+    remFixed += Math.max(0, round2(ph.fixedPrice - billedPre));
+  }
+  const hasOpenTm = reports.some(r => r.projectId === project.id && r.status === 'open' && project.phases.find(ph => ph.id === r.phaseId)?.type === 'tm');
+  return {
+    invoicedPreHst: round2(invPre), invoicedWithHst: round2(invFull),
+    collectedPreHst: round2(colPre), collectedWithHst: round2(colFull),
+    outstandingPreHst: round2(invPre - colPre), outstandingWithHst: round2(invFull - colFull),
+    remainingFixedPreHst: round2(remFixed), remainingFixedWithHst: round2(remFixed * (1 + HST_PCT)),
+    hasOpenTm,
+  };
+}
+
+// Plan for merging phase `sourceId` INTO `targetId` (target survives, keeps its
+// id → its invoices/reports/time never move). Returns the ids to re-point and
+// the merged project (caller stamps updatedAt + persists + audits). Pure — no
+// I/O, no Date.now. Generalizable: same billing type only, and at most ONE open
+// report across the two (preserving one-open-report-per-phase).
+export interface PhaseMergePlan { error?: string; mergedProject?: ContractingProject; invoiceIds: string[]; reportIds: string[]; timeEntryIds: string[]; deleteReportIds: string[]; keptReport?: ContractingProgressReport; sourceName?: string; targetName?: string; }
+export function planPhaseMerge(project: ContractingProject, sourceId: string, targetId: string, mergedName: string | undefined, invoices: ContractingInvoice[], reports: ContractingProgressReport[], timeEntries: ContractingTimeEntry[]): PhaseMergePlan {
+  const empty = { invoiceIds: [], reportIds: [], timeEntryIds: [], deleteReportIds: [] };
+  if (sourceId === targetId) return { ...empty, error: 'Pick two different phases.' };
+  const source = project.phases.find(p => p.id === sourceId);
+  const target = project.phases.find(p => p.id === targetId);
+  if (!source || !target) return { ...empty, error: 'Phase not found.' };
+  if (source.type !== target.type) return { ...empty, error: 'Phases must share a billing type (both Fixed or both T&M).' };
+  // The merged phase can hold at most ONE open report. Keep ONE survivor —
+  // prefer the TARGET's open report (correct number/period), else the first
+  // source one (re-pointed) — and FOLD the other open reports' receipts +
+  // manual-time lines into it so no billing is orphaned; delete the folded-in
+  // reports.
+  const openReports = reports.filter(r => r.projectId === project.id && r.status === 'open' && (r.phaseId === sourceId || r.phaseId === targetId));
+  let deleteReportIds: string[] = [];
+  let keptReport: ContractingProgressReport | undefined;
+  if (openReports.length > 0) {
+    const survivor = openReports.find(r => r.phaseId === targetId) || openReports[0];
+    const folded = openReports.filter(r => r.id !== survivor.id);
+    if (folded.length) {
+      keptReport = {
+        ...survivor, phaseId: targetId,
+        receipts: [...(survivor.receipts || []), ...folded.flatMap(r => r.receipts || [])],
+        manualTime: [...(survivor.manualTime || []), ...folded.flatMap(r => r.manualTime || [])],
+      };
+      deleteReportIds = folded.map(r => r.id);
+    } else if (survivor.phaseId === sourceId) {
+      keptReport = { ...survivor, phaseId: targetId };   // single source open report → re-point in full
+    }
+  }
+  const delSet = new Set(deleteReportIds);
+  const join = (a?: string, b?: string) => [a, b].map(x => (x || '').trim()).filter(Boolean).join(' · ') || undefined;
+  const starts = [target.tmStartAt, source.tmStartAt].filter((x): x is number => typeof x === 'number');
+  const merged: ContractingPhase = {
+    ...target,
+    name: (mergedName && mergedName.trim()) || target.name,
+    checklist: [...target.checklist, ...source.checklist],
+    description: join(target.description, source.description),
+    note: join(target.note, source.note),
+    fixedPrice: target.type === 'fixed' ? round2((target.fixedPrice || 0) + (source.fixedPrice || 0)) : undefined,
+    tmStartAt: target.type === 'tm' ? (starts.length ? Math.min(...starts) : undefined) : undefined,
+    priceAudit: [...(target.priceAudit || []), ...(source.priceAudit || [])],
+  };
+  const mergedProject: ContractingProject = { ...project, phases: project.phases.filter(p => p.id !== sourceId).map(p => (p.id === targetId ? merged : p)) };
+  return {
+    mergedProject,
+    invoiceIds: invoices.filter(i => i.projectId === project.id && i.phaseId === sourceId).map(i => i.id),
+    // Re-point source reports EXCEPT the folded-away ones and the survivor
+    // (the survivor is written in full via keptReport when it came from source).
+    reportIds: reports.filter(r => r.projectId === project.id && r.phaseId === sourceId && !delSet.has(r.id) && r.id !== keptReport?.id).map(r => r.id),
+    timeEntryIds: timeEntries.filter(t => t.projectId === project.id && t.phaseId === sourceId).map(t => t.id),
+    deleteReportIds,
+    keptReport,
+    sourceName: source.name, targetName: target.name,
+  };
+}
+
 // A fixed phase is READY TO BILL when every REQUIRED checklist item is done.
 export function phaseReadyToBill(phase: ContractingPhase): boolean {
   const required = phase.checklist.filter(c => c.required);

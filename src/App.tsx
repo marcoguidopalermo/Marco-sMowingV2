@@ -63,7 +63,7 @@ import TaskDetailModal from './components/TaskDetailModal';
 import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
-import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable } from './lib/contracting';
+import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, planPhaseMerge } from './lib/contracting';
 import type { ContractingProperty, ContractingSupplier } from './types';
 import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
@@ -2269,6 +2269,33 @@ export default function App() {
     await appendContractingAudit('project.delete', `${proj?.name || id}`);
     await deleteDoc(doc(roleColl('contractingProjects'), id));
     showToastMsg('Project deleted.');
+  };
+  // Merge one phase INTO another (generalizable): re-points every invoice,
+  // report, and time entry from source → target, folds source's checklist /
+  // notes / (fixed) price into target, drops source. Snapshots stay frozen —
+  // only the phaseId reference moves. Guarded + audited.
+  const mergeContractingPhases = async (projectId: string, sourceId: string, targetId: string, mergedName?: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const project = subContractingProjectsRef.current[projectId];
+    if (!project) return;
+    const plan = planPhaseMerge(
+      project, sourceId, targetId, mergedName,
+      Object.values(subContractingInvoicesRef.current),
+      Object.values(subContractingProgressReportsRef.current),
+      Object.values(subContractingTimeEntriesRef.current),
+    );
+    if (plan.error || !plan.mergedProject) { showToastMsg(plan.error || 'Cannot merge.'); return; }
+    const now = Date.now();
+    for (const id of plan.invoiceIds) await setDoc(doc(roleColl('contractingInvoices'), id), cleanRM({ phaseId: targetId }), { merge: true } as any);
+    for (const id of plan.reportIds) await setDoc(doc(roleColl('contractingProgressReports'), id), cleanRM({ phaseId: targetId }), { merge: true } as any);
+    for (const id of plan.timeEntryIds) await setDoc(doc(roleColl('contractingTimeEntries'), id), cleanRM({ phaseId: targetId }), { merge: true } as any);
+    // Fold-in survivor (absorbs discarded open reports' receipts + manual time)
+    // then delete the folded-away duplicates → exactly one open report.
+    if (plan.keptReport) await setDoc(doc(roleColl('contractingProgressReports'), plan.keptReport.id), cleanRM({ ...plan.keptReport, updatedAt: now }));
+    for (const id of plan.deleteReportIds) await deleteDoc(doc(roleColl('contractingProgressReports'), id));
+    await setDoc(doc(roleColl('contractingProjects'), projectId), cleanRM({ ...plan.mergedProject, updatedAt: now }));
+    await appendContractingAudit('phase.merge', `${project.name}: "${plan.sourceName}" → "${plan.targetName}" (re-pointed ${plan.invoiceIds.length} inv / ${plan.reportIds.length} rpt / ${plan.timeEntryIds.length} time)`);
+    showToastMsg('Phases merged.');
   };
   // Archive / restore a project (reversible; data intact). Audited.
   const archiveContractingProject = async (id: string, archived: boolean) => {
@@ -4664,6 +4691,7 @@ export default function App() {
           onSaveProject={saveContractingProject}
           onDeleteProject={deleteContractingProject}
           onArchiveProject={archiveContractingProject}
+          onMergePhases={mergeContractingPhases}
           onSaveTimeEntry={saveContractingTimeEntry}
           onOpenReport={openContractingReport}
           onEndReport={endContractingReport}
