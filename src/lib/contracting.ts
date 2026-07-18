@@ -64,17 +64,18 @@ export function receiptBilled(cost: number, markupPct: number): number {
   return round2((Number(cost) || 0) * (1 + (Number(markupPct) || 0) / 100));
 }
 
-export interface LabourInput { contractorId: string; name: string; billingRole: ContractingBillingRole; hours: number; }
+export interface LabourInput { contractorId: string; name: string; billingRole: ContractingBillingRole; hours: number; rate?: number; }
 
 // The live billing preview / snapshot for a progress report. Aggregates labour
 // per person, sums materials at their billed (marked-up) value, applies HST.
 // materialLines are CLIENT-SAFE (no cost/markup fields).
 export function computeReportTotals(labour: LabourInput[], receipts: ContractingReceipt[], rates: ContractingRateCard, rateByContractor?: Record<string, number>): ContractingReportSnapshot {
-  // Aggregate labour per (contractorId + role) so multiple sessions combine.
+  // Aggregate labour per (contractorId + role + rate) so multiple sessions at
+  // the same rate combine; a per-line rate override splits into its own line.
   const byPerson = new Map<string, ContractingLabourLine>();
   for (const l of labour) {
-    const key = `${l.contractorId}|${l.billingRole}`;
-    const rate = rateByContractor?.[l.contractorId] ?? rateFor(l.billingRole, rates);
+    const rate = (l.rate != null && l.rate > 0) ? l.rate : (rateByContractor?.[l.contractorId] ?? rateFor(l.billingRole, rates));
+    const key = `${l.contractorId}|${l.billingRole}|${rate}`;
     const prev = byPerson.get(key);
     const hours = round2((prev?.hours || 0) + (Number(l.hours) || 0));
     byPerson.set(key, { contractorId: l.contractorId, name: l.name, billingRole: l.billingRole, hours, rate, amount: round2(hours * rate) });
@@ -100,7 +101,7 @@ export function labourForReport(
 ): LabourInput[] {
   const out: LabourInput[] = [];
   for (const mt of report.manualTime || []) {
-    out.push({ contractorId: mt.contractorId, name: mt.contractorName, billingRole: mt.billingRole, hours: Number(mt.hours) || 0 });
+    out.push({ contractorId: mt.contractorId, name: mt.contractorName, billingRole: mt.billingRole, hours: Number(mt.hours) || 0, rate: mt.rateOverride });
   }
   const end = report.endAt || nowMs;
   for (const te of timeEntries) {
@@ -109,7 +110,10 @@ export function labourForReport(
     if (te.status === 'invoiced') continue;
     const attached = te.reportId === report.id;
     if (te.reportId && !attached) continue;               // belongs to another report
-    if (!attached && (te.clockIn < report.startAt || te.clockIn >= end)) continue; // window
+    if (!attached) {
+      if (te.detached) continue;                          // manually removed from its window report
+      if (te.clockIn < report.startAt || te.clockIn >= end) continue; // window
+    }
     const outMs = te.clockOut || nowMs;
     const rawHours = Math.max(0, (outMs - te.clockIn) / 3_600_000);
     out.push({ contractorId: te.contractorId, name: te.contractorName, billingRole: te.billingRole, hours: roundVisitHours(rawHours) });
@@ -132,7 +136,7 @@ export function unbilledLabour(projectId: string, timeEntries: ContractingTimeEn
     if (!te.clockOut) continue;                           // still clocked in
     const open = reports.find(r => r.projectId === te.projectId && r.phaseId === te.phaseId && r.status === 'open');
     const autoCaptured = !!open && te.clockIn >= open.startAt && te.clockIn < nowMs;
-    if (autoCaptured) continue;                           // already flowing into the open report
+    if (autoCaptured && !te.detached) continue;           // flowing into the open report (unless detached)
     const hours = roundVisitHours(Math.max(0, (te.clockOut - te.clockIn) / 3_600_000));
     const rate = rateByContractor?.[te.contractorId] ?? rateFor(te.billingRole, rates);
     out.push({ entry: te, hours, amount: round2(hours * rate) });
@@ -256,6 +260,14 @@ export function planPhaseMerge(project: ContractingProject, sourceId: string, ta
     keptReport,
     sourceName: source.name, targetName: target.name,
   };
+}
+
+// Blended project completion — a SIMPLE AVERAGE of the phases' manual
+// completionPct (phases with no % count as 0). Informational only.
+export function projectCompletionPct(project: ContractingProject): number {
+  if (!project.phases.length) return 0;
+  const sum = project.phases.reduce((s, ph) => s + (Number(ph.completionPct) || 0), 0);
+  return Math.round(sum / project.phases.length);
 }
 
 // A fixed phase is READY TO BILL when every REQUIRED checklist item is done.

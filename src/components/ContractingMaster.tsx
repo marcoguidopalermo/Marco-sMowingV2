@@ -9,11 +9,11 @@ import {
   ContractingProperty, ContractingSupplier, ContractingPhaseType, Employee, StoredFile,
 } from '../types';
 import {
-  HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled,
+  HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled, roundVisitHours,
   computeReportTotals, labourForReport, phaseBillables, phaseReadyToBill, withHst,
   PALERMO, reportDayN, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor, contractorRate,
   unbilledLabour, UnbilledEntry, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
-  projectBillables,
+  projectBillables, projectCompletionPct,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
@@ -37,12 +37,15 @@ interface Props {
   onSaveProperties: (list: ContractingProperty[]) => void;
   onSaveSuppliers: (list: ContractingSupplier[]) => void;
   onAttachUnbilled: (reportId: string, entryIds: string[]) => void;
+  onDetachTimeEntry: (entryId: string) => void;
+  onDiscardReport: (reportId: string) => void;
+  onLogEdit: (detail: string) => void;
   onSaveProject: (p: ContractingProject) => void;
   onDeleteProject: (id: string) => void;
   onArchiveProject: (id: string, archived: boolean) => void;
   onMergePhases: (projectId: string, sourceId: string, targetId: string, mergedName?: string) => void;
   onSaveTimeEntry: (t: ContractingTimeEntry) => void;
-  onOpenReport: (projectId: string, phaseId: string) => void;
+  onOpenReport: (projectId: string, phaseId: string, startAt?: number) => void;
   onEndReport: (reportId: string) => void;
   onSaveReport: (r: ContractingProgressReport) => void;
   onSaveInvoice: (inv: ContractingInvoice) => void;
@@ -65,6 +68,9 @@ type Ctx = Omit<Props, 'projects' | 'timeEntries' | 'reports' | 'invoices' | 'wo
 
 const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 const fmtDate = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+const fmtShort = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }) : '—';
+const dateInputVal = (ms: number) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const dateFromInput = (s: string) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0).getTime(); };
 const STATUS_LABEL: Record<ContractingStatus, string> = { planned: 'Planned', in_progress: 'In Progress', on_hold: 'On Hold', complete: 'Complete', closed: 'Closed' };
 
 type Tab = 'mytime' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
@@ -312,6 +318,7 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
   const [merging, setMerging] = useState(false);
   const removable = projectIsRemovable(project.id, p.invoices, p.reports, p.timeEntries);
   const rollup = projectBillables(project, p.invoices, p.reports);
+  const blendedPct = projectCompletionPct(project);
 
   return (
     <div>
@@ -366,6 +373,14 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
         </div>
         <div className="mt-2 pt-2 border-t border-white/10 text-xs" style={{ color: '#D5DBDB' }}>
           Remaining expected: <b style={{ color: 'white' }}>{money(rollup.remainingFixedPreHst)}</b> pre-HST <span className="opacity-70">({money(rollup.remainingFixedWithHst)} incl.)</span> in fixed completion balances{rollup.hasOpenTm ? ' · open T&M accrues on top' : ''}.
+        </div>
+        {/* Blended completion — simple average of the phases' manual %. */}
+        <div className="mt-2 flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wide" style={{ color: '#AEB6BF' }}>Progress</span>
+          <div className="flex-1 h-2 rounded-full overflow-hidden bg-black/25">
+            <div className="h-full rounded-full" style={{ width: `${blendedPct}%`, backgroundColor: PALERMO.gold }} />
+          </div>
+          <span className="text-xs font-bold" style={{ color: PALERMO.gold }}>{blendedPct}%</span>
         </div>
       </div>
 
@@ -501,17 +516,21 @@ function PhaseEditForm({ phase, hasBilling, removable, currentUser, onClose, onS
   );
 }
 
-function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; nav: Nav; onUpdatePhase: (ph: ContractingPhase) => void; onRemovePhase: () => void }) {
+function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; onUpdatePhase: (ph: ContractingPhase) => void; onRemovePhase: () => void }) {
   const { phase, project, canManage, currentUser, nav } = p;
   const b = phaseBillables(project.id, phase.id, p.invoices);
   const ready = phaseReadyToBill(phase);
   const [newItem, setNewItem] = useState('');
   const [editing, setEditing] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
   const hasBilling = phaseHasInvoicedBilling(project.id, phase.id, p.invoices, p.reports);
   const removable = phaseIsRemovable(project.id, phase.id, p.invoices, p.reports, p.timeEntries);
   // This phase's invoices + reports, for two-way linkage.
   const phaseInvoices = p.invoices.filter(i => i.projectId === project.id && i.phaseId === phase.id).sort((a, b2) => (a.issuedAt || 0) - (b2.issuedAt || 0));
   const phaseReports = p.reports.filter(r => r.projectId === project.id && r.phaseId === phase.id).sort((a, b2) => a.reportNumber - b2.reportNumber);
+  const openReport = phaseReports.find(r => r.status === 'open');
+  const contractors = p.employees.filter(e => e.systemRole === 'contractor');
+  const pct = Math.max(0, Math.min(100, Number(phase.completionPct) || 0));
 
   const toggleDone = (item: ContractingChecklistItem) => {
     if (!canManage) return;
@@ -520,6 +539,8 @@ function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProje
   };
   const toggleReq = (item: ContractingChecklistItem) => canManage && p.onUpdatePhase({ ...phase, checklist: phase.checklist.map(c => c.id === item.id ? { ...c, required: !c.required } : c) });
   const addItem = () => { if (!newItem.trim()) return; p.onUpdatePhase({ ...phase, checklist: [...phase.checklist, { id: uid('chk'), text: newItem.trim(), required: true, done: false }] }); setNewItem(''); };
+  const deleteItem = (item: ContractingChecklistItem) => { p.onUpdatePhase({ ...phase, checklist: phase.checklist.filter(c => c.id !== item.id) }); p.onLogEdit(`Deleted checklist item "${item.text}"${item.required ? ' (required)' : ''} on ${phase.name}`); };
+  const setPct = (v: number) => p.onUpdatePhase({ ...phase, completionPct: Math.max(0, Math.min(100, Math.round(v))), completionPctBy: currentUser.name, completionPctAt: Date.now() });
 
   return (
     <div className="bg-white rounded-lg border p-3">
@@ -527,18 +548,28 @@ function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProje
         <div className="flex items-center gap-2">
           <span className="font-semibold" style={{ color: PALERMO.slate }}>{phase.name}</span>
           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ backgroundColor: phase.type === 'tm' ? '#EBF5FB' : '#FEF9E7', color: phase.type === 'tm' ? '#2874A6' : PALERMO.gold }}>{phase.type === 'tm' ? 'T&M' : 'FIXED'}</span>
+          <span className="text-xs font-bold" style={{ color: PALERMO.gold }}>{pct}%</span>
         </div>
         <div className="flex items-center gap-2">
+          {canManage && openReport && <button onClick={() => setBatchOpen(true)} className="text-xs px-2 py-0.5 rounded text-white font-black" style={{ backgroundColor: PALERMO.gold }}>+ Hours</button>}
           {canManage
             ? <StatusSelect value={phase.status} onChange={s => p.onUpdatePhase({ ...phase, status: s })} small />
             : <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100">{STATUS_LABEL[phase.status]}</span>}
           {canManage && <button onClick={() => setEditing(true)} className="text-xs px-2 py-0.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>Edit</button>}
         </div>
       </div>
+      {/* Completion progress bar (gold on slate) — informational, manual. */}
+      <div className="mt-1.5 flex items-center gap-2">
+        <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ backgroundColor: '#2E4053' }}>
+          <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: PALERMO.gold }} />
+        </div>
+        {canManage && <input type="number" min={0} max={100} step={5} defaultValue={pct} onBlur={e => { const v = Number(e.target.value); if (v !== pct) setPct(v); }} className="inp w-14 text-xs py-0.5 text-right" />}
+      </div>
       {editing && <PhaseEditForm phase={phase} hasBilling={hasBilling} removable={removable} currentUser={currentUser}
         onClose={() => setEditing(false)}
         onSave={np => { p.onUpdatePhase(np); setEditing(false); }}
         onRemove={() => { p.onRemovePhase(); setEditing(false); }} />}
+      {batchOpen && openReport && <BatchHoursForm report={openReport} contractors={contractors} rates={ratesOrDefault(p.rates)} rateOverrides={p.rateOverrides} currentUser={currentUser} onClose={() => setBatchOpen(false)} onSave={rows => { p.onSaveReport({ ...openReport, manualTime: [...openReport.manualTime, ...rows], updatedAt: Date.now() }); p.onLogEdit(`Batch-added ${rows.length} hours line(s) to report #${openReport.reportNumber}`); setBatchOpen(false); }} />}
       {phase.description && <div className="text-sm text-gray-600 mt-1">{phase.description}</div>}
       {phase.note && <div className="text-xs mt-1 px-2 py-1 rounded" style={{ backgroundColor: '#FEF9E7', color: PALERMO.gold }}>⚑ {phase.note}</div>}
 
@@ -572,7 +603,8 @@ function PhaseCard(p: Ctx & { phase: ContractingPhase; project: ContractingProje
               <input type="checkbox" checked={item.done} disabled={!canManage} onChange={() => toggleDone(item)} className="w-4 h-4" />
               <span className={item.done ? 'line-through text-gray-400' : ''}>{item.text}</span>
               <button onClick={() => toggleReq(item)} disabled={!canManage} className="text-[10px] px-1.5 rounded" style={item.required ? { backgroundColor: PALERMO.slate, color: 'white' } : { backgroundColor: '#eee', color: '#888' }}>{item.required ? 'required' : 'optional'}</button>
-              {item.done && item.doneBy && <span className="text-[10px] text-gray-400 ml-auto">{item.doneBy} · {fmtDate(item.doneAt)}</span>}
+              {item.done && item.doneBy && <span className="text-[10px] text-gray-400">{item.doneBy} · {fmtDate(item.doneAt)}</span>}
+              {canManage && <button onClick={() => deleteItem(item)} title="Delete item" className="text-red-400 text-sm ml-auto">×</button>}
             </div>
           ))}
           {phase.checklist.length === 0 && <div className="text-xs text-gray-400">No items.</div>}
@@ -672,11 +704,13 @@ function Billable({ label, pre, full, accent }: { label: string; pre: number; fu
 // ──────────────────────────────────────────────────────────── REPORTS ──────
 function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; contractors: Employee[]; projects: ContractingProject[]; invoices: ContractingInvoice[]; rateOverrides: Record<string, number>; nav: Nav }) {
   const { canManage } = p;
+  const [openingFor, setOpeningFor] = useState<{ proj: ContractingProject; ph: ContractingPhase; lastEnd: number } | null>(null);
   // Minted invoice for a closed report (report → invoice linkage).
   const invoiceForReport = (reportId: string) => p.invoices.find(i => i.reportId === reportId);
   // T&M phases across projects, with their open report (if any).
   const tmPhases = p.projects.flatMap(proj => proj.phases.filter(ph => ph.type === 'tm').map(ph => ({ proj, ph })));
   const openReportFor = (projectId: string, phaseId: string) => p.reports.find(r => r.projectId === projectId && r.phaseId === phaseId && r.status === 'open');
+  const lastEndFor = (projectId: string, phaseId: string) => p.reports.filter(r => r.projectId === projectId && r.phaseId === phaseId && r.endAt).reduce((m, r) => Math.max(m, r.endAt || 0), 0);
 
   return (
     <div>
@@ -689,7 +723,7 @@ function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingP
             <div key={ph.id} className="bg-white rounded-lg border p-3">
               <div className="flex items-center justify-between">
                 <div><span className="font-semibold" style={{ color: PALERMO.slate }}>{proj.name}</span> <span className="text-gray-500">· {ph.name}</span></div>
-                {!open && canManage && <button onClick={() => p.onOpenReport(proj.id, ph.id)} className="text-sm px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>Open billing period</button>}
+                {!open && canManage && <button onClick={() => setOpeningFor({ proj, ph, lastEnd: lastEndFor(proj.id, ph.id) })} className="text-sm px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>Open billing period</button>}
               </div>
               {open && <OpenReport report={open} project={proj} phase={ph} {...p} />}
               {!open && <div className="text-xs text-gray-400 mt-1">No open billing period.</div>}
@@ -697,6 +731,7 @@ function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingP
           );
         })}
       </div>
+      {openingFor && <OpenPeriodForm proj={openingFor.proj} ph={openingFor.ph} lastEnd={openingFor.lastEnd} onClose={() => setOpeningFor(null)} onOpen={startAt => { p.onOpenReport(openingFor.proj.id, openingFor.ph.id, startAt); setOpeningFor(null); }} />}
 
       {/* Historic (invoiced) reports */}
       {p.reports.some(r => r.status === 'invoiced') && (
@@ -768,19 +803,28 @@ function ClockPanel(p: Ctx & { projects: ContractingProject[]; timeEntries: Cont
 function OpenReport(p: Ctx & { report: ContractingProgressReport; project: ContractingProject; phase: ContractingPhase; rates: ContractingRateCard; timeEntries: ContractingTimeEntry[]; reports: ContractingProgressReport[]; contractors: Employee[]; rateOverrides: Record<string, number>; nav: Nav }) {
   const { report, canManage } = p;
   const now = Date.now();
+  const rc = ratesOrDefault(p.rates);
   const labour = labourForReport(report, p.timeEntries, now);
   const snap = computeReportTotals(labour, report.receipts, p.rates, p.rateOverrides);
   const dayN = reportDayN(report.startAt, now);
-  // Unbilled labour on THIS phase — the entries that can be pulled in.
   const unbilled = unbilledLabour(report.projectId, p.timeEntries, p.reports, p.rates, now, p.rateOverrides).filter(u => u.entry.phaseId === report.phaseId);
+  // Individual clock sessions flowing into this report (for detach control).
+  const attachedClock = p.timeEntries.filter(te => !te.manual && te.status !== 'invoiced' && te.phaseId === report.phaseId && !te.detached && (te.reportId === report.id || (!te.reportId && !!te.clockOut && te.clockIn >= report.startAt && te.clockIn < now)));
+  const manualRate = (t: ContractingTimeEntry) => (t.rateOverride != null && t.rateOverride > 0) ? t.rateOverride : (p.rateOverrides[t.contractorId] ?? rateFor(t.billingRole, rc));
+  const clockRate = (te: ContractingTimeEntry) => p.rateOverrides[te.contractorId] ?? rateFor(te.billingRole, rc);
+  const clockHours = (te: ContractingTimeEntry) => roundVisitHours(Math.max(0, ((te.clockOut || now) - te.clockIn) / 3_600_000));
+
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [editManual, setEditManual] = useState<ContractingTimeEntry | null>(null);
   const [addingReceipt, setAddingReceipt] = useState(false);
-  const [addingTime, setAddingTime] = useState(false);
+  const [editReceipt, setEditReceipt] = useState<ContractingReceipt | null>(null);
   const [attaching, setAttaching] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [viewPhotos, setViewPhotos] = useState<StoredFile[] | null>(null);
 
-  const removeReceipt = (id: string) => p.onSaveReport({ ...report, receipts: report.receipts.filter(r => r.id !== id), updatedAt: Date.now() });
-  const removeManual = (id: string) => p.onSaveReport({ ...report, manualTime: report.manualTime.filter(t => t.id !== id), updatedAt: Date.now() });
+  const saveReport = (patch: Partial<ContractingProgressReport>) => p.onSaveReport({ ...report, ...patch, updatedAt: Date.now() });
+  const removeReceipt = (r: ContractingReceipt) => { saveReport({ receipts: report.receipts.filter(x => x.id !== r.id) }); p.onLogEdit(`Deleted material "${r.description}" (${money(r.billed)}) on report #${report.reportNumber}`); };
+  const removeManual = (t: ContractingTimeEntry) => { saveReport({ manualTime: report.manualTime.filter(x => x.id !== t.id) }); p.onLogEdit(`Deleted ${t.contractorName} ${t.hours}h manual line on report #${report.reportNumber}`); };
 
   return (
     <div className="mt-2 border-t pt-2">
@@ -789,25 +833,31 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
         <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={dayN >= 14 ? { backgroundColor: '#F39C12', color: 'white' } : { backgroundColor: '#EBF5FB', color: '#2874A6' }}>Day {dayN} of 14{dayN >= 14 ? ' — time to bill' : ''}</span>
       </div>
 
-      {/* Labour */}
+      {/* Labour — itemized, editable workbench */}
       <div className="mt-2">
-        <div className="text-[11px] font-semibold text-gray-500 uppercase">Labour</div>
-        {snap.labourLines.length === 0 && <div className="text-xs text-gray-400">No time yet.</div>}
-        {snap.labourLines.map(l => (
-          <div key={l.contractorId + l.billingRole} className="flex justify-between text-sm">
-            <span>{l.name} <span className="text-gray-400">· {l.hours}h × {money(l.rate)}</span></span>
-            <b>{money(l.amount)}</b>
+        <div className="flex items-center justify-between">
+          <div className="text-[11px] font-semibold text-gray-500 uppercase">Labour</div>
+          {canManage && <button onClick={() => setBatchOpen(true)} className="text-xs font-black px-2.5 py-1 rounded text-white" style={{ backgroundColor: PALERMO.gold }}>+ Add hours</button>}
+        </div>
+        {report.manualTime.length === 0 && attachedClock.length === 0 && <div className="text-xs text-gray-400">No time yet.</div>}
+        {/* Manual / batch entries — "Jul 18 — Tony · 10 hr @ $150 = $1,500" */}
+        {report.manualTime.map(t => { const r = manualRate(t); return (
+          <div key={t.id} className="flex justify-between text-sm items-center">
+            <span>{fmtShort(t.clockIn)} — {t.contractorName} · {t.hours} hr @ {money(r)}{t.rateOverride != null ? <span className="text-[9px] ml-1 px-1 rounded bg-amber-100 text-amber-700">rate override</span> : ''}</span>
+            <span className="flex items-center gap-2"><b>{money((Number(t.hours) || 0) * r)}</b>{canManage && <><button onClick={() => setEditManual(t)} className="text-[11px]" style={{ color: PALERMO.slate }}>edit</button><button onClick={() => removeManual(t)} className="text-red-400 text-sm">×</button></>}</span>
+          </div>
+        ); })}
+        {/* Auto-attached clock sessions — detach returns them to unbilled. */}
+        {attachedClock.map(te => (
+          <div key={te.id} className="flex justify-between text-sm items-center text-gray-600">
+            <span>{fmtShort(te.clockIn)} — {te.contractorName} · {clockHours(te)} hr @ {money(clockRate(te))} <span className="text-[9px] px-1 rounded bg-slate-100">clock</span></span>
+            <span className="flex items-center gap-2"><b>{money(clockHours(te) * clockRate(te))}</b>{canManage && <button onClick={() => p.onDetachTimeEntry(te.id)} title="Move to unbilled labour" className="text-amber-600 text-[11px]">detach</button>}</span>
           </div>
         ))}
-        {/* manual lines listing for removal */}
-        {canManage && report.manualTime.map(t => (
-          <div key={t.id} className="text-[11px] text-gray-400 flex justify-between"><span>manual: {t.contractorName} {t.hours}h</span><button onClick={() => removeManual(t.id)} className="text-red-400">remove</button></div>
-        ))}
-        {canManage && <div className="flex gap-3 mt-1"><button onClick={() => setAddingTime(true)} className="text-xs" style={{ color: PALERMO.slate }}>+ Manual time</button>{unbilled.length > 0 && <button onClick={() => setAttaching(true)} className="text-xs font-semibold" style={{ color: '#C0392B' }}>+ Add unbilled labour</button>}</div>}
-        {/* Cadence nudge for unbilled labour sitting on this phase. */}
-        {unbilled.length > 0 && (
-          <div className="mt-1 text-[11px] px-2 py-1 rounded" style={{ backgroundColor: '#FDEDEC', color: '#C0392B' }}>
-            {unbilled.length} unbilled entr{unbilled.length === 1 ? 'y' : 'ies'} · {round2(unbilled.reduce((s, u) => s + u.hours, 0))} hrs — <button onClick={() => setAttaching(true)} className="underline font-semibold">review</button>
+        {canManage && unbilled.length > 0 && (
+          <div className="mt-1 text-[11px] px-2 py-1 rounded flex items-center justify-between" style={{ backgroundColor: '#FDEDEC', color: '#C0392B' }}>
+            <span>{unbilled.length} unbilled entr{unbilled.length === 1 ? 'y' : 'ies'} · {round2(unbilled.reduce((s, u) => s + u.hours, 0))} hrs</span>
+            <button onClick={() => setAttaching(true)} className="underline font-semibold">add unbilled →</button>
           </div>
         )}
       </div>
@@ -822,7 +872,7 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
               {canManage && <span className="text-[10px] text-gray-400"> · cost {money(r.cost)} +{r.markupPct}%</span>}
               {r.photo && <button onClick={() => setViewPhotos([r.photo!])} className="text-[10px] ml-1" style={{ color: PALERMO.gold }}>📷</button>}
             </span>
-            <span className="flex items-center gap-2"><b>{money(r.billed)}</b>{canManage && <button onClick={() => removeReceipt(r.id)} className="text-red-400 text-[11px]">×</button>}</span>
+            <span className="flex items-center gap-2"><b>{money(r.billed)}</b>{canManage && <><button onClick={() => setEditReceipt(r)} className="text-[11px]" style={{ color: PALERMO.slate }}>edit</button><button onClick={() => removeReceipt(r)} className="text-red-400 text-sm">×</button></>}</span>
           </div>
         ))}
         {canManage && <button onClick={() => setAddingReceipt(true)} className="text-xs mt-1" style={{ color: PALERMO.slate }}>+ Receipt</button>}
@@ -838,13 +888,16 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
       </div>
 
       {canManage && (
-        <button onClick={() => setReviewing(true)} disabled={snap.subtotalPreHst <= 0} className="w-full mt-2 py-2 rounded text-white font-bold disabled:opacity-40" style={{ backgroundColor: PALERMO.slate }}>
-          End report &amp; bill →
-        </button>
+        <div className="flex gap-2 mt-2">
+          <button onClick={() => setReviewing(true)} disabled={snap.subtotalPreHst <= 0} className="flex-1 py-2 rounded text-white font-bold disabled:opacity-40" style={{ backgroundColor: PALERMO.slate }}>End report &amp; bill →</button>
+          <button onClick={() => confirm('Discard this open period without invoicing? Empty periods are removed; clock time returns to unbilled.') && p.onDiscardReport(report.id)} className="px-3 py-2 rounded border font-semibold text-red-600 border-red-200">Discard</button>
+        </div>
       )}
 
-      {addingReceipt && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} onClose={() => setAddingReceipt(false)} onSave={rc => { p.onSaveReport({ ...report, receipts: [...report.receipts, rc], updatedAt: Date.now() }); setAddingReceipt(false); }} />}
-      {addingTime && <ManualTimeForm report={report} contractors={p.contractors} rates={p.rates} currentUser={p.currentUser} onClose={() => setAddingTime(false)} onSave={t => { p.onSaveReport({ ...report, manualTime: [...report.manualTime, t], updatedAt: Date.now() }); setAddingTime(false); }} />}
+      {batchOpen && <BatchHoursForm report={report} contractors={p.contractors} rates={rc} rateOverrides={p.rateOverrides} currentUser={p.currentUser} onClose={() => setBatchOpen(false)} onSave={rows => { saveReport({ manualTime: [...report.manualTime, ...rows] }); p.onLogEdit(`Batch-added ${rows.length} hours line(s) to report #${report.reportNumber}`); setBatchOpen(false); }} />}
+      {editManual && <ManualLineEditForm line={editManual} rates={rc} rateOverrides={p.rateOverrides} onClose={() => setEditManual(null)} onSave={upd => { saveReport({ manualTime: report.manualTime.map(x => x.id === upd.id ? upd : x) }); p.onLogEdit(`Edited ${upd.contractorName} manual line on report #${report.reportNumber}`); setEditManual(null); }} />}
+      {addingReceipt && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} onClose={() => setAddingReceipt(false)} onSave={rc2 => { saveReport({ receipts: [...report.receipts, rc2] }); setAddingReceipt(false); }} />}
+      {editReceipt && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} initial={editReceipt} onClose={() => setEditReceipt(null)} onSave={rc2 => { saveReport({ receipts: report.receipts.map(x => x.id === rc2.id ? rc2 : x) }); p.onLogEdit(`Edited material "${rc2.description}" on report #${report.reportNumber}`); setEditReceipt(null); }} />}
       {attaching && <AttachUnbilledForm unbilled={unbilled} onClose={() => setAttaching(false)} onAttach={ids => { p.onAttachUnbilled(report.id, ids); setAttaching(false); }} />}
       {reviewing && <ReviewConfirm report={report} project={p.project} phase={p.phase} snap={snap} onClose={() => setReviewing(false)} onConfirm={() => { p.onEndReport(report.id); setReviewing(false); }} />}
       {viewPhotos && <PhotoViewer files={viewPhotos} onClose={() => setViewPhotos(null)} />}
@@ -852,16 +905,16 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
   );
 }
 
-function ReceiptForm({ project, uploadedBy, currentUser, onClose, onSave }: { project: ContractingProject; uploadedBy: { email: string; name: string }; currentUser: { id: string; name: string }; onClose: () => void; onSave: (r: ContractingReceipt) => void }) {
-  const [description, setDescription] = useState('');
-  const [cost, setCost] = useState('');
-  const [markup, setMarkup] = useState('0');
-  const [ref, setRef] = useState('');
-  const [photo, setPhoto] = useState<StoredFile | undefined>();
+function ReceiptForm({ project, uploadedBy, currentUser, initial, onClose, onSave }: { project: ContractingProject; uploadedBy: { email: string; name: string }; currentUser: { id: string; name: string }; initial?: ContractingReceipt; onClose: () => void; onSave: (r: ContractingReceipt) => void }) {
+  const [description, setDescription] = useState(initial?.description || '');
+  const [cost, setCost] = useState(initial ? String(initial.cost) : '');
+  const [markup, setMarkup] = useState(initial ? String(initial.markupPct) : '0');
+  const [ref, setRef] = useState(initial?.preApprovedRef || '');
+  const [photo, setPhoto] = useState<StoredFile | undefined>(initial?.photo);
   const [uploading, setUploading] = useState(false);
   const billed = receiptBilled(Number(cost) || 0, Number(markup) || 0);
   return (
-    <Modal title="Add receipt / material" onClose={onClose}>
+    <Modal title={initial ? 'Edit material' : 'Add receipt / material'} onClose={onClose}>
       <Field label="Description"><input className="inp" value={description} onChange={e => setDescription(e.target.value)} /></Field>
       <div className="grid grid-cols-2 gap-2">
         <Field label="Cost (internal, pre-HST)"><input className="inp" type="number" value={cost} onChange={e => setCost(e.target.value)} /></Field>
@@ -878,31 +931,107 @@ function ReceiptForm({ project, uploadedBy, currentUser, onClose, onSave }: { pr
         {photo && <span className="text-xs text-green-600">✓ attached</span>}
       </Field>
       <ModalActions onClose={onClose} disabled={!description.trim() || uploading} onSave={() => onSave({
-        id: uid('crc'), description: description.trim(), cost: Number(cost) || 0, markupPct: Number(markup) || 0, billed,
-        photo, preApprovedRef: ref.trim() || undefined, addedBy: currentUser, addedAt: Date.now(),
+        id: initial?.id || uid('crc'), description: description.trim(), cost: Number(cost) || 0, markupPct: Number(markup) || 0, billed,
+        photo, preApprovedRef: ref.trim() || undefined, addedBy: initial?.addedBy || currentUser, addedAt: initial?.addedAt || Date.now(),
       })} />
     </Modal>
   );
 }
 
-function ManualTimeForm({ report, contractors, rates, currentUser, onClose, onSave }: { report: ContractingProgressReport; contractors: Employee[]; rates: ContractingRateCard; currentUser: { id: string; name: string }; onClose: () => void; onSave: (t: ContractingTimeEntry) => void }) {
-  const [contractorId, setContractorId] = useState(contractors[0]?.id || '');
-  const [hours, setHours] = useState('');
-  const emp = contractors.find(c => c.id === contractorId);
-  const role = (emp?.contractingBillingRole || 'general_labour') as ContractingBillingRole;
+// Batch end-of-day hours entry: a date + rows of [contractor | hours | rate].
+// Records each row as a manual time line on the open report.
+function BatchHoursForm({ report, contractors, rates, rateOverrides, currentUser, onClose, onSave }: { report: ContractingProgressReport; contractors: Employee[]; rates: ContractingRateCard; rateOverrides: Record<string, number>; currentUser: { id: string; name: string }; onClose: () => void; onSave: (rows: ContractingTimeEntry[]) => void }) {
+  const [date, setDate] = useState(dateInputVal(Date.now()));
+  const defaultRate = (emp?: Employee) => emp ? (rateOverrides[emp.id] ?? rateFor((emp.contractingBillingRole || 'general_labour') as ContractingBillingRole, rates)) : 0;
+  type RowT = { key: string; contractorId: string; hours: string; rate: string };
+  const mkRow = (): RowT => { const c = contractors[0]; return { key: uid('row'), contractorId: c?.id || '', hours: '', rate: String(defaultRate(c) || '') }; };
+  const [rows, setRows] = useState<RowT[]>([mkRow()]);
+  const setRow = (key: string, patch: Partial<RowT>) => setRows(rs => rs.map(r => r.key === key ? { ...r, ...patch } : r));
+  const filled = rows.filter(r => r.contractorId && Number(r.hours) > 0);
+  const total = filled.reduce((s, r) => s + Number(r.hours) * (Number(r.rate) || 0), 0);
+  const commit = () => {
+    const clockIn = dateFromInput(date);
+    const out: ContractingTimeEntry[] = filled.map(r => {
+      const emp = contractors.find(c => c.id === r.contractorId)!;
+      const role = (emp.contractingBillingRole || 'general_labour') as ContractingBillingRole;
+      const enteredRate = Number(r.rate) || 0;
+      const def = defaultRate(emp);
+      return {
+        id: uid('cmt'), projectId: report.projectId, phaseId: report.phaseId, contractorId: emp.id, contractorName: emp.name,
+        billingRole: role, clockIn, manual: true, hours: round2(Number(r.hours)),
+        rateOverride: enteredRate !== def ? enteredRate : undefined,   // store only the odd exception
+        reportId: report.id, status: 'open', createdBy: currentUser, createdAt: Date.now(),
+      };
+    });
+    onSave(out);
+  };
   return (
-    <Modal title="Add manual time" onClose={onClose}>
-      <Field label="Contractor">
-        <select className="inp" value={contractorId} onChange={e => setContractorId(e.target.value)}>
-          {contractors.map(c => <option key={c.id} value={c.id}>{c.name} ({ROLE_LABEL[(c.contractingBillingRole || 'general_labour') as ContractingBillingRole]})</option>)}
-        </select>
-      </Field>
-      <Field label="Hours"><input className="inp" type="number" step="0.25" value={hours} onChange={e => setHours(e.target.value)} /></Field>
-      <div className="text-sm mb-2">{ROLE_LABEL[role]} @ {money(rateFor(role, ratesOrDefault(rates)))}/hr → <b>{money((Number(hours) || 0) * rateFor(role, ratesOrDefault(rates)))}</b></div>
-      <ModalActions onClose={onClose} disabled={!emp || !(Number(hours) > 0)} onSave={() => onSave({
-        id: uid('cmt'), projectId: report.projectId, phaseId: report.phaseId, contractorId: emp!.id, contractorName: emp!.name,
-        billingRole: role, clockIn: Date.now(), manual: true, hours: Number(hours), reportId: report.id, status: 'open', createdBy: currentUser, createdAt: Date.now(),
+    <Modal title="Add hours" onClose={onClose}>
+      <Field label="Date"><input className="inp" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+      <div className="space-y-2">
+        {rows.map(r => {
+          const emp = contractors.find(c => c.id === r.contractorId);
+          return (
+            <div key={r.key} className="flex gap-1.5 items-center">
+              <select className="inp flex-1 min-w-0" value={r.contractorId} onChange={e => { const emp2 = contractors.find(c => c.id === e.target.value); setRow(r.key, { contractorId: e.target.value, rate: String(defaultRate(emp2) || '') }); }}>
+                {contractors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <input className="inp w-16" type="number" step="0.25" min="0" placeholder="hrs" value={r.hours} onChange={e => setRow(r.key, { hours: e.target.value })} />
+              <span className="text-xs text-gray-400">@</span>
+              <input className="inp w-20" type="number" step="5" value={r.rate} onChange={e => setRow(r.key, { rate: e.target.value })} title={emp ? `role rate ${money(defaultRate(emp))}` : ''} />
+              {rows.length > 1 && <button onClick={() => setRows(rs => rs.filter(x => x.key !== r.key))} className="text-red-400 text-sm px-1">×</button>}
+            </div>
+          );
+        })}
+      </div>
+      <button onClick={() => setRows(rs => [...rs, mkRow()])} className="text-xs mt-2" style={{ color: PALERMO.slate }}>+ add row</button>
+      <div className="text-[10px] text-gray-400 mt-1">15-min steps · rate auto-fills from billing role, editable for exceptions.</div>
+      <div className="text-sm mt-2">{filled.length} line(s) · <b style={{ color: PALERMO.gold }}>{money(total)}</b></div>
+      <ModalActions onClose={onClose} disabled={filled.length === 0} onSave={commit} />
+    </Modal>
+  );
+}
+
+// Edit one manual/batch time line (date, hours, rate).
+function ManualLineEditForm({ line, rates, rateOverrides, onClose, onSave }: { line: ContractingTimeEntry; rates: ContractingRateCard; rateOverrides: Record<string, number>; onClose: () => void; onSave: (t: ContractingTimeEntry) => void }) {
+  const def = rateOverrides[line.contractorId] ?? rateFor(line.billingRole, rates);
+  const [date, setDate] = useState(dateInputVal(line.clockIn));
+  const [hours, setHours] = useState(String(line.hours ?? ''));
+  const [rate, setRate] = useState(String(line.rateOverride ?? def));
+  const amt = (Number(hours) || 0) * (Number(rate) || 0);
+  return (
+    <Modal title={`Edit ${line.contractorName}'s hours`} onClose={onClose}>
+      <Field label="Date"><input className="inp" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Hours"><input className="inp" type="number" step="0.25" min="0" value={hours} onChange={e => setHours(e.target.value)} /></Field>
+        <Field label="Rate ($/hr)"><input className="inp" type="number" step="5" value={rate} onChange={e => setRate(e.target.value)} /></Field>
+      </div>
+      <div className="text-sm mb-2">{ROLE_LABEL[line.billingRole]} · role rate {money(def)} → <b>{money(amt)}</b></div>
+      <ModalActions onClose={onClose} disabled={!(Number(hours) > 0)} onSave={() => onSave({
+        ...line, clockIn: dateFromInput(date), hours: round2(Number(hours)),
+        rateOverride: Number(rate) !== def ? Number(rate) : undefined,
       })} />
+    </Modal>
+  );
+}
+
+// Open a new billing period with a pickable start date (defaults to the day
+// after the last invoiced period — a gap warning fires if a hole is left).
+function OpenPeriodForm({ proj, ph, lastEnd, onClose, onOpen }: { proj: ContractingProject; ph: ContractingPhase; lastEnd: number; onClose: () => void; onOpen: (startAt: number) => void }) {
+  const defaultStart = lastEnd || ph.tmStartAt || Date.now();
+  const [date, setDate] = useState(dateInputVal(defaultStart));
+  const picked = dateFromInput(date);
+  // Contiguous start = the last period's end. Gap if picked is later; overlap if earlier.
+  const gapDays = lastEnd ? Math.round((picked - lastEnd) / 86400000) : 0;
+  return (
+    <Modal title="Open billing period" onClose={onClose}>
+      <div className="text-sm mb-2">{proj.name} · {ph.name}</div>
+      <Field label="Start date"><input className="inp" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+      {lastEnd ? <div className="text-xs text-gray-500 mb-2">Last invoiced period ended {fmtDate(lastEnd)}. Contiguous start keeps periods gap-free.</div>
+        : <div className="text-xs text-gray-500 mb-2">First period on this phase.</div>}
+      {gapDays > 0 && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FEF9E7', color: PALERMO.gold }}>⚠ Leaves a {gapDays}-day gap after the last period — time clocked in that gap won't auto-attach (it'll surface as unbilled labour).</div>}
+      {gapDays < 0 && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FDEDEC', color: '#C0392B' }}>⚠ Starts before the last period ended — overlapping periods.</div>}
+      <ModalActions onClose={onClose} disabled={false} onSave={() => onOpen(picked)} />
     </Modal>
   );
 }

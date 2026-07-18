@@ -894,6 +894,9 @@ export interface ContractingPhase {
   tmStartAt?: number;             // T&M clock start → seeds the first open report
   note?: string;                  // e.g. window-package approval note
   priceAudit?: ContractingPriceAudit[];  // fixed-price change history (audited)
+  completionPct?: number;         // 0–100, MANUAL, informational only (not billing)
+  completionPctBy?: string;
+  completionPctAt?: number;
 }
 export interface ContractingProject {
   id: string;
@@ -922,6 +925,8 @@ export interface ContractingTimeEntry {
   clockOut?: number;
   manual?: boolean;               // manually-added billable line
   hours?: number;                 // explicit hours (manual) — else derived from clock
+  rateOverride?: number;          // per-line rate (the odd exception) — else role/override rate
+  detached?: boolean;             // clock entry removed from its window report → back to unbilled
   reportId?: string;              // attached open report
   status: 'open' | 'invoiced';
   createdBy?: { id: string; name: string };

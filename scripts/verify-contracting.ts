@@ -1,6 +1,6 @@
 // Verify ContractingMaster billing math against the exact progress-report
 // example. Run: npx tsx scripts/verify-contracting.ts
-import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, unbilledLabour, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge } from '../src/lib/contracting';
+import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, unbilledLabour, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge, projectCompletionPct } from '../src/lib/contracting';
 
 const rates = DEFAULT_CONTRACTING_RATES;
 let pass = 0, fail = 0;
@@ -147,6 +147,40 @@ ok('survivor is the TARGET report r3 (#2, from Jul 14 equiv)', foldPlan.keptRepo
 ok('source manual line folded into survivor', (foldPlan.keptReport?.manualTime || []).length === 1, (foldPlan.keptReport?.manualTime || []).length);
 ok('source duplicate open report deleted (r4)', foldPlan.deleteReportIds.join(',') === 'r4', foldPlan.deleteReportIds.join(','));
 ok('no orphan / no refusal', !foldPlan.error);
+
+console.log('\n=== batch hours entry (Marco\'s exact example) ===');
+// Jul 18 — Tony 10 hr @ $150 = $1,500 ; Kris 10 hr @ $120 = $1,200 → +$2,700
+const batch = computeReportTotals([
+  { contractorId: 'tony', name: 'Tony', billingRole: 'gc_pm', hours: 10 },
+  { contractorId: 'kris', name: 'Kris', billingRole: 'skilled_carpenter', hours: 10 },
+], [], DEFAULT_CONTRACTING_RATES);
+const tLine = batch.labourLines.find(l => l.contractorId === 'tony')!;
+const kLine = batch.labourLines.find(l => l.contractorId === 'kris')!;
+ok('Tony 10 hr @ $150 = $1,500', tLine.amount === 1500, tLine.amount);
+ok('Kris 10 hr @ $120 = $1,200', kLine.amount === 1200, kLine.amount);
+ok('report labour +$2,700', batch.labourSubtotal === 2700, batch.labourSubtotal);
+
+console.log('\n=== per-line rate override (the odd exception) ===');
+const ov = computeReportTotals([
+  { contractorId: 'tony', name: 'Tony', billingRole: 'gc_pm', hours: 10 },              // role $150 → 1500
+  { contractorId: 'tony', name: 'Tony', billingRole: 'gc_pm', hours: 5, rate: 200 },    // override $200 → 1000
+], [], DEFAULT_CONTRACTING_RATES);
+ok('override splits into its own line (2 lines)', ov.labourLines.length === 2, ov.labourLines.length);
+ok('override line bills at $200 (5×200=1000)', !!ov.labourLines.find(l => l.rate === 200 && l.amount === 1000));
+ok('role line unaffected ($1,500)', !!ov.labourLines.find(l => l.rate === 150 && l.amount === 1500));
+ok('override total = $2,500', ov.labourSubtotal === 2500, ov.labourSubtotal);
+
+console.log('\n=== detach: clock entry → unbilled, not destroyed ===');
+const Rz: any = { id: 'rz', projectId: 'p', phaseId: 'ph', startAt: 0, status: 'open', receipts: [], manualTime: [] };
+const clk: any = { id: 'c1', projectId: 'p', phaseId: 'ph', contractorId: 'kris', contractorName: 'Kris', billingRole: 'skilled_carpenter', clockIn: 3600000, clockOut: 3600000 * 3, status: 'open' };
+ok('attached before detach (in preview)', labourForReport(Rz, [clk], 3600000 * 10).length === 1);
+const detached = { ...clk, detached: true };
+ok('detached entry leaves the report', labourForReport(Rz, [detached], 3600000 * 10).length === 0);
+ok('detached entry appears in UNBILLED', unbilledLabour('p', [detached], [Rz], DEFAULT_CONTRACTING_RATES, 3600000 * 10).length === 1);
+
+console.log('\n=== phase % completion (simple average blend) ===');
+ok('blended = average of phase %s', projectCompletionPct({ phases: [{ completionPct: 100 }, { completionPct: 50 }, { completionPct: 0 }] } as any) === 50, projectCompletionPct({ phases: [{ completionPct: 100 }, { completionPct: 50 }, { completionPct: 0 }] } as any));
+ok('missing % counts as 0', projectCompletionPct({ phases: [{ completionPct: 80 }, {}] } as any) === 40);
 
 console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

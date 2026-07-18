@@ -2318,18 +2318,51 @@ export default function App() {
   };
   // Open the first/next billing period for a T&M phase. Start at the previous
   // report's endAt, else the phase's tmStartAt, else now — no gaps/overlaps.
-  const openContractingReport = async (projectId: string, phaseId: string) => {
+  const openContractingReport = async (projectId: string, phaseId: string, startAtOverride?: number) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     const all = Object.values(subContractingProgressReportsRef.current);
     if (all.some(r => r.projectId === projectId && r.phaseId === phaseId && r.status === 'open')) { showToastMsg('A billing period is already open.'); return; }
     const prior = all.filter(r => r.projectId === projectId && r.phaseId === phaseId);
     const lastEnd = prior.reduce((m, r) => Math.max(m, r.endAt || 0), 0);
     const phase = subContractingProjectsRef.current[projectId]?.phases.find(ph => ph.id === phaseId);
-    const startAt = lastEnd || phase?.tmStartAt || Date.now();
+    const startAt = startAtOverride || lastEnd || phase?.tmStartAt || Date.now();
     const reportNumber = prior.reduce((m, r) => Math.max(m, r.reportNumber), 0) + 1;
     const rep: ContractingProgressReport = { id: `crep-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, projectId, phaseId, startAt, status: 'open', reportNumber, receipts: [], manualTime: [], createdAt: Date.now(), updatedAt: Date.now() };
     await setDoc(doc(roleColl('contractingProgressReports'), rep.id), cleanRM(rep));
     showToastMsg('Billing period opened.');
+  };
+  // Detach a window-attached clock entry from its open report → back to
+  // UNBILLED labour (the underlying time record is preserved, not destroyed).
+  const detachContractingTimeEntry = async (entryId: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const te = subContractingTimeEntriesRef.current[entryId];
+    if (!te || te.status === 'invoiced') { showToastMsg('Cannot detach an invoiced entry.'); return; }
+    await setDoc(doc(roleColl('contractingTimeEntries'), entryId), cleanRM({ ...te, detached: true, reportId: null }));
+    await appendContractingAudit('report.detach', `${te.contractorName} time (${new Date(te.clockIn).toLocaleDateString('en-CA')}) → unbilled`);
+    showToastMsg('Moved to unbilled labour.');
+  };
+  // Close-without-invoicing (discard) an open report. If it holds materials or
+  // manual lines, require clearing them first (the open-report workbench makes
+  // that trivial) — nothing is silently destroyed. Attached clock time returns
+  // to unbilled. Audited.
+  const discardContractingReport = async (reportId: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const report = subContractingProgressReportsRef.current[reportId];
+    if (!report || report.status !== 'open') { showToastMsg('Report not open.'); return; }
+    if ((report.receipts || []).length || (report.manualTime || []).length) { showToastMsg('Clear this period’s material and manual lines first, then discard.'); return; }
+    // Any explicitly-attached clock entries → release to unbilled (window
+    // entries fall back automatically once the report is gone).
+    for (const te of Object.values(subContractingTimeEntriesRef.current)) {
+      if (te.reportId === reportId && te.status !== 'invoiced') await setDoc(doc(roleColl('contractingTimeEntries'), te.id), cleanRM({ ...te, reportId: null }));
+    }
+    await deleteDoc(doc(roleColl('contractingProgressReports'), reportId));
+    await appendContractingAudit('report.discard', `Report #${report.reportNumber} closed without invoicing (empty)`);
+    showToastMsg('Period discarded.');
+  };
+  // Light-touch edit log for open-report workbench actions (who/what/when).
+  const logContractingEdit = async (detail: string) => {
+    if (!canManageContracting) return;
+    await appendContractingAudit('report.edit', detail);
   };
   // End an open report: snapshot the lines, mint the sequential PROG invoice,
   // mark attached time invoiced, then auto-open the next period. All within
@@ -4688,6 +4721,9 @@ export default function App() {
           onSaveProperties={saveContractingProperties}
           onSaveSuppliers={saveContractingSuppliers}
           onAttachUnbilled={attachUnbilledLabour}
+          onDetachTimeEntry={detachContractingTimeEntry}
+          onDiscardReport={discardContractingReport}
+          onLogEdit={logContractingEdit}
           onSaveProject={saveContractingProject}
           onDeleteProject={deleteContractingProject}
           onArchiveProject={archiveContractingProject}
