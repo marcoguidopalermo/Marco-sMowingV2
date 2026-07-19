@@ -6,12 +6,14 @@
 // affects the sync). Writes a single small stats doc the admin card reads.
 import * as admin from "firebase-admin";
 import * as logger from "firebase-functions/logger";
+import {sendNotification} from "../notifications.js";
 
 type DB = admin.firestore.Firestore;
 
 const DOC_LIMIT = 1_048_576;      // Firestore 1 MiB per-doc cap
 const FREE_TIER = 1_073_741_824;  // 1 GiB Firestore free tier
 const SAMPLE = 20;                // docs sampled per collection for avg size
+const SUPER_ADMIN = "marcoguidopalermo@gmail.com";  // warnings are Marco-only
 
 // Byte length of a value's JSON serialization (approximates stored size).
 function jsonBytes(v: unknown): number {
@@ -71,20 +73,42 @@ export async function runStorageMeasurement(
 
   const collectionsBytes = collections.reduce((s, c) => s + c.bytes, 0);
   const totalBytes = mainBytes + collectionsBytes;
+  const pct = Math.round((mainBytes / DOC_LIMIT) * 1000) / 10;   // one decimal
+
+  // ── Deduped warning (super admin only) — once per crossing ──────────────
+  // Severity re-arms only after dropping below 80% and crossing up again.
+  // 'red' (≥90) escalates from 'amber'; neither re-fires while still elevated.
+  const statsRef = db.doc(`${PUB}/appStats/storage`);
+  const prevWarn = ((await statsRef.get()).data() as any)?.warnState || "none";
+  const level: "none" | "amber" | "red" = pct >= 90 ? "red" : pct >= 80 ? "amber" : "none";
+  let toSend: "amber" | "red" | null = null;
+  if (level === "red" && prevWarn !== "red") toSend = "red";
+  else if (level === "amber" && prevWarn === "none") toSend = "amber";
 
   const stats = {
     measuredAt: nowMs,
-    main: {
-      bytes: mainBytes,
-      limit: DOC_LIMIT,
-      pct: Math.round((mainBytes / DOC_LIMIT) * 1000) / 10,   // one decimal
-      fields: fieldSizes,
-    },
+    main: {bytes: mainBytes, limit: DOC_LIMIT, pct, fields: fieldSizes},
     collections,          // [{name, docs, bytes}]
     totalBytes,
     freeTier: FREE_TIER,
+    warnState: level,     // dedupe state for the crossing logic above
   };
+  await statsRef.set(stats);
+  warnings.push(`storage_measure main=${Math.round(mainBytes / 1024)}KB pct=${pct} warn=${toSend || "-"}`);
 
-  await db.doc(`${PUB}/appStats/storage`).set(stats);
-  warnings.push(`storage_measure main=${Math.round(mainBytes / 1024)}KB pct=${stats.main.pct}`);
+  // Push to the super admin only (never all admins). Isolated so a send
+  // failure can't fail the measurement or the sync. The global "storage"
+  // type toggle is still honored inside sendNotification.
+  if (toSend) {
+    try {
+      const kb = Math.round(mainBytes / 1024);
+      await sendNotification([SUPER_ADMIN], "storage", {
+        title: toSend === "red" ? "🔴 Storage critical" : "⚠️ Storage warning",
+        body: `Main data document at ${pct}% of its 1 MiB limit (${kb} KB). Archive a growth surface soon.`,
+        url: "/",
+      });
+    } catch (e) {
+      logger.warn("storage warning push failed", {error: String(e)});
+    }
+  }
 }

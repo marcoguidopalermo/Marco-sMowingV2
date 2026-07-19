@@ -20,7 +20,8 @@ const CENTRE_CAP = 100;
 const LOG_CAP = 500;
 
 export type Category =
-  | "announcements" | "repairs" | "workorders" | "leases" | "fleet" | "policies";
+  | "announcements" | "repairs" | "workorders" | "leases" | "fleet" | "policies"
+  | "storage";
 
 // Global kill switches + per-trigger sub-toggles. Defaults: all ON except the
 // dormant policy sign-off. Enforced SERVER-SIDE here.
@@ -281,6 +282,7 @@ const TEST_SAMPLES: Record<Category, {title: string; body: string; url: string}>
   leases: {title: "📄 Lease expiry in 60 days", body: "Sample property · Unit 1 · tenant.", url: "/#contracting"},
   fleet: {title: "🚚 Registration expiring in 30 days", body: "Sample fleet unit.", url: "/#mechanic"},
   policies: {title: "📝 Policy sign-off", body: "Sample policy acknowledgement.", url: "/"},
+  storage: {title: "⚠️ Storage warning", body: "Sample — main data document nearing its size limit.", url: "/"},
 };
 export const sendTestNotification = onCall({region: REGION}, async (req) => {
   const email = normEmail(req.auth?.token?.email);
