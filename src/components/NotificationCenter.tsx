@@ -36,6 +36,13 @@ export default function NotificationCenter({ userEmail, isAdmin, onNavigate, sho
   const emailKey = K(userEmail);
 
   useEffect(() => { pushSupport().then(setSupport); }, []);
+  // Esc closes the panel (tap-out is handled by the backdrop below).
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
   useEffect(() => {
     if (!userEmail) return;
     const u1 = onSnapshot(doc(PUB('notificationCentre'), emailKey), s => setItems(((s.data() as any)?.items || []) as CentreItem[]));
@@ -65,7 +72,10 @@ export default function NotificationCenter({ userEmail, isAdmin, onNavigate, sho
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 mt-1 w-[min(92vw,360px)] bg-white border border-gray-200 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col max-h-[80vh]">
+          {/* Phone: near-full-width fixed sheet (always on-screen wherever the
+              bell sits). Desktop: dropdown anchored to the bell's LEFT edge,
+              width clamped to the viewport so it never runs off either edge. */}
+          <div className="fixed inset-x-2 top-16 z-50 flex flex-col max-h-[75vh] bg-white border border-gray-200 rounded-xl shadow-2xl overflow-hidden md:absolute md:inset-x-auto md:left-0 md:top-full md:mt-1 md:w-[min(360px,calc(100vw-16px))] md:max-h-[80vh]">
             <div className="flex items-center border-b bg-gray-50 shrink-0">
               {(['inbox', 'settings', ...(isAdmin ? ['dashboard'] as const : [])] as const).map(t => (
                 <button key={t} onClick={() => setTab(t)} className={`flex-1 px-3 py-2 text-xs font-black uppercase tracking-widest ${tab === t ? 'text-slate-800 bg-white' : 'text-gray-400'}`}>{t}</button>
