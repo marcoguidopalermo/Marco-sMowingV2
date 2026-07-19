@@ -10,9 +10,11 @@ import {
   ContractingUnit, ContractingTenancy, ContractingTenant, ContractingTenancyStatus,
 } from '../types';
 import {
-  tenancyCountdown, tenancyMonthlyTotal, unitIsVacant, leasesNeedingAttention, computeNoticeEnd,
+  tenancyCountdown, tenancyMonthlyTotal, unitIsVacant, leasesNeedingAttention,
+  tenancyMoveOut, tenancyDeposit, moveOutIsShortNotice,
   fmtYmd, msToYmd, Countdown, UnitRow,
 } from '../lib/propertyMgmt';
+import type { ContractingDeposit } from '../types';
 import {
   HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled,
   computeReportTotals, labourForReport, phaseBillables, phaseReadyToBill, withHst,
@@ -1804,7 +1806,7 @@ function PropertyCard({ property, noticeDays, currentUser, onUpdate, onDelete }:
 }
 
 function UnitRowCard({ unit, noticeDays, currentUser, editing, onUpdate, onRemove }: { unit: ContractingUnit; noticeDays: number; currentUser: { id: string; name: string }; editing: boolean; onUpdate: (u: ContractingUnit) => void; onRemove: () => void }) {
-  const [form, setForm] = useState<null | 'start' | 'edit' | 'renew' | 'notice'>(null);
+  const [form, setForm] = useState<null | 'start' | 'edit' | 'renew' | 'moveout'>(null);
   const [showHistory, setShowHistory] = useState(false);
   const now = Date.now();
   const t = unit.tenancy;
@@ -1813,10 +1815,14 @@ function UnitRowCard({ unit, noticeDays, currentUser, editing, onUpdate, onRemov
   const stamp = (action: string, base?: ContractingTenancy) => [...((base || t)?.audit || []), { at: Date.now(), by: currentUser.name, action }];
   const setTenancy = (nt: ContractingTenancy | undefined) => onUpdate({ ...unit, tenancy: nt });
   const endTenancy = () => { if (!t) return; onUpdate({ ...unit, tenancy: undefined, history: [...(unit.history || []), { ...t, endedAt: Date.now(), endedBy: currentUser.name, audit: stamp('ended tenancy') }] }); };
-  const renew = (newEnd: string) => t && setTenancy({ ...t, status: 'fixed_term', leaseEnd: newEnd, audit: stamp(`renewed → ${newEnd}`) });
-  const convert = () => t && setTenancy({ ...t, status: 'month_to_month', leaseEnd: undefined, noticeGivenAt: undefined, computedEnd: undefined, audit: stamp('converted to month-to-month') });
-  const giveNotice = (date: string) => t && setTenancy({ ...t, noticeGivenAt: date, computedEnd: computeNoticeEnd(date, noticeDays), noticeBy: currentUser.name, audit: stamp(`notice given ${date} → ends ${computeNoticeEnd(date, noticeDays)}`) });
-  const cancelNotice = () => t && setTenancy({ ...t, noticeGivenAt: undefined, computedEnd: undefined, noticeBy: undefined, audit: stamp('notice cancelled — tenant stays') });
+  const renew = (newEnd: string) => t && setTenancy({ ...t, status: 'fixed_term', leaseEnd: newEnd, moveOutAt: undefined, moveOutBy: undefined, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp(`renewed → ${newEnd}`) });
+  const convert = () => t && setTenancy({ ...t, status: 'month_to_month', leaseEnd: undefined, moveOutAt: undefined, moveOutBy: undefined, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp('converted to month-to-month') });
+  // MOVE OUT — the tenant's stated date (not computed). Works on both types.
+  const setMoveOut = (date: string) => t && setTenancy({ ...t, moveOutAt: date, moveOutBy: currentUser.name, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp(`move-out set ${date}`) });
+  const cancelMoveOut = () => t && setTenancy({ ...t, moveOutAt: undefined, moveOutBy: undefined, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp('move-out cancelled — tenant stays') });
+  const moveOut = tenancyMoveOut(t || ({} as ContractingTenancy));
+  const deposit = t ? tenancyDeposit(t) : {};
+  const shortNotice = moveOut ? moveOutIsShortNotice(moveOut, noticeDays, now) : false;
 
   return (
     <div className="p-3">
@@ -1842,17 +1848,20 @@ function UnitRowCard({ unit, noticeDays, currentUser, editing, onUpdate, onRemov
             ))}
           </div>
           {t.status === 'fixed_term' && t.leaseEnd && <div className="text-[11px] text-gray-400 mt-1">Lease {fmtYmd(t.leaseStart)} – {fmtYmd(t.leaseEnd)}</div>}
-          {t.status === 'month_to_month' && t.noticeGivenAt && <div className="text-[11px] text-gray-400 mt-1">Notice {fmtYmd(t.noticeGivenAt)}{t.noticeBy ? ` by ${t.noticeBy}` : ''} → ends {fmtYmd(t.computedEnd)}</div>}
-          {t.depositNote && <div className="text-[11px] text-gray-400">Deposit: {t.depositNote}</div>}
+          {moveOut && <div className="text-[11px] mt-1" style={{ color: '#C0392B' }}>Move out · {fmtYmd(moveOut)}{t.moveOutBy ? ` (by ${t.moveOutBy})` : ''}{shortNotice ? ' · less than 60 days’ notice' : ''}</div>}
+          {/* Deposit — structured; quiet amber flag when not collected. */}
+          {deposit.collected
+            ? <div className="text-[11px] text-gray-400">Deposit {deposit.amount ? money(deposit.amount) : ''}{deposit.dateCollected ? ` · collected ${fmtYmd(deposit.dateCollected)}` : ''}{deposit.note ? ` · ${deposit.note}` : ''}</div>
+            : <div className="text-[11px]" style={{ color: '#B7950B' }}>⚑ Deposit not collected{deposit.note ? ` · ${deposit.note}` : ''}</div>}
 
           {/* One-tap resolutions */}
           <div className="flex flex-wrap gap-1.5 mt-2">
-            {t.status === 'fixed_term' && cd && cd.level !== 'neutral' && <>
+            {t.status === 'fixed_term' && !moveOut && cd && cd.level !== 'neutral' && <>
               <button onClick={() => setForm('renew')} className="text-xs px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>Renew</button>
               <button onClick={convert} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Convert to M2M</button>
             </>}
-            {t.status === 'month_to_month' && !t.noticeGivenAt && <button onClick={() => setForm('notice')} className="text-xs px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: '#C0392B' }}>Notice given</button>}
-            {t.status === 'month_to_month' && t.noticeGivenAt && <button onClick={cancelNotice} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Cancel notice</button>}
+            {!moveOut && <button onClick={() => setForm('moveout')} className="text-xs px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: '#C0392B' }}>Move out</button>}
+            {moveOut && <button onClick={cancelMoveOut} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Cancel move-out</button>}
             <button onClick={() => setForm('edit')} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Edit</button>
             <button onClick={() => confirm('End this tenancy? It moves to history and the unit becomes vacant.') && endTenancy()} className="text-xs px-2.5 py-1 rounded text-red-500 font-semibold ml-auto">End tenancy</button>
           </div>
@@ -1875,7 +1884,7 @@ function UnitRowCard({ unit, noticeDays, currentUser, editing, onUpdate, onRemov
 
       {(form === 'start' || form === 'edit') && <TenancyForm initial={form === 'edit' ? t! : undefined} noticeDays={noticeDays} onClose={() => setForm(null)} onSave={nt => { setTenancy(form === 'edit' ? { ...nt, audit: stamp('edited tenancy', nt) } : { ...nt, createdAt: Date.now(), audit: [{ at: Date.now(), by: currentUser.name, action: 'started tenancy' }] }); setForm(null); }} />}
       {form === 'renew' && <DatePickForm title="Renew lease" label="New lease end" initial={t?.leaseEnd} onClose={() => setForm(null)} onSave={d => { renew(d); setForm(null); }} />}
-      {form === 'notice' && <DatePickForm title="Notice given" label="Notice date" initial={msToYmd(now)} hint={`Ends ${noticeDays} days after notice.`} onClose={() => setForm(null)} onSave={d => { giveNotice(d); setForm(null); }} />}
+      {form === 'moveout' && <MoveOutForm initial={t?.leaseEnd || msToYmd(now)} noticeDays={noticeDays} now={now} onClose={() => setForm(null)} onSave={d => { setMoveOut(d); setForm(null); }} />}
     </div>
   );
 }
@@ -1885,7 +1894,11 @@ function TenancyForm({ initial, noticeDays, onClose, onSave }: { initial?: Contr
   const [status, setStatus] = useState<ContractingTenancyStatus>(initial?.status || 'fixed_term');
   const [leaseStart, setLeaseStart] = useState(initial?.leaseStart || '');
   const [leaseEnd, setLeaseEnd] = useState(initial?.leaseEnd || '');
-  const [deposit, setDeposit] = useState(initial?.depositNote || '');
+  const initDep = tenancyDeposit(initial || ({} as ContractingTenancy));
+  const [depCollected, setDepCollected] = useState(!!initDep.collected);
+  const [depAmount, setDepAmount] = useState(initDep.amount != null ? String(initDep.amount) : '');
+  const [depDate, setDepDate] = useState(initDep.dateCollected || '');
+  const [depNote, setDepNote] = useState(initDep.note || '');
   const [notes, setNotes] = useState(initial?.notes || '');
   const [tenants, setTenants] = useState<ContractingTenant[]>(initial?.tenants?.length ? initial.tenants : [{ name: '' }]);
   const setT = (i: number, patch: Partial<ContractingTenant>) => setTenants(ts => ts.map((t, j) => j === i ? { ...t, ...patch } : t));
@@ -1920,14 +1933,38 @@ function TenancyForm({ initial, noticeDays, onClose, onSave }: { initial?: Contr
       </div>
       <button onClick={() => setTenants(ts => [...ts, { name: '' }])} className="text-xs mb-2" style={{ color: PALERMO.slate }}>+ add tenant</button>
       <div className="text-sm mb-2">Monthly total: <b style={{ color: PALERMO.gold }}>{money(total)}</b></div>
-      <Field label="Deposit (amount + date + reference)"><input className="inp" value={deposit} onChange={e => setDeposit(e.target.value)} /></Field>
+      {/* Deposit — structured */}
+      <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Deposit</div>
+      <label className="flex items-center gap-2 text-sm mb-2"><input type="checkbox" checked={depCollected} onChange={e => setDepCollected(e.target.checked)} /> Collected</label>
+      {depCollected && (
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Amount"><input className="inp" type="number" value={depAmount} onChange={e => setDepAmount(e.target.value)} /></Field>
+          <Field label="Date collected"><input className="inp" type="date" value={depDate} onChange={e => setDepDate(e.target.value)} /></Field>
+        </div>
+      )}
+      <Field label="Deposit note (reference)"><input className="inp" value={depNote} onChange={e => setDepNote(e.target.value)} /></Field>
       <Field label="Notes"><textarea className="inp" rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
       <ModalActions onClose={onClose} disabled={tenants.every(t => !t.name.trim())} onSave={() => onSave({
         id: initial?.id || uid('cten'), status, leaseStart: leaseStart || undefined, leaseEnd: status === 'fixed_term' ? (leaseEnd || undefined) : undefined,
-        noticeGivenAt: initial?.noticeGivenAt, computedEnd: initial?.computedEnd, noticeBy: initial?.noticeBy,
-        depositNote: deposit.trim() || undefined, notes: notes.trim() || undefined,
+        moveOutAt: initial?.moveOutAt, moveOutBy: initial?.moveOutBy, createdAt: initial?.createdAt, audit: initial?.audit,
+        deposit: { collected: depCollected, amount: depAmount === '' ? undefined : Number(depAmount), dateCollected: depDate || undefined, note: depNote.trim() || undefined },
+        notes: notes.trim() || undefined,
         tenants: tenants.filter(t => t.name.trim() || t.rentAmount).map(t => ({ name: t.name.trim(), phone: t.phone, email: t.email, rentAmount: t.rentAmount })),
       })} />
+    </Modal>
+  );
+}
+
+// Move out — the tenant's ACTUAL stated date (not computed). Soft <Nd hint.
+function MoveOutForm({ initial, noticeDays, now, onClose, onSave }: { initial?: string; noticeDays: number; now: number; onClose: () => void; onSave: (d: string) => void }) {
+  const [date, setDate] = useState(initial || '');
+  const short = date ? moveOutIsShortNotice(date, noticeDays, now) : false;
+  return (
+    <Modal title="Move out" onClose={onClose}>
+      <div className="text-xs text-gray-500 mb-2">Enter the tenant's actual move-out date. The countdown runs to this date.</div>
+      <Field label="Move-out date"><input className="inp" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+      {short && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FEF9E7', color: '#B7950B' }}>Less than {noticeDays} days’ notice (informational only).</div>}
+      <ModalActions onClose={onClose} disabled={!date} onSave={() => onSave(date)} />
     </Modal>
   );
 }

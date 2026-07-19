@@ -885,15 +885,20 @@ export interface ContractingRateCard { gc_pm: number; skilled_carpenter: number;
 // Reference layer only — NO payment tracking, bills, or ledgers.
 export interface ContractingTenant { name: string; phone?: string; email?: string; rentAmount?: number; }
 export type ContractingTenancyStatus = 'fixed_term' | 'month_to_month';
+export interface ContractingDeposit { collected?: boolean; amount?: number; dateCollected?: string; note?: string; }
 export interface ContractingTenancy {
   id: string;
   status: ContractingTenancyStatus;
   leaseStart?: string;             // YYYY-MM-DD
   leaseEnd?: string;               // fixed_term expiry
-  noticeGivenAt?: string;          // M2M notice date (starts the countdown)
+  moveOutAt?: string;              // ACTUAL move-out date entered (drives countdown)
+  moveOutBy?: string;
+  deposit?: ContractingDeposit;    // structured (collected / amount / date / note)
+  // DEPRECATED (read-migrated): computedEnd→moveOutAt, depositNote→deposit.note
+  noticeGivenAt?: string;
   noticeBy?: string;
-  computedEnd?: string;            // M2M: notice + noticeDays (derived, stored)
-  depositNote?: string;            // amount + date + reference text
+  computedEnd?: string;
+  depositNote?: string;
   notes?: string;
   tenants: ContractingTenant[];    // rent lives per tenant; total DERIVES (sum)
   createdAt?: number;

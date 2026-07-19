@@ -6,7 +6,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword } from 'firebase/auth';
 import { getFirestore, doc, getDoc, setDoc, getDocs, collection } from 'firebase/firestore';
-import { computeNoticeEnd, msToYmd } from '../src/lib/propertyMgmt';
+import { msToYmd } from '../src/lib/propertyMgmt';
 import type { Employee, ContractingProperty } from '../src/types';
 
 const cfg={apiKey:'AIzaSyCQjueOGMf4CtjHOJ2xLCdmZ2leyeEBctU',authDomain:'crewmaster-73f31.firebaseapp.com',projectId:'crewmaster-73f31',storageBucket:'crewmaster-73f31.firebasestorage.app',messagingSenderId:'831920078849',appId:'1:831920078849:web:8d72204b58c48bb21f0000'};
@@ -32,14 +32,17 @@ const demo:ContractingProperty={
   notes:'Demo of the 3 rent shapes + countdown states.',
   units:[
     { id:'cunit-demo-1', name:'Main floor', tenancy:{ id:'ct-d1', status:'fixed_term', leaseStart:ymdIn(-300), leaseEnd:ymdIn(120),
-      tenants:[{name:'Sarah Lee', phone:'555-0101', email:'sarah@x.com', rentAmount:1800},{name:'Roommate (contact only)', phone:'555-0102'}], depositNote:'$1,800 · 2025-09-01', createdAt:now } },
+      tenants:[{name:'Sarah Lee', phone:'555-0101', email:'sarah@x.com', rentAmount:1800},{name:'Roommate (contact only)', phone:'555-0102'}],
+      deposit:{ collected:true, amount:1800, dateCollected:ymdIn(-300) }, createdAt:now } },
     { id:'cunit-demo-2', name:'Unit 2', tenancy:{ id:'ct-d2', status:'fixed_term', leaseStart:ymdIn(-200), leaseEnd:ymdIn(30),
-      tenants:[{name:'Amir',rentAmount:600},{name:'Beth',rentAmount:600},{name:'Cody',rentAmount:600}], createdAt:now } },
+      tenants:[{name:'Amir',rentAmount:600},{name:'Beth',rentAmount:600},{name:'Cody',rentAmount:600}],
+      deposit:{ collected:false, note:'to collect at move-in' }, createdAt:now } },
     { id:'cunit-demo-3', name:'Basement', tenancy:{ id:'ct-d3', status:'fixed_term', leaseStart:ymdIn(-380), leaseEnd:ymdIn(-10),
-      tenants:[{name:'Dana',rentAmount:600},{name:'Evan',rentAmount:700},{name:'Faye',rentAmount:500}], createdAt:now } },
-    { id:'cunit-demo-4', name:'Unit 4 (M2M w/ notice)', tenancy:{ id:'ct-d4', status:'month_to_month', leaseStart:ymdIn(-500),
-      noticeGivenAt:ymdIn(-5), computedEnd:computeNoticeEnd(ymdIn(-5),60), noticeBy:'Linda',
-      tenants:[{name:'Tom',phone:'555-0199',rentAmount:1500}], createdAt:now } },
+      tenants:[{name:'Dana',rentAmount:600},{name:'Evan',rentAmount:700},{name:'Faye',rentAmount:500}],
+      deposit:{ collected:true, amount:1800, dateCollected:ymdIn(-380) }, createdAt:now } },
+    { id:'cunit-demo-4', name:'Unit 4 (M2M · move-out set)', tenancy:{ id:'ct-d4', status:'month_to_month', leaseStart:ymdIn(-500),
+      moveOutAt:ymdIn(55), moveOutBy:'Linda',
+      tenants:[{name:'Tom',phone:'555-0199',rentAmount:1500}], deposit:{ collected:true, amount:1500, dateCollected:ymdIn(-500) }, createdAt:now } },
   ],
 };
 
@@ -47,7 +50,7 @@ console.log(`${APPLY?'APPLY':'DRY RUN'}`);
 console.log(`Linda → property_manager (${linda.linkedUserEmail}); contractor/PM records: ${nextEmps.filter(e=>e.systemRole==='property_manager').length} PM`);
 for(const u of demo.units!){
   const t=u.tenancy!; const total=t.tenants.reduce((s,x)=>s+(x.rentAmount||0),0);
-  console.log(`  ${u.name.padEnd(24)} ${t.status.padEnd(14)} $${total}/mo  end=${t.status==='fixed_term'?t.leaseEnd:('notice→'+t.computedEnd)}`);
+  console.log(`  ${u.name.padEnd(30)} ${t.status.padEnd(14)} $${total}/mo  ${t.moveOutAt?('moveout '+t.moveOutAt):('end '+t.leaseEnd)}  deposit=${t.deposit?.collected?'collected':'NOT collected'}`);
 }
 
 if(!APPLY){ console.log('\nDRY RUN — no writes. Re-run with --apply.'); process.exit(0); }

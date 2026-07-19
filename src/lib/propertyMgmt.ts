@@ -1,6 +1,6 @@
 // Property management (v2): countdown / notice / occupancy logic. Reference
 // layer only — no payment/ledger math. Dates are 'YYYY-MM-DD' (local).
-import { ContractingProperty, ContractingUnit, ContractingTenancy } from '../types';
+import { ContractingProperty, ContractingUnit, ContractingTenancy, ContractingDeposit } from '../types';
 
 export const NOTICE_DAYS_DEFAULT = 60;
 export function noticeDaysOrDefault(settings?: { contractingNoticeDays?: number } | null): number {
@@ -15,15 +15,22 @@ export function msToYmd(ms: number): string { const d = new Date(ms); return `${
 export function addDaysYmd(s: string, days: number): string { return msToYmd(ymdToMs(s) + days * DAY); }
 export function fmtYmd(s?: string): string { return s ? new Date(ymdToMs(s)).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'; }
 
-// The M2M notice-end date = notice + noticeDays.
-export function computeNoticeEnd(noticeYmd: string, noticeDays: number): string { return addDaysYmd(noticeYmd, noticeDays); }
-
 export function tenancyMonthlyTotal(t: ContractingTenancy): number {
   return (t.tenants || []).reduce((s, x) => s + (Number(x.rentAmount) || 0), 0);
 }
 export function unitIsVacant(u: ContractingUnit): boolean { return !u.tenancy; }
 
-export type CountdownKind = 'fixed' | 'm2m_open' | 'm2m_notice';
+// The ACTUAL move-out date (read-migrates the legacy computedEnd).
+export function tenancyMoveOut(t: ContractingTenancy): string | undefined { return t.moveOutAt || t.computedEnd; }
+// The structured deposit (read-migrates legacy free-text depositNote → note).
+export function tenancyDeposit(t: ContractingTenancy): ContractingDeposit { return t.deposit || (t.depositNote ? { note: t.depositNote } : {}); }
+// Soft validation hint — the move-out is less than `noticeDays` days away.
+export function moveOutIsShortNotice(moveOutYmd: string, noticeDays: number, nowMs: number): boolean {
+  return daysUntilExport(moveOutYmd, nowMs) < noticeDays;
+}
+export function daysUntilExport(endYmd: string, nowMs: number): number { return daysUntil(endYmd, nowMs); }
+
+export type CountdownKind = 'fixed' | 'moveout' | 'open';
 export type CountdownLevel = 'neutral' | 'amber' | 'red';
 export interface Countdown { kind: CountdownKind; endYmd?: string; endMs: number; daysLeft?: number; level: CountdownLevel; label: string; }
 
@@ -32,20 +39,20 @@ function daysUntil(endYmd: string, nowMs: number): number {
   const startToday = new Date(nowMs); startToday.setHours(0, 0, 0, 0);
   return Math.round((ymdToMs(endYmd) - startToday.getTime()) / DAY);
 }
+const level60 = (d: number): CountdownLevel => d <= 0 ? 'red' : d <= 60 ? 'amber' : 'neutral';
 
 export function tenancyCountdown(t: ContractingTenancy, nowMs: number): Countdown {
+  // A move-out date (either type) drives the countdown to the ACTUAL date.
+  const moveOut = tenancyMoveOut(t);
+  if (moveOut) {
+    const d = daysUntil(moveOut, nowMs);
+    return { kind: 'moveout', endYmd: moveOut, endMs: ymdToMs(moveOut), daysLeft: d, level: level60(d), label: d <= 0 ? 'past move-out — end tenancy' : `moving out in ${d} day${d === 1 ? '' : 's'}` };
+  }
   if (t.status === 'fixed_term' && t.leaseEnd) {
     const d = daysUntil(t.leaseEnd, nowMs);
-    const level: CountdownLevel = d <= 0 ? 'red' : d <= 60 ? 'amber' : 'neutral';
-    return { kind: 'fixed', endYmd: t.leaseEnd, endMs: ymdToMs(t.leaseEnd), daysLeft: d, level, label: d <= 0 ? 'expired — renew or convert' : `${d} day${d === 1 ? '' : 's'} until expiry` };
+    return { kind: 'fixed', endYmd: t.leaseEnd, endMs: ymdToMs(t.leaseEnd), daysLeft: d, level: level60(d), label: d <= 0 ? 'expired — renew or convert' : `${d} day${d === 1 ? '' : 's'} until expiry` };
   }
-  // month-to-month
-  if (t.noticeGivenAt && t.computedEnd) {
-    const d = daysUntil(t.computedEnd, nowMs);
-    const level: CountdownLevel = d <= 0 ? 'red' : 'amber';
-    return { kind: 'm2m_notice', endYmd: t.computedEnd, endMs: ymdToMs(t.computedEnd), daysLeft: d, level, label: d <= 0 ? 'past notice — end tenancy' : `ending in ${d} day${d === 1 ? '' : 's'}` };
-  }
-  return { kind: 'm2m_open', endMs: Infinity, level: 'neutral', label: 'month-to-month' };
+  return { kind: 'open', endMs: Infinity, level: 'neutral', label: 'month-to-month' };
 }
 
 // Every unit across the properties, with its countdown — for occupancy views.
@@ -58,9 +65,9 @@ export function allUnitRows(properties: ContractingProperty[], nowMs: number): U
   return rows;
 }
 
-// Leases needing attention — amber/red/notice-given, soonest-first.
+// Leases needing attention — amber/red or a scheduled move-out, soonest-first.
 export function leasesNeedingAttention(properties: ContractingProperty[], nowMs: number): UnitRow[] {
   return allUnitRows(properties, nowMs)
-    .filter(r => r.countdown && (r.countdown.level === 'amber' || r.countdown.level === 'red' || r.countdown.kind === 'm2m_notice'))
+    .filter(r => r.countdown && (r.countdown.level === 'amber' || r.countdown.level === 'red' || r.countdown.kind === 'moveout'))
     .sort((a, b) => (a.countdown!.endMs) - (b.countdown!.endMs));
 }
