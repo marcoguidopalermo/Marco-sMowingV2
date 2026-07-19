@@ -1040,6 +1040,8 @@ export interface ContractingInvoice {
   createdAt?: number;
 }
 
+// Two-state model: in progress → complete. Legacy 'open' is read-migrated to
+// 'in_progress' by woStatus() in lib/contracting.
 export type ContractingWorkOrderStatus = 'open' | 'in_progress' | 'done';
 export interface ContractingWorkOrder {
   id: string;
@@ -1055,10 +1057,14 @@ export interface ContractingWorkOrder {
   assigneeId?: string;            // DEPRECATED single-assignee (read-migrated → assigneeIds)
   assigneeName?: string;          // DEPRECATED
   unitId?: string;                // optional UNIT tag (property-level orders leave blank)
+  scheduledAt?: number;           // optional planned date (ms, local noon)
+  dueAt?: number;                 // optional deadline (ms, local noon)
   archived?: boolean;             // hidden from default list (declutter)
   createdBy?: { id: string; name: string };
   createdAt?: number;
   updatedAt?: number;
+  editedBy?: string;              // light audit — last editor / time
+  editedAt?: number;
 }
 
 // Personal TO-DO / FOLLOW-UP items — PRIVATE per user (filtered by userId).

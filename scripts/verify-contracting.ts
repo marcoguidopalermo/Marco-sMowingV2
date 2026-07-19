@@ -1,6 +1,6 @@
 // Verify ContractingMaster billing math against the exact progress-report
 // example. Run: npx tsx scripts/verify-contracting.ts
-import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, projectIsRemovable, reportIsDeletable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge, projectCompletionPct, woAssignees, woIsAssignedTo } from '../src/lib/contracting';
+import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, projectIsRemovable, reportIsDeletable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge, projectCompletionPct, woAssignees, woIsAssignedTo, woStatus, woIsOverdue, compareWorkOrders, woWeekStats } from '../src/lib/contracting';
 
 const rates = DEFAULT_CONTRACTING_RATES;
 let pass = 0, fail = 0;
@@ -183,6 +183,31 @@ const multi: any = { assigneeIds: ['k', 't'], assigneeNames: ['Kris', 'Tony'] };
 ok('array of two → [k,t]', woAssignees(multi).ids.join(',') === 'k,t');
 ok('assigned-to-me matches EITHER (k and t)', woIsAssignedTo(multi, 'k') && woIsAssignedTo(multi, 't') && !woIsAssignedTo(multi, 'z'));
 ok('empty → unassigned', woAssignees({} as any).ids.length === 0 && !woIsAssignedTo({} as any, 'k'));
+
+// ── work-order two-state status + dates ──
+const NOW = new Date(2026, 6, 20, 12, 0, 0).getTime(); // Jul 20 2026 noon
+const DAY = 86_400_000;
+ok('legacy open → in_progress', woStatus({ status: 'open' } as any) === 'in_progress');
+ok('legacy in_progress stays', woStatus({ status: 'in_progress' } as any) === 'in_progress');
+ok('done stays done', woStatus({ status: 'done' } as any) === 'done');
+ok('missing status → in_progress', woStatus({} as any) === 'in_progress');
+ok('past due + not complete → overdue', woIsOverdue({ status: 'in_progress', dueAt: NOW - 2 * DAY } as any, NOW) === true);
+ok('past due but complete → not overdue', woIsOverdue({ status: 'done', dueAt: NOW - 2 * DAY } as any, NOW) === false);
+ok('future due → not overdue', woIsOverdue({ status: 'in_progress', dueAt: NOW + 2 * DAY } as any, NOW) === false);
+ok('no due → not overdue', woIsOverdue({ status: 'in_progress' } as any, NOW) === false);
+// Sort: overdue first, then soonest sched/due, undated last.
+const wOverdue = { id: 'o', status: 'in_progress', dueAt: NOW - DAY, createdAt: 1 } as any;
+const wSoon = { id: 's', status: 'in_progress', scheduledAt: NOW + DAY, createdAt: 2 } as any;
+const wLater = { id: 'l', status: 'in_progress', dueAt: NOW + 5 * DAY, createdAt: 3 } as any;
+const wUndated = { id: 'u', status: 'in_progress', createdAt: 4 } as any;
+const sorted = [wUndated, wLater, wSoon, wOverdue].sort((a, b) => compareWorkOrders(a, b, NOW)).map(w => w.id);
+ok('sort = overdue, soon, later, undated', sorted.join(',') === 'o,s,l,u');
+// Week stats: overdue count + scheduled within 7 days (not complete/archived).
+const stats = woWeekStats([wOverdue, wSoon, wLater, wUndated,
+  { id: 'x', status: 'done', dueAt: NOW - DAY } as any,
+  { id: 'a', status: 'in_progress', archived: true, dueAt: NOW - DAY } as any], NOW);
+ok('week stats overdue=1 (done/archived excluded)', stats.overdue === 1);
+ok('week stats scheduledThisWeek=1', stats.scheduledThisWeek === 1);
 
 console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

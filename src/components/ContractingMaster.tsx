@@ -21,7 +21,7 @@ import {
   PALERMO, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor,
   projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
   projectBillables, projectCompletionPct, woAssignees, woIsAssignedTo,
-  reportIsDeletable,
+  reportIsDeletable, woStatus, woIsOverdue, compareWorkOrders, woWeekStats,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
@@ -261,7 +261,8 @@ function HomeTab(p: Ctx & { hoursCards: Props['hoursCards']; personalItems: Reco
   const me = p.currentUser;
   const mine = Object.values(p.personalItems).filter(i => i.userId === me.id);
   // My assigned, non-completed, non-archived work orders — grouped by priority.
-  const myWos = Object.values(p.workOrders).filter(w => woIsAssignedTo(w, me.id) && w.status !== 'done' && !w.archived);
+  const myWos = Object.values(p.workOrders).filter(w => woIsAssignedTo(w, me.id) && woStatus(w) !== 'done' && !w.archived);
+  const woStats = woWeekStats(myWos, Date.now());
   const priMeta = { high: { label: 'high priority', dot: '#C0392B', color: '#C0392B' }, normal: { label: 'normal', dot: '#2874A6', color: '#2874A6' }, low: { label: 'low', dot: '#7F8C8D', color: '#566573' } };
   const priRows = (['high', 'normal', 'low'] as const).map(pri => ({ pri, count: myWos.filter(w => w.priority === pri).length, ...priMeta[pri] })).filter(r => r.count > 0);
   return (
@@ -281,7 +282,14 @@ function HomeTab(p: Ctx & { hoursCards: Props['hoursCards']; personalItems: Reco
       {/* MY WORK ORDERS — counts by priority, tap-through to the pre-filtered list */}
       <div className="bg-white rounded-xl border">
         <button onClick={() => p.onGoToMyWorkOrders('all')} className="w-full flex items-center justify-between px-3 py-2 border-b text-left">
-          <span className="text-xs font-black uppercase tracking-widest" style={{ color: PALERMO.slate }}>My work orders</span>
+          <span>
+            <span className="text-xs font-black uppercase tracking-widest block" style={{ color: PALERMO.slate }}>My work orders</span>
+            {(woStats.overdue > 0 || woStats.scheduledThisWeek > 0) && (
+              <span className="text-[11px] font-semibold" style={{ color: woStats.overdue > 0 ? '#C0392B' : '#566573' }}>
+                {[woStats.overdue > 0 ? `${woStats.overdue} overdue` : null, woStats.scheduledThisWeek > 0 ? `${woStats.scheduledThisWeek} scheduled this week` : null].filter(Boolean).join(' · ')}
+              </span>
+            )}
+          </span>
           <span className="text-xs text-gray-400">{myWos.length} open →</span>
         </button>
         <div className="divide-y">
@@ -1488,11 +1496,13 @@ function WorkOrdersTab(p: Props & { mineOnly: boolean; setMineOnly: (b: boolean)
   const activeProps = p.properties.filter(x => x.active !== false);
   const contractors = p.employees.filter(e => e.systemRole === 'contractor');
   const meId = p.currentUser.id;
+  const now = Date.now();
   const newest = (a: ContractingWorkOrder, b: ContractingWorkOrder) => (b.createdAt || 0) - (a.createdAt || 0);
   const match = (w: ContractingWorkOrder) => (filter === 'All' || w.property === filter) && (!mineOnly || woIsAssignedTo(w, meId)) && (priorityFilter === 'all' || w.priority === priorityFilter);
   const live = Object.values(p.workOrders).filter(w => !w.archived && match(w));
-  const activeList = live.filter(w => w.status !== 'done').sort(newest);
-  const doneList = live.filter(w => w.status === 'done').sort(newest);
+  // In-progress sorted: overdue first, then soonest sched/due, undated last.
+  const activeList = live.filter(w => woStatus(w) !== 'done').sort((a, b) => compareWorkOrders(a, b, now));
+  const doneList = live.filter(w => woStatus(w) === 'done').sort(newest);
   const archivedList = Object.values(p.workOrders).filter(w => w.archived && match(w)).sort(newest);
 
   return (
@@ -1551,13 +1561,9 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
   // any contractor this work order is assigned to (contacts only, tap-to-call).
   const canSeeTenant = p.canManageProperties || woIsAssignedTo(wo, p.currentUser.id);
   const tenantContacts = (canSeeTenant && unit?.tenancy) ? unit.tenancy.tenants.filter(t => t.name || t.phone) : [];
-  const cycle: ContractingWorkOrder['status'][] = ['open', 'in_progress', 'done'];
-  const nextStatus = () => cycle[(cycle.indexOf(wo.status) + 1) % 3];
+  const done = woStatus(wo) === 'done';
   const save = (patch: Partial<ContractingWorkOrder>) => p.onSaveWorkOrder({ ...wo, ...patch, updatedAt: Date.now() });
-  const promote = () => {
-    p.onSaveProject({ id: uid('cproj'), name: wo.title, status: 'planned', propertyRef: wo.property, phases: [], notes: wo.description, createdBy: p.currentUser, createdAt: Date.now(), updatedAt: Date.now() });
-    save({ status: 'done', completionNote: (wo.completionNote ? wo.completionNote + ' · ' : '') + 'Promoted to project' });
-  };
+  const [editing, setEditing] = useState(false);
   const { ids: assigneeIds, names: assigneeNames } = woAssignees(wo);
   const nameOf = (id: string) => p.contractors.find(x => x.id === id)?.name || assigneeNames[assigneeIds.indexOf(id)] || id;
   // Toggle one assignee on/off; write the array shape (migrates single → array).
@@ -1576,6 +1582,7 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
         </div>
         <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: wo.priority === 'high' ? '#FADBD8' : wo.priority === 'normal' ? '#EBF5FB' : '#F8F9F9', color: wo.priority === 'high' ? '#C0392B' : '#555' }}>{wo.priority}</span>
       </div>
+      <WorkOrderDates wo={wo} done={done} />
       {tenantContacts.length > 0 && (
         <div className="text-[11px] text-gray-500 mt-0.5">
           tenant: {tenantContacts.map((t, i) => (
@@ -1619,36 +1626,73 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
       {wo.completionNote && <div className="text-xs text-gray-500 mt-1 italic">✓ {wo.completionNote}</div>}
       {wo.photos && wo.photos.length > 0 && <button onClick={() => setViewPhotos(wo.photos!)} className="text-xs mt-1" style={{ color: PALERMO.gold }}>📷 {wo.photos.length} photo(s)</button>}
       <div className="flex items-center gap-2 mt-2 flex-wrap">
-        <button onClick={() => save({ status: nextStatus() })} className="text-xs px-2.5 py-1.5 rounded text-white font-semibold" style={{ backgroundColor: wo.status === 'done' ? '#27AE60' : PALERMO.slate }}>
-          {wo.status === 'open' ? 'Start' : wo.status === 'in_progress' ? 'Mark done' : '✓ Done (reopen)'}
+        {/* Two-state toggle: in progress ⇄ complete. */}
+        <button onClick={() => save({ status: done ? 'in_progress' : 'done' })} className="text-xs px-2.5 py-1.5 rounded text-white font-semibold" style={{ backgroundColor: done ? '#27AE60' : PALERMO.slate }}>
+          {done ? '✓ Complete · reopen' : 'Mark complete'}
         </button>
-        {canManage && wo.status !== 'done' && <button onClick={promote} className="text-xs px-2.5 py-1.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>Promote</button>}
+        {/* Full edit — Marco/Tony/Linda. */}
+        {p.canManageProperties && <button onClick={() => setEditing(true)} className="text-xs px-2.5 py-1.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>Edit</button>}
         {canManage && <button onClick={() => save({ archived: !wo.archived })} className="text-xs px-2.5 py-1.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>{wo.archived ? 'Unarchive' : 'Archive'}</button>}
         {canManage && <button onClick={() => confirm(`Delete work order "${wo.title}"?`) && p.onDeleteWorkOrder(wo.id)} className="text-xs px-2.5 py-1.5 rounded text-red-500 font-semibold ml-auto">Delete</button>}
       </div>
+      {wo.editedBy && <div className="text-[10px] text-gray-400 mt-1">edited by {wo.editedBy}{wo.editedAt ? ` · ${fmtShort(wo.editedAt)}` : ''}</div>}
+      {editing && <WorkOrderForm initial={wo} currentUser={p.currentUser} uploadedBy={p.uploadedBy} properties={p.properties} contractors={p.contractors} onClose={() => setEditing(false)} onSave={w => { p.onSaveWorkOrder(w); setEditing(false); }} defaultProperty={wo.property} />}
       {viewPhotos && <PhotoViewer files={viewPhotos} onClose={() => setViewPhotos(null)} />}
     </div>
   );
 }
 
-function WorkOrderForm({ currentUser, uploadedBy, properties, contractors, onClose, onSave, defaultProperty }: { currentUser: { id: string; name: string }; uploadedBy: { email: string; name: string }; properties: ContractingProperty[]; contractors: Employee[]; onClose: () => void; onSave: (w: ContractingWorkOrder) => void; defaultProperty: string }) {
-  const [property, setProperty] = useState(defaultProperty);
-  const [unitId, setUnitId] = useState('');
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [priority, setPriority] = useState<ContractingWorkOrder['priority']>('normal');
-  const [assigneeIds, setAssigneeIds] = useState<string[]>([]);
-  const [photos, setPhotos] = useState<StoredFile[]>([]);
+// Compact optional date chips for a work order. States: scheduled today
+// (highlighted), future scheduled ("Sched Thu Jul 23"), past scheduled + not
+// complete (quiet grey "was scheduled" — plans slip), due upcoming ("Due Aug 1"),
+// past due + not complete (red "overdue"). Undated → nothing.
+function WorkOrderDates({ wo, done }: { wo: ContractingWorkOrder; done: boolean }) {
+  const now = Date.now();
+  const sod = (ms: number) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const day = (ms: number) => new Date(ms).toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' });
+  const chips: JSX.Element[] = [];
+  if (typeof wo.scheduledAt === 'number') {
+    const s = sod(wo.scheduledAt), t = sod(now);
+    if (s === t) chips.push(<span key="s" className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ backgroundColor: '#D6EAF8', color: '#1F618D' }}>Sched today</span>);
+    else if (s > t) chips.push(<span key="s" className="text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: '#F4F6F7', color: '#566573' }}>Sched {day(wo.scheduledAt)}</span>);
+    else if (!done) chips.push(<span key="s" className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: '#F4F6F7', color: '#909497' }}>was scheduled {day(wo.scheduledAt)}</span>);
+  }
+  if (typeof wo.dueAt === 'number') {
+    if (woIsOverdue(wo, now)) chips.push(<span key="d" className="text-[10px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded" style={{ backgroundColor: '#FADBD8', color: '#C0392B' }}>overdue · due {day(wo.dueAt)}</span>);
+    else chips.push(<span key="d" className="text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: '#FEF9E7', color: '#B7950B' }}>Due {day(wo.dueAt)}</span>);
+  }
+  if (chips.length === 0) return null;
+  return <div className="mt-1 flex flex-wrap gap-1.5">{chips}</div>;
+}
+
+// Create OR edit a work order. With `initial` it's a full edit (title,
+// description, property, unit tag, priority, dates, assignees) — Marco/Tony/
+// Linda only; stamps a light edited-by/at audit. Notes/photos stay additive.
+function WorkOrderForm({ initial, currentUser, uploadedBy, properties, contractors, onClose, onSave, defaultProperty }: { initial?: ContractingWorkOrder; currentUser: { id: string; name: string }; uploadedBy: { email: string; name: string }; properties: ContractingProperty[]; contractors: Employee[]; onClose: () => void; onSave: (w: ContractingWorkOrder) => void; defaultProperty: string }) {
+  const isEdit = !!initial;
+  const [property, setProperty] = useState(initial?.property || defaultProperty);
+  const [unitId, setUnitId] = useState(initial?.unitId || '');
+  const [title, setTitle] = useState(initial?.title || '');
+  const [description, setDescription] = useState(initial?.description || '');
+  const [priority, setPriority] = useState<ContractingWorkOrder['priority']>(initial?.priority || 'normal');
+  const [scheduled, setScheduled] = useState(initial?.scheduledAt ? dateInputVal(initial.scheduledAt) : '');
+  const [due, setDue] = useState(initial?.dueAt ? dateInputVal(initial.dueAt) : '');
+  const [assigneeIds, setAssigneeIds] = useState<string[]>(initial ? woAssignees(initial).ids : []);
+  const [photos, setPhotos] = useState<StoredFile[]>(initial?.photos || []);
   const [uploading, setUploading] = useState(false);
-  const woId = uid('cwo');
+  const woId = initial?.id || uid('cwo');
   const propUnits = properties.find(x => x.name === property)?.units || [];
   return (
-    <Modal title="New work order" onClose={onClose}>
+    <Modal title={isEdit ? 'Edit work order' : 'New work order'} onClose={onClose}>
       <Field label="Property"><select className="inp" value={property} onChange={e => { setProperty(e.target.value); setUnitId(''); }}>{properties.map(x => <option key={x.id} value={x.name}>{x.corp ? '★ ' : ''}{x.name}</option>)}</select></Field>
       {propUnits.length > 0 && <Field label="Unit (optional — leave blank for property-level)"><select className="inp" value={unitId} onChange={e => setUnitId(e.target.value)}><option value="">Whole property</option>{propUnits.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select></Field>}
       <Field label="Title"><input className="inp" value={title} onChange={e => setTitle(e.target.value)} /></Field>
       <Field label="Description"><textarea className="inp" rows={2} value={description} onChange={e => setDescription(e.target.value)} /></Field>
       <Field label="Priority"><div className="flex gap-2">{(['low', 'normal', 'high'] as const).map(pr => <button key={pr} onClick={() => setPriority(pr)} className="flex-1 py-1.5 rounded border text-sm capitalize" style={priority === pr ? { backgroundColor: PALERMO.slate, color: 'white' } : {}}>{pr}</button>)}</div></Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Scheduled (optional)"><input className="inp" type="date" value={scheduled} onChange={e => setScheduled(e.target.value)} /></Field>
+        <Field label="Due (optional)"><input className="inp" type="date" value={due} onChange={e => setDue(e.target.value)} /></Field>
+      </div>
       <Field label="Assign to (optional)">
         <div className="flex flex-wrap gap-1.5">
           {contractors.map(c => { const on = assigneeIds.includes(c.id); return (
@@ -1666,9 +1710,16 @@ function WorkOrderForm({ currentUser, uploadedBy, properties, contractors, onClo
         {photos.length > 0 && <span className="text-xs text-green-600">✓ {photos.length}</span>}
       </Field>
       <ModalActions onClose={onClose} disabled={!title.trim() || uploading} onSave={() => onSave({
-        id: woId, property, unitId: unitId || undefined, title: title.trim(), description: description.trim() || undefined, priority, status: 'open',
+        ...(initial || {}),
+        id: woId, property, unitId: unitId || undefined, title: title.trim(), description: description.trim() || undefined, priority,
+        status: initial?.status || 'in_progress',
+        scheduledAt: scheduled ? dateFromInput(scheduled) : undefined,
+        dueAt: due ? dateFromInput(due) : undefined,
         assigneeIds: assigneeIds.length ? assigneeIds : undefined, assigneeNames: assigneeIds.length ? assigneeIds.map(id => contractors.find(c => c.id === id)?.name || id) : undefined,
-        photos: photos.length ? photos : undefined, createdBy: currentUser, createdAt: Date.now(), updatedAt: Date.now(),
+        assigneeId: undefined, assigneeName: undefined,
+        photos: photos.length ? photos : undefined,
+        createdBy: initial?.createdBy || currentUser, createdAt: initial?.createdAt || Date.now(), updatedAt: Date.now(),
+        ...(isEdit ? { editedBy: currentUser.name, editedAt: Date.now() } : {}),
       })} />
     </Modal>
   );

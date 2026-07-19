@@ -4,6 +4,7 @@ import {
   ContractingRateCard, ContractingBillingRole, ContractingReceipt, ContractingLabourLine,
   ContractingReportSnapshot, ContractingProject, ContractingPhase, ContractingInvoice, ContractingTimeEntry,
   ContractingProperty, ContractingProgressReport, ContractingSupplier, Employee,
+  ContractingWorkOrder,
 } from '../types';
 
 export const HST_PCT = 0.13;
@@ -321,6 +322,57 @@ export function woAssignees(wo: { assigneeIds?: string[]; assigneeNames?: string
 }
 export function woIsAssignedTo(wo: { assigneeIds?: string[]; assigneeId?: string }, userId: string): boolean {
   return woAssignees(wo).ids.includes(userId);
+}
+
+// ── Work-order two-state status + optional dates ────────────────────────────
+// Two states only: in progress → complete. Legacy 'open' reads as 'in_progress'.
+export function woStatus(w: { status?: string }): 'in_progress' | 'done' {
+  return w.status === 'done' ? 'done' : 'in_progress';
+}
+const startOfDay = (ms: number): number => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+// Date display/sort state for a work order at `now`. Only meaningful while the
+// order is not complete (a done order shows no urgency).
+export type WoDateState =
+  | 'overdue'            // past DUE, not complete → red
+  | 'dueUpcoming'        // has a future/today due
+  | 'scheduledToday'     // scheduled today → highlighted
+  | 'scheduledFuture'    // scheduled ahead
+  | 'scheduledPast'      // past scheduled, not complete → quiet "was scheduled"
+  | 'none';
+export function woIsOverdue(w: { status?: string; dueAt?: number }, now: number): boolean {
+  return woStatus(w) !== 'done' && typeof w.dueAt === 'number' && startOfDay(w.dueAt) < startOfDay(now);
+}
+// Earliest of scheduled/due (for sorting). null when undated.
+export function woSoonest(w: { scheduledAt?: number; dueAt?: number }): number | null {
+  const ds = [w.scheduledAt, w.dueAt].filter((x): x is number => typeof x === 'number');
+  return ds.length ? Math.min(...ds) : null;
+}
+// Sort: overdue first (soonest due first within), then soonest of sched/due,
+// undated last (newest-created first among undated).
+export function compareWorkOrders(a: ContractingWorkOrder, b: ContractingWorkOrder, now: number): number {
+  const ao = woIsOverdue(a, now), bo = woIsOverdue(b, now);
+  if (ao !== bo) return ao ? -1 : 1;
+  const as = woSoonest(a), bs = woSoonest(b);
+  if (as == null && bs == null) return (b.createdAt || 0) - (a.createdAt || 0);
+  if (as == null) return 1;   // undated → last
+  if (bs == null) return -1;
+  return as - bs;
+}
+// Home-card rollup: overdue count + scheduled within the next 7 days (both
+// among not-complete, non-archived orders).
+export function woWeekStats(orders: ContractingWorkOrder[], now: number): { overdue: number; scheduledThisWeek: number } {
+  const today = startOfDay(now);
+  const weekEnd = today + 7 * 86_400_000;
+  let overdue = 0, scheduledThisWeek = 0;
+  for (const w of orders) {
+    if (w.archived || woStatus(w) === 'done') continue;
+    if (woIsOverdue(w, now)) overdue++;
+    if (typeof w.scheduledAt === 'number') {
+      const s = startOfDay(w.scheduledAt);
+      if (s >= today && s <= weekEnd) scheduledThisWeek++;
+    }
+  }
+  return { overdue, scheduledThisWeek };
 }
 
 // The DEFAULT rental properties list (internal organization only). Corp badge
