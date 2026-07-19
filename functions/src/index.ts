@@ -17,6 +17,12 @@ export const helloJobber = onCall(
 );
 
 export {checkEmailAuthorized} from "./authGate.js";
+export {
+  registerPushToken,
+  pushAnnouncement,
+  pushRepairAssigned,
+  onWorkOrderWrite,
+} from "./notifications.js";
 export {jobberOAuthStart, jobberOAuthCallback} from "./jobber/oauth.js";
 export {jobberSyncUsers} from "./jobber/syncUsers.js";
 export {

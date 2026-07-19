@@ -11,6 +11,7 @@ import {
 import {makeJobberClient, JobberClient, sleep} from "./client.js";
 import {runArchivePass} from "./archive.js";
 import {runRoleGeneration} from "./roleMaster.js";
+import {runNotificationScan} from "../notifications.js";
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -2621,6 +2622,16 @@ async function runPerformanceSync(args: {
           error: err instanceof Error ? err.message : String(err),
         });
         summary.warnings.push("role_generation_error");
+      }
+      // Notification scan (lease/move-out 60d, fleet-doc 30d) — deduped.
+      // Isolated: a notification failure never fails the sync.
+      try {
+        await runNotificationScan(Date.now(), summary.warnings);
+      } catch (err) {
+        logger.warn("notification scan failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        summary.warnings.push("notification_scan_error");
       }
     }
 

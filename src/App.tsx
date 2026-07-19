@@ -67,6 +67,8 @@ import { computeReportTotals, labourForReport, ratesOrDefault as contractingRate
 import type { ContractingProperty, ContractingSupplier } from './types';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabel, payDateLabel } from './lib/payPeriods';
 import { noticeDaysOrDefault } from './lib/propertyMgmt';
+import NotificationCenter from './components/NotificationCenter';
+import { refreshPushToken, onForegroundMessage } from './lib/messaging';
 import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
 import RequestTimeOffModal, { type RequestTimeOffSubmit } from './components/RequestTimeOffModal';
@@ -367,6 +369,7 @@ export default function App() {
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
   const [bulletinAudience, setBulletinAudience] = useState<BulletinAudienceRole[]>([]);
+  const [bulletinSendPush, setBulletinSendPush] = useState(false);
 
   // Core App Data Structure
   const [appData, setAppData] = useState<AppData>({
@@ -1288,6 +1291,20 @@ export default function App() {
   const weekDays = Array.from({ length: 7 }).map((_, i) => addDays(startOfWeek, i));
 
   const showToastMsg = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 4500); };
+
+  // Web push — refresh any live token + surface foreground messages as toasts.
+  // Best-effort: never blocks or throws into the app.
+  useEffect(() => {
+    if (!user) return;
+    refreshPushToken().catch(() => {});
+    onForegroundMessage((n) => showToastMsg(`🔔 ${n.title}${n.body ? ` — ${n.body}` : ''}`)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+  // Tap-through from a notification (url like "/#contracting") → switch view.
+  const handleNotifNavigate = (url: string) => {
+    const h = (url.split('#')[1] || '').trim();
+    if (h && canAccessView(h as AppView, effectiveRole)) setCurrentView(h as AppView);
+  };
   const getEmpName = (id: string) => appData.employees.find(e => e.id === id)?.name || 'Unknown';
 
   const openManageTab = (tab: ManageTab) => {
@@ -3093,6 +3110,27 @@ export default function App() {
   };
 
 
+  // Web push for repair assignment — fire for NEWLY-added mechanics only.
+  // Best-effort; never blocks the assignment write.
+  const notifyRepairAssigned = (
+    task: MechanicTask,
+    prev: Array<{ userEmail?: string; userName?: string }>,
+    next: Array<{ userEmail?: string; userName?: string }>,
+  ) => {
+    const prevSet = new Set(prev.map(a => (a.userEmail || '').toLowerCase()).filter(Boolean));
+    const added = next
+      .map(a => (a.userEmail || '').toLowerCase())
+      .filter(e => e && !prevSet.has(e));
+    if (!added.length) return;
+    httpsCallable(functions, 'pushRepairAssigned')({
+      mechanicEmails: added,
+      title: task.description || task.unitName || 'Repair',
+      priority: task.priority ? 'high' : 'normal',
+      reportedBy: task.reportedBy?.name || '',
+      taskId: task.id,
+    }).catch(() => { /* delivery is a bonus; inbox entry still written server-side */ });
+  };
+
   const renderMechanicBoard = () => (
     <MechanicBoard
       appData={appData}
@@ -3105,19 +3143,29 @@ export default function App() {
       onViewInspection={(id) => setViewingInspectionId(id)}
       onAssignTask={(taskId, assignedTo) => {
         if (!can('canEditRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+        const existing = appData.mechanicTasks.find(t => t.id === taskId);
         const updated = appData.mechanicTasks.map(t =>
           t.id === taskId ? { ...t, assignedTo: assignedTo === null ? undefined : assignedTo } : t
         );
         syncToCloud({ ...appData, mechanicTasks: updated });
+        if (existing && assignedTo) {
+          const prev = existing.assignees && existing.assignees.length ? existing.assignees : (existing.assignedTo ? [existing.assignedTo] : []);
+          notifyRepairAssigned(existing, prev, [assignedTo]);
+        }
       }}
       onSetAssignees={(taskId, assignees) => {
         if (!can('canEditRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+        const existing = appData.mechanicTasks.find(t => t.id === taskId);
         const updated = appData.mechanicTasks.map(t =>
           t.id === taskId
             ? { ...t, assignees, assignedTo: assignees[0] || undefined }
             : t,
         );
         syncToCloud({ ...appData, mechanicTasks: updated });
+        if (existing) {
+          const prev = existing.assignees && existing.assignees.length ? existing.assignees : (existing.assignedTo ? [existing.assignedTo] : []);
+          notifyRepairAssigned(existing, prev, assignees);
+        }
       }}
       onTogglePriority={(task) => {
         if (!can('canEditRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
@@ -3931,12 +3979,15 @@ export default function App() {
       setNewContent={setNewContent}
       audience={bulletinAudience}
       setAudience={setBulletinAudience}
+      sendPush={bulletinSendPush}
+      setSendPush={setBulletinSendPush}
       onPost={() => {
         if (!can('canPostBulletins', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
         if (!newTitle || !newContent) return;
         const nowMs = Date.now();
+        const bid = `b-${nowMs}`;
         const newBulletin: any = {
-          id: `b-${nowMs}`,
+          id: bid,
           title: newTitle,
           content: newContent,
           date: formatDate(new Date()),
@@ -3953,7 +4004,17 @@ export default function App() {
           ? { ...(appData.bulletinReads || {}), [bulletinReadKey]: nowMs }
           : appData.bulletinReads;
         syncToCloud({ ...appData, bulletins: [newBulletin, ...appData.bulletins], bulletinReads: nextReads });
-        setNewTitle(''); setNewContent(''); setBulletinAudience([]);
+        // Optional web push — fan out to the same audience that can see the
+        // post. Best-effort; a push failure never blocks the bulletin itself.
+        if (bulletinSendPush) {
+          const payload: any = { bulletinId: bid, title: newTitle, body: newContent.slice(0, 160) };
+          if (bulletinAudience.length > 0) { payload.audience = 'role'; payload.roleGroup = bulletinAudience; }
+          else { payload.audience = 'everyone'; }
+          httpsCallable(functions, 'pushAnnouncement')(payload)
+            .then(() => showToastMsg('Bulletin posted · notification sent'))
+            .catch(() => showToastMsg('Bulletin posted · push could not be sent'));
+        }
+        setNewTitle(''); setNewContent(''); setBulletinAudience([]); setBulletinSendPush(false);
       }}
       onDelete={(id) => {
         if (!can('canDeleteBulletins', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
@@ -4140,8 +4201,11 @@ export default function App() {
         )}
         {!crewBuilderMode && (
         <div className="p-4 bg-white border-b border-gray-200 shadow-sm flex flex-col gap-3">
-          <div className="flex items-center justify-center py-2">
+          <div className="relative flex items-center justify-center py-2">
             <img src={logoBlack} alt="Logo" className="h-24 w-auto" />
+            <div className="absolute right-0 top-0">
+              <NotificationCenter userEmail={displayEmail} isAdmin={isAdmin} onNavigate={handleNotifNavigate} showToast={showToastMsg} />
+            </div>
           </div>
           <TimeMasterWidget
             appData={appData}
@@ -4459,6 +4523,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            <NotificationCenter userEmail={displayEmail} isAdmin={isAdmin} onNavigate={handleNotifNavigate} showToast={showToastMsg} />
             {isRealAdmin && (
               <div ref={viewAsMenuRefMobile} className="relative">
                 <button

@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { Megaphone, PenTool, Users, Trash2, Calendar as CalendarIcon } from 'lucide-react';
+import { Megaphone, PenTool, Users, Trash2, Calendar as CalendarIcon, Bell } from 'lucide-react';
 import type { BulletinAudienceRole, UserRole } from '../types';
 
 const ROLE_OPTIONS: { value: BulletinAudienceRole; label: string }[] = [
@@ -22,6 +22,8 @@ interface BulletinBoardProps {
   setNewContent: Dispatch<SetStateAction<string>>;
   audience: BulletinAudienceRole[];
   setAudience: Dispatch<SetStateAction<BulletinAudienceRole[]>>;
+  sendPush: boolean;
+  setSendPush: Dispatch<SetStateAction<boolean>>;
   onPost: () => void;
   onDelete: (id: string) => void;
 }
@@ -38,6 +40,8 @@ export default function BulletinBoard({
   setNewContent,
   audience,
   setAudience,
+  sendPush,
+  setSendPush,
   onPost,
   onDelete,
 }: BulletinBoardProps) {
@@ -90,6 +94,12 @@ export default function BulletinBoard({
                 ))}
               </div>
             </div>
+
+            <label className="flex items-center gap-2.5 text-sm font-bold text-slate-700 cursor-pointer bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+              <input type="checkbox" checked={sendPush} onChange={e => setSendPush(e.target.checked)} className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500" />
+              <Bell className="w-4 h-4 text-amber-500" />
+              Also send a push notification {audience.length > 0 ? 'to the selected roles' : 'to everyone'}
+            </label>
 
             <div className="flex justify-end items-center mt-2">
               <button onClick={onPost} disabled={!newTitle || !newContent} className="bg-lime-500 hover:bg-lime-600 text-slate-900 px-6 py-2 rounded-xl font-bold transition-colors shadow-sm disabled:opacity-50">Post Bulletin</button>
