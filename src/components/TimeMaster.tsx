@@ -237,12 +237,20 @@ export default function TimeMaster({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appData.deletionAuditLog, effectiveOwnerEmail, dateFilter, customStart, customEnd]);
 
-  // All users (for admin overview)
+  // All users (for admin overview). Entry-derived, PLUS contractor-role people
+  // even with zero punches this period — so a contractor's 0h absence in the
+  // strip can't be misread as the old exclusion bug. They render badged.
   const allUsers = useMemo(() => {
     const map = new Map<string, string>();
     appData.timeEntries.forEach(e => { if (!map.has(e.userEmail)) map.set(e.userEmail, e.userName); });
+    const have = new Set(Array.from(map.keys()).map(k => (k || '').toLowerCase()));
+    (appData.employees || []).forEach(emp => {
+      if (emp.systemRole !== 'contractor' || emp.status !== 'Active') return;
+      const em = emp.linkedUserEmail || emp.email || '';
+      if (em && !have.has(em.toLowerCase())) { map.set(em, emp.name); have.add(em.toLowerCase()); }
+    });
     return Array.from(map.entries()).map(([email, name]) => ({ email, name })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [appData.timeEntries]);
+  }, [appData.timeEntries, appData.employees]);
 
   const userSummaries = useMemo(() => {
     const [tS, tE] = todayRange();
@@ -1427,13 +1435,18 @@ export default function TimeMaster({
                   >
                     <option value="">— pick an employee —</option>
                     {appData.employees
-                      // Palermo's contractors clock inside ContractingMaster,
-                      // never Marco's TimeMaster — keep them out of this picker.
-                      .filter(e => e.systemRole !== 'contractor' && e.status === 'Active' && (e.linkedUserEmail || e.email))
+                      // TimeMaster is payroll — it covers EVERYONE who has time
+                      // entries, contractors included (their punches + manual
+                      // corrections are payroll data). Contractor rows are
+                      // badged below. This is the ONE people-list that includes
+                      // contractors; crews/scheduling/performance still exclude
+                      // them elsewhere.
+                      .filter(e => e.status === 'Active' && (e.linkedUserEmail || e.email))
                       .sort((a, b) => a.name.localeCompare(b.name))
                       .map(e => {
                         const em = (e.linkedUserEmail || e.email || '').toLowerCase();
-                        return <option key={e.id} value={em}>{e.name} — {em}</option>;
+                        const isC = e.systemRole === 'contractor';
+                        return <option key={e.id} value={em}>{e.name}{isC ? ' · contractor' : ''} — {em}</option>;
                       })}
                   </select>
                 ) : (
