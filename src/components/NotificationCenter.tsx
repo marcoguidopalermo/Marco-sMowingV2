@@ -27,7 +27,7 @@ interface Prefs { master?: boolean; categories?: Partial<Record<NCategory, boole
 const ago = (ms: number) => { const s = (Date.now() - ms) / 1000; if (s < 60) return 'now'; if (s < 3600) return `${Math.floor(s / 60)}m`; if (s < 86400) return `${Math.floor(s / 3600)}h`; return `${Math.floor(s / 86400)}d`; };
 const CHIP: Record<NCategory, string> = { announcements: '#B7950B', repairs: '#C0392B', workorders: '#2E4053', leases: '#8E44AD', fleet: '#E67E22', policies: '#7F8C8D' };
 
-export default function NotificationCenter({ userEmail, isAdmin, onNavigate, showToast }: { userEmail: string; isAdmin: boolean; onNavigate: (url: string) => void; showToast: (m: string) => void }) {
+export default function NotificationCenter({ userEmail, isAdmin, onNavigate, showToast, employees = [] }: { userEmail: string; isAdmin: boolean; onNavigate: (url: string) => void; showToast: (m: string) => void; employees?: any[] }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'inbox' | 'settings' | 'dashboard'>('inbox');
   const [items, setItems] = useState<CentreItem[]>([]);
@@ -117,7 +117,7 @@ export default function NotificationCenter({ userEmail, isAdmin, onNavigate, sho
               </div>
             )}
 
-            {tab === 'dashboard' && isAdmin && <NotificationDashboard showToast={showToast} />}
+            {tab === 'dashboard' && isAdmin && <NotificationDashboard showToast={showToast} employees={employees} />}
           </div>
         </>
       )}
@@ -145,9 +145,82 @@ function EnableCard({ support, onEnable }: { support: PushSupport; onEnable: () 
   );
 }
 
+// ── Editable audiences ──────────────────────────────────────────────────────
+interface AudSpec { roles?: string[]; divisions?: string[]; people?: string[] }
+const ROLE_OPTS: { v: string; l: string }[] = [
+  { v: 'admin', l: 'Admins' }, { v: 'manager', l: 'Managers' },
+  { v: 'mechanic', l: 'Mechanics' }, { v: 'property_manager', l: 'Property mgrs' },
+];
+const ROLE_LABEL = (v: string) => ROLE_OPTS.find(o => o.v === v)?.l || v;
+// Audience-editable trigger types. mode 'override' = the stored audience replaces
+// the structural default; mode 'extra' = ADDS on top of a locked structural set.
+const AUDIENCE_TYPES: { key: string; cat: NCategory; label: string; mode: 'override' | 'extra'; structural?: string }[] = [
+  { key: 'workorders_created', cat: 'workorders', label: 'Work order · created', mode: 'override' },
+  { key: 'workorders_assigned_extra', cat: 'workorders', label: 'Work order · assigned', mode: 'extra', structural: 'New assignee(s)' },
+  { key: 'repairs_extra', cat: 'repairs', label: 'Repair · assigned', mode: 'extra', structural: 'Assigned mechanic(s)' },
+  { key: 'leases', cat: 'leases', label: 'Lease / move-out', mode: 'override' },
+  { key: 'fleet', cat: 'fleet', label: 'Fleet doc expiry', mode: 'override' },
+];
+
+function AudienceEditor({ spec, onChange, structural, employees }:
+  { spec: AudSpec; onChange: (s: AudSpec) => void; structural?: string; employees: any[] }) {
+  const emailOf = (e: any) => (e.linkedUserEmail || e.email || '').toLowerCase();
+  const nameOf = (email: string) => employees.find(e => emailOf(e) === email)?.name || email;
+  const divisions = useMemo(() => {
+    const s = new Set<string>();
+    employees.forEach(e => { if (e.managedDivision) s.add(e.managedDivision); });
+    return [...s];
+  }, [employees]);
+  const roles = spec.roles || [], divs = spec.divisions || [], people = spec.people || [];
+  const set = (patch: Partial<AudSpec>) => onChange({ roles, divisions: divs, people, ...patch });
+  const chip = (label: string, onX?: () => void, locked?: boolean) => (
+    <span key={label} className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-full ${locked ? 'bg-slate-200 text-slate-500' : 'bg-emerald-100 text-emerald-800'}`}>
+      {locked && <span className="text-[8px]">🔒</span>}{label}
+      {onX && <button onClick={onX} className="ml-0.5 text-emerald-600 hover:text-emerald-900 font-black">×</button>}
+    </span>
+  );
+  const availRoles = ROLE_OPTS.filter(o => !roles.includes(o.v));
+  const availDivs = divisions.filter(d => !divs.includes(d));
+  const availPeople = employees.filter(e => emailOf(e) && !people.includes(emailOf(e)));
+  return (
+    <div className="mt-1.5 pl-2 border-l-2 border-emerald-100">
+      <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+        Recipients{structural ? ' (added on top of structural)' : ''}
+      </div>
+      <div className="flex flex-wrap gap-1 items-center">
+        {structural && chip(structural, undefined, true)}
+        {roles.map(r => chip(ROLE_LABEL(r), () => set({ roles: roles.filter(x => x !== r) })))}
+        {divs.map(d => chip(`Div: ${d}`, () => set({ divisions: divs.filter(x => x !== d) })))}
+        {people.map(p => chip(nameOf(p), () => set({ people: people.filter(x => x !== p) })))}
+        {(roles.length + divs.length + people.length === 0 && !structural) && <span className="text-[11px] text-gray-400 italic">No recipients</span>}
+      </div>
+      <div className="flex flex-wrap gap-1 mt-1.5">
+        {availRoles.length > 0 && (
+          <select value="" onChange={e => e.target.value && set({ roles: [...roles, e.target.value] })} className="text-[10px] border rounded px-1 py-0.5 bg-white text-slate-600">
+            <option value="">+ role</option>
+            {availRoles.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+          </select>
+        )}
+        {availDivs.length > 0 && (
+          <select value="" onChange={e => e.target.value && set({ divisions: [...divs, e.target.value] })} className="text-[10px] border rounded px-1 py-0.5 bg-white text-slate-600">
+            <option value="">+ division</option>
+            {availDivs.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+        )}
+        {availPeople.length > 0 && (
+          <select value="" onChange={e => e.target.value && set({ people: [...people, e.target.value] })} className="text-[10px] border rounded px-1 py-0.5 bg-white text-slate-600">
+            <option value="">+ person</option>
+            {availPeople.map(e => <option key={emailOf(e)} value={emailOf(e)}>{e.name || emailOf(e)}</option>)}
+          </select>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Admin dashboard: per-type row (kill switch, counts, last-sent) + adoption.
 interface LogEntry { category: NCategory; title: string; recipientCount: number; delivered: number; at: number }
-function NotificationDashboard({ showToast }: { showToast: (m: string) => void }) {
+function NotificationDashboard({ showToast, employees }: { showToast: (m: string) => void; employees: any[] }) {
   const [config, setConfig] = useState<any>({});
   const [log, setLog] = useState<LogEntry[]>([]);
   const [tokenUsers, setTokenUsers] = useState(0);
@@ -178,6 +251,25 @@ function NotificationDashboard({ showToast }: { showToast: (m: string) => void }
   const now = Date.now();
   const countIn = (cat: NCategory, days: number) => log.filter(l => l.category === cat && l.at > now - days * 86400000).length;
   const lastOf = (cat: NCategory) => log.find(l => l.category === cat);
+
+  // Structural defaults, mirrored here so admins see the current recipients as
+  // editable chips. Matches the server fallbacks in notifications.ts.
+  const contractingMgrs = useMemo(() => {
+    const out = new Set<string>(['marcoguidopalermo@gmail.com']);
+    employees.forEach(e => { if (e.contractingManager || e.systemRole === 'property_manager') { const em = (e.linkedUserEmail || e.email || '').toLowerCase(); if (em) out.add(em); } });
+    return [...out];
+  }, [employees]);
+  const seedSpec = (key: string): AudSpec => {
+    if (key === 'workorders_created' || key === 'leases') return { people: contractingMgrs };
+    if (key === 'fleet') return { roles: ['admin', 'manager'] };
+    return {}; // *_extra types start empty (structural set is implicit)
+  };
+  const specFor = (key: string): AudSpec => (config.audiences?.[key]) ?? seedSpec(key);
+  const setAudienceSpec = (key: string, s: AudSpec) => setDoc(
+    doc(db, 'artifacts', appId, 'public', 'data', 'notificationConfig', 'globals'),
+    { audiences: { [key]: { roles: s.roles || [], divisions: s.divisions || [], people: s.people || [] } } },
+    { merge: true },
+  );
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto p-3">
@@ -211,6 +303,17 @@ function NotificationDashboard({ showToast }: { showToast: (m: string) => void }
                 <label className="text-[10px] font-bold text-slate-600 flex items-center justify-between">Assigned → assignee<input type="checkbox" checked={subToggles.workorders_assigned !== false} onChange={e => setSub('workorders_assigned', e.target.checked)} /></label>
               </div>
             )}
+            {!c.dormant && AUDIENCE_TYPES.filter(t => t.cat === c.key).map(t => (
+              <div key={t.key} className="mt-1">
+                {AUDIENCE_TYPES.filter(x => x.cat === c.key).length > 1 && <div className="text-[10px] font-black text-slate-500 mt-1">{t.label}</div>}
+                <AudienceEditor
+                  spec={specFor(t.key)}
+                  onChange={s => setAudienceSpec(t.key, s)}
+                  structural={t.mode === 'extra' ? t.structural : undefined}
+                  employees={employees}
+                />
+              </div>
+            ))}
           </div>
         );
       })}

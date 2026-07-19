@@ -24,9 +24,15 @@ export type Category =
 
 // Global kill switches + per-trigger sub-toggles. Defaults: all ON except the
 // dormant policy sign-off. Enforced SERVER-SIDE here.
+interface AudienceSpec { roles?: string[]; divisions?: string[]; people?: string[] }
 interface GlobalConfig {
   globals?: Partial<Record<Category, boolean>>;
   subToggles?: Record<string, boolean>;   // e.g. workorders_created / workorders_assigned
+  // Editable recipient audiences, keyed per trigger. Broadcast types
+  // (workorders_created / leases / fleet) OVERRIDE their default when set;
+  // "*_extra" keys (repairs_extra / workorders_assigned_extra) ADD on top of
+  // the structural recipients that define the event's meaning.
+  audiences?: Record<string, AudienceSpec>;
 }
 
 const normEmail = (v: unknown): string =>
@@ -169,6 +175,38 @@ async function contractingManagerEmails(): Promise<string[]> {
   }
   return [...out];
 }
+// Resolve an editable audience spec (roles + divisions + explicit people) to a
+// concrete email list. Empty/absent spec → [].
+async function resolveSpec(spec: AudienceSpec | undefined): Promise<string[]> {
+  if (!spec) return [];
+  const out = new Set<string>();
+  const emps = await loadEmployees();
+  if (spec.roles?.length) {
+    for (const e of emps) {
+      if (spec.roles.includes(e.systemRole || "worker")) { const em = empEmail(e); if (em) out.add(em); }
+    }
+  }
+  if (spec.divisions?.length) {
+    const wanted = spec.divisions.map((d) => (d || "").toLowerCase());
+    for (const e of emps) {
+      const div = (e.managedDivision || "").toLowerCase();
+      const crew = (e.primaryCrew || "").toLowerCase();
+      if (wanted.some((d) => d && (div === d || crew.includes(d)))) { const em = empEmail(e); if (em) out.add(em); }
+    }
+  }
+  for (const p of (spec.people || [])) { const em = normEmail(p); if (em) out.add(em); }
+  return [...out];
+}
+const hasSpec = (s: AudienceSpec | undefined): boolean =>
+  !!s && !!((s.roles?.length) || (s.divisions?.length) || (s.people?.length));
+// Broadcast audience: stored spec OVERRIDES the structural default when set.
+async function audienceFor(
+  cfg: GlobalConfig, key: string, fallback: () => Promise<string[]>,
+): Promise<string[]> {
+  const spec = cfg.audiences?.[key];
+  return hasSpec(spec) ? resolveSpec(spec) : fallback();
+}
+
 async function adminsAndManagers(): Promise<string[]> {
   const set = new Set(await emailsForRole(["admin", "manager"]));
   set.add("marcoguidopalermo@gmail.com");
@@ -224,7 +262,11 @@ export const pushRepairAssigned = onCall({region: REGION}, async (req) => {
   const {mechanicEmails, title, priority, reportedBy, taskId} = (req.data || {}) as any;
   if (!Array.isArray(mechanicEmails) || !mechanicEmails.length) return {recipients: 0, delivered: 0, pruned: 0};
   const pri = priority === "high" ? "🔴 HIGH PRIORITY · " : "";
-  const res = await sendNotification(mechanicEmails, "repairs",
+  // Structural (assigned mechanics) + admin-configured extras on top.
+  const cfg = await loadConfig();
+  const extra = await resolveSpec(cfg.audiences?.repairs_extra);
+  const recips = [...new Set([...mechanicEmails.map(normEmail), ...extra])];
+  const res = await sendNotification(recips, "repairs",
     {title: `${pri}Repair assigned`, body: `${title || "Repair"}${reportedBy ? ` · reported by ${reportedBy}` : ""}`, url: taskId ? `/#mechanic` : "/#mechanic"});
   return res;
 });
@@ -268,10 +310,11 @@ export const onWorkOrderWrite = onDocumentWritten(
       if (!after) return;                       // deleted
       const assigneesOf = (w: any): string[] =>
         (w?.assigneeIds && w.assigneeIds.length ? w.assigneeIds : (w?.assigneeId ? [w.assigneeId] : []));
+      const cfg = await loadConfig();
 
-      // CREATED
+      // CREATED — broadcast; stored audience overrides the default managers.
       if (!before) {
-        const mgrs = await contractingManagerEmails();
+        const mgrs = await audienceFor(cfg, "workorders_created", contractingManagerEmails);
         await sendNotification(mgrs, "workorders", {
           title: "New work order",
           body: `${after.title || "Work order"} · ${after.property || ""}${after.priority === "high" ? " · HIGH" : ""}${after.createdBy?.name ? ` · logged by ${after.createdBy.name}` : ""}`,
@@ -289,8 +332,11 @@ export const onWorkOrderWrite = onDocumentWritten(
           .map((id: string) => emps.find((e) => e.id === id))
           .map((e: any) => empEmail(e || {}))
           .filter(Boolean);
-        if (emails.length) {
-          await sendNotification(emails, "workorders", {
+        // Structural (new assignees) + admin-configured extras on top.
+        const extra = await resolveSpec(cfg.audiences?.workorders_assigned_extra);
+        const recips = [...new Set([...emails, ...extra])];
+        if (recips.length) {
+          await sendNotification(recips, "workorders", {
             title: "Work order assigned to you",
             body: `${after.title || "Work order"} · ${after.property || ""}`,
             url: "/#contracting",
@@ -316,7 +362,7 @@ export async function runNotificationScan(nowMs: number, warnings: string[]): Pr
 
   // ── Lease / move-out (60 days + at the date) → Marco + Tony + Linda ──
   if (cfg.globals?.leases !== false) {
-    const recips = await contractingManagerEmails();
+    const recips = await audienceFor(cfg, "leases", contractingManagerEmails);
     const props = await db.collection(`${PUB}/contractingPropertyDocs`).get();
     for (const doc of props.docs) {
       const p = doc.data() as any;
@@ -349,7 +395,7 @@ export async function runNotificationScan(nowMs: number, warnings: string[]): Pr
 
   // ── Fleet document expiry (30 days + at expiry) → admins + managers ──
   if (cfg.globals?.fleet !== false) {
-    const recips = await adminsAndManagers();
+    const recips = await audienceFor(cfg, "fleet", adminsAndManagers);
     const main = (await db.doc(`${PUB}/appData/main`).get()).data() as any;
     const fleet = (main?.fleet || []) as any[];
     for (const unit of fleet) {

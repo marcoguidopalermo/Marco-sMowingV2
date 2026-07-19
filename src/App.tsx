@@ -4206,7 +4206,7 @@ export default function App() {
           <div className="relative flex items-center justify-center py-2">
             <img src={logoBlack} alt="Logo" className="h-24 w-auto" />
             <div className="absolute right-0 top-0">
-              <NotificationCenter userEmail={displayEmail} isAdmin={isAdmin} onNavigate={handleNotifNavigate} showToast={showToastMsg} />
+              <NotificationCenter userEmail={displayEmail} isAdmin={isAdmin} onNavigate={handleNotifNavigate} showToast={showToastMsg} employees={appData.employees || []} />
             </div>
           </div>
           <TimeMasterWidget
@@ -4525,7 +4525,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            <NotificationCenter userEmail={displayEmail} isAdmin={isAdmin} onNavigate={handleNotifNavigate} showToast={showToastMsg} />
+            <NotificationCenter userEmail={displayEmail} isAdmin={isAdmin} onNavigate={handleNotifNavigate} showToast={showToastMsg} employees={appData.employees || []} />
             {isRealAdmin && (
               <div ref={viewAsMenuRefMobile} className="relative">
                 <button
