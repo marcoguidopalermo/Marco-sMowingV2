@@ -69,6 +69,7 @@ import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabe
 import { noticeDaysOrDefault } from './lib/propertyMgmt';
 import NotificationCenter from './components/NotificationCenter';
 import PushEnablePrompt from './components/PushEnablePrompt';
+import { useStorageStats } from './components/ManageResourcesModal';
 import { refreshPushToken, onForegroundMessage } from './lib/messaging';
 import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
@@ -1292,6 +1293,10 @@ export default function App() {
   const weekDays = Array.from({ length: 7 }).map((_, i) => addDays(startOfWeek, i));
 
   const showToastMsg = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 4500); };
+  // Storage early-warning: an amber strip for admins when the main doc crosses
+  // 80% of the 1 MiB cap — the cue to archive before it becomes an incident.
+  const storageStats = useStorageStats();
+  const storageWarn = isAdmin && (storageStats?.main?.pct ?? 0) >= 80;
 
   // Web push — refresh any live token + surface foreground messages as toasts.
   // Best-effort: never blocks or throws into the app.
@@ -4183,6 +4188,12 @@ export default function App() {
       `}</style>
       {toast && <div className="fixed top-6 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-6 py-4 rounded-2xl shadow-2xl z-[200] flex items-center gap-3 animate-in slide-in-from-top-4 duration-300"><AlertTriangle className="w-5 h-5 text-lime-400" /><span className="font-bold text-sm">{toast}</span></div>}
       <PushEnablePrompt userEmail={displayEmail} showToast={showToastMsg} />
+      {storageWarn && (
+        <div className="fixed bottom-0 inset-x-0 bg-amber-500 text-slate-900 px-4 py-2 flex items-center justify-center gap-2 z-[140] shadow-md no-print text-xs font-black uppercase tracking-widest">
+          <AlertTriangle className="w-4 h-4" />
+          Storage {storageStats?.main?.pct}% of limit — archive a growth surface soon (Settings → Storage)
+        </div>
+      )}
 
       {isViewingAs && (
         <div className="fixed top-0 inset-x-0 bg-amber-500 text-slate-900 px-4 py-2 flex items-center justify-center gap-3 z-[150] shadow-md no-print">

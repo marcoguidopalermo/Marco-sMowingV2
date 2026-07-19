@@ -12,6 +12,7 @@ import {makeJobberClient, JobberClient, sleep} from "./client.js";
 import {runArchivePass} from "./archive.js";
 import {runRoleGeneration} from "./roleMaster.js";
 import {runNotificationScan} from "../notifications.js";
+import {runStorageMeasurement} from "./storageMeasure.js";
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -2632,6 +2633,18 @@ async function runPerformanceSync(args: {
           error: err instanceof Error ? err.message : String(err),
         });
         summary.warnings.push("notification_scan_error");
+      }
+      // Storage-health measurement (bounded: main-doc read + count()/sampled
+      // collection sizes, no full scans). Isolated: never fails the sync.
+      try {
+        await runStorageMeasurement(
+          db, APP_ID, formatTodayInToronto(), Date.now(), summary.warnings,
+        );
+      } catch (err) {
+        logger.warn("storage measurement failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        summary.warnings.push("storage_measure_error");
       }
     }
 

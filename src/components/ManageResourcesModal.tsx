@@ -22,6 +22,98 @@ import { formatDate, needsAudit } from '../lib/dateUtils';
 // rather than as a map key). Persisted form lives in AppData.partialTimeOff.
 type PartialTimeOffDraft = PartialTimeOff & { date: string };
 
+// ── Storage health ──────────────────────────────────────────────────────────
+interface StorageStats {
+  measuredAt: number;
+  main: { bytes: number; limit: number; pct: number; fields: { field: string; bytes: number }[] };
+  collections: { name: string; docs: number; bytes: number }[];
+  totalBytes: number;
+  freeTier: number;
+}
+const kb = (b: number) => `${(b / 1024).toFixed(b < 1024 * 100 ? 1 : 0)} KB`;
+const mb = (b: number) => `${(b / (1024 * 1024)).toFixed(b < 1024 * 1024 * 10 ? 1 : 0)} MB`;
+const sizeLabel = (b: number) => (b >= 1024 * 1024 ? mb(b) : kb(b));
+// Green <60%, amber 60–80%, red >80% — matches the headline severity bands.
+const pctColor = (pct: number) => (pct >= 80 ? '#C0392B' : pct >= 60 ? '#B7950B' : '#1E8449');
+const ago = (ms: number) => {
+  const s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 3600) return `${Math.max(1, Math.floor(s / 60))} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+};
+
+// Reads the nightly-measured stats doc (bounded measurement in the scheduled
+// function — never scans on render). Headline = main appData doc size vs 1 MiB.
+export function useStorageStats(): StorageStats | null {
+  const [stats, setStats] = useState<StorageStats | null>(null);
+  useEffect(() => {
+    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'appStats', 'storage');
+    return onSnapshot(ref, s => setStats((s.data() as StorageStats) || null), () => setStats(null));
+  }, []);
+  return stats;
+}
+
+function StorageHealthCard({ stats }: { stats: StorageStats | null }) {
+  if (!stats) {
+    return (
+      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+        <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-1">Storage</label>
+        <p className="text-xs text-slate-500">Not measured yet — the nightly maintenance pass computes this. Check back after the next scheduled run.</p>
+      </div>
+    );
+  }
+  const m = stats.main;
+  const col = pctColor(m.pct);
+  const others = [...stats.collections].sort((a, b) => b.bytes - a.bytes);
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
+      <div className="flex items-center justify-between">
+        <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Storage Health</label>
+        <span className="text-[10px] text-slate-400">measured {ago(stats.measuredAt)}</span>
+      </div>
+
+      {/* Headline: main doc vs the 1 MiB Firestore doc limit */}
+      <div>
+        <div className="flex items-baseline justify-between mb-1">
+          <span className="text-sm font-bold text-slate-800">Main data document</span>
+          <span className="text-sm font-black" style={{ color: col }}>{sizeLabel(m.bytes)} · {m.pct}% of limit</span>
+        </div>
+        <div className="h-2.5 w-full rounded-full bg-slate-100 overflow-hidden">
+          <div className="h-full rounded-full" style={{ width: `${Math.min(100, m.pct)}%`, backgroundColor: col }} />
+        </div>
+        <div className="text-[10px] text-slate-400 mt-1">of the 1 MiB (1,048,576 byte) per-document Firestore cap</div>
+        {m.pct >= 80 && <div className="text-[11px] font-bold mt-1.5" style={{ color: '#C0392B' }}>⚠ Over 80% — archive or trim a growth surface soon.</div>}
+        {m.fields.length > 0 && (
+          <div className="text-[11px] text-slate-500 mt-2">
+            Largest fields: {m.fields.slice(0, 4).map(f => `${f.field} (${sizeLabel(f.bytes)})`).join(' · ')}
+          </div>
+        )}
+      </div>
+
+      {/* Growth surfaces — count + estimated size per collection */}
+      <div>
+        <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Growth surfaces (estimated)</div>
+        <div className="divide-y divide-slate-100">
+          {others.length === 0 && <div className="text-xs text-slate-400 py-1">No sized collections.</div>}
+          {others.map(c => (
+            <div key={c.name} className="flex items-center justify-between py-1 text-xs">
+              <span className="text-slate-600">{c.name}</span>
+              <span className="text-slate-500">{c.docs} doc{c.docs === 1 ? '' : 's'} · ~{sizeLabel(c.bytes)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Total vs the 1 GiB free tier (estimate) */}
+      <div className="flex items-center justify-between text-xs border-t border-slate-100 pt-2">
+        <span className="font-bold text-slate-700">Total (estimate)</span>
+        <span className="text-slate-500">~{sizeLabel(stats.totalBytes)} · &lt;1% of the 1 GiB free tier</span>
+      </div>
+      <a href="https://console.firebase.google.com/project/crewmaster-73f31/usage" target="_blank" rel="noreferrer" className="text-[11px] font-bold text-slate-600 underline">View exact usage in Firebase Console →</a>
+    </div>
+  );
+}
+
 interface JobberAuthState {
   accountName?: string;
   connectedAt?: number;
@@ -131,6 +223,7 @@ export default function ManageResourcesModal({
 }: ManageResourcesModalProps) {
   const canManageJobber =
     isSuperAdmin || (isAdmin && can('canManageJobberIntegration', currentUserRole));
+  const storageStats = useStorageStats();
   const [jobberAuth, setJobberAuth] = useState<JobberAuthState | null>(null);
   const [jobberBusy, setJobberBusy] = useState(false);
   // Per-employee draft state for the "Set up first chunk" rollout
@@ -1663,6 +1756,8 @@ export default function ManageResourcesModal({
                   <p className="text-slate-600 text-sm mt-1 leading-relaxed">Global behaviors that affect everyone using the app. {isAdmin ? 'You are an admin — fields are editable.' : 'Read-only — only admins can change these.'}</p>
                 </div>
               </div>
+
+              <StorageHealthCard stats={storageStats} />
 
               <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-3">
                 <div>
