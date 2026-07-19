@@ -93,7 +93,7 @@ const dateInputVal = (ms: number) => { const d = new Date(ms); return `${d.getFu
 const dateFromInput = (s: string) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0).getTime(); };
 const STATUS_LABEL: Record<ContractingStatus, string> = { planned: 'Planned', in_progress: 'In Progress', on_hold: 'On Hold', complete: 'Complete', closed: 'Closed' };
 
-type Tab = 'home' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
+type Tab = 'home' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'propertycontacts' | 'rates';
 
 export default function ContractingMaster(props: Props) {
   const { canManage, isAdmin, currentUser, isPropertyManager, canManageProperties } = props;
@@ -138,6 +138,9 @@ export default function ContractingMaster(props: Props) {
     { id: 'reports', label: 'Reports', show: canManage },
     { id: 'invoices', label: 'Invoices', show: canManage },
     { id: 'properties', label: 'Properties', show: canManageProperties },
+    // Contractor pool (Kris et al.): read-only tenant CONTACTS only — no
+    // financial/lease surface. Managers/Linda get the full Properties tab above.
+    { id: 'propertycontacts', label: 'Properties', show: !canManageProperties },
     { id: 'workorders', label: 'Work Orders', show: true },
     { id: 'shopping', label: 'Material', show: true },
     { id: 'rates', label: 'Rates', show: canManage },
@@ -182,6 +185,7 @@ export default function ContractingMaster(props: Props) {
         {tab === 'workorders' && <WorkOrdersTab {...props} mineOnly={woMineOnly} setMineOnly={setWoMineOnly} propFilter={woProperty} setPropFilter={setWoProperty} priorityFilter={woPriority} setPriorityFilter={setWoPriority} />}
         {tab === 'shopping' && <ShoppingTab {...props} />}
         {tab === 'properties' && canManageProperties && <PropertyManagementTab properties={props.properties} noticeDays={props.noticeDays} currentUser={currentUser} onSaveProperty={props.onSavePropertyDoc} onDeleteProperty={props.onDeletePropertyDoc} />}
+        {tab === 'propertycontacts' && !canManageProperties && <PropertyContactsTab properties={props.properties} />}
         {tab === 'rates' && canManage && <RatesTab rates={rates} onSaveRates={props.onSaveRates} />}
       </div>
       <div className="text-center text-[11px] text-gray-400 pb-4">
@@ -1464,8 +1468,10 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
   const prop = p.properties.find(x => x.name === wo.property);
   const corp = prop?.corp;
   const unit = wo.unitId ? prop?.units?.find(u => u.id === wo.unitId) : undefined;
-  // Tenant reference for the tagged unit — Marco/Tony/Linda only, never Kris.
-  const tenantRef = (p.canManageProperties && unit?.tenancy) ? unit.tenancy.tenants.filter(t => t.name).map(t => `${t.name}${t.phone ? ` ${t.phone}` : ''}`).join(', ') : '';
+  // Tenant CONTACT reference for the tagged unit — Marco/Tony/Linda always, plus
+  // any contractor this work order is assigned to (contacts only, tap-to-call).
+  const canSeeTenant = p.canManageProperties || woIsAssignedTo(wo, p.currentUser.id);
+  const tenantContacts = (canSeeTenant && unit?.tenancy) ? unit.tenancy.tenants.filter(t => t.name || t.phone) : [];
   const cycle: ContractingWorkOrder['status'][] = ['open', 'in_progress', 'done'];
   const nextStatus = () => cycle[(cycle.indexOf(wo.status) + 1) % 3];
   const save = (patch: Partial<ContractingWorkOrder>) => p.onSaveWorkOrder({ ...wo, ...patch, updatedAt: Date.now() });
@@ -1491,7 +1497,13 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
         </div>
         <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: wo.priority === 'high' ? '#FADBD8' : wo.priority === 'normal' ? '#EBF5FB' : '#F8F9F9', color: wo.priority === 'high' ? '#C0392B' : '#555' }}>{wo.priority}</span>
       </div>
-      {tenantRef && <div className="text-[11px] text-gray-500 mt-0.5">tenant: {tenantRef} ▸</div>}
+      {tenantContacts.length > 0 && (
+        <div className="text-[11px] text-gray-500 mt-0.5">
+          tenant: {tenantContacts.map((t, i) => (
+            <span key={i}>{i > 0 && ', '}{t.name}{t.phone && <> · <a href={`tel:${t.phone}`} className="font-semibold underline" style={{ color: '#1E7E45' }}>{t.phone}</a></>}</span>
+          ))}
+        </div>
+      )}
       {/* Assignees — clear chips (all shown), readable at a glance. */}
       <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
         {assigneeIds.length === 0 && (
@@ -1715,6 +1727,67 @@ function ShoppingTab(p: Props) {
 function CountdownBadge({ cd }: { cd: Countdown }) {
   const style = cd.level === 'red' ? { bg: '#FADBD8', fg: '#C0392B' } : cd.level === 'amber' ? { bg: '#FEF9E7', fg: '#B7950B' } : { bg: '#EBF5FB', fg: '#2874A6' };
   return <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ backgroundColor: style.bg, color: style.fg }}>{cd.label}</span>;
+}
+
+// Contractor-facing Properties — CONTACTS ONLY. Enforced by absence: this
+// component renders no rent/deposit/lease-date/countdown/history/attention
+// markup at all. Occupied unit → tenant name(s) + phone (tap-to-call) + email;
+// vacant unit → "vacant" (contractors may need to know a unit is empty for
+// access). No financial or lease context whatsoever.
+function PropertyContactsTab({ properties }: { properties: ContractingProperty[] }) {
+  const visible = properties.filter(p => p.active !== false);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Properties</h2>
+      </div>
+      <p className="text-xs text-gray-500 mb-3">Tenant contacts for access &amp; coordination.</p>
+      <div className="space-y-3">
+        {visible.map(pr => {
+          const units = pr.units || [];
+          return (
+            <div key={pr.id} className="bg-white rounded-lg border">
+              <div className="p-3 border-b flex items-center gap-2 min-w-0">
+                {pr.corp && <span className="text-[10px] font-black px-1.5 py-0.5 rounded" style={{ backgroundColor: PALERMO.gold, color: 'white' }}>★</span>}
+                <span className="font-bold truncate" style={{ color: PALERMO.slate }}>{pr.name}</span>
+                <span className="text-[10px] text-gray-400">{units.length} unit{units.length === 1 ? '' : 's'}</span>
+              </div>
+              <div className="divide-y">
+                {units.map(u => <UnitContactRow key={u.id} unit={u} />)}
+              </div>
+            </div>
+          );
+        })}
+        {visible.length === 0 && <div className="text-gray-500 text-sm">No properties.</div>}
+      </div>
+    </div>
+  );
+}
+
+function UnitContactRow({ unit }: { unit: ContractingUnit }) {
+  const tenants = (unit.tenancy?.tenants || []).filter(t => t.name || t.phone || t.email);
+  return (
+    <div className="p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-semibold" style={{ color: PALERMO.slate }}>{unit.name}</span>
+        {!unit.tenancy && <span className="text-[11px] font-black px-2 py-0.5 rounded" style={{ backgroundColor: '#EAECEE', color: '#7F8C8D' }}>vacant</span>}
+      </div>
+      {unit.tenancy && (
+        <div className="mt-1 space-y-1.5">
+          {tenants.length === 0 && <div className="text-xs text-gray-400">Occupied</div>}
+          {tenants.map((t, i) => (
+            <div key={i} className="text-sm">
+              <div className="font-medium text-gray-800">{t.name || <span className="text-gray-400">(tenant)</span>}</div>
+              <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs mt-0.5">
+                {t.phone && <a href={`tel:${t.phone}`} className="font-semibold underline" style={{ color: '#1E7E45' }}>📞 {t.phone}</a>}
+                {t.email && <a href={`mailto:${t.email}`} className="underline" style={{ color: '#1E7E45' }}>✉️ {t.email}</a>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function PropertyManagementTab({ properties, noticeDays, currentUser, onSaveProperty, onDeleteProperty }: { properties: ContractingProperty[]; noticeDays: number; currentUser: { id: string; name: string }; onSaveProperty: (p: ContractingProperty) => void; onDeleteProperty: (id: string) => void }) {
