@@ -90,7 +90,15 @@ export async function sendNotification(
     const catOn = pref?.categories?.[category] !== false; // default ON
     if (master && catOn) recipients.push(uid);
   }
+  return deliverTo(recipients, category, p);
+}
 
+// Delivery core — no gating. Writes each recipient's centre entry, sends to
+// their tokens, prunes dead ones, logs. Callers gate before reaching here
+// (sendNotification checks toggles/prefs; the test sender bypasses them).
+async function deliverTo(
+  recipients: string[], category: Category, p: SendPayload,
+): Promise<{recipients: number; delivered: number; pruned: number}> {
   // Centre entries (inbox even without a push token) + collect tokens.
   const tokens: string[] = [];
   const owner = new Map<string, string>();
@@ -218,6 +226,34 @@ export const pushRepairAssigned = onCall({region: REGION}, async (req) => {
   const pri = priority === "high" ? "🔴 HIGH PRIORITY · " : "";
   const res = await sendNotification(mechanicEmails, "repairs",
     {title: `${pri}Repair assigned`, body: `${title || "Repair"}${reportedBy ? ` · reported by ${reportedBy}` : ""}`, url: taskId ? `/#mechanic` : "/#mechanic"});
+  return res;
+});
+
+// Dashboard "Send test to me" → sample of a type to the caller's own devices
+// only. Bypasses the global kill switch + the caller's own prefs (so a disabled
+// or muted type is still testable), but logs like any real send.
+const TEST_SAMPLES: Record<Category, {title: string; body: string; url: string}> = {
+  announcements: {title: "📣 Announcement", body: "This is how an announcement will look.", url: "/#bulletins"},
+  repairs: {title: "🔧 Repair assigned", body: "Sample repair · reported by a crew member.", url: "/#mechanic"},
+  workorders: {title: "🏠 New work order", body: "Sample work order · a property · HIGH.", url: "/#contracting"},
+  leases: {title: "📄 Lease expiry in 60 days", body: "Sample property · Unit 1 · tenant.", url: "/#contracting"},
+  fleet: {title: "🚚 Registration expiring in 30 days", body: "Sample fleet unit.", url: "/#mechanic"},
+  policies: {title: "📝 Policy sign-off", body: "Sample policy acknowledgement.", url: "/"},
+};
+export const sendTestNotification = onCall({region: REGION}, async (req) => {
+  const email = normEmail(req.auth?.token?.email);
+  if (!email) throw new HttpsError("unauthenticated", "Sign in required.");
+  const emps = await loadEmployees();
+  const me = emps.find((e) => empEmail(e) === email);
+  const role = me?.systemRole || (email === "marcoguidopalermo@gmail.com" ? "admin" : "worker");
+  if (role !== "admin" && email !== "marcoguidopalermo@gmail.com") {
+    throw new HttpsError("permission-denied", "Admins only.");
+  }
+  const category = ((req.data || {}) as any).category as Category;
+  const sample = TEST_SAMPLES[category];
+  if (!sample) throw new HttpsError("invalid-argument", "unknown category");
+  const res = await deliverTo([email], category,
+    {title: sample.title, body: `TEST · ${sample.body}`, url: sample.url});
   return res;
 });
 

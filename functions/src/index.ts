@@ -21,6 +21,7 @@ export {
   registerPushToken,
   pushAnnouncement,
   pushRepairAssigned,
+  sendTestNotification,
   onWorkOrderWrite,
 } from "./notifications.js";
 export {jobberOAuthStart, jobberOAuthCallback} from "./jobber/oauth.js";

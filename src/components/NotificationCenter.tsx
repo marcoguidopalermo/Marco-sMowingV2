@@ -4,7 +4,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Bell } from 'lucide-react';
 import { collection, doc, onSnapshot, setDoc, query, orderBy, limit } from 'firebase/firestore';
-import { db, appId } from '../lib/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, appId, functions } from '../lib/firebase';
 import { pushSupport, enablePush, PushSupport } from '../lib/messaging';
 
 const norm = (e: string) => (e || '').trim().toLowerCase();
@@ -106,7 +107,7 @@ export default function NotificationCenter({ userEmail, isAdmin, onNavigate, sho
               </div>
             )}
 
-            {tab === 'dashboard' && isAdmin && <NotificationDashboard />}
+            {tab === 'dashboard' && isAdmin && <NotificationDashboard showToast={showToast} />}
           </div>
         </>
       )}
@@ -136,10 +137,23 @@ function EnableCard({ support, onEnable }: { support: PushSupport; onEnable: () 
 
 // ── Admin dashboard: per-type row (kill switch, counts, last-sent) + adoption.
 interface LogEntry { category: NCategory; title: string; recipientCount: number; delivered: number; at: number }
-function NotificationDashboard() {
+function NotificationDashboard({ showToast }: { showToast: (m: string) => void }) {
   const [config, setConfig] = useState<any>({});
   const [log, setLog] = useState<LogEntry[]>([]);
   const [tokenUsers, setTokenUsers] = useState(0);
+  const [testing, setTesting] = useState<string | null>(null);
+  const sendTest = async (cat: NCategory) => {
+    setTesting(cat);
+    try {
+      const res: any = await httpsCallable(functions, 'sendTestNotification')({ category: cat });
+      const d = res?.data || {};
+      showToast(d.delivered ? `Test sent — ${d.delivered} device(s)` : 'Test logged — no device registered yet (enable push first)');
+    } catch {
+      showToast('Test could not be sent.');
+    } finally {
+      setTesting(null);
+    }
+  };
   useEffect(() => {
     // Global config is a single doc at .../notificationConfig.
     const uC = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'notificationConfig', 'globals'), s => setConfig((s.data() as any) || {}));
@@ -163,9 +177,17 @@ function NotificationDashboard() {
         const last = lastOf(c.key);
         return (
           <div key={c.key} className={`border rounded-lg p-2 mb-2 ${c.dormant ? 'opacity-50' : ''}`}>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <span className="font-bold text-sm text-slate-800">{c.label}{c.dormant ? ' · not yet active' : ''}</span>
-              <label className="text-[10px] font-black uppercase flex items-center gap-1">{on ? 'on' : 'off'}<input type="checkbox" disabled={c.dormant} checked={on} onChange={e => setGlobal(c.key, e.target.checked)} /></label>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={c.dormant || testing === c.key}
+                  onClick={() => sendTest(c.key)}
+                  className="text-[10px] font-black uppercase tracking-wider px-2 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 disabled:opacity-40"
+                >{testing === c.key ? '…' : 'Test to me'}</button>
+                <label className="text-[10px] font-black uppercase flex items-center gap-1">{on ? 'on' : 'off'}<input type="checkbox" disabled={c.dormant} checked={on} onChange={e => setGlobal(c.key, e.target.checked)} /></label>
+              </div>
             </div>
             {!c.dormant && (
               <div className="text-[11px] text-gray-500 mt-1">
