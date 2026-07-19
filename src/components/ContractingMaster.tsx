@@ -21,6 +21,7 @@ import {
   PALERMO, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor,
   projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
   projectBillables, projectCompletionPct, woAssignees, woIsAssignedTo,
+  reportIsDeletable,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
@@ -48,6 +49,9 @@ interface Props {
   onDeletePropertyDoc: (id: string) => void;
   onSaveSuppliers: (list: ContractingSupplier[]) => void;
   onDiscardReport: (reportId: string) => void;
+  onDeleteReport: (reportId: string) => void;
+  // Payroll punched hours (read-only reference for the open-report panel).
+  payrollTimeEntries: TimeEntry[];
   onLogEdit: (detail: string) => void;
   onSaveProject: (p: ContractingProject) => void;
   onDeleteProject: (id: string) => void;
@@ -900,14 +904,75 @@ function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingP
             {p.reports.filter(r => r.status === 'invoiced').sort((a, b) => (b.endAt || 0) - (a.endAt || 0)).map(r => {
               const proj = p.projects.find(x => x.id === r.projectId);
               const minted = invoiceForReport(r.id);
+              const del = reportIsDeletable(r.id, p.invoices);
               return (
-                <div key={r.id} className="bg-white rounded border p-2 text-sm flex items-center justify-between">
-                  <span>{proj?.name} · Report #{r.reportNumber} · {fmtDate(r.startAt)}–{fmtDate(r.endAt)}{minted && <button onClick={() => p.nav.openInvoice(minted.id)} className="ml-2 text-xs underline decoration-dotted" style={{ color: PALERMO.slate }}>→ {minted.number}</button>}</span>
-                  <b style={{ color: PALERMO.slate }}>{money(r.snapshot?.total || 0)}</b>
+                <div key={r.id} className="bg-white rounded border p-2 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-sm">{proj?.name} · Report #{r.reportNumber}{minted && <button onClick={() => p.nav.openInvoice(minted.id)} className="ml-2 text-xs underline decoration-dotted" style={{ color: PALERMO.slate }}>→ {minted.number}</button>}</div>
+                    {/* Billing-period range — prominent, readable at a glance. */}
+                    <div className="text-base font-bold" style={{ color: PALERMO.slate }}>{fmtDate(r.startAt)} – {fmtDate(r.endAt)}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <b style={{ color: PALERMO.slate }}>{money(r.snapshot?.total || 0)}</b>
+                    {canManage && (del.deletable
+                      ? <button onClick={() => confirm(`Delete Report #${r.reportNumber} (${fmtDate(r.startAt)}–${fmtDate(r.endAt)})? This cannot be undone.`) && p.onDeleteReport(r.id)} className="text-red-500 text-sm font-semibold px-1" title="Delete report">Delete</button>
+                      : <span className="text-[10px] text-gray-400 text-right leading-tight" title="A live invoice backs this report">void {del.blockedBy}<br />to delete</span>)}
+                  </div>
                 </div>
               );
             })}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Reference-only punched-hours panel on the open report (Marco/Tony). READS
+// payroll timeEntries; never writes them. Report math is unchanged by its
+// presence. Shows each contractor's punched hours in the report's date range
+// (per day + period total) beside the BILLED total, with a neutral delta.
+function TimeMasterRefPanel({ report, contractors, payrollTimeEntries, onUsePunched }: { report: ContractingProgressReport; contractors: Employee[]; payrollTimeEntries: TimeEntry[]; onUsePunched: (contractorId: string, hours: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const startTs = report.startAt;
+  const endTs = report.endAt || Date.now();
+  const dur = (e: TimeEntry) => { const end = e.clockOut ? new Date(e.clockOut).getTime() : Date.now(); return Math.max(0, (end - new Date(e.clockIn).getTime()) / 3_600_000); };
+  const emailOf = (c: Employee) => (c.linkedUserEmail || c.email || '').toLowerCase();
+  const billedByC = new Map<string, number>();
+  report.manualTime.forEach(t => billedByC.set(t.contractorId, (billedByC.get(t.contractorId) || 0) + (Number(t.hours) || 0)));
+  const rows = contractors.map(c => {
+    const email = emailOf(c);
+    const entries = payrollTimeEntries.filter(e => (e.userEmail || '').toLowerCase() === email && (() => { const t = new Date(e.clockIn).getTime(); return t >= startTs && t <= endTs; })());
+    const byDay = new Map<string, number>();
+    entries.forEach(e => { const d = new Date(e.clockIn).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }); byDay.set(d, (byDay.get(d) || 0) + dur(e)); });
+    const punched = entries.reduce((s, e) => s + dur(e), 0);
+    const billed = billedByC.get(c.id) || 0;
+    return { c, punched, billed, byDay: [...byDay.entries()] };
+  }).filter(r => r.punched > 0 || r.billed > 0);
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-2 rounded border" style={{ borderColor: '#D5DBDB' }}>
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-2 py-1.5 text-[11px] font-black uppercase tracking-wide" style={{ color: PALERMO.slate }}>
+        <span>⏱ TimeMaster hours this period</span><span>{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="px-2 pb-2 space-y-2">
+          <div className="text-[10px] text-gray-400">Punched hours — reference only, never auto-billed. Deductions are your call.</div>
+          {rows.map(r => {
+            const delta = round2(r.punched - r.billed);
+            return (
+              <div key={r.c.id} className="border-t pt-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-sm" style={{ color: PALERMO.slate }}>{r.c.name}</span>
+                  <span className="flex items-center gap-2">
+                    <span className="text-xs text-gray-600">punched <b>{round2(r.punched)}h</b> · billed <b>{round2(r.billed)}h</b> · <span style={{ color: '#7F8C8D' }}>{delta >= 0 ? '+' : ''}{delta}h</span></span>
+                    {r.punched > 0 && <button onClick={() => onUsePunched(r.c.id, round2(r.punched))} className="text-[11px] px-2 py-0.5 rounded border font-semibold whitespace-nowrap" style={{ color: PALERMO.slate }}>use punched</button>}
+                  </span>
+                </div>
+                {r.byDay.length > 0 && <div className="text-[11px] text-gray-500 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">{r.byDay.map(([d, h]) => <span key={d}>{d}: {round2(h)}h</span>)}</div>}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -922,6 +987,7 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
   const manualRate = (t: ContractingTimeEntry) => (t.rateOverride != null && t.rateOverride > 0) ? t.rateOverride : (p.rateOverrides[t.contractorId] ?? rateFor(t.billingRole, rc));
 
   const [batchOpen, setBatchOpen] = useState(false);
+  const [batchPrefill, setBatchPrefill] = useState<{ contractorId: string; hours: number } | null>(null);
   const [editManual, setEditManual] = useState<ContractingTimeEntry | null>(null);
   const [addingMaterial, setAddingMaterial] = useState(false);
   const [editReceipt, setEditReceipt] = useState<ContractingReceipt | null>(null);
@@ -937,9 +1003,13 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
 
   return (
     <div className="mt-2 border-t pt-2">
-      <div className="flex items-center justify-between">
+      <div className="flex items-end justify-between">
         <span className="text-xs text-gray-500">Report #{report.reportNumber}</span>
-        <span className="text-xs text-gray-400">open since {fmtDate(report.startAt)}{canManage && <button onClick={() => setEditingStart(true)} className="ml-1 underline decoration-dotted" style={{ color: PALERMO.slate }}>edit</button>}</span>
+        {/* Billing-period start — prominent, readable at a glance on phone. */}
+        <span className="text-right">
+          <span className="block text-[10px] text-gray-400 uppercase tracking-wide leading-none">Open since</span>
+          <span className="text-base font-bold" style={{ color: PALERMO.slate }}>{fmtDate(report.startAt)}{canManage && <button onClick={() => setEditingStart(true)} className="ml-1.5 text-xs font-normal underline decoration-dotted" style={{ color: PALERMO.slate }}>edit</button>}</span>
+        </span>
       </div>
 
       {/* Labour — batch "+ Add hours" lines (editable workbench) */}
@@ -957,6 +1027,9 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
           </div>
         ); })}
       </div>
+
+      {/* TimeMaster punched-hours reference (Marco/Tony only) */}
+      {canManage && <TimeMasterRefPanel report={report} contractors={p.contractors} payrollTimeEntries={p.payrollTimeEntries} onUsePunched={(cid, hrs) => { setBatchPrefill({ contractorId: cid, hours: hrs }); setBatchOpen(true); }} />}
 
       {/* Materials */}
       <div className="mt-2">
@@ -992,7 +1065,7 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
         </div>
       )}
 
-      {batchOpen && <BatchHoursForm report={report} contractors={p.contractors} rates={rc} rateOverrides={p.rateOverrides} currentUser={p.currentUser} onClose={() => setBatchOpen(false)} onSave={rows => { saveReport({ manualTime: [...report.manualTime, ...rows] }); p.onLogEdit(`Added ${rows.length} hours line(s) to report #${report.reportNumber}`); setBatchOpen(false); }} />}
+      {batchOpen && <BatchHoursForm report={report} contractors={p.contractors} rates={rc} rateOverrides={p.rateOverrides} currentUser={p.currentUser} prefill={batchPrefill} onClose={() => { setBatchOpen(false); setBatchPrefill(null); }} onSave={rows => { saveReport({ manualTime: [...report.manualTime, ...rows] }); p.onLogEdit(`Added ${rows.length} hours line(s) to report #${report.reportNumber}`); setBatchOpen(false); setBatchPrefill(null); }} />}
       {editManual && <ManualLineEditForm line={editManual} rates={rc} rateOverrides={p.rateOverrides} onClose={() => setEditManual(null)} onSave={upd => { saveReport({ manualTime: report.manualTime.map(x => x.id === upd.id ? upd : x) }); p.onLogEdit(`Edited ${upd.contractorName} hours line on report #${report.reportNumber}`); setEditManual(null); }} />}
       {addingMaterial && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} addAnother onClose={() => setAddingMaterial(false)} onSave={rc2 => saveReport({ receipts: [...report.receipts, rc2] })} />}
       {editReceipt && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} initial={editReceipt} onClose={() => setEditReceipt(null)} onSave={rc2 => { saveReport({ receipts: report.receipts.map(x => x.id === rc2.id ? rc2 : x) }); p.onLogEdit(`Edited material "${rc2.description}" on report #${report.reportNumber}`); setEditReceipt(null); }} />}
@@ -1063,12 +1136,18 @@ function ReceiptForm({ project, uploadedBy, currentUser, initial, addAnother, on
 
 // Batch end-of-day hours entry: a date + rows of [contractor | hours | rate].
 // Records each row as a manual time line on the open report.
-function BatchHoursForm({ report, contractors, rates, rateOverrides, currentUser, onClose, onSave }: { report: ContractingProgressReport; contractors: Employee[]; rates: ContractingRateCard; rateOverrides: Record<string, number>; currentUser: { id: string; name: string }; onClose: () => void; onSave: (rows: ContractingTimeEntry[]) => void }) {
+function BatchHoursForm({ report, contractors, rates, rateOverrides, currentUser, prefill, onClose, onSave }: { report: ContractingProgressReport; contractors: Employee[]; rates: ContractingRateCard; rateOverrides: Record<string, number>; currentUser: { id: string; name: string }; prefill?: { contractorId: string; hours: number } | null; onClose: () => void; onSave: (rows: ContractingTimeEntry[]) => void }) {
   const [date, setDate] = useState(dateInputVal(Date.now()));
   const defaultRate = (emp?: Employee) => emp ? (rateOverrides[emp.id] ?? rateFor((emp.contractingBillingRole || 'general_labour') as ContractingBillingRole, rates)) : 0;
   type RowT = { key: string; contractorId: string; hours: string; rate: string };
   const mkRow = (): RowT => { const c = contractors[0]; return { key: uid('row'), contractorId: c?.id || '', hours: '', rate: String(defaultRate(c) || '') }; };
-  const [rows, setRows] = useState<RowT[]>([mkRow()]);
+  // One-tap assist: seed the first row with a contractor's punched total (still
+  // fully editable — Tony adjusts hours/rate for deductions before saving).
+  const initRows = (): RowT[] => {
+    if (prefill) { const c = contractors.find(x => x.id === prefill.contractorId) || contractors[0]; return [{ key: uid('row'), contractorId: c?.id || '', hours: prefill.hours ? String(prefill.hours) : '', rate: String(defaultRate(c) || '') }]; }
+    return [mkRow()];
+  };
+  const [rows, setRows] = useState<RowT[]>(initRows);
   const setRow = (key: string, patch: Partial<RowT>) => setRows(rs => rs.map(r => r.key === key ? { ...r, ...patch } : r));
   const filled = rows.filter(r => r.contractorId && Number(r.hours) > 0);
   const total = filled.reduce((s, r) => s + Number(r.hours) * (Number(r.rate) || 0), 0);
@@ -1363,7 +1442,7 @@ function InvoiceView({ invoice, project, report, canSeeInternal, onClose, onGoTo
           <div className="font-bold text-base" style={{ color: PALERMO.slate }}>Palermo's Contracting</div>
           <div className="text-gray-600">{project?.name}{project?.client ? ` — ${project.client.name}` : ''}</div>
           <div className="mt-2">Invoice <b>{invoice.number}</b> · {fmtDate(invoice.issuedAt)}</div>
-          {invoice.periodStart && <div className="text-gray-600">Period {fmtDate(invoice.periodStart)}–{fmtDate(invoice.periodEnd)}</div>}
+          {invoice.periodStart && <div className="mt-0.5"><span className="text-[10px] text-gray-400 uppercase tracking-wide">Billing period</span><div className="text-base font-bold" style={{ color: PALERMO.slate }}>{fmtDate(invoice.periodStart)} – {fmtDate(invoice.periodEnd)}</div></div>}
           <div className="mt-2">
             <div className="font-semibold">Scope of work</div>
             <div className="text-gray-700">{invoice.scopeDescription || (snap ? 'Labour and materials per progress report.' : 'Per agreement.')}</div>

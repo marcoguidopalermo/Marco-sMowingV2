@@ -63,7 +63,7 @@ import TaskDetailModal from './components/TaskDetailModal';
 import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
-import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, planPhaseMerge } from './lib/contracting';
+import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, reportIsDeletable, planPhaseMerge } from './lib/contracting';
 import type { ContractingProperty, ContractingSupplier } from './types';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabel, payDateLabel } from './lib/payPeriods';
 import { noticeDaysOrDefault } from './lib/propertyMgmt';
@@ -2397,6 +2397,20 @@ export default function App() {
     await deleteDoc(doc(roleColl('contractingProgressReports'), reportId));
     await appendContractingAudit('report.discard', `Report #${report.reportNumber} closed without invoicing (empty)`);
     showToastMsg('Period discarded.');
+  };
+  // DELETE a closed (invoiced) report — guarded. Allowed only when no LIVE
+  // invoice backs it (voided invoice, or closed without invoicing: test data /
+  // mistakes). A live minted invoice blocks: void it first (that flow reopens
+  // the report), then delete. Confirm-gated in the UI; audited here.
+  const deleteContractingReport = async (reportId: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const report = subContractingProgressReportsRef.current[reportId];
+    if (!report) { showToastMsg('Report not found.'); return; }
+    const guard = reportIsDeletable(reportId, Object.values(subContractingInvoicesRef.current));
+    if (!guard.deletable) { showToastMsg(`Void ${guard.blockedBy} first, then delete.`); return; }
+    await deleteDoc(doc(roleColl('contractingProgressReports'), reportId));
+    await appendContractingAudit('report.delete', `Report #${report.reportNumber} deleted${guard.blockedBy ? '' : ' (no live invoice)'}`);
+    showToastMsg(`Report #${report.reportNumber} deleted.`);
   };
   // Light-touch edit log for open-report workbench actions (who/what/when).
   const logContractingEdit = async (detail: string) => {
@@ -4850,6 +4864,8 @@ export default function App() {
           onSaveRates={saveContractingRates}
           onSaveSuppliers={saveContractingSuppliers}
           onDiscardReport={discardContractingReport}
+          onDeleteReport={deleteContractingReport}
+          payrollTimeEntries={appData.timeEntries || []}
           onLogEdit={logContractingEdit}
           onSaveProject={saveContractingProject}
           onDeleteProject={deleteContractingProject}

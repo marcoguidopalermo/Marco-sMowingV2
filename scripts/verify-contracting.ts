@@ -1,6 +1,6 @@
 // Verify ContractingMaster billing math against the exact progress-report
 // example. Run: npx tsx scripts/verify-contracting.ts
-import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge, projectCompletionPct, woAssignees, woIsAssignedTo } from '../src/lib/contracting';
+import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, projectIsRemovable, reportIsDeletable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge, projectCompletionPct, woAssignees, woIsAssignedTo } from '../src/lib/contracting';
 
 const rates = DEFAULT_CONTRACTING_RATES;
 let pass = 0, fail = 0;
@@ -63,6 +63,13 @@ ok('project with an invoice is NOT removable', projectIsRemovable('p', [inv1], [
 ok('project with a report is NOT removable', projectIsRemovable('p', [], [{ projectId: 'p' } as any], []) === false);
 ok('project with a time entry is NOT removable', projectIsRemovable('p', [], [], [{ projectId: 'p' } as any]) === false);
 ok('other project\'s attachments do not block', projectIsRemovable('p', [{ projectId: 'other' } as any], [], []) === true);
+
+// reportIsDeletable: live invoice blocks; voided or no-invoice → deletable.
+ok('report with no invoice IS deletable', reportIsDeletable('r1', []).deletable === true);
+ok('report backing a LIVE invoice is NOT deletable', reportIsDeletable('r1', [{ reportId: 'r1', number: 'PROG-005' } as any]).deletable === false);
+ok('blocked report names the invoice to void', reportIsDeletable('r1', [{ reportId: 'r1', number: 'PROG-005' } as any]).blockedBy === 'PROG-005');
+ok('report whose invoice is VOIDED IS deletable', reportIsDeletable('r1', [{ reportId: 'r1', number: 'PROG-005', voided: true } as any]).deletable === true);
+ok('another report\'s invoice does not block', reportIsDeletable('r1', [{ reportId: 'r2', number: 'PROG-006' } as any]).deletable === true);
 
 console.log('\n=== invoice lifecycle: minted → sent → paid + due date ===');
 const D2=86_400_000;

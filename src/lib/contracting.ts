@@ -262,6 +262,18 @@ export function projectIsRemovable(projectId: string, invoices: ContractingInvoi
   return true;
 }
 
+// A CLOSED (invoiced) report may be deleted only when no LIVE invoice backs it:
+// either it was closed without invoicing (no invoice doc), or its invoice has
+// been voided. A live minted/sent/paid invoice blocks deletion — the path is to
+// void that invoice first (which reopens/folds the report), then delete.
+// Returns { deletable } and, when blocked, the invoice number to void.
+export function reportIsDeletable(
+  reportId: string, invoices: ContractingInvoice[],
+): { deletable: boolean; blockedBy?: string } {
+  const live = invoices.find(i => i.reportId === reportId && !i.voided);
+  return live ? { deletable: false, blockedBy: live.number } : { deletable: true };
+}
+
 // Invoice lifecycle stage. MINTED (awaitingSend, not yet sent) → SENT → PAID.
 // Legacy/seeded invoices (no awaitingSend flag) default to SENT — they were
 // issued.
