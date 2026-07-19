@@ -404,6 +404,74 @@ export const ROLE_PERMISSIONS = {
     canViewContracting: true,
     canManageContracting: false,
   },
+  // Property Manager (Linda) — properties/units/tenancies + work orders +
+  // Material only. No contracting billing, no Marco's-side access, no clock.
+  property_manager: {
+    canViewSchedule: false,
+    canCreateCrews: false,
+    canEditAnyCrew: false,
+    canEditOwnCrew: false,
+    canDispatchAnyCrew: false,
+    canDispatchOwnCrew: false,
+    canDeleteCrews: false,
+    canOverrideWarnings: false,
+    canCopyDay: false,
+    canCloseOutCrew: false,
+    canCloseOutOwnCrew: false,
+    canViewMechanicMaster: false,
+    canCreateRepairs: false,
+    canEditRepairs: false,
+    canCompleteRepairs: false,
+    canDeleteRepairs: false,
+    canDeleteMechanicTask: false,
+    canDeleteRepairLog: false,
+    canDeleteInspectionLog: false,
+    canAddTaskNotes: false,
+    canDeleteAnyTaskNote: false,
+    canViewPerformance: false,
+    canEditAnyPerformance: false,
+    canEditOwnPerformance: false,
+    canApprovePerformance: false,
+    canAddUnscheduledCrew: false,
+    canAddDeductions: false,
+    canAddDeductionsOwnCrew: false,
+    canViewAdvancedReports: false,
+    canViewAllTimeMaster: false,
+    canViewOwnTimeMaster: false,
+    canEditAnyTimeEntry: false,
+    canExportTimeCSV: false,
+    canClockInOut: false,
+    canPostBulletins: false,
+    canDeleteBulletins: false,
+    canViewBulletins: false,
+    canUseAIInsight: false,
+    canViewManageResources: false,
+    canEditPersonnel: false,
+    canEditFleet: false,
+    canDeleteFleet: false,
+    canEditInventory: false,
+    canEditAppSettings: false,
+    canSubmitInspections: false,
+    canViewInspectionLog: false,
+    canViewAllInspections: false,
+    canPrintInspections: false,
+    canManageJobberIntegration: false,
+    canTriggerJobberSync: false,
+    canViewOwnCrewLive: false,
+    canMarkMultiDayCompletion: false,
+    canOverrideJobType: false,
+    canViewMultiDayHistory: false,
+    canViewPerfActivityLog: false,
+    canViewTaskMaster: false,
+    canCreateTasks: false,
+    canViewRoleMaster: false,
+    canManageRoleMaster: false,
+    canViewSalesMaster: false,
+    canApproveTimeOff: false,
+    canViewDashboard: false,
+    canViewContracting: true,
+    canManageContracting: false,
+  },
 } as const;
 
 export type Permission = keyof typeof ROLE_PERMISSIONS['admin'];
@@ -503,6 +571,9 @@ export function defaultLandingView(role: UserRole | null | undefined): AppView {
       return 'mymechanic';
     case 'contractor':
       // Palermo's contractors only ever see ContractingMaster.
+      return 'contracting';
+    case 'property_manager':
+      // Linda lands on the Palermo's portal (property management surface).
       return 'contracting';
     default:
       return 'schedule';

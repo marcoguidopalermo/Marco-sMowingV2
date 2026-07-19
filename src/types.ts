@@ -1,4 +1,4 @@
-export type UserRole = 'admin' | 'manager' | 'foreman' | 'worker' | 'mechanic' | 'contractor';
+export type UserRole = 'admin' | 'manager' | 'foreman' | 'worker' | 'mechanic' | 'contractor' | 'property_manager';
 
 export type ManagedDivision = 'lawn' | 'small' | 'large' | 'all';
 
@@ -873,13 +873,42 @@ export interface AppSettings {
   // TimeMaster bi-weekly pay-period anchor/cadence (admin-editable). Absent →
   // DEFAULT_PAY_PERIOD from lib/payPeriods. Display/range-selection only.
   payPeriod?: { anchorStart: string; lengthDays: number; payLagDays: number };
+  // Month-to-month notice length in days (default 60), admin-editable.
+  contractingNoticeDays?: number;
 }
 
 // ══ ContractingMaster (Palermo's Contracting) types ═══════════════════════
 export type ContractingBillingRole = 'gc_pm' | 'skilled_carpenter' | 'general_labour';
 export interface ContractingRateCard { gc_pm: number; skilled_carpenter: number; general_labour: number; }
 
-export interface ContractingProperty { id: string; name: string; corp?: boolean; notes?: string; active?: boolean; }
+// ── Property management (v2): PROPERTY → UNITS → TENANCIES (multi-payer) ────
+// Reference layer only — NO payment tracking, bills, or ledgers.
+export interface ContractingTenant { name: string; phone?: string; email?: string; rentAmount?: number; }
+export type ContractingTenancyStatus = 'fixed_term' | 'month_to_month';
+export interface ContractingTenancy {
+  id: string;
+  status: ContractingTenancyStatus;
+  leaseStart?: string;             // YYYY-MM-DD
+  leaseEnd?: string;               // fixed_term expiry
+  noticeGivenAt?: string;          // M2M notice date (starts the countdown)
+  noticeBy?: string;
+  computedEnd?: string;            // M2M: notice + noticeDays (derived, stored)
+  depositNote?: string;            // amount + date + reference text
+  notes?: string;
+  tenants: ContractingTenant[];    // rent lives per tenant; total DERIVES (sum)
+  createdAt?: number;
+  endedAt?: number;
+  endedBy?: string;
+  audit?: { at: number; by: string; action: string }[];
+}
+export interface ContractingUnit {
+  id: string;
+  name: string;                    // "Main floor", "Unit 2", "Basement"
+  notes?: string;
+  tenancy?: ContractingTenancy;    // at most one ACTIVE (absent = VACANT)
+  history?: ContractingTenancy[];  // ended tenancies (kept per unit)
+}
+export interface ContractingProperty { id: string; name: string; corp?: boolean; notes?: string; active?: boolean; units?: ContractingUnit[]; }
 export interface ContractingSupplier { id: string; name: string; active?: boolean; }
 export type ContractingPhaseType = 'fixed' | 'tm';
 // Audit trail for a fixed-price change on a phase (who/when/from→to).
@@ -1020,6 +1049,7 @@ export interface ContractingWorkOrder {
   assigneeNames?: string[];       // denormalized names (parallel to assigneeIds)
   assigneeId?: string;            // DEPRECATED single-assignee (read-migrated → assigneeIds)
   assigneeName?: string;          // DEPRECATED
+  unitId?: string;                // optional UNIT tag (property-level orders leave blank)
   archived?: boolean;             // hidden from default list (declutter)
   createdBy?: { id: string; name: string };
   createdAt?: number;
@@ -1484,6 +1514,8 @@ export interface AppData {
   contractingWorkOrders?: Record<string, ContractingWorkOrder>;
   contractingShoppingList?: Record<string, ContractingShoppingItem>;
   contractingPersonalItems?: Record<string, ContractingPersonalItem>;
+  // Property management (v2) — full hierarchy off the main doc.
+  contractingPropertyDocs?: Record<string, ContractingProperty>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of

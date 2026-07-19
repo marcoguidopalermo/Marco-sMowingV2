@@ -66,6 +66,7 @@ import ContractingMaster from './components/ContractingMaster';
 import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, planPhaseMerge } from './lib/contracting';
 import type { ContractingProperty, ContractingSupplier } from './types';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabel, payDateLabel } from './lib/payPeriods';
+import { noticeDaysOrDefault } from './lib/propertyMgmt';
 import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
 import RequestTimeOffModal, { type RequestTimeOffSubmit } from './components/RequestTimeOffModal';
@@ -218,6 +219,7 @@ export default function App() {
   const subContractingWorkOrdersRef = useRef<Record<string, ContractingWorkOrder>>({});
   const subContractingShoppingListRef = useRef<Record<string, ContractingShoppingItem>>({});
   const subContractingPersonalItemsRef = useRef<Record<string, ContractingPersonalItem>>({});
+  const subContractingPropertyDocsRef = useRef<Record<string, ContractingProperty>>({});
   const mergePerformance = (
     docPerf: Record<string, Record<string, PerformanceLog>>,
     monthOverlay: Record<string, Record<string, PerformanceLog>>,
@@ -901,6 +903,7 @@ export default function App() {
           contractingWorkOrders: subContractingWorkOrdersRef.current,
           contractingShoppingList: subContractingShoppingListRef.current,
           contractingPersonalItems: subContractingPersonalItemsRef.current,
+          contractingPropertyDocs: subContractingPropertyDocsRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -1183,7 +1186,8 @@ export default function App() {
     const c5 = mk('contractingWorkOrders', subContractingWorkOrdersRef, 'contractingWorkOrders');
     const c6 = mk('contractingShoppingList', subContractingShoppingListRef, 'contractingShoppingList');
     const c7 = mk('contractingPersonalItems', subContractingPersonalItemsRef, 'contractingPersonalItems');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); };
+    const c8 = mk('contractingPropertyDocs', subContractingPropertyDocsRef, 'contractingPropertyDocs');
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); };
   }, [user]);
 
   useEffect(() => {
@@ -2254,17 +2258,34 @@ export default function App() {
     };
   })();
   const contractingRates: ContractingRateCard = contractingRatesOrDefault(appData.settings?.contractingRates);
-  const contractingProperties: ContractingProperty[] = propertiesOrDefault(appData.settings?.contractingProperties);
   const contractingSuppliers: ContractingSupplier[] = suppliersOrDefault(appData.settings?.contractingSuppliers);
+  const contractingNoticeDays = noticeDaysOrDefault(appData.settings);
+  // Property management (v2). Prefer the subcollection docs (full hierarchy);
+  // fall back to the legacy settings list (each given a default unit) until the
+  // one-time migration seeds the subcollection.
+  const propertyDocs = Object.values(appData.contractingPropertyDocs || {});
+  const contractingProperties: ContractingProperty[] = propertyDocs.length
+    ? propertyDocs
+    : propertiesOrDefault(appData.settings?.contractingProperties).map(p => ({ ...p, units: [{ id: `def-unit-${p.id}`, name: 'Whole property' }] }));
+  // Property management is admin + contracting manager (Tony) + property
+  // manager (Linda). Contractors NEVER manage or see tenant/lease data.
+  const isPropertyManager = effectiveRole === 'property_manager';
+  const canManageProperties = canManageContracting || isPropertyManager;
   const saveContractingRates = async (r: ContractingRateCard) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingRates: r } });
     showToastMsg('Rate card saved.');
   };
-  const saveContractingProperties = async (list: ContractingProperty[]) => {
-    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
-    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingProperties: list } });
-    showToastMsg('Properties saved.');
+  const saveContractingPropertyDoc = async (p: ContractingProperty) => {
+    if (!canManageProperties) { showToastMsg(PERMISSION_DENIED); return; }
+    await setDoc(doc(roleColl('contractingPropertyDocs'), p.id), cleanRM(p));
+  };
+  const deleteContractingPropertyDoc = async (id: string) => {
+    if (!canManageProperties) { showToastMsg(PERMISSION_DENIED); return; }
+    const p = subContractingPropertyDocsRef.current[id];
+    await deleteDoc(doc(roleColl('contractingPropertyDocs'), id));
+    await appendContractingAudit('property.delete', `${p?.name || id}`);
+    showToastMsg('Property deleted.');
   };
   const saveContractingSuppliers = async (list: ContractingSupplier[]) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
@@ -4754,8 +4775,12 @@ export default function App() {
           isAdmin={isAdmin}
           canManage={canManageContracting}
           uploadedBy={{ email: displayEmail, name: displayName }}
+          canManageProperties={canManageProperties}
+          isPropertyManager={isPropertyManager}
+          noticeDays={contractingNoticeDays}
+          onSavePropertyDoc={saveContractingPropertyDoc}
+          onDeletePropertyDoc={deleteContractingPropertyDoc}
           onSaveRates={saveContractingRates}
-          onSaveProperties={saveContractingProperties}
           onSaveSuppliers={saveContractingSuppliers}
           onDiscardReport={discardContractingReport}
           onLogEdit={logContractingEdit}

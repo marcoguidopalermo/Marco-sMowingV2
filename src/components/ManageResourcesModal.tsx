@@ -382,6 +382,7 @@ export default function ManageResourcesModal({
                           <option value="worker">Worker</option>
                           <option value="mechanic">Mechanic</option>
                           <option value="contractor">Contractor (Palermo's)</option>
+                          <option value="property_manager">Property Manager (Palermo's)</option>
                         </select>
                       </div>
                       <div className="w-44">

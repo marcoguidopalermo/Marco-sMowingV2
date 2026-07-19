@@ -7,7 +7,12 @@ import {
   ContractingProgressReport, ContractingReceipt, ContractingInvoice, ContractingWorkOrder,
   ContractingShoppingItem, ContractingRateCard, ContractingBillingRole, ContractingStatus,
   ContractingProperty, ContractingSupplier, ContractingPersonalItem, ContractingPhaseType, Employee, StoredFile, TimeEntry,
+  ContractingUnit, ContractingTenancy, ContractingTenant, ContractingTenancyStatus,
 } from '../types';
+import {
+  tenancyCountdown, tenancyMonthlyTotal, unitIsVacant, leasesNeedingAttention, computeNoticeEnd,
+  fmtYmd, msToYmd, Countdown, UnitRow,
+} from '../lib/propertyMgmt';
 import {
   HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled,
   computeReportTotals, labourForReport, phaseBillables, phaseReadyToBill, withHst,
@@ -32,9 +37,13 @@ interface Props {
   currentUser: { id: string; name: string };
   isAdmin: boolean;
   canManage: boolean;
+  canManageProperties: boolean;   // admin + Tony + Linda (property manager)
+  isPropertyManager: boolean;     // Linda — restricted surface
+  noticeDays: number;
   uploadedBy: { email: string; name: string };
   onSaveRates: (r: ContractingRateCard) => void;
-  onSaveProperties: (list: ContractingProperty[]) => void;
+  onSavePropertyDoc: (p: ContractingProperty) => void;
+  onDeletePropertyDoc: (id: string) => void;
   onSaveSuppliers: (list: ContractingSupplier[]) => void;
   onDiscardReport: (reportId: string) => void;
   onLogEdit: (detail: string) => void;
@@ -85,11 +94,11 @@ const STATUS_LABEL: Record<ContractingStatus, string> = { planned: 'Planned', in
 type Tab = 'home' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'rates';
 
 export default function ContractingMaster(props: Props) {
-  const { canManage, isAdmin, currentUser } = props;
+  const { canManage, isAdmin, currentUser, isPropertyManager, canManageProperties } = props;
   const rates = ratesOrDefault(props.rates);
-  // Contractors land on HOME (clock + hours + lists), then Work Orders ·
-  // Material. Managers open on Projects.
-  const [tab, setTab] = useState<Tab>(canManage ? 'projects' : 'home');
+  // Contractors → Home; managers → Projects; property manager (Linda) →
+  // Properties (restricted surface).
+  const [tab, setTab] = useState<Tab>(canManage ? 'projects' : isPropertyManager ? 'properties' : 'home');
 
   const projects = useMemo(() => Object.values(props.projects).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)), [props.projects]);
   const invoices = useMemo(() => Object.values(props.invoices), [props.invoices]);
@@ -122,13 +131,13 @@ export default function ContractingMaster(props: Props) {
   // FINANCIALS (projects, reports, invoices, billables, rate card) are
   // admin + contracting-manager ONLY — enforced by absence (not rendered).
   const tabs: { id: Tab; label: string; show: boolean }[] = [
-    { id: 'home', label: 'Home', show: true },
+    { id: 'home', label: 'Home', show: !canManage && !isPropertyManager },
     { id: 'projects', label: 'Projects', show: canManage },
     { id: 'reports', label: 'Reports', show: canManage },
     { id: 'invoices', label: 'Invoices', show: canManage },
+    { id: 'properties', label: 'Properties', show: canManageProperties },
     { id: 'workorders', label: 'Work Orders', show: true },
     { id: 'shopping', label: 'Material', show: true },
-    { id: 'properties', label: 'Properties', show: canManage },
     { id: 'rates', label: 'Rates', show: canManage },
   ];
 
@@ -144,7 +153,7 @@ export default function ContractingMaster(props: Props) {
           <div className="w-9 h-9 rounded flex items-center justify-center font-black text-lg" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>P</div>
           <div>
             <div className="text-white font-bold text-lg leading-tight">Palermo's Contracting</div>
-            <div className="text-xs" style={{ color: PALERMO.gold }}>{canManage ? 'ContractingMaster · T&M + fixed billing' : 'Work Orders · Material'}</div>
+            <div className="text-xs" style={{ color: PALERMO.gold }}>{canManage ? 'ContractingMaster · T&M + fixed billing' : isPropertyManager ? 'Property Management' : 'Work Orders · Material'}</div>
           </div>
         </div>
       </div>
@@ -170,11 +179,11 @@ export default function ContractingMaster(props: Props) {
         {tab === 'home' && <HomeTab {...props} hoursCards={props.hoursCards} personalItems={props.personalItems} shoppingList={props.shoppingList} workOrders={props.workOrders} onGoToMyWorkOrders={goToMyWorkOrders} />}
         {tab === 'workorders' && <WorkOrdersTab {...props} mineOnly={woMineOnly} setMineOnly={setWoMineOnly} propFilter={woProperty} setPropFilter={setWoProperty} priorityFilter={woPriority} setPriorityFilter={setWoPriority} />}
         {tab === 'shopping' && <ShoppingTab {...props} />}
-        {tab === 'properties' && canManage && <PropertiesTab properties={props.properties} onSaveProperties={props.onSaveProperties} />}
+        {tab === 'properties' && canManageProperties && <PropertyManagementTab properties={props.properties} noticeDays={props.noticeDays} currentUser={currentUser} onSaveProperty={props.onSavePropertyDoc} onDeleteProperty={props.onDeletePropertyDoc} />}
         {tab === 'rates' && canManage && <RatesTab rates={rates} onSaveRates={props.onSaveRates} />}
       </div>
       <div className="text-center text-[11px] text-gray-400 pb-4">
-        {isAdmin ? 'Admin' : canManage ? 'Contracting Manager' : 'Contractor'} · {currentUser.name}
+        {isAdmin ? 'Admin' : canManage ? 'Contracting Manager' : isPropertyManager ? 'Property Manager' : 'Contractor'} · {currentUser.name}
       </div>
       </div>
       {/* Invoice viewer — opened from any tab (Invoices, a phase, a report). */}
@@ -1450,7 +1459,11 @@ function WorkOrdersTab(p: Props & { mineOnly: boolean; setMineOnly: (b: boolean)
 function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Employee[] }) {
   const { wo, canManage } = p;
   const [viewPhotos, setViewPhotos] = useState<StoredFile[] | null>(null);
-  const corp = p.properties.find(x => x.name === wo.property)?.corp;
+  const prop = p.properties.find(x => x.name === wo.property);
+  const corp = prop?.corp;
+  const unit = wo.unitId ? prop?.units?.find(u => u.id === wo.unitId) : undefined;
+  // Tenant reference for the tagged unit — Marco/Tony/Linda only, never Kris.
+  const tenantRef = (p.canManageProperties && unit?.tenancy) ? unit.tenancy.tenants.filter(t => t.name).map(t => `${t.name}${t.phone ? ` ${t.phone}` : ''}`).join(', ') : '';
   const cycle: ContractingWorkOrder['status'][] = ['open', 'in_progress', 'done'];
   const nextStatus = () => cycle[(cycle.indexOf(wo.status) + 1) % 3];
   const save = (patch: Partial<ContractingWorkOrder>) => p.onSaveWorkOrder({ ...wo, ...patch, updatedAt: Date.now() });
@@ -1472,10 +1485,11 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="font-semibold" style={{ color: PALERMO.slate }}>{wo.title}</span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded" style={corp ? { backgroundColor: PALERMO.gold, color: 'white' } : { backgroundColor: '#eee' }}>{corp ? '★ ' : ''}{wo.property}</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded" style={corp ? { backgroundColor: PALERMO.gold, color: 'white' } : { backgroundColor: '#eee' }}>{corp ? '★ ' : ''}{wo.property}{unit ? ` · ${unit.name}` : ''}</span>
         </div>
         <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: wo.priority === 'high' ? '#FADBD8' : wo.priority === 'normal' ? '#EBF5FB' : '#F8F9F9', color: wo.priority === 'high' ? '#C0392B' : '#555' }}>{wo.priority}</span>
       </div>
+      {tenantRef && <div className="text-[11px] text-gray-500 mt-0.5">tenant: {tenantRef} ▸</div>}
       {/* Assignees — clear chips (all shown), readable at a glance. */}
       <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
         {assigneeIds.length === 0 && (
@@ -1526,6 +1540,7 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
 
 function WorkOrderForm({ currentUser, uploadedBy, properties, contractors, onClose, onSave, defaultProperty }: { currentUser: { id: string; name: string }; uploadedBy: { email: string; name: string }; properties: ContractingProperty[]; contractors: Employee[]; onClose: () => void; onSave: (w: ContractingWorkOrder) => void; defaultProperty: string }) {
   const [property, setProperty] = useState(defaultProperty);
+  const [unitId, setUnitId] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<ContractingWorkOrder['priority']>('normal');
@@ -1533,9 +1548,11 @@ function WorkOrderForm({ currentUser, uploadedBy, properties, contractors, onClo
   const [photos, setPhotos] = useState<StoredFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const woId = uid('cwo');
+  const propUnits = properties.find(x => x.name === property)?.units || [];
   return (
     <Modal title="New work order" onClose={onClose}>
-      <Field label="Property"><select className="inp" value={property} onChange={e => setProperty(e.target.value)}>{properties.map(x => <option key={x.id} value={x.name}>{x.corp ? '★ ' : ''}{x.name}</option>)}</select></Field>
+      <Field label="Property"><select className="inp" value={property} onChange={e => { setProperty(e.target.value); setUnitId(''); }}>{properties.map(x => <option key={x.id} value={x.name}>{x.corp ? '★ ' : ''}{x.name}</option>)}</select></Field>
+      {propUnits.length > 0 && <Field label="Unit (optional — leave blank for property-level)"><select className="inp" value={unitId} onChange={e => setUnitId(e.target.value)}><option value="">Whole property</option>{propUnits.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</select></Field>}
       <Field label="Title"><input className="inp" value={title} onChange={e => setTitle(e.target.value)} /></Field>
       <Field label="Description"><textarea className="inp" rows={2} value={description} onChange={e => setDescription(e.target.value)} /></Field>
       <Field label="Priority"><div className="flex gap-2">{(['low', 'normal', 'high'] as const).map(pr => <button key={pr} onClick={() => setPriority(pr)} className="flex-1 py-1.5 rounded border text-sm capitalize" style={priority === pr ? { backgroundColor: PALERMO.slate, color: 'white' } : {}}>{pr}</button>)}</div></Field>
@@ -1556,7 +1573,7 @@ function WorkOrderForm({ currentUser, uploadedBy, properties, contractors, onClo
         {photos.length > 0 && <span className="text-xs text-green-600">✓ {photos.length}</span>}
       </Field>
       <ModalActions onClose={onClose} disabled={!title.trim() || uploading} onSave={() => onSave({
-        id: woId, property, title: title.trim(), description: description.trim() || undefined, priority, status: 'open',
+        id: woId, property, unitId: unitId || undefined, title: title.trim(), description: description.trim() || undefined, priority, status: 'open',
         assigneeIds: assigneeIds.length ? assigneeIds : undefined, assigneeNames: assigneeIds.length ? assigneeIds.map(id => contractors.find(c => c.id === id)?.name || id) : undefined,
         photos: photos.length ? photos : undefined, createdBy: currentUser, createdAt: Date.now(), updatedAt: Date.now(),
       })} />
@@ -1692,44 +1709,237 @@ function ShoppingTab(p: Props) {
 }
 
 // ─────────────────────────────────────────────────────────── PROPERTIES ────
-function PropertiesTab({ properties, onSaveProperties }: { properties: ContractingProperty[]; onSaveProperties: (list: ContractingProperty[]) => void }) {
+// ───────────────────────────────────── PROPERTY MANAGEMENT (v2) ─────────────
+function CountdownBadge({ cd }: { cd: Countdown }) {
+  const style = cd.level === 'red' ? { bg: '#FADBD8', fg: '#C0392B' } : cd.level === 'amber' ? { bg: '#FEF9E7', fg: '#B7950B' } : { bg: '#EBF5FB', fg: '#2874A6' };
+  return <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ backgroundColor: style.bg, color: style.fg }}>{cd.label}</span>;
+}
+
+function PropertyManagementTab({ properties, noticeDays, currentUser, onSaveProperty, onDeleteProperty }: { properties: ContractingProperty[]; noticeDays: number; currentUser: { id: string; name: string }; onSaveProperty: (p: ContractingProperty) => void; onDeleteProperty: (id: string) => void }) {
   const [adding, setAdding] = useState(false);
-  const [name, setName] = useState('');
-  const [corp, setCorp] = useState(false);
-  const [notes, setNotes] = useState('');
-  const update = (id: string, patch: Partial<ContractingProperty>) => onSaveProperties(properties.map(x => x.id === id ? { ...x, ...patch } : x));
-  const add = () => {
-    if (!name.trim()) return;
-    onSaveProperties([...properties, { id: uid('cprop'), name: name.trim(), corp, notes: notes.trim() || undefined, active: true }]);
-    setName(''); setCorp(false); setNotes(''); setAdding(false);
-  };
+  const [showInactive, setShowInactive] = useState(false);
+  const now = Date.now();
+  const attention = leasesNeedingAttention(properties.filter(p => p.active !== false), now);
+  const visible = properties.filter(p => showInactive || p.active !== false);
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
-        <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Rental properties</h2>
+        <h2 className="font-bold text-lg" style={{ color: PALERMO.slate }}>Properties</h2>
         <button onClick={() => setAdding(true)} className="px-3 py-1.5 rounded text-white text-sm font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Add property</button>
       </div>
-      <div className="space-y-2">
-        {properties.map(pr => (
-          <div key={pr.id} className={`bg-white rounded-lg border p-3 ${pr.active === false ? 'opacity-50' : ''}`}>
-            <div className="flex items-center justify-between gap-2">
-              <input className="inp flex-1 font-semibold" defaultValue={pr.name} onBlur={e => e.target.value.trim() && e.target.value !== pr.name && update(pr.id, { name: e.target.value.trim() })} />
-              <label className="flex items-center gap-1 text-xs whitespace-nowrap"><input type="checkbox" checked={!!pr.corp} onChange={e => update(pr.id, { corp: e.target.checked })} /> ★ Corp</label>
-              <button onClick={() => update(pr.id, { active: pr.active === false })} className="text-xs px-2 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>{pr.active === false ? 'Reactivate' : 'Deactivate'}</button>
+
+      {/* Leases needing attention — unit rows, soonest first. */}
+      {attention.length > 0 && (
+        <div className="bg-white rounded-lg border p-3 mb-3" style={{ borderColor: '#F5B7B1' }}>
+          <div className="text-xs font-black uppercase tracking-widest mb-1" style={{ color: '#C0392B' }}>Leases needing attention</div>
+          <div className="space-y-1">
+            {attention.map(r => (
+              <div key={r.unit.id} className="flex items-center justify-between text-sm gap-2">
+                <span className="truncate">{r.property.name} · {r.unit.name} <span className="text-gray-400">· {(r.unit.tenancy?.tenants || []).map(t => t.name).filter(Boolean).join(', ') || 'tenant'}</span></span>
+                {r.countdown && <CountdownBadge cd={r.countdown} />}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {visible.map(pr => <PropertyCard key={pr.id} property={pr} noticeDays={noticeDays} currentUser={currentUser} onUpdate={onSaveProperty} onDelete={() => confirm(`Delete "${pr.name}" and all its units/tenancy history?`) && onDeleteProperty(pr.id)} />)}
+      </div>
+      {properties.some(p => p.active === false) && <button onClick={() => setShowInactive(s => !s)} className="text-xs mt-3 font-semibold text-gray-400 uppercase">{showInactive ? 'Hide' : 'Show'} inactive</button>}
+
+      {adding && <AddPropertyForm onClose={() => setAdding(false)} onSave={p => { onSaveProperty(p); setAdding(false); }} />}
+    </div>
+  );
+}
+
+function AddPropertyForm({ onClose, onSave }: { onClose: () => void; onSave: (p: ContractingProperty) => void }) {
+  const [name, setName] = useState(''); const [corp, setCorp] = useState(false); const [notes, setNotes] = useState('');
+  return (
+    <Modal title="Add property" onClose={onClose}>
+      <Field label="Name / address"><input className="inp" value={name} onChange={e => setName(e.target.value)} /></Field>
+      <label className="flex items-center gap-2 text-sm mb-2"><input type="checkbox" checked={corp} onChange={e => setCorp(e.target.checked)} /> Corporate property (★ badge)</label>
+      <Field label="Notes"><textarea className="inp" rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
+      {/* Single-unit houses get one default unit so the model is uniform. */}
+      <ModalActions onClose={onClose} disabled={!name.trim()} onSave={() => onSave({ id: uid('cprop'), name: name.trim(), corp, notes: notes.trim() || undefined, active: true, units: [{ id: uid('cunit'), name: 'Whole property' }] })} />
+    </Modal>
+  );
+}
+
+function PropertyCard({ property, noticeDays, currentUser, onUpdate, onDelete }: { property: ContractingProperty; noticeDays: number; currentUser: { id: string; name: string }; onUpdate: (p: ContractingProperty) => void; onDelete: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const units = property.units || [];
+  const updateUnit = (u: ContractingUnit) => onUpdate({ ...property, units: units.map(x => x.id === u.id ? u : x) });
+  const addUnit = () => onUpdate({ ...property, units: [...units, { id: uid('cunit'), name: `Unit ${units.length + 1}` }] });
+  const removeUnit = (id: string) => onUpdate({ ...property, units: units.filter(x => x.id !== id) });
+  return (
+    <div className={`bg-white rounded-lg border ${property.active === false ? 'opacity-60' : ''}`}>
+      <div className="p-3 border-b">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {property.corp && <span className="text-[10px] font-black px-1.5 py-0.5 rounded" style={{ backgroundColor: PALERMO.gold, color: 'white' }}>★</span>}
+            <span className="font-bold truncate" style={{ color: PALERMO.slate }}>{property.name}</span>
+            <span className="text-[10px] text-gray-400">{units.length} unit{units.length === 1 ? '' : 's'}</span>
+          </div>
+          <button onClick={() => setEditing(e => !e)} className="text-xs px-2 py-0.5 rounded border font-semibold shrink-0" style={{ color: PALERMO.slate }}>{editing ? 'Done' : 'Edit'}</button>
+        </div>
+        {editing && (
+          <div className="mt-2 space-y-2">
+            <input className="inp text-sm" defaultValue={property.name} onBlur={e => e.target.value.trim() && e.target.value !== property.name && onUpdate({ ...property, name: e.target.value.trim() })} />
+            <input className="inp text-sm" placeholder="Notes" defaultValue={property.notes || ''} onBlur={e => onUpdate({ ...property, notes: e.target.value.trim() || undefined })} />
+            <div className="flex items-center gap-2 flex-wrap">
+              <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={!!property.corp} onChange={e => onUpdate({ ...property, corp: e.target.checked })} /> ★ Corp</label>
+              <button onClick={() => onUpdate({ ...property, active: property.active === false })} className="text-xs px-2 py-1 rounded border">{property.active === false ? 'Reactivate' : 'Deactivate'}</button>
+              <button onClick={addUnit} className="text-xs px-2 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.slate }}>+ Unit</button>
+              <button onClick={onDelete} className="text-xs px-2 py-1 rounded text-red-500 font-semibold ml-auto">Delete property</button>
             </div>
-            <input className="inp mt-2 text-sm" placeholder="Notes" defaultValue={pr.notes || ''} onBlur={e => update(pr.id, { notes: e.target.value.trim() || undefined })} />
+          </div>
+        )}
+      </div>
+      <div className="divide-y">
+        {units.map(u => <UnitRowCard key={u.id} unit={u} noticeDays={noticeDays} currentUser={currentUser} editing={editing} onUpdate={updateUnit} onRemove={() => (units.length > 1 ? removeUnit(u.id) : alert('A property keeps at least one unit.'))} />)}
+      </div>
+    </div>
+  );
+}
+
+function UnitRowCard({ unit, noticeDays, currentUser, editing, onUpdate, onRemove }: { unit: ContractingUnit; noticeDays: number; currentUser: { id: string; name: string }; editing: boolean; onUpdate: (u: ContractingUnit) => void; onRemove: () => void }) {
+  const [form, setForm] = useState<null | 'start' | 'edit' | 'renew' | 'notice'>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const now = Date.now();
+  const t = unit.tenancy;
+  const cd = t ? tenancyCountdown(t, now) : undefined;
+  const total = t ? tenancyMonthlyTotal(t) : 0;
+  const stamp = (action: string, base?: ContractingTenancy) => [...((base || t)?.audit || []), { at: Date.now(), by: currentUser.name, action }];
+  const setTenancy = (nt: ContractingTenancy | undefined) => onUpdate({ ...unit, tenancy: nt });
+  const endTenancy = () => { if (!t) return; onUpdate({ ...unit, tenancy: undefined, history: [...(unit.history || []), { ...t, endedAt: Date.now(), endedBy: currentUser.name, audit: stamp('ended tenancy') }] }); };
+  const renew = (newEnd: string) => t && setTenancy({ ...t, status: 'fixed_term', leaseEnd: newEnd, audit: stamp(`renewed → ${newEnd}`) });
+  const convert = () => t && setTenancy({ ...t, status: 'month_to_month', leaseEnd: undefined, noticeGivenAt: undefined, computedEnd: undefined, audit: stamp('converted to month-to-month') });
+  const giveNotice = (date: string) => t && setTenancy({ ...t, noticeGivenAt: date, computedEnd: computeNoticeEnd(date, noticeDays), noticeBy: currentUser.name, audit: stamp(`notice given ${date} → ends ${computeNoticeEnd(date, noticeDays)}`) });
+  const cancelNotice = () => t && setTenancy({ ...t, noticeGivenAt: undefined, computedEnd: undefined, noticeBy: undefined, audit: stamp('notice cancelled — tenant stays') });
+
+  return (
+    <div className="p-3">
+      <div className="flex items-center justify-between gap-2">
+        {editing
+          ? <input className="inp text-sm flex-1 font-semibold" defaultValue={unit.name} onBlur={e => e.target.value.trim() && onUpdate({ ...unit, name: e.target.value.trim() })} />
+          : <span className="font-semibold" style={{ color: PALERMO.slate }}>{unit.name}</span>}
+        {t ? <CountdownBadge cd={cd!} /> : <span className="text-[11px] font-black px-2 py-0.5 rounded" style={{ backgroundColor: '#EAECEE', color: '#7F8C8D' }}>VACANT</span>}
+      </div>
+
+      {t ? (
+        <div className="mt-1.5">
+          <div className="flex items-baseline justify-between">
+            <span className="text-xs font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: t.status === 'fixed_term' ? '#FEF9E7' : '#EBF5FB', color: t.status === 'fixed_term' ? PALERMO.gold : '#2874A6' }}>{t.status === 'fixed_term' ? 'Fixed term' : 'Month-to-month'}</span>
+            <span className="text-lg font-black" style={{ color: PALERMO.slate }}>{money(total)}<span className="text-xs font-normal text-gray-400">/mo</span></span>
+          </div>
+          <div className="text-sm text-gray-700 mt-1">
+            {t.tenants.map((tn, i) => (
+              <div key={i} className="flex items-center justify-between">
+                <span>{tn.name || <span className="text-gray-400">(unnamed)</span>}{tn.phone ? <span className="text-xs text-gray-400"> · {tn.phone}</span> : ''}</span>
+                <span className="text-gray-500">{tn.rentAmount ? money(tn.rentAmount) : <span className="text-[10px] text-gray-400">contact only</span>}</span>
+              </div>
+            ))}
+          </div>
+          {t.status === 'fixed_term' && t.leaseEnd && <div className="text-[11px] text-gray-400 mt-1">Lease {fmtYmd(t.leaseStart)} – {fmtYmd(t.leaseEnd)}</div>}
+          {t.status === 'month_to_month' && t.noticeGivenAt && <div className="text-[11px] text-gray-400 mt-1">Notice {fmtYmd(t.noticeGivenAt)}{t.noticeBy ? ` by ${t.noticeBy}` : ''} → ends {fmtYmd(t.computedEnd)}</div>}
+          {t.depositNote && <div className="text-[11px] text-gray-400">Deposit: {t.depositNote}</div>}
+
+          {/* One-tap resolutions */}
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {t.status === 'fixed_term' && cd && cd.level !== 'neutral' && <>
+              <button onClick={() => setForm('renew')} className="text-xs px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>Renew</button>
+              <button onClick={convert} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Convert to M2M</button>
+            </>}
+            {t.status === 'month_to_month' && !t.noticeGivenAt && <button onClick={() => setForm('notice')} className="text-xs px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: '#C0392B' }}>Notice given</button>}
+            {t.status === 'month_to_month' && t.noticeGivenAt && <button onClick={cancelNotice} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Cancel notice</button>}
+            <button onClick={() => setForm('edit')} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Edit</button>
+            <button onClick={() => confirm('End this tenancy? It moves to history and the unit becomes vacant.') && endTenancy()} className="text-xs px-2.5 py-1 rounded text-red-500 font-semibold ml-auto">End tenancy</button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-1.5 flex items-center gap-2">
+          <button onClick={() => setForm('start')} className="text-xs px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.slate }}>Start tenancy</button>
+          {editing && <button onClick={onRemove} className="text-xs px-2.5 py-1 rounded text-red-500 font-semibold ml-auto">Remove unit</button>}
+        </div>
+      )}
+
+      {(unit.history || []).length > 0 && (
+        <div className="mt-2">
+          <button onClick={() => setShowHistory(s => !s)} className="text-[11px] font-semibold text-gray-400 uppercase">{showHistory ? '▾' : '▸'} History ({(unit.history || []).length})</button>
+          {showHistory && <div className="space-y-1 mt-1">{(unit.history || []).map(h => (
+            <div key={h.id} className="text-[11px] text-gray-400">{h.tenants.map(x => x.name).filter(Boolean).join(', ') || 'tenant'} · {money(tenancyMonthlyTotal(h))}/mo · ended {fmtDate(h.endedAt)}</div>
+          ))}</div>}
+        </div>
+      )}
+
+      {(form === 'start' || form === 'edit') && <TenancyForm initial={form === 'edit' ? t! : undefined} noticeDays={noticeDays} onClose={() => setForm(null)} onSave={nt => { setTenancy(form === 'edit' ? { ...nt, audit: stamp('edited tenancy', nt) } : { ...nt, createdAt: Date.now(), audit: [{ at: Date.now(), by: currentUser.name, action: 'started tenancy' }] }); setForm(null); }} />}
+      {form === 'renew' && <DatePickForm title="Renew lease" label="New lease end" initial={t?.leaseEnd} onClose={() => setForm(null)} onSave={d => { renew(d); setForm(null); }} />}
+      {form === 'notice' && <DatePickForm title="Notice given" label="Notice date" initial={msToYmd(now)} hint={`Ends ${noticeDays} days after notice.`} onClose={() => setForm(null)} onSave={d => { giveNotice(d); setForm(null); }} />}
+    </div>
+  );
+}
+
+// Start/edit a tenancy: status, dates, deposit, tenants (rent per tenant).
+function TenancyForm({ initial, noticeDays, onClose, onSave }: { initial?: ContractingTenancy; noticeDays: number; onClose: () => void; onSave: (t: ContractingTenancy) => void }) {
+  const [status, setStatus] = useState<ContractingTenancyStatus>(initial?.status || 'fixed_term');
+  const [leaseStart, setLeaseStart] = useState(initial?.leaseStart || '');
+  const [leaseEnd, setLeaseEnd] = useState(initial?.leaseEnd || '');
+  const [deposit, setDeposit] = useState(initial?.depositNote || '');
+  const [notes, setNotes] = useState(initial?.notes || '');
+  const [tenants, setTenants] = useState<ContractingTenant[]>(initial?.tenants?.length ? initial.tenants : [{ name: '' }]);
+  const setT = (i: number, patch: Partial<ContractingTenant>) => setTenants(ts => ts.map((t, j) => j === i ? { ...t, ...patch } : t));
+  const total = tenants.reduce((s, t) => s + (Number(t.rentAmount) || 0), 0);
+  void noticeDays;
+  return (
+    <Modal title={initial ? 'Edit tenancy' : 'Start tenancy'} onClose={onClose}>
+      <Field label="Type">
+        <div className="flex gap-2">
+          {(['fixed_term', 'month_to_month'] as const).map(s => <button key={s} onClick={() => setStatus(s)} className="flex-1 py-1.5 rounded border text-sm font-semibold" style={status === s ? { backgroundColor: PALERMO.slate, color: 'white' } : {}}>{s === 'fixed_term' ? 'Fixed term' : 'Month-to-month'}</button>)}
+        </div>
+      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Lease start"><input className="inp" type="date" value={leaseStart} onChange={e => setLeaseStart(e.target.value)} /></Field>
+        {status === 'fixed_term' && <Field label="Lease end"><input className="inp" type="date" value={leaseEnd} onChange={e => setLeaseEnd(e.target.value)} /></Field>}
+      </div>
+      <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Tenants (rent per person; blank = contact only)</div>
+      <div className="space-y-2 mb-2">
+        {tenants.map((tn, i) => (
+          <div key={i} className="border rounded p-2 space-y-1">
+            <div className="flex gap-2">
+              <input className="inp flex-1" placeholder="Name" value={tn.name} onChange={e => setT(i, { name: e.target.value })} />
+              <input className="inp w-24" type="number" placeholder="$/mo" value={tn.rentAmount ?? ''} onChange={e => setT(i, { rentAmount: e.target.value === '' ? undefined : Number(e.target.value) })} />
+              {tenants.length > 1 && <button onClick={() => setTenants(ts => ts.filter((_, j) => j !== i))} className="text-red-400 px-1">×</button>}
+            </div>
+            <div className="flex gap-2">
+              <input className="inp flex-1" placeholder="Phone" value={tn.phone || ''} onChange={e => setT(i, { phone: e.target.value || undefined })} />
+              <input className="inp flex-1" placeholder="Email" value={tn.email || ''} onChange={e => setT(i, { email: e.target.value || undefined })} />
+            </div>
           </div>
         ))}
       </div>
-      {adding && (
-        <Modal title="Add property" onClose={() => setAdding(false)}>
-          <Field label="Name / address"><input className="inp" value={name} onChange={e => setName(e.target.value)} /></Field>
-          <label className="flex items-center gap-2 text-sm mb-2"><input type="checkbox" checked={corp} onChange={e => setCorp(e.target.checked)} /> Corporate property (★ badge)</label>
-          <Field label="Notes"><textarea className="inp" rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
-          <ModalActions onClose={() => setAdding(false)} disabled={!name.trim()} onSave={add} />
-        </Modal>
-      )}
-    </div>
+      <button onClick={() => setTenants(ts => [...ts, { name: '' }])} className="text-xs mb-2" style={{ color: PALERMO.slate }}>+ add tenant</button>
+      <div className="text-sm mb-2">Monthly total: <b style={{ color: PALERMO.gold }}>{money(total)}</b></div>
+      <Field label="Deposit (amount + date + reference)"><input className="inp" value={deposit} onChange={e => setDeposit(e.target.value)} /></Field>
+      <Field label="Notes"><textarea className="inp" rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
+      <ModalActions onClose={onClose} disabled={tenants.every(t => !t.name.trim())} onSave={() => onSave({
+        id: initial?.id || uid('cten'), status, leaseStart: leaseStart || undefined, leaseEnd: status === 'fixed_term' ? (leaseEnd || undefined) : undefined,
+        noticeGivenAt: initial?.noticeGivenAt, computedEnd: initial?.computedEnd, noticeBy: initial?.noticeBy,
+        depositNote: deposit.trim() || undefined, notes: notes.trim() || undefined,
+        tenants: tenants.filter(t => t.name.trim() || t.rentAmount).map(t => ({ name: t.name.trim(), phone: t.phone, email: t.email, rentAmount: t.rentAmount })),
+      })} />
+    </Modal>
+  );
+}
+
+function DatePickForm({ title, label, initial, hint, onClose, onSave }: { title: string; label: string; initial?: string; hint?: string; onClose: () => void; onSave: (d: string) => void }) {
+  const [date, setDate] = useState(initial || '');
+  return (
+    <Modal title={title} onClose={onClose}>
+      <Field label={label}><input className="inp" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+      {hint && <div className="text-xs text-gray-500 mb-2">{hint}</div>}
+      <ModalActions onClose={onClose} disabled={!date} onSave={() => onSave(date)} />
+    </Modal>
   );
 }
 
