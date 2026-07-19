@@ -68,6 +68,7 @@ import type { ContractingProperty, ContractingSupplier } from './types';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabel, payDateLabel } from './lib/payPeriods';
 import { noticeDaysOrDefault } from './lib/propertyMgmt';
 import NotificationCenter from './components/NotificationCenter';
+import PushEnablePrompt from './components/PushEnablePrompt';
 import { refreshPushToken, onForegroundMessage } from './lib/messaging';
 import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
@@ -4167,6 +4168,7 @@ export default function App() {
         }
       `}</style>
       {toast && <div className="fixed top-6 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-6 py-4 rounded-2xl shadow-2xl z-[200] flex items-center gap-3 animate-in slide-in-from-top-4 duration-300"><AlertTriangle className="w-5 h-5 text-lime-400" /><span className="font-bold text-sm">{toast}</span></div>}
+      <PushEnablePrompt userEmail={displayEmail} showToast={showToastMsg} />
 
       {isViewingAs && (
         <div className="fixed top-0 inset-x-0 bg-amber-500 text-slate-900 px-4 py-2 flex items-center justify-center gap-3 z-[150] shadow-md no-print">
