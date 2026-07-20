@@ -38,15 +38,22 @@ interface FormState {
 // Schemas
 // --------------------------------
 
+// Sign-in must NOT length-validate — a valid existing password (Firebase's
+// min is 6, and shorter ones may predate our 8-char rule) must always be
+// submittable. Only require a non-empty field; Firebase accepts/rejects the
+// credential and a wrong password gets the normal error.
 const signInSchema = z.object({
   email: z.string().email("Invalid email address"),
-  password: z.string().min(8, "Password must be at least 8 characters"),
+  password: z.string().min(1, "Password is required"),
 });
 
+// SET-password minimum (account creation, and anywhere a new password is
+// chosen) is 8 — enforced here, at set time. Existing shorter passwords keep
+// working; the rule is never applied retroactively at sign-in.
 const signUpSchema = z
   .object({
     email: z.string().email("Please enter a valid email address"),
-    password: z.string().min(6, "Password must be at least 6 characters"),
+    password: z.string().min(8, "Password must be at least 8 characters"),
     confirmPassword: z.string().min(1, "Please confirm your password"),
   })
   .refine((data) => data.password === data.confirmPassword, {
@@ -82,7 +89,7 @@ function mapAuthError(err: unknown): string {
     case "auth/email-already-in-use":
       return "An account with this email already exists — try signing in instead.";
     case "auth/weak-password":
-      return "Password must be at least 6 characters.";
+      return "Password must be at least 8 characters.";
     case "auth/invalid-email":
       return "Please enter a valid email address.";
     case "auth/operation-not-allowed":
@@ -465,7 +472,7 @@ function AuthSignUp({ onSignIn, onSubmitSuccess, onGoogleLogin }: AuthSignUpProp
             <Input
               id="signup-password"
               type={formState.showPassword ? "text" : "password"}
-              placeholder="At least 6 characters"
+              placeholder="At least 8 characters"
               disabled={formState.isLoading}
               className={cn("h-12 bg-slate-50 border-slate-200 rounded-xl focus:ring-green-500 focus:bg-white transition-all font-medium", errors.password && "border-red-300 bg-red-50")}
               {...register("password")}
