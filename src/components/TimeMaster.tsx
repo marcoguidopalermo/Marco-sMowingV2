@@ -796,6 +796,7 @@ export default function TimeMaster({
           </div>
           <div className="col-span-1" />
         </div>
+        {entry.workNote && <div className="px-3 pb-2 -mt-1 text-xs text-slate-500 italic">“{entry.workNote}”</div>}
 
         {expanded && (
           <div className="border-t border-slate-100 bg-slate-50 p-3 space-y-2">

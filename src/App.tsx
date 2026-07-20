@@ -63,7 +63,7 @@ import TaskDetailModal from './components/TaskDetailModal';
 import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
-import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, reportIsDeletable, planPhaseMerge } from './lib/contracting';
+import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, reportIsDeletable, planPhaseMerge, isContractingWorker } from './lib/contracting';
 import type { ContractingProperty, ContractingSupplier } from './types';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabel, payDateLabel } from './lib/payPeriods';
 import { noticeDaysOrDefault } from './lib/propertyMgmt';
@@ -2264,10 +2264,10 @@ export default function App() {
     syncToCloud({ ...appData, timeEntries: [ne, ...(appData.timeEntries || [])] });
     showToastMsg('Clocked in.');
   };
-  const contractorClockOut = () => {
+  const contractorClockOut = (note?: string) => {
     if (!myActivePunch) return;
-    syncToCloud({ ...appData, timeEntries: (appData.timeEntries || []).map(e => e.id === myActivePunch.id ? { ...e, clockOut: new Date().toISOString() } : e) });
-    showToastMsg('Clocked out.');
+    syncToCloud({ ...appData, timeEntries: (appData.timeEntries || []).map(e => e.id === myActivePunch.id ? { ...e, clockOut: new Date().toISOString(), ...(note ? { workNote: note } : {}) } : e) });
+    showToastMsg(note ? 'Clocked out · note saved.' : 'Clocked out.');
   };
   // Contractor home HOURS cards — the pay-period lens over THEIR OWN punches
   // (hours only, never rates/pay). Display-only read of the payroll data.
@@ -2331,6 +2331,29 @@ export default function App() {
     const prev = appData.settings?.contractingAuditLog || [];
     const next = [...prev, { action, detail, by: displayName, at: Date.now() }].slice(-200);
     await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingAuditLog: next } });
+  };
+  // Tony's contractor-scoped time management — write/delete payroll entries for
+  // CONTRACTING people ONLY (billing-role holders + contractors, incl. himself
+  // & Kris; NEVER Marco's-side employees). Guarded + audited in one write.
+  const contractingWorkerEmailSet = () => new Set((appData.employees || []).filter(isContractingWorker).map(e => (e.linkedUserEmail || e.email || '').toLowerCase()).filter(Boolean));
+  const saveContractingTimeEntry = (entry: TimeEntry) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    if (!contractingWorkerEmailSet().has((entry.userEmail || '').toLowerCase())) { showToastMsg('Contracting people only.'); return; }
+    const exists = (appData.timeEntries || []).some(e => e.id === entry.id);
+    const stamped: TimeEntry = { ...entry, editedBy: displayName, editedAt: new Date().toISOString() };
+    const timeEntries = exists ? (appData.timeEntries || []).map(e => e.id === entry.id ? stamped : e) : [stamped, ...(appData.timeEntries || [])];
+    const detail = `${exists ? 'Edited' : 'Added'} time for ${entry.userName}${entry.workNote ? ` — “${entry.workNote}”` : ''}`;
+    const auditNext = [...(appData.settings?.contractingAuditLog || []), { action: exists ? 'time.edit' : 'time.add', detail, by: displayName, at: Date.now() }].slice(-200);
+    syncToCloud({ ...appData, timeEntries, settings: { ...(appData.settings || {}), contractingAuditLog: auditNext } });
+    showToastMsg(exists ? 'Time entry updated.' : 'Time entry added.');
+  };
+  const deleteContractingTimeEntry = (id: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const e = (appData.timeEntries || []).find(x => x.id === id);
+    if (!e || !contractingWorkerEmailSet().has((e.userEmail || '').toLowerCase())) { showToastMsg('Contracting people only.'); return; }
+    const auditNext = [...(appData.settings?.contractingAuditLog || []), { action: 'time.delete', detail: `Deleted time for ${e.userName}`, by: displayName, at: Date.now() }].slice(-200);
+    syncToCloud({ ...appData, timeEntries: (appData.timeEntries || []).filter(x => x.id !== id), settings: { ...(appData.settings || {}), contractingAuditLog: auditNext } });
+    showToastMsg('Time entry deleted.');
   };
   // Delete a project — ONLY when nothing is attached (guard mirrors phase
   // removal). Anything attached must be archived instead. Confirm-gated at the
@@ -4896,6 +4919,8 @@ export default function App() {
           onDiscardReport={discardContractingReport}
           onDeleteReport={deleteContractingReport}
           payrollTimeEntries={appData.timeEntries || []}
+          onSaveContractingTime={saveContractingTimeEntry}
+          onDeleteContractingTime={deleteContractingTimeEntry}
           onLogEdit={logContractingEdit}
           onSaveProject={saveContractingProject}
           onDeleteProject={deleteContractingProject}

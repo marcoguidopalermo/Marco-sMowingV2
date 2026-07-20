@@ -99,6 +99,10 @@ export interface TimeEntry {
   // same pay-chunk feeding); the flag is purely a record/UI marker.
   manualEntry?: boolean;
   enteredBy?: { email: string; name: string };
+  // Optional "what was worked on" note captured at clock-out (contracting
+  // punches) — surfaces on the entry, the report reference panel, and can be
+  // carried into a billable line. Editable after the fact by Tony/Marco.
+  workNote?: string;
   // Sub-variant of manualEntry. When true, the manager entered
   // HOURS only (not specific times). clockIn / clockOut are
   // synthesized (nominal 8:00 AM start + hours duration) so the
@@ -963,6 +967,7 @@ export interface ContractingTimeEntry {
   manual?: boolean;               // manually-added billable line
   hours?: number;                 // explicit hours (manual) — else derived from clock
   rateOverride?: number;          // per-line rate (the odd exception) — else role/override rate
+  description?: string;           // what the hours were for (carried from a punch note; frozen on invoicing)
   detached?: boolean;             // clock entry removed from its window report → back to unbilled
   reportId?: string;              // attached open report
   status: 'open' | 'invoiced';

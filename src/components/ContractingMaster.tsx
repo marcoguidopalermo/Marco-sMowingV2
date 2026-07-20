@@ -53,6 +53,9 @@ interface Props {
   onDeleteReport: (reportId: string) => void;
   // Payroll punched hours (read-only reference for the open-report panel).
   payrollTimeEntries: TimeEntry[];
+  // Tony's contractor-scoped time management (guarded + audited in App).
+  onSaveContractingTime: (e: TimeEntry) => void;
+  onDeleteContractingTime: (id: string) => void;
   onLogEdit: (detail: string) => void;
   onSaveProject: (p: ContractingProject) => void;
   onDeleteProject: (id: string) => void;
@@ -71,7 +74,7 @@ interface Props {
   myActivePunch: TimeEntry | null;
   myTodayPunches: TimeEntry[];
   onClockIn: () => void;
-  onClockOut: () => void;
+  onClockOut: (note?: string) => void;
   // Home screen: personal (private) lists + own-hours cards.
   personalItems: Record<string, ContractingPersonalItem>;
   onSavePersonalItem: (it: ContractingPersonalItem) => void;
@@ -100,7 +103,7 @@ const timeInputVal = (ms: number) => { const d = new Date(ms); return `${String(
 const dateTimeFromInput = (s: string, t: string) => { const [y, m, d] = s.split('-').map(Number); const [hh, mm] = t.split(':').map(Number); return new Date(y, (m || 1) - 1, d || 1, hh || 0, mm || 0, 0).getTime(); };
 const STATUS_LABEL: Record<ContractingStatus, string> = { planned: 'Planned', in_progress: 'In Progress', on_hold: 'On Hold', complete: 'Complete', closed: 'Closed' };
 
-type Tab = 'home' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'propertycontacts' | 'rates';
+type Tab = 'home' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'propertycontacts' | 'time' | 'rates';
 
 export default function ContractingMaster(props: Props) {
   const { canManage, isAdmin, currentUser, isPropertyManager, canManageProperties } = props;
@@ -151,6 +154,7 @@ export default function ContractingMaster(props: Props) {
     { id: 'propertycontacts', label: 'Properties', show: !canManageProperties },
     { id: 'workorders', label: 'Work Orders', show: true },
     { id: 'shopping', label: 'Material', show: true },
+    { id: 'time', label: 'Time', show: canManage },
     { id: 'rates', label: 'Rates', show: canManage },
   ];
 
@@ -194,6 +198,7 @@ export default function ContractingMaster(props: Props) {
         {tab === 'shopping' && <ShoppingTab {...props} />}
         {tab === 'properties' && canManageProperties && <PropertyManagementTab properties={props.properties} noticeDays={props.noticeDays} currentUser={currentUser} onSaveProperty={props.onSavePropertyDoc} onDeleteProperty={props.onDeletePropertyDoc} />}
         {tab === 'propertycontacts' && !canManageProperties && <PropertyContactsTab properties={props.properties} />}
+        {tab === 'time' && canManage && <ContractingTimeTab employees={props.employees} payrollTimeEntries={props.payrollTimeEntries} currentUser={currentUser} onSave={props.onSaveContractingTime} onDelete={props.onDeleteContractingTime} />}
         {tab === 'rates' && canManage && <RatesTab rates={rates} onSaveRates={props.onSaveRates} />}
       </div>
       <div className="text-center text-[11px] text-gray-400 pb-4">
@@ -219,26 +224,41 @@ export default function ContractingMaster(props: Props) {
 // ────────────────────────────────────────────────────────────── CLOCK ──────
 // Minimal contractor clock in/out (top of Home) — full-width big button, live
 // status, today's punches collapsible. Writes to payroll time data.
-function ContractorClockTab({ active, today, onIn, onOut }: { active: TimeEntry | null; today: TimeEntry[]; onIn: () => void; onOut: () => void }) {
+function ContractorClockTab({ active, today, onIn, onOut }: { active: TimeEntry | null; today: TimeEntry[]; onIn: () => void; onOut: (note?: string) => void }) {
   const [, force] = useState(0);
   const [showPunches, setShowPunches] = useState(false);
+  const [noting, setNoting] = useState(false);
+  const [note, setNote] = useState('');
   useEffect(() => { const id = setInterval(() => force(n => n + 1), 30000); return () => clearInterval(id); }, []);
   const elapsed = active ? Math.max(0, (Date.now() - new Date(active.clockIn).getTime()) / 3600000) : 0;
   const hm = (h: number) => `${Math.floor(h)}h ${Math.round((h - Math.floor(h)) * 60)}m`;
   const t = (iso?: string) => iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '—';
+  const finish = (n?: string) => { onOut(n); setNoting(false); setNote(''); };
   return (
     <div>
       {active ? (
-        <button onClick={onOut} className="w-full rounded-2xl p-4 text-white flex items-center justify-between" style={{ backgroundColor: PALERMO.slate }}>
-          <span className="text-left">
-            <span className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-widest" style={{ color: PALERMO.gold }}>
-              <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: PALERMO.gold }} /><span className="relative inline-flex rounded-full h-2.5 w-2.5" style={{ backgroundColor: PALERMO.gold }} /></span>
-              Clocked in · {hm(elapsed)}
+        <div className="w-full rounded-2xl p-4 text-white" style={{ backgroundColor: PALERMO.slate }}>
+          <div className="flex items-center justify-between">
+            <span className="text-left">
+              <span className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-widest" style={{ color: PALERMO.gold }}>
+                <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: PALERMO.gold }} /><span className="relative inline-flex rounded-full h-2.5 w-2.5" style={{ backgroundColor: PALERMO.gold }} /></span>
+                Clocked in · {hm(elapsed)}
+              </span>
+              <span className="block text-[11px] opacity-70">since {t(active.clockIn)}</span>
             </span>
-            <span className="block text-[11px] opacity-70">since {t(active.clockIn)}</span>
-          </span>
-          <span className="px-4 py-3 rounded-xl font-black" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>Clock out</span>
-        </button>
+            {!noting && <button onClick={() => setNoting(true)} className="px-4 py-3 rounded-xl font-black" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>Clock out</button>}
+          </div>
+          {noting && (
+            <div className="mt-3 bg-white rounded-xl p-3 text-slate-800">
+              <label className="text-[11px] font-black uppercase tracking-widest text-slate-500">What was worked on? (optional)</label>
+              <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="e.g. framed the bar wall · ~6 hrs billable" className="w-full mt-1 bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm outline-none focus:ring-2 focus:ring-emerald-400 resize-none" autoFocus />
+              <div className="flex gap-2 mt-2">
+                <button onClick={() => finish(note.trim() || undefined)} className="flex-1 py-2 rounded-lg font-black text-white" style={{ backgroundColor: PALERMO.slate }}>Save</button>
+                <button onClick={() => finish(undefined)} className="px-3 py-2 rounded-lg font-semibold border text-slate-600">Save without note</button>
+              </div>
+            </div>
+          )}
+        </div>
       ) : (
         <button onClick={onIn} className="w-full py-6 rounded-2xl font-black text-2xl text-white shadow" style={{ backgroundColor: PALERMO.gold }}>Clock in</button>
       )}
@@ -248,7 +268,10 @@ function ContractorClockTab({ active, today, onIn, onOut }: { active: TimeEntry 
           {showPunches && (
             <div className="space-y-1 mt-1 text-left">
               {today.map(e => (
-                <div key={e.id} className="bg-white rounded border p-2 text-sm">{t(e.clockIn)} → {e.clockOut ? t(e.clockOut) : <span className="text-emerald-600 font-semibold">active</span>}</div>
+                <div key={e.id} className="bg-white rounded border p-2 text-sm">
+                  <div>{t(e.clockIn)} → {e.clockOut ? t(e.clockOut) : <span className="text-emerald-600 font-semibold">active</span>}</div>
+                  {e.workNote && <div className="text-xs text-gray-500 italic mt-0.5">“{e.workNote}”</div>}
+                </div>
               ))}
             </div>
           )}
@@ -944,7 +967,7 @@ function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingP
 // payroll timeEntries; never writes them. Report math is unchanged by its
 // presence. Shows each contractor's punched hours in the report's date range
 // (per day + period total) beside the BILLED total, with a neutral delta.
-function TimeMasterRefPanel({ report, contractors, payrollTimeEntries, onUsePunched }: { report: ContractingProgressReport; contractors: Employee[]; payrollTimeEntries: TimeEntry[]; onUsePunched: (contractorId: string, hours: number) => void }) {
+function TimeMasterRefPanel({ report, contractors, payrollTimeEntries, onUsePunched }: { report: ContractingProgressReport; contractors: Employee[]; payrollTimeEntries: TimeEntry[]; onUsePunched: (contractorId: string, hours: number, note?: string) => void }) {
   const [open, setOpen] = useState(false);
   const startTs = report.startAt;
   const endTs = report.endAt || Date.now();
@@ -955,11 +978,13 @@ function TimeMasterRefPanel({ report, contractors, payrollTimeEntries, onUsePunc
   const rows = contractors.map(c => {
     const email = emailOf(c);
     const entries = payrollTimeEntries.filter(e => (e.userEmail || '').toLowerCase() === email && (() => { const t = new Date(e.clockIn).getTime(); return t >= startTs && t <= endTs; })());
-    const byDay = new Map<string, number>();
-    entries.forEach(e => { const d = new Date(e.clockIn).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }); byDay.set(d, (byDay.get(d) || 0) + dur(e)); });
+    // Per-punch rows (with any clock-out note) + the day/period rollup.
+    const punches = entries.map(e => ({ day: new Date(e.clockIn).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }), hours: dur(e), note: e.workNote })).sort((a, b) => a.day.localeCompare(b.day));
     const punched = entries.reduce((s, e) => s + dur(e), 0);
     const billed = billedByC.get(c.id) || 0;
-    return { c, punched, billed, byDay: [...byDay.entries()] };
+    // Distinct notes → carried into the prefill description.
+    const combinedNote = [...new Set(punches.map(p => (p.note || '').trim()).filter(Boolean))].join(' · ') || undefined;
+    return { c, punched, billed, punches, combinedNote };
   }).filter(r => r.punched > 0 || r.billed > 0);
   if (rows.length === 0) return null;
   return (
@@ -978,10 +1003,17 @@ function TimeMasterRefPanel({ report, contractors, payrollTimeEntries, onUsePunc
                   <span className="font-semibold text-sm" style={{ color: PALERMO.slate }}>{r.c.name}</span>
                   <span className="flex items-center gap-2">
                     <span className="text-xs text-gray-600">punched <b>{round2(r.punched)}h</b> · billed <b>{round2(r.billed)}h</b> · <span style={{ color: '#7F8C8D' }}>{delta >= 0 ? '+' : ''}{delta}h</span></span>
-                    {r.punched > 0 && <button onClick={() => onUsePunched(r.c.id, round2(r.punched))} className="text-[11px] px-2 py-0.5 rounded border font-semibold whitespace-nowrap" style={{ color: PALERMO.slate }}>use punched</button>}
+                    {r.punched > 0 && <button onClick={() => onUsePunched(r.c.id, round2(r.punched), r.combinedNote)} className="text-[11px] px-2 py-0.5 rounded border font-semibold whitespace-nowrap" style={{ color: PALERMO.slate }}>use punched</button>}
                   </span>
                 </div>
-                {r.byDay.length > 0 && <div className="text-[11px] text-gray-500 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">{r.byDay.map(([d, h]) => <span key={d}>{d}: {round2(h)}h</span>)}</div>}
+                {/* Per-punch rows — hours + the clock-out note when present. */}
+                {r.punches.length > 0 && (
+                  <div className="text-[11px] text-gray-500 mt-0.5 space-y-0.5">
+                    {r.punches.map((pn, i) => (
+                      <div key={i}><span className="text-gray-600">{pn.day}: {round2(pn.hours)}h</span>{pn.note && <span className="italic text-gray-500"> · “{pn.note}”</span>}</div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -999,7 +1031,7 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
   const manualRate = (t: ContractingTimeEntry) => (t.rateOverride != null && t.rateOverride > 0) ? t.rateOverride : (p.rateOverrides[t.contractorId] ?? rateFor(t.billingRole, rc));
 
   const [batchOpen, setBatchOpen] = useState(false);
-  const [batchPrefill, setBatchPrefill] = useState<{ contractorId: string; hours: number } | null>(null);
+  const [batchPrefill, setBatchPrefill] = useState<{ contractorId: string; hours: number; note?: string } | null>(null);
   const [editManual, setEditManual] = useState<ContractingTimeEntry | null>(null);
   const [addingMaterial, setAddingMaterial] = useState(false);
   const [editReceipt, setEditReceipt] = useState<ContractingReceipt | null>(null);
@@ -1033,15 +1065,18 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
         {report.manualTime.length === 0 && <div className="text-xs text-gray-400">No hours yet.</div>}
         {/* "Jul 18 — Tony · 10 hr @ $150 = $1,500" */}
         {report.manualTime.map(t => { const r = manualRate(t); return (
-          <div key={t.id} className="flex justify-between text-sm items-center">
-            <span>{fmtShort(t.clockIn)} — {t.contractorName} · {t.hours} hr @ {money(r)}{t.rateOverride != null ? <span className="text-[9px] ml-1 px-1 rounded bg-amber-100 text-amber-700">rate override</span> : ''}</span>
-            <span className="flex items-center gap-2"><b>{money((Number(t.hours) || 0) * r)}</b>{canManage && <><button onClick={() => setEditManual(t)} className="text-[11px]" style={{ color: PALERMO.slate }}>edit</button><button onClick={() => removeManual(t)} className="text-red-400 text-sm">×</button></>}</span>
+          <div key={t.id} className="text-sm">
+            <div className="flex justify-between items-center">
+              <span>{fmtShort(t.clockIn)} — {t.contractorName} · {t.hours} hr @ {money(r)}{t.rateOverride != null ? <span className="text-[9px] ml-1 px-1 rounded bg-amber-100 text-amber-700">rate override</span> : ''}</span>
+              <span className="flex items-center gap-2"><b>{money((Number(t.hours) || 0) * r)}</b>{canManage && <><button onClick={() => setEditManual(t)} className="text-[11px]" style={{ color: PALERMO.slate }}>edit</button><button onClick={() => removeManual(t)} className="text-red-400 text-sm">×</button></>}</span>
+            </div>
+            {t.description && <div className="text-[11px] text-gray-500 italic">“{t.description}”</div>}
           </div>
         ); })}
       </div>
 
       {/* TimeMaster punched-hours reference (Marco/Tony only) */}
-      {canManage && <TimeMasterRefPanel report={report} contractors={p.contractors} payrollTimeEntries={p.payrollTimeEntries} onUsePunched={(cid, hrs) => { setBatchPrefill({ contractorId: cid, hours: hrs }); setBatchOpen(true); }} />}
+      {canManage && <TimeMasterRefPanel report={report} contractors={p.contractors} payrollTimeEntries={p.payrollTimeEntries} onUsePunched={(cid, hrs, note) => { setBatchPrefill({ contractorId: cid, hours: hrs, note }); setBatchOpen(true); }} />}
 
       {/* Materials */}
       <div className="mt-2">
@@ -1077,7 +1112,7 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
         </div>
       )}
 
-      {batchOpen && <BatchHoursForm report={report} contractors={p.contractors} rates={rc} rateOverrides={p.rateOverrides} currentUser={p.currentUser} prefill={batchPrefill} onClose={() => { setBatchOpen(false); setBatchPrefill(null); }} onSave={rows => { saveReport({ manualTime: [...report.manualTime, ...rows] }); p.onLogEdit(`Added ${rows.length} hours line(s) to report #${report.reportNumber}`); setBatchOpen(false); setBatchPrefill(null); }} />}
+      {batchOpen && <BatchHoursForm report={report} contractors={p.contractors} rates={rc} rateOverrides={p.rateOverrides} currentUser={p.currentUser} prefill={batchPrefill} payrollTimeEntries={p.payrollTimeEntries} onClose={() => { setBatchOpen(false); setBatchPrefill(null); }} onSave={rows => { saveReport({ manualTime: [...report.manualTime, ...rows] }); p.onLogEdit(`Added ${rows.length} hours line(s) to report #${report.reportNumber}`); setBatchOpen(false); setBatchPrefill(null); }} />}
       {editManual && <ManualLineEditForm line={editManual} rates={rc} rateOverrides={p.rateOverrides} onClose={() => setEditManual(null)} onSave={upd => { saveReport({ manualTime: report.manualTime.map(x => x.id === upd.id ? upd : x) }); p.onLogEdit(`Edited ${upd.contractorName} hours line on report #${report.reportNumber}`); setEditManual(null); }} />}
       {addingMaterial && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} addAnother onClose={() => setAddingMaterial(false)} onSave={rc2 => saveReport({ receipts: [...report.receipts, rc2] })} />}
       {editReceipt && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} initial={editReceipt} onClose={() => setEditReceipt(null)} onSave={rc2 => { saveReport({ receipts: report.receipts.map(x => x.id === rc2.id ? rc2 : x) }); p.onLogEdit(`Edited material "${rc2.description}" on report #${report.reportNumber}`); setEditReceipt(null); }} />}
@@ -1148,21 +1183,28 @@ function ReceiptForm({ project, uploadedBy, currentUser, initial, addAnother, on
 
 // Batch end-of-day hours entry: a date + rows of [contractor | hours | rate].
 // Records each row as a manual time line on the open report.
-function BatchHoursForm({ report, contractors, rates, rateOverrides, currentUser, prefill, onClose, onSave }: { report: ContractingProgressReport; contractors: Employee[]; rates: ContractingRateCard; rateOverrides: Record<string, number>; currentUser: { id: string; name: string }; prefill?: { contractorId: string; hours: number } | null; onClose: () => void; onSave: (rows: ContractingTimeEntry[]) => void }) {
+function BatchHoursForm({ report, contractors, rates, rateOverrides, currentUser, prefill, payrollTimeEntries, onClose, onSave }: { report: ContractingProgressReport; contractors: Employee[]; rates: ContractingRateCard; rateOverrides: Record<string, number>; currentUser: { id: string; name: string }; prefill?: { contractorId: string; hours: number; note?: string } | null; payrollTimeEntries: TimeEntry[]; onClose: () => void; onSave: (rows: ContractingTimeEntry[]) => void }) {
   const [date, setDate] = useState(dateInputVal(Date.now()));
   const defaultRate = (emp?: Employee) => emp ? (rateOverrides[emp.id] ?? rateFor((emp.contractingBillingRole || 'general_labour') as ContractingBillingRole, rates)) : 0;
-  type RowT = { key: string; contractorId: string; hours: string; rate: string };
-  const mkRow = (): RowT => { const c = contractors[0]; return { key: uid('row'), contractorId: c?.id || '', hours: '', rate: String(defaultRate(c) || '') }; };
-  // One-tap assist: seed the first row with a contractor's punched total (still
-  // fully editable — Tony adjusts hours/rate for deductions before saving).
+  type RowT = { key: string; contractorId: string; hours: string; rate: string; desc: string };
+  const mkRow = (): RowT => { const c = contractors[0]; return { key: uid('row'), contractorId: c?.id || '', hours: '', rate: String(defaultRate(c) || ''), desc: '' }; };
+  // One-tap assist: seed the first row with a contractor's punched total + note
+  // (fully editable — Tony adjusts hours/rate/description before saving).
   const initRows = (): RowT[] => {
-    if (prefill) { const c = contractors.find(x => x.id === prefill.contractorId) || contractors[0]; return [{ key: uid('row'), contractorId: c?.id || '', hours: prefill.hours ? String(prefill.hours) : '', rate: String(defaultRate(c) || '') }]; }
+    if (prefill) { const c = contractors.find(x => x.id === prefill.contractorId) || contractors[0]; return [{ key: uid('row'), contractorId: c?.id || '', hours: prefill.hours ? String(prefill.hours) : '', rate: String(defaultRate(c) || ''), desc: prefill.note || '' }]; }
     return [mkRow()];
   };
   const [rows, setRows] = useState<RowT[]>(initRows);
   const setRow = (key: string, patch: Partial<RowT>) => setRows(rs => rs.map(r => r.key === key ? { ...r, ...patch } : r));
   const filled = rows.filter(r => r.contractorId && Number(r.hours) > 0);
   const total = filled.reduce((s, r) => s + Number(r.hours) * (Number(r.rate) || 0), 0);
+  // Suggestion: a punch note for this person on the chosen date (informs, never auto-bills).
+  const emailOf = (id: string) => (contractors.find(c => c.id === id)?.linkedUserEmail || contractors.find(c => c.id === id)?.email || '').toLowerCase();
+  const noteFor = (contractorId: string): string | undefined => {
+    const email = emailOf(contractorId); if (!email) return undefined;
+    const hit = payrollTimeEntries.find(e => (e.userEmail || '').toLowerCase() === email && dateInputVal(new Date(e.clockIn).getTime()) === date && (e.workNote || '').trim());
+    return hit?.workNote?.trim();
+  };
   const commit = () => {
     const clockIn = dateFromInput(date);
     const out: ContractingTimeEntry[] = filled.map(r => {
@@ -1174,6 +1216,7 @@ function BatchHoursForm({ report, contractors, rates, rateOverrides, currentUser
         id: uid('cmt'), projectId: report.projectId, phaseId: report.phaseId, contractorId: emp.id, contractorName: emp.name,
         billingRole: role, clockIn, manual: true, hours: round2(Number(r.hours)),
         rateOverride: enteredRate !== def ? enteredRate : undefined,   // store only the odd exception
+        description: r.desc.trim() || undefined,
         reportId: report.id, status: 'open', createdBy: currentUser, createdAt: Date.now(),
       };
     });
@@ -1182,18 +1225,23 @@ function BatchHoursForm({ report, contractors, rates, rateOverrides, currentUser
   return (
     <Modal title="Add hours" onClose={onClose}>
       <Field label="Date"><input className="inp" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
-      <div className="space-y-2">
+      <div className="space-y-3">
         {rows.map(r => {
           const emp = contractors.find(c => c.id === r.contractorId);
+          const suggestion = r.contractorId ? noteFor(r.contractorId) : undefined;
           return (
-            <div key={r.key} className="flex gap-1.5 items-center">
-              <select className="inp flex-1 min-w-0" value={r.contractorId} onChange={e => { const emp2 = contractors.find(c => c.id === e.target.value); setRow(r.key, { contractorId: e.target.value, rate: String(defaultRate(emp2) || '') }); }}>
-                {contractors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-              <input className="inp w-16" type="number" step="0.25" min="0" placeholder="hrs" value={r.hours} onChange={e => setRow(r.key, { hours: e.target.value })} />
-              <span className="text-xs text-gray-400">@</span>
-              <input className="inp w-20" type="number" step="5" value={r.rate} onChange={e => setRow(r.key, { rate: e.target.value })} title={emp ? `role rate ${money(defaultRate(emp))}` : ''} />
-              {rows.length > 1 && <button onClick={() => setRows(rs => rs.filter(x => x.key !== r.key))} className="text-red-400 text-sm px-1">×</button>}
+            <div key={r.key} className="space-y-1">
+              <div className="flex gap-1.5 items-center">
+                <select className="inp flex-1 min-w-0" value={r.contractorId} onChange={e => { const emp2 = contractors.find(c => c.id === e.target.value); setRow(r.key, { contractorId: e.target.value, rate: String(defaultRate(emp2) || '') }); }}>
+                  {contractors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <input className="inp w-16" type="number" step="0.25" min="0" placeholder="hrs" value={r.hours} onChange={e => setRow(r.key, { hours: e.target.value })} />
+                <span className="text-xs text-gray-400">@</span>
+                <input className="inp w-20" type="number" step="5" value={r.rate} onChange={e => setRow(r.key, { rate: e.target.value })} title={emp ? `role rate ${money(defaultRate(emp))}` : ''} />
+                {rows.length > 1 && <button onClick={() => setRows(rs => rs.filter(x => x.key !== r.key))} className="text-red-400 text-sm px-1">×</button>}
+              </div>
+              <input className="inp text-sm" placeholder="Description (what the hours were for)" value={r.desc} onChange={e => setRow(r.key, { desc: e.target.value })} />
+              {suggestion && suggestion !== r.desc && <button onClick={() => setRow(r.key, { desc: suggestion })} className="text-[11px] text-left" style={{ color: PALERMO.slate }}>use note: “{suggestion}”</button>}
             </div>
           );
         })}
@@ -1212,6 +1260,7 @@ function ManualLineEditForm({ line, rates, rateOverrides, onClose, onSave }: { l
   const [date, setDate] = useState(dateInputVal(line.clockIn));
   const [hours, setHours] = useState(String(line.hours ?? ''));
   const [rate, setRate] = useState(String(line.rateOverride ?? def));
+  const [desc, setDesc] = useState(line.description || '');
   const amt = (Number(hours) || 0) * (Number(rate) || 0);
   return (
     <Modal title={`Edit ${line.contractorName}'s hours`} onClose={onClose}>
@@ -1220,10 +1269,12 @@ function ManualLineEditForm({ line, rates, rateOverrides, onClose, onSave }: { l
         <Field label="Hours"><input className="inp" type="number" step="0.25" min="0" value={hours} onChange={e => setHours(e.target.value)} /></Field>
         <Field label="Rate ($/hr)"><input className="inp" type="number" step="5" value={rate} onChange={e => setRate(e.target.value)} /></Field>
       </div>
+      <Field label="Description"><input className="inp" value={desc} onChange={e => setDesc(e.target.value)} /></Field>
       <div className="text-sm mb-2">{ROLE_LABEL[line.billingRole]} · role rate {money(def)} → <b>{money(amt)}</b></div>
       <ModalActions onClose={onClose} disabled={!(Number(hours) > 0)} onSave={() => onSave({
         ...line, clockIn: dateFromInput(date), hours: round2(Number(hours)),
         rateOverride: Number(rate) !== def ? Number(rate) : undefined,
+        description: desc.trim() || undefined,
       })} />
     </Modal>
   );
@@ -2218,6 +2269,103 @@ function DatePickForm({ title, label, initial, hint, mustBeAfter, onClose, onSav
       {err && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FADBD8', color: '#C0392B' }}>{err}</div>}
       {hint && <div className="text-xs text-gray-500 mb-2">{hint}</div>}
       <ModalActions onClose={onClose} disabled={!date || !!err} onSave={() => onSave(date)} />
+    </Modal>
+  );
+}
+
+// ─────────────────────────────────────────── CONTRACTOR TIME (Tony) ────────
+// Tony's contractor-scoped time management: view/edit/add manual entries for
+// CONTRACTING people only (billing-role holders + contractors). Marco's-side
+// employees never appear here. Hours only shown with in/out + note; edits are
+// audited in App. Reads the same payroll timeEntries; contractors themselves
+// only VIEW their own (Home), never edit — corrections come through here.
+function ContractingTimeTab({ employees, payrollTimeEntries, currentUser, onSave, onDelete }: { employees: Employee[]; payrollTimeEntries: TimeEntry[]; currentUser: { id: string; name: string }; onSave: (e: TimeEntry) => void; onDelete: (id: string) => void }) {
+  const [form, setForm] = useState<{ mode: 'add' | 'edit'; worker: Employee; entry?: TimeEntry } | null>(null);
+  const workers = employees.filter(isContractingWorker);
+  const emailOf = (e: Employee) => (e.linkedUserEmail || e.email || '').toLowerCase();
+  const dur = (e: TimeEntry) => { const end = e.clockOut ? new Date(e.clockOut).getTime() : Date.now(); return Math.max(0, (end - new Date(e.clockIn).getTime()) / 3_600_000); };
+  const t = (iso?: string) => iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '—';
+  const d = (iso: string) => new Date(iso).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' });
+  const since = Date.now() - 60 * 86400000;
+  return (
+    <div>
+      <h2 className="font-bold text-lg mb-1" style={{ color: PALERMO.slate }}>Contractor time</h2>
+      <p className="text-xs text-gray-500 mb-3">Contracting people only · last 60 days · hours (no rates here). Edits are audited.</p>
+      <div className="space-y-3">
+        {workers.map(w => {
+          const email = emailOf(w);
+          const entries = payrollTimeEntries.filter(e => (e.userEmail || '').toLowerCase() === email && new Date(e.clockIn).getTime() >= since).sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
+          const total = entries.reduce((s, e) => s + dur(e), 0);
+          return (
+            <div key={w.id} className="bg-white rounded-lg border">
+              <div className="p-2 border-b flex items-center justify-between">
+                <span className="font-semibold" style={{ color: PALERMO.slate }}>{w.name} <span className="text-xs font-normal text-gray-400">· {round2(total)}h</span></span>
+                <button onClick={() => setForm({ mode: 'add', worker: w })} className="text-xs px-2 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Add entry</button>
+              </div>
+              <div className="divide-y">
+                {entries.length === 0 && <div className="p-2 text-xs text-gray-400">No entries in the last 60 days.</div>}
+                {entries.map(e => (
+                  <div key={e.id} className="p-2 text-sm flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div>{d(e.clockIn)} · {e.manualHoursOnly ? `${round2(dur(e))}h (hours)` : `${t(e.clockIn)} → ${e.clockOut ? t(e.clockOut) : <span className="text-emerald-600">active</span>}`} <b className="text-gray-500">{round2(dur(e))}h</b>{e.manualEntry && <span className="text-[9px] ml-1 px-1 rounded bg-slate-100 text-slate-500">manual</span>}</div>
+                      {e.workNote && <div className="text-[11px] text-gray-500 italic">“{e.workNote}”</div>}
+                      {e.editedBy && <div className="text-[10px] text-gray-300">edited by {e.editedBy}</div>}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button onClick={() => setForm({ mode: 'edit', worker: w, entry: e })} className="text-[11px]" style={{ color: PALERMO.slate }}>edit</button>
+                      <button onClick={() => confirm('Delete this time entry?') && onDelete(e.id)} className="text-red-400 text-sm">×</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        {workers.length === 0 && <div className="text-gray-500 text-sm">No contracting people.</div>}
+      </div>
+      {form && <ContractingTimeEditForm mode={form.mode} worker={form.worker} entry={form.entry} currentUser={currentUser} onClose={() => setForm(null)} onSave={e => { onSave(e); setForm(null); }} />}
+    </div>
+  );
+}
+
+function ContractingTimeEditForm({ mode, worker, entry, currentUser, onClose, onSave }: { mode: 'add' | 'edit'; worker: Employee; entry?: TimeEntry; currentUser: { id: string; name: string }; onClose: () => void; onSave: (e: TimeEntry) => void }) {
+  const emailOf = (e: Employee) => (e.linkedUserEmail || e.email || '').toLowerCase();
+  const [byHours, setByHours] = useState(!!entry?.manualHoursOnly || mode === 'add');
+  const [date, setDate] = useState(entry ? dateInputVal(new Date(entry.clockIn).getTime()) : dateInputVal(Date.now()));
+  const [start, setStart] = useState(entry && !entry.manualHoursOnly ? timeInputVal(new Date(entry.clockIn).getTime()) : '08:00');
+  const [end, setEnd] = useState(entry?.clockOut && !entry.manualHoursOnly ? timeInputVal(new Date(entry.clockOut).getTime()) : '16:00');
+  const durH = entry ? Math.max(0, ((entry.clockOut ? new Date(entry.clockOut).getTime() : Date.now()) - new Date(entry.clockIn).getTime()) / 3_600_000) : 0;
+  const [hours, setHours] = useState(entry ? String(round2(durH)) : '');
+  const [note, setNote] = useState(entry?.workNote || '');
+  const isoAt = (dstr: string, tstr: string) => { const [y, m, dd] = dstr.split('-').map(Number); const [hh, mm] = tstr.split(':').map(Number); return new Date(y, (m || 1) - 1, dd || 1, hh || 0, mm || 0, 0).toISOString(); };
+  const valid = byHours ? Number(hours) > 0 : (start && end && end > start);
+  const build = (): TimeEntry => {
+    const base: TimeEntry = entry
+      ? { ...entry }
+      : { id: `time-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, userEmail: emailOf(worker), userName: worker.name, clockIn: '', notes: [], manualEntry: true, enteredBy: { email: '', name: currentUser.name } };
+    if (byHours) {
+      const startIso = isoAt(date, '08:00');
+      const endIso = new Date(new Date(startIso).getTime() + Number(hours) * 3_600_000).toISOString();
+      return { ...base, clockIn: startIso, clockOut: endIso, manualEntry: true, manualHoursOnly: true, workNote: note.trim() || undefined };
+    }
+    return { ...base, clockIn: isoAt(date, start), clockOut: isoAt(date, end), manualEntry: true, manualHoursOnly: false, workNote: note.trim() || undefined };
+  };
+  return (
+    <Modal title={`${mode === 'add' ? 'Add' : 'Edit'} time · ${worker.name}`} onClose={onClose}>
+      <Field label="Date"><input className="inp" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+      <div className="flex gap-2 mb-2">
+        {(['hours', 'times'] as const).map(m => <button key={m} onClick={() => setByHours(m === 'hours')} className="flex-1 py-1.5 rounded border text-sm font-semibold capitalize" style={(byHours ? 'hours' : 'times') === m ? { backgroundColor: PALERMO.slate, color: 'white' } : {}}>{m === 'hours' ? 'Hours only' : 'In / out'}</button>)}
+      </div>
+      {byHours ? (
+        <Field label="Hours"><input className="inp" type="number" step="0.25" min="0" value={hours} onChange={e => setHours(e.target.value)} /></Field>
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="In"><input className="inp" type="time" value={start} onChange={e => setStart(e.target.value)} /></Field>
+          <Field label="Out"><input className="inp" type="time" value={end} onChange={e => setEnd(e.target.value)} /></Field>
+        </div>
+      )}
+      <Field label="Note (what was worked on)"><input className="inp" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. framed the bar wall" /></Field>
+      <ModalActions onClose={onClose} disabled={!valid} onSave={() => onSave(build())} />
     </Modal>
   );
 }
