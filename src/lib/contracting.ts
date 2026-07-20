@@ -324,6 +324,16 @@ export function woIsAssignedTo(wo: { assigneeIds?: string[]; assigneeId?: string
   return woAssignees(wo).ids.includes(userId);
 }
 
+// Who can be assigned to a work order / billed on a T&M report: anyone with a
+// contracting BILLING ROLE or rate on their Personnel record, OR a plain
+// contractor systemRole. Keying on the billing role (not systemRole) is what
+// lets Tony (admin + GC/PM $150) be assignable — systemRole 'admin' excluded him.
+export function isContractingWorker(e: { systemRole?: string; contractingBillingRole?: string; contractingHourlyOverride?: number }): boolean {
+  return e.systemRole === 'contractor'
+    || !!e.contractingBillingRole
+    || (typeof e.contractingHourlyOverride === 'number' && e.contractingHourlyOverride > 0);
+}
+
 // ── Work-order two-state status + optional dates ────────────────────────────
 // Two states only: in progress → complete. Legacy 'open' reads as 'in_progress'.
 export function woStatus(w: { status?: string }): 'in_progress' | 'done' {

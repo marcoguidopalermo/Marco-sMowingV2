@@ -1,8 +1,8 @@
 // Property management (v2): countdown / notice / occupancy logic. Reference
 // layer only — no payment/ledger math. Dates are 'YYYY-MM-DD' (local).
-import { ContractingProperty, ContractingUnit, ContractingTenancy, ContractingDeposit } from '../types';
+import { ContractingProperty, ContractingUnit, ContractingTenancy, ContractingDeposit, ContractingTenant } from '../types';
 
-export const NOTICE_DAYS_DEFAULT = 60;
+export const NOTICE_DAYS_DEFAULT = 75;
 export function noticeDaysOrDefault(settings?: { contractingNoticeDays?: number } | null): number {
   const n = settings?.contractingNoticeDays;
   return (typeof n === 'number' && n > 0) ? n : NOTICE_DAYS_DEFAULT;
@@ -17,6 +17,20 @@ export function fmtYmd(s?: string): string { return s ? new Date(ymdToMs(s)).toL
 
 export function tenancyMonthlyTotal(t: ContractingTenancy): number {
   return (t.tenants || []).reduce((s, x) => s + (Number(x.rentAmount) || 0), 0);
+}
+
+// The ★ MAIN CONTACT for a tenancy: the explicitly-starred tenant, else (single
+// tenant, or none marked) the first — so there's always an effective contact.
+export function starredTenant(t?: ContractingTenancy | null): ContractingTenant | undefined {
+  const list = t?.tenants || [];
+  return list.find(x => x.main) || list[0] || undefined;
+}
+// Tenants ordered with the starred one first (for display).
+export function tenantsStarredFirst(t?: ContractingTenancy | null): ContractingTenant[] {
+  const list = [...(t?.tenants || [])];
+  const star = starredTenant(t);
+  if (!star) return list;
+  return [star, ...list.filter(x => x !== star)];
 }
 export function unitIsVacant(u: ContractingUnit): boolean { return !u.tenancy; }
 

@@ -12,7 +12,7 @@ import {
 import {
   tenancyCountdown, tenancyMonthlyTotal, unitIsVacant, leasesNeedingAttention,
   tenancyMoveOut, tenancyDeposit, moveOutIsShortNotice,
-  fmtYmd, msToYmd, Countdown, UnitRow,
+  fmtYmd, msToYmd, Countdown, UnitRow, starredTenant, tenantsStarredFirst,
 } from '../lib/propertyMgmt';
 import type { ContractingDeposit } from '../types';
 import {
@@ -22,6 +22,7 @@ import {
   projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
   projectBillables, projectCompletionPct, woAssignees, woIsAssignedTo,
   reportIsDeletable, woStatus, woIsOverdue, compareWorkOrders, woWeekStats,
+  isContractingWorker,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
@@ -95,6 +96,8 @@ const fmtDate = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-CA', {
 const fmtShort = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }) : '—';
 const dateInputVal = (ms: number) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const dateFromInput = (s: string) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, (m || 1) - 1, d || 1, 12, 0, 0).getTime(); };
+const timeInputVal = (ms: number) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+const dateTimeFromInput = (s: string, t: string) => { const [y, m, d] = s.split('-').map(Number); const [hh, mm] = t.split(':').map(Number); return new Date(y, (m || 1) - 1, d || 1, hh || 0, mm || 0, 0).getTime(); };
 const STATUS_LABEL: Record<ContractingStatus, string> = { planned: 'Planned', in_progress: 'In Progress', on_hold: 'On Hold', complete: 'Complete', closed: 'Closed' };
 
 type Tab = 'home' | 'projects' | 'reports' | 'invoices' | 'workorders' | 'shopping' | 'properties' | 'propertycontacts' | 'rates';
@@ -110,7 +113,8 @@ export default function ContractingMaster(props: Props) {
   const invoices = useMemo(() => Object.values(props.invoices), [props.invoices]);
   const reports = useMemo(() => Object.values(props.reports), [props.reports]);
   const timeEntries = useMemo(() => Object.values(props.timeEntries), [props.timeEntries]);
-  const contractors = useMemo(() => props.employees.filter(e => e.systemRole === 'contractor'), [props.employees]);
+  // Contracting workers = billing-role holders (incl. Tony) + plain contractors.
+  const contractors = useMemo(() => props.employees.filter(isContractingWorker), [props.employees]);
   // Per-contractor rate override map — honored by the live preview so it
   // matches what the invoice will freeze.
   const rateOverrides = useMemo(() => rateMapFor(props.employees, rates), [props.employees, rates]);
@@ -1494,7 +1498,7 @@ function WorkOrdersTab(p: Props & { mineOnly: boolean; setMineOnly: (b: boolean)
   const [showArchived, setShowArchived] = useState(false);
   const [adding, setAdding] = useState(false);
   const activeProps = p.properties.filter(x => x.active !== false);
-  const contractors = p.employees.filter(e => e.systemRole === 'contractor');
+  const contractors = p.employees.filter(isContractingWorker);
   const meId = p.currentUser.id;
   const now = Date.now();
   const newest = (a: ContractingWorkOrder, b: ContractingWorkOrder) => (b.createdAt || 0) - (a.createdAt || 0);
@@ -1560,7 +1564,18 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
   // Tenant CONTACT reference for the tagged unit — Marco/Tony/Linda always, plus
   // any contractor this work order is assigned to (contacts only, tap-to-call).
   const canSeeTenant = p.canManageProperties || woIsAssignedTo(wo, p.currentUser.id);
-  const tenantContacts = (canSeeTenant && unit?.tenancy) ? unit.tenancy.tenants.filter(t => t.name || t.phone) : [];
+  // ★ Main contact(s) for this order. Unit-tagged → that unit's star.
+  // Property-level → each occupied unit's star (unit name shown when >1 unit).
+  const woContacts: { unitName?: string; tenant: ContractingTenant }[] = [];
+  if (canSeeTenant && prop) {
+    if (wo.unitId) {
+      const st = unit?.tenancy ? starredTenant(unit.tenancy) : undefined;
+      if (st) woContacts.push({ unitName: unit!.name, tenant: st });
+    } else {
+      const us = prop.units || [];
+      for (const u of us) { if (u.tenancy) { const st = starredTenant(u.tenancy); if (st) woContacts.push({ unitName: us.length > 1 ? u.name : undefined, tenant: st }); } }
+    }
+  }
   const done = woStatus(wo) === 'done';
   const save = (patch: Partial<ContractingWorkOrder>) => p.onSaveWorkOrder({ ...wo, ...patch, updatedAt: Date.now() });
   const [editing, setEditing] = useState(false);
@@ -1583,10 +1598,13 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
         <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: wo.priority === 'high' ? '#FADBD8' : wo.priority === 'normal' ? '#EBF5FB' : '#F8F9F9', color: wo.priority === 'high' ? '#C0392B' : '#555' }}>{wo.priority}</span>
       </div>
       <WorkOrderDates wo={wo} done={done} />
-      {tenantContacts.length > 0 && (
-        <div className="text-[11px] text-gray-500 mt-0.5">
-          tenant: {tenantContacts.map((t, i) => (
-            <span key={i}>{i > 0 && ', '}{t.name}{t.phone && <> · <a href={`tel:${t.phone}`} className="font-semibold underline" style={{ color: '#1E7E45' }}>{t.phone}</a></>}</span>
+      {woContacts.length > 0 && (
+        <div className="mt-0.5 space-y-0.5">
+          {woContacts.map((c, i) => (
+            <div key={i} className="text-[11px] text-gray-600">
+              <span style={{ color: PALERMO.gold }}>★</span> {c.unitName ? `${c.unitName}: ` : ''}<span className="font-semibold text-gray-700">{c.tenant.name}</span>
+              {c.tenant.phone && <> · <a href={`tel:${c.tenant.phone}`} className="font-bold underline" style={{ color: '#1E7E45' }}>{c.tenant.phone} 📞</a></>}
+            </div>
           ))}
         </div>
       )}
@@ -1650,12 +1668,14 @@ function WorkOrderDates({ wo, done }: { wo: ContractingWorkOrder; done: boolean 
   const now = Date.now();
   const sod = (ms: number) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
   const day = (ms: number) => new Date(ms).toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' });
+  const tm = (ms: number) => new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
   const chips: JSX.Element[] = [];
   if (typeof wo.scheduledAt === 'number') {
     const s = sod(wo.scheduledAt), t = sod(now);
-    if (s === t) chips.push(<span key="s" className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ backgroundColor: '#D6EAF8', color: '#1F618D' }}>Sched today</span>);
-    else if (s > t) chips.push(<span key="s" className="text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: '#F4F6F7', color: '#566573' }}>Sched {day(wo.scheduledAt)}</span>);
-    else if (!done) chips.push(<span key="s" className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: '#F4F6F7', color: '#909497' }}>was scheduled {day(wo.scheduledAt)}</span>);
+    const timeSuffix = wo.scheduledHasTime ? ` · ${tm(wo.scheduledAt)}` : '';
+    if (s === t) chips.push(<span key="s" className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ backgroundColor: '#D6EAF8', color: '#1F618D' }}>Sched today{timeSuffix}</span>);
+    else if (s > t) chips.push(<span key="s" className="text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: '#F4F6F7', color: '#566573' }}>Sched {day(wo.scheduledAt)}{timeSuffix}</span>);
+    else if (!done) chips.push(<span key="s" className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: '#F4F6F7', color: '#909497' }}>was scheduled {day(wo.scheduledAt)}{timeSuffix}</span>);
   }
   if (typeof wo.dueAt === 'number') {
     if (woIsOverdue(wo, now)) chips.push(<span key="d" className="text-[10px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded" style={{ backgroundColor: '#FADBD8', color: '#C0392B' }}>overdue · due {day(wo.dueAt)}</span>);
@@ -1676,6 +1696,7 @@ function WorkOrderForm({ initial, currentUser, uploadedBy, properties, contracto
   const [description, setDescription] = useState(initial?.description || '');
   const [priority, setPriority] = useState<ContractingWorkOrder['priority']>(initial?.priority || 'normal');
   const [scheduled, setScheduled] = useState(initial?.scheduledAt ? dateInputVal(initial.scheduledAt) : '');
+  const [schedTime, setSchedTime] = useState(initial?.scheduledHasTime && initial?.scheduledAt ? timeInputVal(initial.scheduledAt) : '');
   const [due, setDue] = useState(initial?.dueAt ? dateInputVal(initial.dueAt) : '');
   const [assigneeIds, setAssigneeIds] = useState<string[]>(initial ? woAssignees(initial).ids : []);
   const [photos, setPhotos] = useState<StoredFile[]>(initial?.photos || []);
@@ -1690,9 +1711,10 @@ function WorkOrderForm({ initial, currentUser, uploadedBy, properties, contracto
       <Field label="Description"><textarea className="inp" rows={2} value={description} onChange={e => setDescription(e.target.value)} /></Field>
       <Field label="Priority"><div className="flex gap-2">{(['low', 'normal', 'high'] as const).map(pr => <button key={pr} onClick={() => setPriority(pr)} className="flex-1 py-1.5 rounded border text-sm capitalize" style={priority === pr ? { backgroundColor: PALERMO.slate, color: 'white' } : {}}>{pr}</button>)}</div></Field>
       <div className="grid grid-cols-2 gap-2">
-        <Field label="Scheduled (optional)"><input className="inp" type="date" value={scheduled} onChange={e => setScheduled(e.target.value)} /></Field>
+        <Field label="Scheduled (optional)"><input className="inp" type="date" value={scheduled} onChange={e => { setScheduled(e.target.value); if (!e.target.value) setSchedTime(''); }} /></Field>
         <Field label="Due (optional)"><input className="inp" type="date" value={due} onChange={e => setDue(e.target.value)} /></Field>
       </div>
+      {scheduled && <Field label="Scheduled time (optional — for tenant appointments)"><input className="inp" type="time" value={schedTime} onChange={e => setSchedTime(e.target.value)} /></Field>}
       <Field label="Assign to (optional)">
         <div className="flex flex-wrap gap-1.5">
           {contractors.map(c => { const on = assigneeIds.includes(c.id); return (
@@ -1713,7 +1735,8 @@ function WorkOrderForm({ initial, currentUser, uploadedBy, properties, contracto
         ...(initial || {}),
         id: woId, property, unitId: unitId || undefined, title: title.trim(), description: description.trim() || undefined, priority,
         status: initial?.status || 'in_progress',
-        scheduledAt: scheduled ? dateFromInput(scheduled) : undefined,
+        scheduledAt: scheduled ? (schedTime ? dateTimeFromInput(scheduled, schedTime) : dateFromInput(scheduled)) : undefined,
+        scheduledHasTime: scheduled && schedTime ? true : undefined,
         dueAt: due ? dateFromInput(due) : undefined,
         assigneeIds: assigneeIds.length ? assigneeIds : undefined, assigneeNames: assigneeIds.length ? assigneeIds.map(id => contractors.find(c => c.id === id)?.name || id) : undefined,
         assigneeId: undefined, assigneeName: undefined,
@@ -1895,7 +1918,8 @@ function PropertyContactsTab({ properties }: { properties: ContractingProperty[]
 }
 
 function UnitContactRow({ unit }: { unit: ContractingUnit }) {
-  const tenants = (unit.tenancy?.tenants || []).filter(t => t.name || t.phone || t.email);
+  const ordered = tenantsStarredFirst(unit.tenancy).filter(t => t.name || t.phone || t.email);
+  const star = starredTenant(unit.tenancy);
   return (
     <div className="p-3">
       <div className="flex items-center justify-between gap-2">
@@ -1904,10 +1928,10 @@ function UnitContactRow({ unit }: { unit: ContractingUnit }) {
       </div>
       {unit.tenancy && (
         <div className="mt-1 space-y-1.5">
-          {tenants.length === 0 && <div className="text-xs text-gray-400">Occupied</div>}
-          {tenants.map((t, i) => (
+          {ordered.length === 0 && <div className="text-xs text-gray-400">Occupied</div>}
+          {ordered.map((t, i) => (
             <div key={i} className="text-sm">
-              <div className="font-medium text-gray-800">{t.name || <span className="text-gray-400">(tenant)</span>}</div>
+              <div className="font-medium text-gray-800 flex items-center gap-1">{t === star && <span style={{ color: PALERMO.gold }}>★</span>}{t.name || <span className="text-gray-400">(tenant)</span>}{t === star && ordered.length > 1 && <span className="text-[9px] text-gray-400 uppercase font-bold">main</span>}</div>
               <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs mt-0.5">
                 {t.phone && <a href={`tel:${t.phone}`} className="font-semibold underline" style={{ color: '#1E7E45' }}>📞 {t.phone}</a>}
                 {t.email && <a href={`mailto:${t.email}`} className="underline" style={{ color: '#1E7E45' }}>✉️ {t.email}</a>}
@@ -2017,6 +2041,8 @@ function UnitRowCard({ unit, noticeDays, currentUser, editing, onUpdate, onRemov
   const total = t ? tenancyMonthlyTotal(t) : 0;
   const stamp = (action: string, base?: ContractingTenancy) => [...((base || t)?.audit || []), { at: Date.now(), by: currentUser.name, action }];
   const setTenancy = (nt: ContractingTenancy | undefined) => onUpdate({ ...unit, tenancy: nt });
+  // ★ Main contact — exactly one starred; tapping a different tenant moves it.
+  const setMain = (tn: ContractingTenant) => t && setTenancy({ ...t, tenants: t.tenants.map(x => ({ ...x, main: x === tn })), audit: stamp(`main contact → ${tn.name || 'tenant'}`) });
   const endTenancy = () => { if (!t) return; onUpdate({ ...unit, tenancy: undefined, history: [...(unit.history || []), { ...t, endedAt: Date.now(), endedBy: currentUser.name, audit: stamp('ended tenancy') }] }); };
   const renew = (newEnd: string) => t && setTenancy({ ...t, status: 'fixed_term', leaseEnd: newEnd, moveOutAt: undefined, moveOutBy: undefined, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp(`renewed → ${newEnd}`) });
   const convert = () => t && setTenancy({ ...t, status: 'month_to_month', leaseEnd: undefined, moveOutAt: undefined, moveOutBy: undefined, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp('converted to month-to-month') });
@@ -2043,15 +2069,21 @@ function UnitRowCard({ unit, noticeDays, currentUser, editing, onUpdate, onRemov
             <span className="text-lg font-black" style={{ color: PALERMO.slate }}>{money(total)}<span className="text-xs font-normal text-gray-400">/mo</span></span>
           </div>
           <div className="text-sm text-gray-700 mt-1">
-            {t.tenants.map((tn, i) => (
-              <div key={i} className="flex items-center justify-between">
-                <span>{tn.name || <span className="text-gray-400">(unnamed)</span>}{tn.phone ? <span className="text-xs text-gray-400"> · {tn.phone}</span> : ''}</span>
-                <span className="text-gray-500">{tn.rentAmount ? money(tn.rentAmount) : <span className="text-[10px] text-gray-400">contact only</span>}</span>
-              </div>
-            ))}
+            {tenantsStarredFirst(t).map((tn, i) => {
+              const isMain = starredTenant(t) === tn;
+              return (
+                <div key={i} className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    <button onClick={() => setMain(tn)} title="Set main contact" className="text-sm shrink-0" style={{ color: isMain ? PALERMO.gold : '#CACFD2' }}>{isMain ? '★' : '☆'}</button>
+                    <span className="truncate">{tn.name || <span className="text-gray-400">(unnamed)</span>}{tn.phone ? <span className="text-xs text-gray-400"> · <a href={`tel:${tn.phone}`} className="underline" style={{ color: '#1E7E45' }}>{tn.phone}</a></span> : ''}</span>
+                  </span>
+                  <span className="text-gray-500 shrink-0">{tn.rentAmount ? money(tn.rentAmount) : <span className="text-[10px] text-gray-400">contact only</span>}</span>
+                </div>
+              );
+            })}
           </div>
           {t.status === 'fixed_term' && t.leaseEnd && <div className="text-[11px] text-gray-400 mt-1">Lease {fmtYmd(t.leaseStart)} – {fmtYmd(t.leaseEnd)}</div>}
-          {moveOut && <div className="text-[11px] mt-1" style={{ color: '#C0392B' }}>Move out · {fmtYmd(moveOut)}{t.moveOutBy ? ` (by ${t.moveOutBy})` : ''}{shortNotice ? ' · less than 60 days’ notice' : ''}</div>}
+          {moveOut && <div className="text-[11px] mt-1" style={{ color: '#C0392B' }}>Move out · {fmtYmd(moveOut)}{t.moveOutBy ? ` (by ${t.moveOutBy})` : ''}{shortNotice ? ` · less than ${noticeDays} days’ notice` : ''}</div>}
           {/* Deposit — structured; quiet amber flag when not collected. */}
           {deposit.collected
             ? <div className="text-[11px] text-gray-400">Deposit {deposit.amount ? money(deposit.amount) : ''}{deposit.dateCollected ? ` · collected ${fmtYmd(deposit.dateCollected)}` : ''}{deposit.note ? ` · ${deposit.note}` : ''}</div>
@@ -2086,7 +2118,7 @@ function UnitRowCard({ unit, noticeDays, currentUser, editing, onUpdate, onRemov
       )}
 
       {(form === 'start' || form === 'edit') && <TenancyForm initial={form === 'edit' ? t! : undefined} noticeDays={noticeDays} onClose={() => setForm(null)} onSave={nt => { setTenancy(form === 'edit' ? { ...nt, audit: stamp('edited tenancy', nt) } : { ...nt, createdAt: Date.now(), audit: [{ at: Date.now(), by: currentUser.name, action: 'started tenancy' }] }); setForm(null); }} />}
-      {form === 'renew' && <DatePickForm title="Renew lease" label="New lease end" initial={t?.leaseEnd} onClose={() => setForm(null)} onSave={d => { renew(d); setForm(null); }} />}
+      {form === 'renew' && <DatePickForm title="Renew lease" label="New lease end" initial={t?.leaseEnd} mustBeAfter={t?.leaseStart} onClose={() => setForm(null)} onSave={d => { renew(d); setForm(null); }} />}
       {form === 'moveout' && <MoveOutForm initial={t?.leaseEnd || msToYmd(now)} noticeDays={noticeDays} now={now} onClose={() => setForm(null)} onSave={d => { setMoveOut(d); setForm(null); }} />}
     </div>
   );
@@ -2107,6 +2139,9 @@ function TenancyForm({ initial, noticeDays, onClose, onSave }: { initial?: Contr
   const setT = (i: number, patch: Partial<ContractingTenant>) => setTenants(ts => ts.map((t, j) => j === i ? { ...t, ...patch } : t));
   const total = tenants.reduce((s, t) => s + (Number(t.rentAmount) || 0), 0);
   void noticeDays;
+  // Fixed-term lease end must be strictly after start (YMD strings sort by date).
+  const dateError = (status === 'fixed_term' && leaseStart && leaseEnd && leaseEnd <= leaseStart)
+    ? 'Lease end date is before the start date.' : '';
   return (
     <Modal title={initial ? 'Edit tenancy' : 'Start tenancy'} onClose={onClose}>
       <Field label="Type">
@@ -2118,6 +2153,7 @@ function TenancyForm({ initial, noticeDays, onClose, onSave }: { initial?: Contr
         <Field label="Lease start"><input className="inp" type="date" value={leaseStart} onChange={e => setLeaseStart(e.target.value)} /></Field>
         {status === 'fixed_term' && <Field label="Lease end"><input className="inp" type="date" value={leaseEnd} onChange={e => setLeaseEnd(e.target.value)} /></Field>}
       </div>
+      {dateError && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FADBD8', color: '#C0392B' }}>{dateError}</div>}
       <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Tenants (rent per person; blank = contact only)</div>
       <div className="space-y-2 mb-2">
         {tenants.map((tn, i) => (
@@ -2147,12 +2183,12 @@ function TenancyForm({ initial, noticeDays, onClose, onSave }: { initial?: Contr
       )}
       <Field label="Deposit note (reference)"><input className="inp" value={depNote} onChange={e => setDepNote(e.target.value)} /></Field>
       <Field label="Notes"><textarea className="inp" rows={2} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
-      <ModalActions onClose={onClose} disabled={tenants.every(t => !t.name.trim())} onSave={() => onSave({
+      <ModalActions onClose={onClose} disabled={tenants.every(t => !t.name.trim()) || !!dateError} onSave={() => onSave({
         id: initial?.id || uid('cten'), status, leaseStart: leaseStart || undefined, leaseEnd: status === 'fixed_term' ? (leaseEnd || undefined) : undefined,
         moveOutAt: initial?.moveOutAt, moveOutBy: initial?.moveOutBy, createdAt: initial?.createdAt, audit: initial?.audit,
         deposit: { collected: depCollected, amount: depAmount === '' ? undefined : Number(depAmount), dateCollected: depDate || undefined, note: depNote.trim() || undefined },
         notes: notes.trim() || undefined,
-        tenants: tenants.filter(t => t.name.trim() || t.rentAmount).map(t => ({ name: t.name.trim(), phone: t.phone, email: t.email, rentAmount: t.rentAmount })),
+        tenants: tenants.filter(t => t.name.trim() || t.rentAmount).map(t => ({ name: t.name.trim(), phone: t.phone, email: t.email, rentAmount: t.rentAmount, main: t.main })),
       })} />
     </Modal>
   );
@@ -2172,13 +2208,16 @@ function MoveOutForm({ initial, noticeDays, now, onClose, onSave }: { initial?: 
   );
 }
 
-function DatePickForm({ title, label, initial, hint, onClose, onSave }: { title: string; label: string; initial?: string; hint?: string; onClose: () => void; onSave: (d: string) => void }) {
+function DatePickForm({ title, label, initial, hint, mustBeAfter, onClose, onSave }: { title: string; label: string; initial?: string; hint?: string; mustBeAfter?: string; onClose: () => void; onSave: (d: string) => void }) {
   const [date, setDate] = useState(initial || '');
+  // Renew: the new end must be strictly after the lease start (YMD string sort).
+  const err = (date && mustBeAfter && date <= mustBeAfter) ? 'New end date is before the lease start date.' : '';
   return (
     <Modal title={title} onClose={onClose}>
       <Field label={label}><input className="inp" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+      {err && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FADBD8', color: '#C0392B' }}>{err}</div>}
       {hint && <div className="text-xs text-gray-500 mb-2">{hint}</div>}
-      <ModalActions onClose={onClose} disabled={!date} onSave={() => onSave(date)} />
+      <ModalActions onClose={onClose} disabled={!date || !!err} onSave={() => onSave(date)} />
     </Modal>
   );
 }

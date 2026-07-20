@@ -883,7 +883,7 @@ export interface ContractingRateCard { gc_pm: number; skilled_carpenter: number;
 
 // ── Property management (v2): PROPERTY → UNITS → TENANCIES (multi-payer) ────
 // Reference layer only — NO payment tracking, bills, or ledgers.
-export interface ContractingTenant { name: string; phone?: string; email?: string; rentAmount?: number; }
+export interface ContractingTenant { name: string; phone?: string; email?: string; rentAmount?: number; main?: boolean; }
 export type ContractingTenancyStatus = 'fixed_term' | 'month_to_month';
 export interface ContractingDeposit { collected?: boolean; amount?: number; dateCollected?: string; note?: string; }
 export interface ContractingTenancy {
@@ -1057,7 +1057,8 @@ export interface ContractingWorkOrder {
   assigneeId?: string;            // DEPRECATED single-assignee (read-migrated → assigneeIds)
   assigneeName?: string;          // DEPRECATED
   unitId?: string;                // optional UNIT tag (property-level orders leave blank)
-  scheduledAt?: number;           // optional planned date (ms, local noon)
+  scheduledAt?: number;           // optional planned date (ms; noon, or exact time when scheduledHasTime)
+  scheduledHasTime?: boolean;     // true when scheduledAt carries a real time (tenant appointment)
   dueAt?: number;                 // optional deadline (ms, local noon)
   archived?: boolean;             // hidden from default list (declutter)
   createdBy?: { id: string; name: string };

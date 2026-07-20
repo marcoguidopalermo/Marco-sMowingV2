@@ -34,6 +34,11 @@ interface GlobalConfig {
   // "*_extra" keys (repairs_extra / workorders_assigned_extra) ADD on top of
   // the structural recipients that define the event's meaning.
   audiences?: Record<string, AudienceSpec>;
+  // Quiet hours (Toronto). Default: enabled, 20:00–08:00. Pushes in the window
+  // are held + delivered at window end; centre entries still land immediately.
+  quietHours?: {enabled?: boolean; startHour?: number; endHour?: number};
+  // Per-type "bypass quiet hours" (default OFF). For future urgent categories.
+  bypassQuiet?: Partial<Record<Category, boolean>>;
 }
 
 const normEmail = (v: unknown): string =>
@@ -79,42 +84,45 @@ async function logSend(category: Category, p: SendPayload, recipientCount: numbe
   }
 }
 
-// ── The single send entry point ──────────────────────────────────────────
-// Checks the global toggle, each user's category preference, writes the centre
-// entry (inbox works without push), sends to tokens, prunes dead ones, logs.
-export async function sendNotification(
-  userEmails: string[], category: Category, p: SendPayload, subToggle?: string,
-): Promise<{recipients: number; delivered: number; pruned: number; skipped?: string}> {
-  const cfg = await loadConfig();
-  if (cfg.globals?.[category] === false) return {recipients: 0, delivered: 0, pruned: 0, skipped: "global_off"};
-  if (subToggle && cfg.subToggles?.[subToggle] === false) return {recipients: 0, delivered: 0, pruned: 0, skipped: "subtoggle_off"};
-
-  const uids = [...new Set(userEmails.map(normEmail).filter(Boolean))];
-  const recipients: string[] = [];
-  for (const uid of uids) {
-    const pref = (await db.doc(`${PUB}/notificationPrefs/${key(uid)}`).get()).data() as any;
-    const master = pref?.master !== false;               // default ON
-    const catOn = pref?.categories?.[category] !== false; // default ON
-    if (master && catOn) recipients.push(uid);
-  }
-  return deliverTo(recipients, category, p);
+// ── Quiet hours (default 8 PM–8 AM Toronto) ─────────────────────────────────
+// During the window, pushes are HELD (queued) and delivered in one catch-up
+// when the window ends; notification-centre entries still land immediately.
+function torontoHour(nowMs: number): number {
+  const s = new Date(nowMs).toLocaleString("en-US", {timeZone: "America/Toronto", hour12: false, hour: "2-digit"});
+  return parseInt(s, 10) % 24;
+}
+function quietActive(cfg: GlobalConfig, nowMs: number): boolean {
+  const q = cfg.quietHours || {};
+  if (q.enabled === false) return false;
+  const start = typeof q.startHour === "number" ? q.startHour : 20;
+  const end = typeof q.endHour === "number" ? q.endHour : 8;
+  if (start === end) return false;
+  const h = torontoHour(nowMs);
+  return start < end ? (h >= start && h < end) : (h >= start || h < end);
+}
+async function enqueuePush(recipients: string[], category: Category, p: SendPayload) {
+  await db.collection(`${PUB}/notificationQueue`).add({
+    category, title: p.title, body: p.body, url: p.url || "/", recipients, at: Date.now(),
+  });
 }
 
-// Delivery core — no gating. Writes each recipient's centre entry, sends to
-// their tokens, prunes dead ones, logs. Callers gate before reaching here
-// (sendNotification checks toggles/prefs; the test sender bypasses them).
-async function deliverTo(
+// Write each recipient's bounded centre entry (inbox works without push).
+async function appendCentres(recipients: string[], category: Category, p: SendPayload) {
+  for (const uid of recipients) await appendCentre(uid, category, p);
+}
+
+// Push to recipients' tokens (NO centre write — that's done separately so the
+// inbox lands immediately even when the push is held for quiet hours). Prunes
+// dead tokens, logs the send.
+async function pushToTokens(
   recipients: string[], category: Category, p: SendPayload,
-): Promise<{recipients: number; delivered: number; pruned: number}> {
-  // Centre entries (inbox even without a push token) + collect tokens.
+): Promise<{delivered: number; pruned: number}> {
   const tokens: string[] = [];
   const owner = new Map<string, string>();
   for (const uid of recipients) {
-    await appendCentre(uid, category, p);
     const td = (await db.doc(`${PUB}/pushTokens/${key(uid)}`).get()).data() as any;
     for (const t of (td?.tokens || [])) { tokens.push(t.token); owner.set(t.token, uid); }
   }
-
   let delivered = 0; let pruned = 0;
   if (tokens.length) {
     try {
@@ -138,7 +146,81 @@ async function deliverTo(
     }
   }
   await logSend(category, p, recipients.length, delivered);
-  return {recipients: recipients.length, delivered, pruned};
+  return {delivered, pruned};
+}
+
+// Immediate deliver (centre + push) — no quiet gate. Used by the test sender.
+async function deliverTo(
+  recipients: string[], category: Category, p: SendPayload,
+): Promise<{recipients: number; delivered: number; pruned: number}> {
+  await appendCentres(recipients, category, p);
+  const r = await pushToTokens(recipients, category, p);
+  return {recipients: recipients.length, ...r};
+}
+
+// ── The single send entry point ──────────────────────────────────────────
+// Checks the global toggle, each user's category preference, writes the centre
+// entry (inbox works without push). The PUSH is sent now, unless quiet hours
+// are active and the type doesn't bypass them (and no deliverNow override), in
+// which case it's queued for the end-of-window catch-up.
+export async function sendNotification(
+  userEmails: string[], category: Category, p: SendPayload,
+  subToggle?: string, opts?: {deliverNow?: boolean},
+): Promise<{recipients: number; delivered: number; pruned: number; skipped?: string; queued?: boolean}> {
+  const cfg = await loadConfig();
+  if (cfg.globals?.[category] === false) return {recipients: 0, delivered: 0, pruned: 0, skipped: "global_off"};
+  if (subToggle && cfg.subToggles?.[subToggle] === false) return {recipients: 0, delivered: 0, pruned: 0, skipped: "subtoggle_off"};
+
+  const uids = [...new Set(userEmails.map(normEmail).filter(Boolean))];
+  const recipients: string[] = [];
+  for (const uid of uids) {
+    const pref = (await db.doc(`${PUB}/notificationPrefs/${key(uid)}`).get()).data() as any;
+    const master = pref?.master !== false;               // default ON
+    const catOn = pref?.categories?.[category] !== false; // default ON
+    if (master && catOn) recipients.push(uid);
+  }
+  // Inbox lands immediately; only the buzz waits.
+  await appendCentres(recipients, category, p);
+  const bypass = cfg.bypassQuiet?.[category] === true;
+  if (!opts?.deliverNow && !bypass && quietActive(cfg, Date.now())) {
+    await enqueuePush(recipients, category, p);
+    return {recipients: recipients.length, delivered: 0, pruned: 0, queued: true};
+  }
+  const r = await pushToTokens(recipients, category, p);
+  return {recipients: recipients.length, delivered: r.delivered, pruned: r.pruned};
+}
+
+// ── Quiet-hours catch-up ────────────────────────────────────────────────────
+// Called from the scheduled pass. When the quiet window is NOT active, deliver
+// every queued push in one pass — RE-CHECKING gates at delivery time (global
+// toggle + each recipient's current prefs). No-op while still quiet. Isolated
+// by the caller. (Centre entries were already written at enqueue time.)
+export async function runQuietFlush(nowMs: number, warnings: string[]): Promise<void> {
+  const cfg = await loadConfig();
+  if (quietActive(cfg, nowMs)) { warnings.push("quiet_flush skipped (still quiet)"); return; }
+  const snap = await db.collection(`${PUB}/notificationQueue`).orderBy("at").limit(300).get();
+  if (snap.empty) { warnings.push("quiet_flush empty"); return; }
+  let delivered = 0;
+  for (const doc of snap.docs) {
+    const q = doc.data() as any;
+    const category = q.category as Category;
+    try {
+      if (cfg.globals?.[category] === false) { await doc.ref.delete(); continue; } // global off now
+      const recips: string[] = [];
+      for (const uid of (q.recipients || [])) {
+        const pref = (await db.doc(`${PUB}/notificationPrefs/${key(uid)}`).get()).data() as any;
+        if (pref?.master !== false && pref?.categories?.[category] !== false) recips.push(uid);
+      }
+      if (recips.length) {
+        const r = await pushToTokens(recips, category, {title: q.title, body: q.body, url: q.url});
+        delivered += r.delivered;
+      }
+    } catch (e) {
+      logger.warn("quiet flush item failed", {error: String(e)});
+    }
+    await doc.ref.delete();
+  }
+  warnings.push(`quiet_flush delivered=${delivered} items=${snap.size}`);
 }
 
 // ── Dedupe markers (scheduled types) — bounded, TTL-cleaned ────────────────
@@ -242,7 +324,7 @@ export const pushAnnouncement = onCall({region: REGION}, async (req) => {
   if (!["admin", "manager"].includes(role) && email !== "marcoguidopalermo@gmail.com") {
     throw new HttpsError("permission-denied", "Managers/admins only.");
   }
-  const {audience, division, roleGroup, title, body, bulletinId} = (req.data || {}) as any;
+  const {audience, division, roleGroup, title, body, bulletinId, deliverNow} = (req.data || {}) as any;
   let targets: string[] = [];
   if (audience === "division" && division) {
     targets = emps.filter((e) => (e.managedDivision === division || e.primaryCrew?.toLowerCase?.().includes(division))).map(empEmail);
@@ -251,8 +333,10 @@ export const pushAnnouncement = onCall({region: REGION}, async (req) => {
   } else {
     targets = emps.map(empEmail); // everyone
   }
+  // deliverNow = the poster chose to pierce quiet hours for this bulletin.
   const res = await sendNotification(targets.filter(Boolean), "announcements",
-    {title: title || "Announcement", body: body || "", url: bulletinId ? `/#bulletins` : "/#bulletins"});
+    {title: title || "Announcement", body: body || "", url: bulletinId ? `/#bulletins` : "/#bulletins"},
+    undefined, {deliverNow: !!deliverNow});
   return res;
 });
 

@@ -1,6 +1,6 @@
 // Verify ContractingMaster billing math against the exact progress-report
 // example. Run: npx tsx scripts/verify-contracting.ts
-import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, projectIsRemovable, reportIsDeletable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge, projectCompletionPct, woAssignees, woIsAssignedTo, woStatus, woIsOverdue, compareWorkOrders, woWeekStats } from '../src/lib/contracting';
+import { DEFAULT_CONTRACTING_RATES, computeReportTotals, receiptBilled, roundVisitHours, nextProgNumber, labourForReport, projectIsRemovable, reportIsDeletable, invoiceStage, invoiceDueAt, invoiceIsLate, NET_TERMS_MS, projectBillables, planPhaseMerge, projectCompletionPct, woAssignees, woIsAssignedTo, woStatus, woIsOverdue, compareWorkOrders, woWeekStats, isContractingWorker } from '../src/lib/contracting';
 
 const rates = DEFAULT_CONTRACTING_RATES;
 let pass = 0, fail = 0;
@@ -208,6 +208,13 @@ const stats = woWeekStats([wOverdue, wSoon, wLater, wUndated,
   { id: 'a', status: 'in_progress', archived: true, dueAt: NOW - DAY } as any], NOW);
 ok('week stats overdue=1 (done/archived excluded)', stats.overdue === 1);
 ok('week stats scheduledThisWeek=1', stats.scheduledThisWeek === 1);
+
+// ── assignable = billing role, not systemRole (Tony fix) ──
+ok('plain contractor is assignable', isContractingWorker({ systemRole: 'contractor' } as any) === true);
+ok('admin WITH billing role is assignable (Tony)', isContractingWorker({ systemRole: 'admin', contractingBillingRole: 'gc_pm' } as any) === true);
+ok('admin with hourly override is assignable', isContractingWorker({ systemRole: 'admin', contractingHourlyOverride: 150 } as any) === true);
+ok('plain admin (no billing role) is NOT assignable', isContractingWorker({ systemRole: 'admin' } as any) === false);
+ok('worker (no billing role) is NOT assignable', isContractingWorker({ systemRole: 'worker' } as any) === false);
 
 console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -70,6 +70,7 @@ import { noticeDaysOrDefault } from './lib/propertyMgmt';
 import NotificationCenter from './components/NotificationCenter';
 import PushEnablePrompt from './components/PushEnablePrompt';
 import { useStorageStats } from './components/ManageResourcesModal';
+import { useQuietNow } from './components/NotificationCenter';
 import { refreshPushToken, onForegroundMessage } from './lib/messaging';
 import { ratesOrDefault } from './lib/salesMaster';
 import RoleInstanceModal from './components/RoleInstanceModal';
@@ -1297,6 +1298,7 @@ export default function App() {
   // the 1 MiB main-doc cap; a separate informational strip when the TOTAL
   // estimate passes 80% of the 1 GiB free tier. The card itself stays visible
   // to all admins (harmless reference); only these warnings are Marco-scoped.
+  const isQuietNow = useQuietNow();
   const storageStats = useStorageStats();
   const storageMainPct = storageStats?.main?.pct ?? 0;
   const storageTotalPct = storageStats ? (storageStats.totalBytes / storageStats.freeTier) * 100 : 0;
@@ -4036,8 +4038,13 @@ export default function App() {
           const payload: any = { bulletinId: bid, title: newTitle, body: newContent.slice(0, 160) };
           if (bulletinAudience.length > 0) { payload.audience = 'role'; payload.roleGroup = bulletinAudience; }
           else { payload.audience = 'everyone'; }
+          // Quiet hours → a deliberate choice: deliver now (pierce) or hold to 8 AM.
+          if (isQuietNow()) {
+            payload.deliverNow = window.confirm("It's quiet hours — this push would be held until 8:00 AM.\n\nOK = deliver now anyway · Cancel = hold until 8:00 AM");
+          }
+          const heldMsg = payload.deliverNow === false ? 'Bulletin posted · push holds until 8:00 AM' : 'Bulletin posted · notification sent';
           httpsCallable(functions, 'pushAnnouncement')(payload)
-            .then(() => showToastMsg('Bulletin posted · notification sent'))
+            .then(() => showToastMsg(heldMsg))
             .catch(() => showToastMsg('Bulletin posted · push could not be sent'));
         }
         setNewTitle(''); setNewContent(''); setBulletinAudience([]); setBulletinSendPush(false);

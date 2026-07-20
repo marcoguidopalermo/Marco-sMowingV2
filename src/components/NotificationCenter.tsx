@@ -1,7 +1,7 @@
 // In-app notification centre (bell + inbox) + enable-push card + per-user
 // settings + (admin) dashboard. Self-subscribes to per-user Firestore docs.
 // The inbox works without push permission; push is the delivery bonus.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Bell } from 'lucide-react';
 import { collection, doc, onSnapshot, setDoc, query, orderBy, limit } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
@@ -146,6 +146,23 @@ function EnableCard({ support, onEnable }: { support: PushSupport; onEnable: () 
   );
 }
 
+// Quiet-hours check (Toronto), reading the admin-set window. Returns a stable
+// callback that reports whether pushes are currently held. Used to warn a
+// bulletin poster before an announcement gets deferred.
+export function useQuietNow(): () => boolean {
+  const qRef = useRef<any>({});
+  useEffect(() => onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'notificationConfig', 'globals'), s => { qRef.current = (s.data() as any)?.quietHours || {}; }), []);
+  return () => {
+    const q = qRef.current || {};
+    if (q.enabled === false) return false;
+    const start = typeof q.startHour === 'number' ? q.startHour : 20;
+    const end = typeof q.endHour === 'number' ? q.endHour : 8;
+    if (start === end) return false;
+    const h = Number(new Date().toLocaleString('en-US', { timeZone: 'America/Toronto', hour12: false, hour: '2-digit' })) % 24;
+    return start < end ? (h >= start && h < end) : (h >= start || h < end);
+  };
+}
+
 // ── Editable audiences ──────────────────────────────────────────────────────
 interface AudSpec { roles?: string[]; divisions?: string[]; people?: string[] }
 const ROLE_OPTS: { v: string; l: string }[] = [
@@ -249,6 +266,12 @@ function NotificationDashboard({ showToast, employees }: { showToast: (m: string
   const subToggles = config.subToggles || {};
   const setGlobal = (k: string, v: boolean) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notificationConfig', 'globals'), { globals: { ...(config.globals || {}), [k]: v } }, { merge: true });
   const setSub = (k: string, v: boolean) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notificationConfig', 'globals'), { subToggles: { ...(config.subToggles || {}), [k]: v } }, { merge: true });
+  const quiet = config.quietHours || {};
+  const setQuiet = (patch: any) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notificationConfig', 'globals'), { quietHours: { ...(config.quietHours || {}), ...patch } }, { merge: true });
+  const setBypass = (k: string, v: boolean) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notificationConfig', 'globals'), { bypassQuiet: { ...(config.bypassQuiet || {}), [k]: v } }, { merge: true });
+  const hourLabel = (h: number) => { const ap = h < 12 ? 'AM' : 'PM'; const hh = h % 12 === 0 ? 12 : h % 12; return `${hh}:00 ${ap}`; };
+  const qStart = typeof quiet.startHour === 'number' ? quiet.startHour : 20;
+  const qEnd = typeof quiet.endHour === 'number' ? quiet.endHour : 8;
   const now = Date.now();
   const countIn = (cat: NCategory, days: number) => log.filter(l => l.category === cat && l.at > now - days * 86400000).length;
   const lastOf = (cat: NCategory) => log.find(l => l.category === cat);
@@ -275,6 +298,23 @@ function NotificationDashboard({ showToast, employees }: { showToast: (m: string
   return (
     <div className="flex-1 min-h-0 overflow-y-auto p-3">
       <div className="text-[11px] text-gray-500 mb-2">Push adoption: <b>{tokenUsers}</b> device-registered user(s). Kill switches enforced server-side.</div>
+
+      {/* Quiet hours — pushes held during the window, delivered at window end. */}
+      <div className="border rounded-lg p-2 mb-3 bg-slate-50">
+        <label className="flex items-center justify-between">
+          <span className="font-bold text-sm text-slate-800">Quiet hours</span>
+          <span className="text-[10px] font-black uppercase flex items-center gap-1">{quiet.enabled === false ? 'off' : 'on'}<input type="checkbox" checked={quiet.enabled !== false} onChange={e => setQuiet({ enabled: e.target.checked })} /></span>
+        </label>
+        <div className="flex items-center gap-2 mt-1.5 text-xs text-slate-600">
+          <span>From</span>
+          <select value={qStart} onChange={e => setQuiet({ startHour: Number(e.target.value) })} className="border rounded px-1 py-0.5 bg-white" disabled={quiet.enabled === false}>{Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{hourLabel(h)}</option>)}</select>
+          <span>to</span>
+          <select value={qEnd} onChange={e => setQuiet({ endHour: Number(e.target.value) })} className="border rounded px-1 py-0.5 bg-white" disabled={quiet.enabled === false}>{Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{hourLabel(h)}</option>)}</select>
+          <span className="text-slate-400">(Toronto)</span>
+        </div>
+        <div className="text-[10px] text-gray-400 mt-1">Pushes in the window are held and delivered in one catch-up when it ends. Inbox entries land immediately.</div>
+      </div>
+
       {NOTIF_CATEGORIES.map(c => {
         const on = globals[c.key] !== false && !c.dormant;
         const last = lastOf(c.key);
@@ -293,9 +333,9 @@ function NotificationDashboard({ showToast, employees }: { showToast: (m: string
               </div>
             </div>
             {!c.dormant && (
-              <div className="text-[11px] text-gray-500 mt-1">
-                Sent 7d: <b>{countIn(c.key, 7)}</b> · 30d: <b>{countIn(c.key, 30)}</b>
-                {last ? <> · last {ago(last.at)} ago → {last.recipientCount} recip ({last.delivered} pushed)</> : ' · never sent'}
+              <div className="text-[11px] text-gray-500 mt-1 flex items-center justify-between gap-2">
+                <span>Sent 7d: <b>{countIn(c.key, 7)}</b> · 30d: <b>{countIn(c.key, 30)}</b>{last ? <> · last {ago(last.at)} ago → {last.recipientCount} recip ({last.delivered} pushed)</> : ' · never sent'}</span>
+                <label className="flex items-center gap-1 shrink-0 text-[10px] font-bold text-slate-500" title="Deliver this type immediately even during quiet hours"><input type="checkbox" checked={(config.bypassQuiet || {})[c.key] === true} onChange={e => setBypass(c.key, e.target.checked)} />bypass quiet</label>
               </div>
             )}
             {c.key === 'workorders' && !c.dormant && (

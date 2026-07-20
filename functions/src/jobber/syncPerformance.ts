@@ -11,7 +11,7 @@ import {
 import {makeJobberClient, JobberClient, sleep} from "./client.js";
 import {runArchivePass} from "./archive.js";
 import {runRoleGeneration} from "./roleMaster.js";
-import {runNotificationScan} from "../notifications.js";
+import {runNotificationScan, runQuietFlush} from "../notifications.js";
 import {runStorageMeasurement} from "./storageMeasure.js";
 
 if (!admin.apps.length) {
@@ -2633,6 +2633,16 @@ async function runPerformanceSync(args: {
           error: err instanceof Error ? err.message : String(err),
         });
         summary.warnings.push("notification_scan_error");
+      }
+      // Quiet-hours catch-up — deliver any held pushes once the window ends.
+      // Isolated: a flush failure never fails the sync.
+      try {
+        await runQuietFlush(Date.now(), summary.warnings);
+      } catch (err) {
+        logger.warn("quiet flush failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        summary.warnings.push("quiet_flush_error");
       }
       // Storage-health measurement (bounded: main-doc read + count()/sampled
       // collection sizes, no full scans). Isolated: never fails the sync.

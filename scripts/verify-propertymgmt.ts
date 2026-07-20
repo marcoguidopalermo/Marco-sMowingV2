@@ -1,6 +1,6 @@
 // Verify property-management logic: derived rent (3 shapes), countdown states,
 // M2M notice flow. Run: npx tsx scripts/verify-propertymgmt.ts
-import { tenancyMonthlyTotal, tenancyCountdown, tenancyMoveOut, tenancyDeposit, moveOutIsShortNotice, noticeDaysOrDefault, msToYmd } from '../src/lib/propertyMgmt';
+import { tenancyMonthlyTotal, tenancyCountdown, tenancyMoveOut, tenancyDeposit, moveOutIsShortNotice, noticeDaysOrDefault, msToYmd, starredTenant, tenantsStarredFirst, NOTICE_DAYS_DEFAULT } from '../src/lib/propertyMgmt';
 
 let pass = 0, fail = 0;
 const ok = (l: string, c: boolean, got: any = '') => { c ? pass++ : fail++; console.log(`${c ? '✅' : '❌'} ${l}${got !== '' ? ` = ${got}` : ''}`); };
@@ -23,7 +23,7 @@ ok('10 days past → red, "expired"', fixed(-10).level === 'red' && /expired/.te
 
 console.log('\n=== MOVE OUT — actual date, both tenancy types ===');
 const nd = noticeDaysOrDefault(null);
-ok('default notice length (hint) = 60', nd === 60, nd);
+ok('default notice length (hint) = 75', nd === 75, nd);
 const open = tenancyCountdown({ status: 'month_to_month', tenants: [] } as any, now);
 ok('M2M open → no countdown ("month-to-month")', open.kind === 'open' && open.label === 'month-to-month');
 // M2M with a move-out date → countdown to THAT date (not +60).
@@ -40,6 +40,18 @@ ok('legacy computedEnd → move-out date', tenancyMoveOut({ computedEnd: ymdIn(1
 ok('legacy notice countdown still reads as move-out', tenancyCountdown({ status: 'month_to_month', noticeGivenAt: ymdIn(-5), computedEnd: ymdIn(55), tenants: [] } as any, now).kind === 'moveout');
 ok('legacy depositNote → structured note', tenancyDeposit({ depositNote: '$1,800 · Jun 1' } as any).note === '$1,800 · Jun 1' && !tenancyDeposit({ depositNote: 'x' } as any).collected);
 ok('structured deposit preferred over legacy', tenancyDeposit({ deposit: { collected: true, amount: 1800 }, depositNote: 'old' } as any).amount === 1800);
+
+// ── starred main contact + 75-day notice default ──
+console.log('\n=== starred main contact + notice default ===');
+ok('notice default is 75', NOTICE_DAYS_DEFAULT === 75);
+ok('noticeDaysOrDefault falls back to 75', noticeDaysOrDefault(undefined) === 75);
+ok('noticeDaysOrDefault honors a set value', noticeDaysOrDefault({ contractingNoticeDays: 90 }) === 90);
+const T1 = { name: 'A', phone: '111' }, T2 = { name: 'B', phone: '222', main: true }, T3 = { name: 'C' };
+ok('explicit star wins', starredTenant({ tenants: [T1, T2, T3] } as any)?.name === 'B');
+ok('no star → first tenant', starredTenant({ tenants: [T1, T3] } as any)?.name === 'A');
+ok('single tenant auto-stars', starredTenant({ tenants: [T3] } as any)?.name === 'C');
+ok('empty → undefined', starredTenant({ tenants: [] } as any) === undefined);
+ok('starred-first ordering', tenantsStarredFirst({ tenants: [T1, T2, T3] } as any).map(t => t.name).join('') === 'BAC');
 
 console.log(`\n${fail === 0 ? '✅ ALL PASS' : '❌ FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
