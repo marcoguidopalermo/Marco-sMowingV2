@@ -1,4 +1,5 @@
-import { AlertTriangle } from 'lucide-react';
+import { useState } from 'react';
+import { AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
 import type { FleetItem } from '../types';
 import { fleetItemLabel } from '../lib/fleetUtils';
 import { fleetDocRenewals, unitDocChip, expiryCountdownLabel } from '../lib/fleetDocuments';
@@ -7,9 +8,12 @@ import { fleetDocRenewals, unitDocChip, expiryCountdownLabel } from '../lib/flee
 // documents. One row per affected DOCUMENT, soonest-first, AMBER ≤30 days /
 // RED expired (the 30-day window from docExpiryState — the same source the
 // push scan reads). Tapping a row jumps to that unit's documents via onJump.
-// Empty state: a quiet "All renewals current ✓".
-export default function FleetRenewalsStrip({ fleet, onJump }: { fleet: FleetItem[]; onJump: (unitId: string) => void }) {
+// Empty state: a quiet "All renewals current ✓". `collapsible` adds a header
+// toggle (default expanded, so attention is never missed) for lists where the
+// strip would crowd a mobile view — same component, same data, second mount.
+export default function FleetRenewalsStrip({ fleet, onJump, collapsible = false }: { fleet: FleetItem[]; onJump: (unitId: string) => void; collapsible?: boolean }) {
   const rows = fleetDocRenewals(fleet);
+  const [open, setOpen] = useState(true);
 
   if (rows.length === 0) {
     return (
@@ -21,11 +25,23 @@ export default function FleetRenewalsStrip({ fleet, onJump }: { fleet: FleetItem
     );
   }
 
+  const header = (
+    <div className="text-xs font-black uppercase tracking-widest flex items-center gap-1.5 text-amber-700">
+      <AlertTriangle className="w-3.5 h-3.5" /> Renewals needing attention ({rows.length})
+    </div>
+  );
+
   return (
     <div className="bg-white rounded-lg border border-amber-200 p-3 mb-3">
-      <div className="text-xs font-black uppercase tracking-widest mb-1.5 flex items-center gap-1.5 text-amber-700">
-        <AlertTriangle className="w-3.5 h-3.5" /> Renewals needing attention ({rows.length})
-      </div>
+      {collapsible ? (
+        <button type="button" onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between mb-1.5">
+          {header}
+          {open ? <ChevronUp className="w-4 h-4 text-amber-600" /> : <ChevronDown className="w-4 h-4 text-amber-600" />}
+        </button>
+      ) : (
+        <div className="mb-1.5">{header}</div>
+      )}
+      {(!collapsible || open) && (
       <div className="space-y-1">
         {rows.map(r => {
           const red = r.state === 'expired';
@@ -48,6 +64,7 @@ export default function FleetRenewalsStrip({ fleet, onJump }: { fleet: FleetItem
           );
         })}
       </div>
+      )}
     </div>
   );
 }

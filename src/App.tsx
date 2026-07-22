@@ -3210,6 +3210,7 @@ export default function App() {
       cvorExpiry={appData.cvorExpiry}
       currentUserEmail={displayEmail}
       currentUserName={displayName}
+      onOpenUnitDocuments={(unitId) => setDocumentsUnitId(unitId)}
       onViewInspection={(id) => setViewingInspectionId(id)}
       onAssignTask={(taskId, assignedTo) => {
         if (!can('canEditRepairs', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }

@@ -10,7 +10,7 @@ import { deleteFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
 import { assigneesForTask, collaboratorNames, joinNames, shareForMechanic } from '../lib/workCredit';
 import FleetGroupedList from './FleetGroupedList';
-import { DocRenewalChip } from './FleetRenewalsStrip';
+import FleetRenewalsStrip, { DocRenewalChip } from './FleetRenewalsStrip';
 import { getUnitAttention } from '../lib/fleetGrouping';
 import { personColor } from '../lib/personColor';
 import { isExpiringSoon, isExpired, isOdoStale, formatTodayInToronto } from '../lib/dateUtils';
@@ -102,6 +102,9 @@ interface MechanicBoardProps {
     placeholderDefaults?: { name: string; threshold: number; metric: 'hours' | 'km' },
   ) => void;
   onViewInspection: (inspectionId: string) => void;
+  // Opens the App-level UnitDocumentsModal for a unit — used by the
+  // renewals strip's tap-through. Same handler Manage Resources uses.
+  onOpenUnitDocuments: (unitId: string) => void;
   onAssignTask: (taskId: string, assignedTo: { userEmail: string; userName: string } | null) => void;
   // Multi-mechanic assignment (no cap) — replaces the task's assignee
   // list. Used by the inline "Assign to me" affordance on each card.
@@ -183,6 +186,7 @@ export default function MechanicBoard({
   onToggleWinterize,
   onManualResetMaintenance,
   onViewInspection,
+  onOpenUnitDocuments,
   onAssignTask,
   onSetAssignees,
   currentUserEmail,
@@ -1113,6 +1117,12 @@ export default function MechanicBoard({
         // inner scroller) only constrained height on lg, so the banner's
         // vertical space broke scroll on mobile.
         <div className="flex flex-col gap-4 flex-1 min-h-0 overflow-y-auto pb-2">
+          {/* Renewals needing attention — SAME component + data path as the
+              Manage Resources fleet tab (second mount, no re-implementation).
+              Collapsible here so it doesn't crowd the mobile fleet list; taps
+              open the unit's documents via the App-level modal. */}
+          <FleetRenewalsStrip fleet={fleet} onJump={onOpenUnitDocuments} collapsible />
+
           {/* Fleet-list header: CVOR expiry editor + Missing-Odo summary.
               These used to live above the view conditional (visible on
               every Mechanic tab) but they're Fleet-specific signals — a
