@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { X, FileText, Camera, ImagePlus, Loader2, Trash2, Wrench, ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react';
 import type { FleetItem, FleetDocument, FleetDocType } from '../types';
 import { uploadFile, deleteFile } from '../lib/storage';
-import { DOC_TYPES, docTypeLabel, docExpiryState, groupDocsByType } from '../lib/fleetDocuments';
+import { DOC_TYPES, docTypeLabel, docExpiryState, groupDocsByType, expiryCountdownLabel } from '../lib/fleetDocuments';
 import { isKmMaintenanceUnit, isHourMaintenanceUnit } from '../lib/maintenanceUtils';
 import PhotoViewer from './PhotoViewer';
 
@@ -126,7 +126,12 @@ export default function UnitDocumentsModal({ unit, repairLog, canEdit, uploadedB
                             <div className="min-w-0 flex-1">
                               <div className="text-xs font-bold text-slate-700 truncate">{docTypeLabel(doc)}</div>
                               <div className="text-[10px] text-slate-400 truncate">{doc.name} · {(doc.size / 1024).toFixed(0)} KB</div>
-                              {chip && <span className={`inline-block mt-0.5 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${chip.cls}`}>{chip.label}{doc.expiryDate ? ` · ${doc.expiryDate}` : ''}</span>}
+                              {chip && (
+                                <span className="mt-0.5 flex items-center gap-1.5 flex-wrap">
+                                  <span className={`inline-block text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border ${chip.cls}`}>{chip.label}{doc.expiryDate ? ` · ${doc.expiryDate}` : ''}</span>
+                                  {doc.expiryDate && <span className={`text-[10px] font-bold ${st === 'expired' ? 'text-red-600' : st === 'expiring' ? 'text-amber-600' : 'text-slate-400'}`}>{expiryCountdownLabel(doc.expiryDate)}</span>}
+                                </span>
+                              )}
                             </div>
                             {canEdit && (
                               <button type="button" onClick={() => removeDoc(doc)} title="Delete document" className="text-slate-300 hover:text-red-500 shrink-0 min-w-[36px] min-h-[36px] inline-flex items-center justify-center"><Trash2 className="w-4 h-4" /></button>

@@ -62,9 +62,16 @@ export const formatTimeRange = (start: string, end: string): string => {
     ? `${s.label}-${e.label} ${e.mer}`
     : `${s.label} ${s.mer}-${e.label} ${e.mer}`;
 };
+// Whole days from start-of-today to `dateStr` (negative = already past).
+// Ceil so any future partial day rounds up and today itself is 0. This is
+// the single day-diff used by both the 30-day "expiring soon" window below
+// and the "expires in N days" / "expired N days ago" display labels, so the
+// number a countdown shows always agrees with which colour it gets.
+export const daysUntilDate = (dateStr: string): number =>
+  Math.ceil((new Date(dateStr).getTime() - new Date().setHours(0, 0, 0, 0)) / (1000 * 60 * 60 * 24));
 export const isExpiringSoon = (dateStr: string | undefined) => {
   if (!dateStr) return false;
-  const diffDays = Math.ceil((new Date(dateStr).getTime() - new Date().setHours(0, 0, 0, 0)) / (1000 * 60 * 60 * 24));
+  const diffDays = daysUntilDate(dateStr);
   return diffDays <= 30 && diffDays >= 0;
 };
 export const isExpired = (dateStr: string | undefined) => {

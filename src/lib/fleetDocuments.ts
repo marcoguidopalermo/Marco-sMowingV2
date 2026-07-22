@@ -2,7 +2,7 @@
 // resolution, and unit/fleet-level alert counts. Reuses the app's existing
 // urgency conventions (isExpired / isExpiringSoon, 30-day amber window).
 import type { FleetItem, FleetDocument, FleetDocType } from '../types';
-import { isExpired, isExpiringSoon } from './dateUtils';
+import { isExpired, isExpiringSoon, daysUntilDate } from './dateUtils';
 
 export const DOC_TYPES: { key: FleetDocType; label: string; expiryRelevant: boolean }[] = [
   { key: 'insurance', label: 'Insurance', expiryRelevant: true },
@@ -68,4 +68,75 @@ export function fleetDocAlertSummary(fleet: FleetItem[]): { expiredUnits: number
     else if (a.expiring > 0) expiringUnits++;
   }
   return { expiredUnits, expiringUnits, total: expiredUnits + expiringUnits };
+}
+
+// One row per affected DOCUMENT for the "renewals needing attention" strip.
+// Same shape as the leases-needing-attention rows: each expiry-relevant type's
+// CURRENT doc, kept only when it is expired or expiring (the 30-day window from
+// docExpiryState — the same source the push scan uses), sorted soonest-first
+// (most-overdue expired dates lead, then the nearest upcoming expiries).
+export interface FleetDocRenewal {
+  unit: FleetItem;
+  docType: FleetDocType;
+  typeLabel: string;
+  expiryDate: string;
+  state: 'expired' | 'expiring';
+  daysLeft: number; // signed: negative once past
+}
+export function fleetDocRenewals(fleet: FleetItem[]): FleetDocRenewal[] {
+  const rows: FleetDocRenewal[] = [];
+  for (const unit of fleet) {
+    const docs = unit.documents || [];
+    for (const t of DOC_TYPES) {
+      if (!t.expiryRelevant) continue;
+      const cur = currentDocForType(docs, t.key);
+      if (!cur || !cur.expiryDate) continue;
+      const st = docExpiryState(cur);
+      if (st !== 'expired' && st !== 'expiring') continue;
+      rows.push({
+        unit,
+        docType: t.key,
+        typeLabel: docTypeLabel(cur),
+        expiryDate: cur.expiryDate,
+        state: st,
+        daysLeft: daysUntilDate(cur.expiryDate),
+      });
+    }
+  }
+  // YMD strings sort chronologically; earliest (most overdue) first.
+  return rows.sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
+}
+
+// Plain-language countdown beside a dated doc row. Neutral wording, no colour —
+// the row/badge supplies the amber/red. Uses the same day-diff as the window.
+export function expiryCountdownLabel(expiryDate: string | undefined): string {
+  if (!expiryDate) return '';
+  // Decide expired/not with the SAME classifier the badge uses (isExpired),
+  // then use the day-diff only for the magnitude — so the words never
+  // contradict the colour on the exact expiry day.
+  if (isExpired(expiryDate)) {
+    const n = Math.max(0, -daysUntilDate(expiryDate));
+    return n === 0 ? 'expired today' : `expired ${n} day${n === 1 ? '' : 's'} ago`;
+  }
+  const d = daysUntilDate(expiryDate);
+  return d === 0 ? 'expires today' : `expires in ${d} day${d === 1 ? '' : 's'}`;
+}
+
+// Compact list-level chip for a unit: worst affected doc + a "+N more" count.
+// null when the unit's docs are all current. Tone drives colour at the call
+// site (red = at least one expired, amber = only expiring).
+export interface UnitDocChip { tone: 'red' | 'amber'; label: string; more: number }
+export function unitDocChip(unit: Pick<FleetItem, 'documents'>): UnitDocChip | null {
+  const rows = fleetDocRenewals([unit as FleetItem]); // already soonest/worst-first
+  if (rows.length === 0) return null;
+  const worst = rows[0];
+  const more = rows.length - 1;
+  const base = worst.state === 'expired'
+    ? `${worst.typeLabel} expired`
+    : `${worst.typeLabel} · ${worst.daysLeft}d`;
+  return {
+    tone: worst.state === 'expired' ? 'red' : 'amber',
+    label: more > 0 ? `${base} +${more} more` : base,
+    more,
+  };
 }

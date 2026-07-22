@@ -8,7 +8,7 @@ import {
   Plus, Trash2, Calendar as CalendarIcon, CreditCard as IdCard,
   AlertTriangle, CheckSquare, UserCircle, Clock, Sliders, Link2, Mail, FileText
 } from 'lucide-react';
-import { unitDocAlerts } from '../lib/fleetDocuments';
+import FleetRenewalsStrip, { DocRenewalChip } from './FleetRenewalsStrip';
 import { Employee, FleetItem, InventoryItem, Job, AppSettings, RolePermissionsOverride, UserRole, JobberUser, PRIMARY_CREWS, EquipmentSubtypeDefinition, PartialTimeOff, ContractingRateCard, ContractingBillingRole } from '../types';
 import { ratesOrDefault as contractingRatesOrDefault, ROLE_LABEL as CONTRACTING_ROLE_LABEL, money as contractingMoney } from '../lib/contracting';
 import { makeSubtypeId, fleetItemLabel } from '../lib/fleetUtils';
@@ -730,21 +730,21 @@ export default function ManageResourcesModal({
                 </div>
               </div>
 
+              {/* Renewals needing attention — one row per expiring/expired
+                  document, soonest-first. Tap jumps to that unit's documents. */}
+              <FleetRenewalsStrip fleet={localFleet} onJump={onOpenUnitDocuments} />
+
               <FleetGroupedList
                 fleet={localFleet}
                 subtypes={localEquipmentSubtypes}
-                renderSummary={(f) => {
-                  const alerts = unitDocAlerts(f);
-                  return (
+                renderSummary={(f) => (
                   <span className="font-bold text-slate-800 flex items-center gap-2 flex-wrap">
                     {f.color && <span className={`w-3 h-3 rounded-full ${f.color} shadow-sm border border-gray-200 inline-block`} />}
                     {fleetItemLabel(f)}
                     {f.status !== 'Active' && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded">{f.status}</span>}
-                    {alerts.expired > 0 && <span className="inline-flex items-center gap-1 bg-red-100 text-red-700 border border-red-300 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded"><AlertTriangle className="w-3 h-3" />{alerts.expired} doc{alerts.expired > 1 ? 's' : ''} expired</span>}
-                    {alerts.expired === 0 && alerts.expiring > 0 && <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-700 border border-amber-300 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded"><AlertTriangle className="w-3 h-3" />{alerts.expiring} expiring</span>}
+                    <DocRenewalChip unit={f} />
                   </span>
-                  );
-                }}
+                )}
                 renderDetails={(f) => {
                   const realIdx = localFleet.findIndex(lf => lf.id === f.id);
                   if (realIdx < 0) return null;

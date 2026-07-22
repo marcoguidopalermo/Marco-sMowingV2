@@ -10,6 +10,7 @@ import { deleteFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
 import { assigneesForTask, collaboratorNames, joinNames, shareForMechanic } from '../lib/workCredit';
 import FleetGroupedList from './FleetGroupedList';
+import { DocRenewalChip } from './FleetRenewalsStrip';
 import { getUnitAttention } from '../lib/fleetGrouping';
 import { personColor } from '../lib/personColor';
 import { isExpiringSoon, isExpired, isOdoStale, formatTodayInToronto } from '../lib/dateUtils';
@@ -1219,6 +1220,7 @@ export default function MechanicBoard({
                   {f.color && <span className={`w-3 h-3 rounded-full ${f.color} shadow-sm border border-gray-200 inline-block`} />}
                   {fleetItemLabel(f)}
                   {f.status !== 'Active' && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded">{f.status}</span>}
+                  <DocRenewalChip unit={f} />
                   {f.isRental && <span className="bg-purple-100 text-purple-800 text-[10px] px-1.5 py-0.5 rounded">Rental</span>}
                   {f.isWinterized && <span className="bg-sky-100 text-sky-800 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">Winterized</span>}
                   {(() => {
