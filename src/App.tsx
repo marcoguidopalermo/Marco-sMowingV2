@@ -13,7 +13,7 @@ import {
   Target, Award, CalendarDays, FileSignature, Map, CheckSquare, Info, Sparkles, Loader2,
   MessageSquareText, Leaf, Download, LogOut, ShieldCheck, UserPlus, Megaphone, Lock,
   Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown, Hammer, Calculator,
-  ChevronUp, Layers, Eye
+  ChevronUp, Layers, Eye, MoreHorizontal, Sliders
 } from 'lucide-react';
 
 import {
@@ -295,6 +295,8 @@ export default function App() {
   // MyCrewToday truck/trailer strip (worker view-only) and the fleet
   // manager surface (admin/manager, editable).
   const [documentsUnitId, setDocumentsUnitId] = useState<string | null>(null);
+  // Mobile bottom-nav "More" overflow sheet (part of the ≤5-slot nav).
+  const [moreNavOpen, setMoreNavOpen] = useState(false);
   const [requestPartsModal, setRequestPartsModal] = useState<RequestPartsModalState>({ isOpen: false });
   const [historyUnitId, setHistoryUnitId] = useState<string | null>(null);
   const [draggingResource, setDraggingResource] = useState<{ type: ResourceType; id: string } | null>(null);
@@ -4315,7 +4317,7 @@ export default function App() {
             {canAccessView('dashboard', effectiveRole) && (
               <button onClick={() => setCurrentView('dashboard')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'dashboard' ? 'bg-white shadow-sm text-emerald-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><LayoutDashboard className="w-4 h-4" /> Dashboard</button>
             )}
-            {canAccessView('mycrew', effectiveRole) && !canAccessView('performance', effectiveRole) && (
+            {canAccessView('mycrew', effectiveRole) && (
               <button onClick={() => setCurrentView('mycrew')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'mycrew' ? 'bg-white shadow-sm text-lime-600' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><TrendingUp className="w-4 h-4" /> My Crew Today</button>
             )}
             {canAccessView('mymechanic', effectiveRole) && (
@@ -5088,6 +5090,22 @@ export default function App() {
               isActive: currentView === 'taskmaster',
               onClick: () => setCurrentView('taskmaster'),
               visible: canAccessView('taskmaster', effectiveRole) },
+            // RoleMaster / SalesMaster were desktop-sidebar-only; surface them
+            // on mobile too (usually via More) so permitted views are reachable.
+            { key: 'rolemaster', label: 'RoleMaster', Icon: ClipboardList, badge: 0,
+              isActive: currentView === 'rolemaster',
+              onClick: () => setCurrentView('rolemaster'),
+              visible: canAccessView('rolemaster', effectiveRole) },
+            { key: 'salesmaster', label: 'Sales', Icon: Calculator, badge: 0,
+              isActive: currentView === 'salesmaster',
+              onClick: () => setCurrentView('salesmaster'),
+              visible: canAccessView('salesmaster', effectiveRole) },
+            // Manage Resources — a modal, not a view; give admins/managers a
+            // mobile launcher (previously reachable only via Settings).
+            { key: 'manage', label: 'Manage', Icon: Sliders, badge: 0,
+              isActive: false,
+              onClick: () => setIsManageModalOpen(true),
+              visible: canManageResources },
             // Palermo's Contracting portal — mobile entry (shopping list is
             // phone-first, so contractors live here on their phones).
             { key: 'contracting', label: "Palermo's", Icon: Hammer, badge: 0,
@@ -5095,7 +5113,33 @@ export default function App() {
               onClick: () => setCurrentView('contracting'),
               visible: canAccessView('contracting', effectiveRole) },
           ];
-          return items.filter(i => i.visible).map(({ key, label, Icon, badge, isActive, onClick }) => (
+          // Highest-traffic destinations per role fill the first slots; the
+          // rest fold into a "More" sheet so the bar never exceeds 5 slots.
+          // The principle is "what they open daily" — adjust to what exists
+          // per role. Any visible item not named here is appended after the
+          // priority ones (so nothing is ever dropped) and lands in More once
+          // the bar overflows.
+          const PRIORITY: Record<string, string[]> = {
+            admin: ['performance', 'timemaster', 'manage', 'contracting'],
+            manager: ['mycrew', 'performance', 'timemaster', 'taskmaster'],
+            foreman: ['mycrew', 'timemaster', 'bulletins', 'schedule'],
+            worker: ['mycrew', 'timemaster', 'bulletins', 'schedule'],
+            mechanic: ['mymechanic', 'mechanic', 'timemaster', 'bulletins'],
+            contractor: ['contracting'],
+            property_manager: ['contracting'],
+          };
+          const vis = items.filter(i => i.visible);
+          const order = PRIORITY[effectiveRole] || [];
+          const ordered: NavBtn[] = [
+            ...order.map(k => vis.find(i => i.key === k)).filter(Boolean) as NavBtn[],
+            ...vis.filter(i => !order.includes(i.key)),
+          ];
+          // ≤5 destinations → show them all; more → 4 priority + a More slot.
+          const overflow = ordered.length > 5 ? ordered.slice(4) : [];
+          const slots = ordered.length > 5 ? ordered.slice(0, 4) : ordered;
+          const moreBadge = overflow.reduce((s, i) => s + (i.badge || 0), 0);
+          const moreActive = overflow.some(i => i.isActive);
+          const renderBtn = ({ key, label, Icon, badge, isActive, onClick }: NavBtn) => (
             <button
               key={key}
               onClick={onClick}
@@ -5111,7 +5155,62 @@ export default function App() {
               </span>
               <span className="text-[10px] font-black uppercase tracking-wider">{label}</span>
             </button>
-          ));
+          );
+          return (
+            <>
+              {slots.map(renderBtn)}
+              {overflow.length > 0 && (
+                <button
+                  key="more"
+                  onClick={() => setMoreNavOpen(true)}
+                  className={`flex-1 min-w-[44px] flex flex-col items-center justify-center gap-0.5 transition-colors ${moreActive ? 'text-lime-400 bg-slate-800' : 'text-slate-400 hover:text-slate-200'}`}
+                  aria-label="More destinations"
+                >
+                  <span className="relative inline-flex">
+                    <MoreHorizontal className="w-5 h-5" />
+                    {moreBadge > 0 && (
+                      <span className="absolute -top-1.5 -right-2 min-w-[16px] h-[16px] px-1 rounded-full bg-rose-500 text-white text-[9px] font-black flex items-center justify-center shadow ring-1 ring-slate-900" aria-label={`${moreBadge} unread in More`}>
+                        {moreBadge > 99 ? '99+' : moreBadge}
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[10px] font-black uppercase tracking-wider">More</span>
+                </button>
+              )}
+              {/* Overflow sheet — large rows, thumb-sized, everything demoted
+                  here is exactly one tap deeper. */}
+              {moreNavOpen && (
+                <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/50 no-print" onClick={() => setMoreNavOpen(false)}>
+                  <div className="bg-slate-900 rounded-t-2xl border-t border-slate-700 pb-[env(safe-area-inset-bottom)] max-h-[75dvh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700 sticky top-0 bg-slate-900">
+                      <span className="text-sm font-black uppercase tracking-widest text-slate-300">More</span>
+                      <button onClick={() => setMoreNavOpen(false)} aria-label="Close" className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+                    </div>
+                    <div className="p-2">
+                      {overflow.map(({ key, label, Icon, badge, isActive, onClick }) => (
+                        <button
+                          key={key}
+                          onClick={() => { setMoreNavOpen(false); onClick(); }}
+                          className={`w-full flex items-center gap-3 px-4 min-h-[56px] rounded-xl transition-colors ${isActive ? 'bg-slate-800 text-lime-400' : 'text-slate-200 hover:bg-slate-800'}`}
+                        >
+                          <span className="relative inline-flex">
+                            <Icon className="w-6 h-6" />
+                            {badge > 0 && (
+                              <span className="absolute -top-1.5 -right-2 min-w-[16px] h-[16px] px-1 rounded-full bg-rose-500 text-white text-[9px] font-black flex items-center justify-center shadow ring-1 ring-slate-900">
+                                {badge > 99 ? '99+' : badge}
+                              </span>
+                            )}
+                          </span>
+                          <span className="text-base font-bold">{label}</span>
+                          {badge > 0 && <span className="ml-auto text-[11px] font-black text-rose-400">{badge > 99 ? '99+' : badge} new</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          );
         })()}
       </nav>
 
