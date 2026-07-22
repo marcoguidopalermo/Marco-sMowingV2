@@ -70,39 +70,101 @@ export function fleetDocAlertSummary(fleet: FleetItem[]): { expiredUnits: number
   return { expiredUnits, expiringUnits, total: expiredUnits + expiringUnits };
 }
 
-// One row per affected DOCUMENT for the "renewals needing attention" strip.
-// Same shape as the leases-needing-attention rows: each expiry-relevant type's
-// CURRENT doc, kept only when it is expired or expiring (the 30-day window from
-// docExpiryState — the same source the push scan uses), sorted soonest-first
-// (most-overdue expired dates lead, then the nearest upcoming expiries).
+// Normalize any stored expiry value to a YYYY-MM-DD string (or undefined).
+// Fleet renewals live in several shapes across records: the newer uploaded
+// FleetDocument.expiryDate ("2026-08-15"), the flat per-unit fields the fleet
+// edit form and the push scan use (regExpiry / safetyExpiry / …), and — very
+// defensively — an ISO datetime, a Firestore Timestamp, or an epoch-ms number
+// on legacy records. Anything unparseable reads as "no date" rather than
+// throwing, so one odd record can't blank the whole strip.
+export function normalizeExpiry(v: unknown): string | undefined {
+  if (v == null || v === '') return undefined;
+  if (typeof v === 'string') {
+    const m = v.trim().match(/^(\d{4})-(\d{2})-(\d{2})/); // YMD or full ISO
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    const t = new Date(v.trim());
+    return Number.isNaN(t.getTime()) ? undefined : t.toISOString().slice(0, 10);
+  }
+  const a = v as { toDate?: () => Date; seconds?: number; _seconds?: number };
+  let ms: number | undefined;
+  if (typeof a.toDate === 'function') ms = a.toDate()?.getTime?.();
+  else if (typeof a.seconds === 'number') ms = a.seconds * 1000;
+  else if (typeof a._seconds === 'number') ms = a._seconds * 1000;
+  else if (v instanceof Date) ms = v.getTime();
+  else if (typeof v === 'number') ms = v;
+  return ms == null || Number.isNaN(ms) ? undefined : new Date(ms).toISOString().slice(0, 10);
+}
+
+// A fleet unit's renewals come from TWO places that must stay in lock-step
+// with what buzzes:
+//   • flat per-unit fields — regExpiry / safetyExpiry / … — which the fleet
+//     edit form writes and the shipped push scan (functions) reads; and
+//   • uploaded FleetDocument.expiryDate rows.
+// The push reads the flat fields, so those are the source of truth for "what
+// buzzes"; a matching uploaded document is only a fallback when no flat field
+// is set (e.g. insurance kept purely as a scan). One row per renewal CONCEPT,
+// deduped, classified by the SAME docExpiryState the badges/push use.
+interface RenewalConcept { key: string; label: string; docType?: FleetDocType; fields: string[] }
+const RENEWAL_CONCEPTS: RenewalConcept[] = [
+  { key: 'registration', label: 'Registration', docType: 'registration', fields: ['regExpiry', 'registrationExpiry', 'plateExpiry'] },
+  { key: 'insurance', label: 'Insurance', docType: 'insurance', fields: ['insuranceExpiry'] },
+  { key: 'safety', label: 'Safety', docType: 'safety_inspection', fields: ['safetyExpiry', 'commercialSafetyExpire'] },
+  { key: 'cvor', label: 'CVOR', fields: ['cvorExpiry'] },
+];
+
+// One row per affected renewal for the "renewals needing attention" strip,
+// sorted soonest-first (most-overdue expired dates lead, then nearest
+// upcoming). Kept only when expired or expiring (the 30-day window).
 export interface FleetDocRenewal {
   unit: FleetItem;
-  docType: FleetDocType;
+  key: string;
   typeLabel: string;
   expiryDate: string;
   state: 'expired' | 'expiring';
-  daysLeft: number; // signed: negative once past
+  daysLeft: number;              // signed: negative once past
+  source: 'field' | 'document';
 }
+
+function unitRenewals(unit: FleetItem): FleetDocRenewal[] {
+  const docs = unit.documents || [];
+  const rec = unit as unknown as Record<string, unknown>;
+  const rows: FleetDocRenewal[] = [];
+  for (const c of RENEWAL_CONCEPTS) {
+    // Flat field first (what buzzes), then the uploaded document as fallback.
+    let expiry: string | undefined;
+    let source: 'field' | 'document' = 'field';
+    for (const f of c.fields) {
+      const n = normalizeExpiry(rec[f]);
+      if (n) { expiry = n; break; }
+    }
+    if (!expiry && c.docType) {
+      const cur = currentDocForType(docs, c.docType);
+      const n = normalizeExpiry(cur?.expiryDate);
+      if (n) { expiry = n; source = 'document'; }
+    }
+    if (!expiry) continue;
+    const st = docExpiryState({ expiryDate: expiry });
+    if (st !== 'expired' && st !== 'expiring') continue;
+    rows.push({ unit, key: c.key, typeLabel: c.label, expiryDate: expiry, state: st, daysLeft: daysUntilDate(expiry), source });
+  }
+  // Any other dated uploaded documents (e.g. docType 'other') not covered by a
+  // concept above — so nothing with an expiry silently drops off the strip.
+  const covered = new Set(RENEWAL_CONCEPTS.map(c => c.docType).filter(Boolean));
+  for (const t of DOC_TYPES) {
+    if (!t.expiryRelevant || covered.has(t.key)) continue;
+    const cur = currentDocForType(docs, t.key);
+    const n = normalizeExpiry(cur?.expiryDate);
+    if (!n) continue;
+    const st = docExpiryState({ expiryDate: n });
+    if (st !== 'expired' && st !== 'expiring') continue;
+    rows.push({ unit, key: t.key, typeLabel: cur ? docTypeLabel(cur) : t.label, expiryDate: n, state: st, daysLeft: daysUntilDate(n), source: 'document' });
+  }
+  return rows;
+}
+
 export function fleetDocRenewals(fleet: FleetItem[]): FleetDocRenewal[] {
   const rows: FleetDocRenewal[] = [];
-  for (const unit of fleet) {
-    const docs = unit.documents || [];
-    for (const t of DOC_TYPES) {
-      if (!t.expiryRelevant) continue;
-      const cur = currentDocForType(docs, t.key);
-      if (!cur || !cur.expiryDate) continue;
-      const st = docExpiryState(cur);
-      if (st !== 'expired' && st !== 'expiring') continue;
-      rows.push({
-        unit,
-        docType: t.key,
-        typeLabel: docTypeLabel(cur),
-        expiryDate: cur.expiryDate,
-        state: st,
-        daysLeft: daysUntilDate(cur.expiryDate),
-      });
-    }
-  }
+  for (const unit of fleet) rows.push(...unitRenewals(unit));
   // YMD strings sort chronologically; earliest (most overdue) first.
   return rows.sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
 }
@@ -126,8 +188,8 @@ export function expiryCountdownLabel(expiryDate: string | undefined): string {
 // null when the unit's docs are all current. Tone drives colour at the call
 // site (red = at least one expired, amber = only expiring).
 export interface UnitDocChip { tone: 'red' | 'amber'; label: string; more: number }
-export function unitDocChip(unit: Pick<FleetItem, 'documents'>): UnitDocChip | null {
-  const rows = fleetDocRenewals([unit as FleetItem]); // already soonest/worst-first
+export function unitDocChip(unit: FleetItem): UnitDocChip | null {
+  const rows = fleetDocRenewals([unit]); // already soonest/worst-first
   if (rows.length === 0) return null;
   const worst = rows[0];
   const more = rows.length - 1;

@@ -31,7 +31,7 @@ export default function FleetRenewalsStrip({ fleet, onJump }: { fleet: FleetItem
           const red = r.state === 'expired';
           return (
             <button
-              key={`${r.unit.id}-${r.docType}`}
+              key={`${r.unit.id}-${r.key}`}
               type="button"
               onClick={() => onJump(r.unit.id)}
               className={`w-full flex items-center justify-between gap-2 text-sm text-left rounded px-1.5 py-1 hover:bg-slate-50 transition-colors ${red ? 'text-red-700' : 'text-amber-800'}`}
