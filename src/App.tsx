@@ -2336,16 +2336,35 @@ export default function App() {
   // CONTRACTING people ONLY (billing-role holders + contractors, incl. himself
   // & Kris; NEVER Marco's-side employees). Guarded + audited in one write.
   const contractingWorkerEmailSet = () => new Set((appData.employees || []).filter(isContractingWorker).map(e => (e.linkedUserEmail || e.email || '').toLowerCase()).filter(Boolean));
-  const saveContractingTimeEntry = (entry: TimeEntry) => {
+  // Same audit stamp employee time-edits get: editedBy/editedAt + an [Edit]/
+  // [Manual entry] note carrying the reason. Applied to BOTH Tony's scoped
+  // edits and contractor self-edits (parity) — so Dave's payroll review sees
+  // them flagged/audited identically.
+  const stampTimeEdit = (entry: TimeEntry, exists: boolean, reason: string): TimeEntry => {
+    const note = { author: displayEmail, authorName: displayName, timestamp: new Date().toISOString(), text: `[${exists ? 'Edit' : 'Manual entry'}] ${reason}` };
+    return { ...entry, editedBy: displayEmail, editedAt: new Date().toISOString(), notes: [...(entry.notes || []), note] };
+  };
+  const saveContractingTimeEntry = (entry: TimeEntry, reason: string) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     if (!contractingWorkerEmailSet().has((entry.userEmail || '').toLowerCase())) { showToastMsg('Contracting people only.'); return; }
     const exists = (appData.timeEntries || []).some(e => e.id === entry.id);
-    const stamped: TimeEntry = { ...entry, editedBy: displayName, editedAt: new Date().toISOString() };
+    const stamped = stampTimeEdit(entry, exists, reason || 'no reason given');
     const timeEntries = exists ? (appData.timeEntries || []).map(e => e.id === entry.id ? stamped : e) : [stamped, ...(appData.timeEntries || [])];
-    const detail = `${exists ? 'Edited' : 'Added'} time for ${entry.userName}${entry.workNote ? ` — “${entry.workNote}”` : ''}`;
+    const detail = `${exists ? 'Edited' : 'Added'} time for ${entry.userName} — ${reason}`;
     const auditNext = [...(appData.settings?.contractingAuditLog || []), { action: exists ? 'time.edit' : 'time.add', detail, by: displayName, at: Date.now() }].slice(-200);
     syncToCloud({ ...appData, timeEntries, settings: { ...(appData.settings || {}), contractingAuditLog: auditNext } });
     showToastMsg(exists ? 'Time entry updated.' : 'Time entry added.');
+  };
+  // Contractor self-service — OWN entries only, identical audit stamp. No
+  // contracting-log write (parity is with an employee self-edit, which stamps
+  // the entry, not a manager log). Dave sees editedBy + the [Edit] note.
+  const saveOwnContractorTime = (entry: TimeEntry, reason: string) => {
+    if ((entry.userEmail || '').toLowerCase() !== (displayEmail || '').toLowerCase()) { showToastMsg('You can only edit your own entries.'); return; }
+    const exists = (appData.timeEntries || []).some(e => e.id === entry.id);
+    const stamped = stampTimeEdit(entry, exists, reason || 'no reason given');
+    const timeEntries = exists ? (appData.timeEntries || []).map(e => e.id === entry.id ? stamped : e) : [stamped, ...(appData.timeEntries || [])];
+    syncToCloud({ ...appData, timeEntries });
+    showToastMsg(exists ? 'Your entry was updated.' : 'Entry added.');
   };
   const deleteContractingTimeEntry = (id: string) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
@@ -4921,6 +4940,7 @@ export default function App() {
           payrollTimeEntries={appData.timeEntries || []}
           onSaveContractingTime={saveContractingTimeEntry}
           onDeleteContractingTime={deleteContractingTimeEntry}
+          onSaveOwnContractorTime={saveOwnContractorTime}
           onLogEdit={logContractingEdit}
           onSaveProject={saveContractingProject}
           onDeleteProject={deleteContractingProject}

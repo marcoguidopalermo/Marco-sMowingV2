@@ -54,8 +54,10 @@ interface Props {
   // Payroll punched hours (read-only reference for the open-report panel).
   payrollTimeEntries: TimeEntry[];
   // Tony's contractor-scoped time management (guarded + audited in App).
-  onSaveContractingTime: (e: TimeEntry) => void;
+  onSaveContractingTime: (e: TimeEntry, reason: string) => void;
   onDeleteContractingTime: (id: string) => void;
+  // Contractor SELF-SERVICE own-entry edits (own-only guard + audit in App).
+  onSaveOwnContractorTime: (e: TimeEntry, reason: string) => void;
   onLogEdit: (detail: string) => void;
   onSaveProject: (p: ContractingProject) => void;
   onDeleteProject: (id: string) => void;
@@ -296,6 +298,9 @@ function HomeTab(p: Ctx & { hoursCards: Props['hoursCards']; personalItems: Reco
     <div className="max-w-md mx-auto space-y-5">
       {/* CLOCK — big punch button on top (contractors) */}
       {!p.canManage && <ContractorClockTab active={p.myActivePunch} today={p.myTodayPunches} onIn={p.onClockIn} onOut={p.onClockOut} />}
+
+      {/* MY HOURS — self-service: fix a punch / add a missed entry / edit note */}
+      {!p.canManage && <MyHoursSection me={me} employees={p.employees} payrollTimeEntries={p.payrollTimeEntries} onSaveOwn={p.onSaveOwnContractorTime} />}
 
       {/* HOURS — hours only, never rates or pay amounts */}
       <div>
@@ -2279,7 +2284,7 @@ function DatePickForm({ title, label, initial, hint, mustBeAfter, onClose, onSav
 // employees never appear here. Hours only shown with in/out + note; edits are
 // audited in App. Reads the same payroll timeEntries; contractors themselves
 // only VIEW their own (Home), never edit — corrections come through here.
-function ContractingTimeTab({ employees, payrollTimeEntries, currentUser, onSave, onDelete }: { employees: Employee[]; payrollTimeEntries: TimeEntry[]; currentUser: { id: string; name: string }; onSave: (e: TimeEntry) => void; onDelete: (id: string) => void }) {
+function ContractingTimeTab({ employees, payrollTimeEntries, currentUser, onSave, onDelete }: { employees: Employee[]; payrollTimeEntries: TimeEntry[]; currentUser: { id: string; name: string }; onSave: (e: TimeEntry, reason: string) => void; onDelete: (id: string) => void }) {
   const [form, setForm] = useState<{ mode: 'add' | 'edit'; worker: Employee; entry?: TimeEntry } | null>(null);
   const workers = employees.filter(isContractingWorker);
   const emailOf = (e: Employee) => (e.linkedUserEmail || e.email || '').toLowerCase();
@@ -2323,12 +2328,53 @@ function ContractingTimeTab({ employees, payrollTimeEntries, currentUser, onSave
         })}
         {workers.length === 0 && <div className="text-gray-500 text-sm">No contracting people.</div>}
       </div>
-      {form && <ContractingTimeEditForm mode={form.mode} worker={form.worker} entry={form.entry} currentUser={currentUser} onClose={() => setForm(null)} onSave={e => { onSave(e); setForm(null); }} />}
+      {form && <ContractingTimeEditForm mode={form.mode} worker={form.worker} entry={form.entry} currentUser={currentUser} onClose={() => setForm(null)} onSave={(e, reason) => { onSave(e, reason); setForm(null); }} />}
     </div>
   );
 }
 
-function ContractingTimeEditForm({ mode, worker, entry, currentUser, onClose, onSave }: { mode: 'add' | 'edit'; worker: Employee; entry?: TimeEntry; currentUser: { id: string; name: string }; onClose: () => void; onSave: (e: TimeEntry) => void }) {
+// Contractor SELF-SERVICE hours — parity with employees: edit own punch times,
+// add a missed manual entry, edit the clock-out note. OWN entries only; the
+// same audit stamp (editedBy/editedAt + a reason note) any employee edit gets.
+// Hours-only, no rates, no other people. Corrections beyond this go via Tony.
+function MyHoursSection({ me, employees, payrollTimeEntries, onSaveOwn }: { me: { id: string; name: string }; employees: Employee[]; payrollTimeEntries: TimeEntry[]; onSaveOwn: (e: TimeEntry, reason: string) => void }) {
+  const [form, setForm] = useState<{ mode: 'add' | 'edit'; entry?: TimeEntry } | null>(null);
+  const [open, setOpen] = useState(false);
+  const meEmp = employees.find(e => e.id === me.id);
+  const myEmail = (meEmp?.linkedUserEmail || meEmp?.email || '').toLowerCase();
+  const dur = (e: TimeEntry) => { const end = e.clockOut ? new Date(e.clockOut).getTime() : Date.now(); return Math.max(0, (end - new Date(e.clockIn).getTime()) / 3_600_000); };
+  const t = (iso?: string) => iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '—';
+  const d = (iso: string) => new Date(iso).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' });
+  const since = Date.now() - 30 * 86400000;
+  const mine = payrollTimeEntries.filter(e => (e.userEmail || '').toLowerCase() === myEmail && new Date(e.clockIn).getTime() >= since).sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
+  if (!meEmp) return null;
+  return (
+    <div className="bg-white rounded-xl border">
+      <div className="flex items-center justify-between px-3 py-2 border-b">
+        <button onClick={() => setOpen(o => !o)} className="text-xs font-black uppercase tracking-widest" style={{ color: PALERMO.slate }}>{open ? '▾' : '▸'} My hours · fix a punch</button>
+        <button onClick={() => setForm({ mode: 'add' })} className="text-xs px-2 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Add entry</button>
+      </div>
+      {open && (
+        <div className="divide-y">
+          {mine.length === 0 && <div className="p-3 text-xs text-gray-400">No entries in the last 30 days.</div>}
+          {mine.map(e => (
+            <div key={e.id} className="p-2.5 text-sm flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div>{d(e.clockIn)} · {e.manualHoursOnly ? `${round2(dur(e))}h (hours)` : <>{t(e.clockIn)} → {e.clockOut ? t(e.clockOut) : <span className="text-emerald-600">active</span>}</>} <b className="text-gray-500">{round2(dur(e))}h</b></div>
+                {e.workNote && <div className="text-[11px] text-gray-500 italic">“{e.workNote}”</div>}
+                {e.editedBy && <div className="text-[10px] text-gray-300">edited</div>}
+              </div>
+              <button onClick={() => setForm({ mode: 'edit', entry: e })} className="text-[11px] shrink-0" style={{ color: PALERMO.slate }}>edit</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {form && <ContractingTimeEditForm mode={form.mode} worker={meEmp} entry={form.entry} currentUser={me} onClose={() => setForm(null)} onSave={(e, reason) => { onSaveOwn(e, reason); setForm(null); }} />}
+    </div>
+  );
+}
+
+function ContractingTimeEditForm({ mode, worker, entry, currentUser, onClose, onSave }: { mode: 'add' | 'edit'; worker: Employee; entry?: TimeEntry; currentUser: { id: string; name: string }; onClose: () => void; onSave: (e: TimeEntry, reason: string) => void }) {
   const emailOf = (e: Employee) => (e.linkedUserEmail || e.email || '').toLowerCase();
   const [byHours, setByHours] = useState(!!entry?.manualHoursOnly || mode === 'add');
   const [date, setDate] = useState(entry ? dateInputVal(new Date(entry.clockIn).getTime()) : dateInputVal(Date.now()));
@@ -2337,8 +2383,9 @@ function ContractingTimeEditForm({ mode, worker, entry, currentUser, onClose, on
   const durH = entry ? Math.max(0, ((entry.clockOut ? new Date(entry.clockOut).getTime() : Date.now()) - new Date(entry.clockIn).getTime()) / 3_600_000) : 0;
   const [hours, setHours] = useState(entry ? String(round2(durH)) : '');
   const [note, setNote] = useState(entry?.workNote || '');
+  const [reason, setReason] = useState('');
   const isoAt = (dstr: string, tstr: string) => { const [y, m, dd] = dstr.split('-').map(Number); const [hh, mm] = tstr.split(':').map(Number); return new Date(y, (m || 1) - 1, dd || 1, hh || 0, mm || 0, 0).toISOString(); };
-  const valid = byHours ? Number(hours) > 0 : (start && end && end > start);
+  const valid = (byHours ? Number(hours) > 0 : (start && end && end > start)) && !!reason.trim();
   const build = (): TimeEntry => {
     const base: TimeEntry = entry
       ? { ...entry }
@@ -2365,7 +2412,8 @@ function ContractingTimeEditForm({ mode, worker, entry, currentUser, onClose, on
         </div>
       )}
       <Field label="Note (what was worked on)"><input className="inp" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. framed the bar wall" /></Field>
-      <ModalActions onClose={onClose} disabled={!valid} onSave={() => onSave(build())} />
+      <Field label="Reason for change (audited)"><input className="inp" value={reason} onChange={e => setReason(e.target.value)} placeholder={mode === 'add' ? 'e.g. missed punch' : 'e.g. forgot to clock out'} /></Field>
+      <ModalActions onClose={onClose} disabled={!valid} onSave={() => onSave(build(), reason.trim())} />
     </Modal>
   );
 }
