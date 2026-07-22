@@ -299,8 +299,8 @@ function HomeTab(p: Ctx & { hoursCards: Props['hoursCards']; personalItems: Reco
       {/* CLOCK — big punch button on top (contractors) */}
       {!p.canManage && <ContractorClockTab active={p.myActivePunch} today={p.myTodayPunches} onIn={p.onClockIn} onOut={p.onClockOut} />}
 
-      {/* MY HOURS — self-service: fix a punch / add a missed entry / edit note */}
-      {!p.canManage && <MyHoursSection me={me} employees={p.employees} payrollTimeEntries={p.payrollTimeEntries} onSaveOwn={p.onSaveOwnContractorTime} />}
+      {/* MY HOURS — readable log first: days, totals, notes; tap to correct */}
+      {!p.canManage && <MyHoursSection me={me} employees={p.employees} payrollTimeEntries={p.payrollTimeEntries} periodCard={p.hoursCards.current} onSaveOwn={p.onSaveOwnContractorTime} />}
 
       {/* HOURS — hours only, never rates or pay amounts */}
       <div>
@@ -2333,42 +2333,75 @@ function ContractingTimeTab({ employees, payrollTimeEntries, currentUser, onSave
   );
 }
 
-// Contractor SELF-SERVICE hours — parity with employees: edit own punch times,
-// add a missed manual entry, edit the clock-out note. OWN entries only; the
-// same audit stamp (editedBy/editedAt + a reason note) any employee edit gets.
-// Hours-only, no rates, no other people. Corrections beyond this go via Tony.
-function MyHoursSection({ me, employees, payrollTimeEntries, onSaveOwn }: { me: { id: string; name: string }; employees: Employee[]; payrollTimeEntries: TimeEntry[]; onSaveOwn: (e: TimeEntry, reason: string) => void }) {
+// Contractor "My Hours" — a readable LOG first, editor second. Days listed
+// (most recent first) with clock in/out, daily total, and clock-out notes;
+// week + pay-period totals up top (own hours only, never rates). Tapping a day
+// opens the existing fix-a-punch edit flow (reason-required, audited, own-only);
+// "Add missed entry" covers days with no punch. Edits CORRECT the punch (an
+// "edited" marker shows on corrected days — no duplicate rows).
+function MyHoursSection({ me, employees, payrollTimeEntries, periodCard, onSaveOwn }: { me: { id: string; name: string }; employees: Employee[]; payrollTimeEntries: TimeEntry[]; periodCard: { rangeLabel: string; payDate: string; hours: number }; onSaveOwn: (e: TimeEntry, reason: string) => void }) {
   const [form, setForm] = useState<{ mode: 'add' | 'edit'; entry?: TimeEntry } | null>(null);
-  const [open, setOpen] = useState(false);
   const meEmp = employees.find(e => e.id === me.id);
   const myEmail = (meEmp?.linkedUserEmail || meEmp?.email || '').toLowerCase();
   const dur = (e: TimeEntry) => { const end = e.clockOut ? new Date(e.clockOut).getTime() : Date.now(); return Math.max(0, (end - new Date(e.clockIn).getTime()) / 3_600_000); };
   const t = (iso?: string) => iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '—';
-  const d = (iso: string) => new Date(iso).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' });
   const since = Date.now() - 30 * 86400000;
-  const mine = payrollTimeEntries.filter(e => (e.userEmail || '').toLowerCase() === myEmail && new Date(e.clockIn).getTime() >= since).sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
+  const mine = payrollTimeEntries.filter(e => (e.userEmail || '').toLowerCase() === myEmail && new Date(e.clockIn).getTime() >= since);
+  // This-week total (Monday 00:00 → now).
+  const ws = new Date(); ws.setHours(0, 0, 0, 0); ws.setDate(ws.getDate() - ((ws.getDay() + 6) % 7));
+  const weekTotal = mine.filter(e => new Date(e.clockIn).getTime() >= ws.getTime()).reduce((s, e) => s + dur(e), 0);
+  // Group by day, most-recent day first.
+  const byDay = new Map<string, TimeEntry[]>();
+  mine.forEach(e => { const k = new Date(e.clockIn).toDateString(); (byDay.get(k) || byDay.set(k, []).get(k)!).push(e); });
+  const days = [...byDay.entries()].map(([k, es]) => ({ k, ms: new Date(k).getTime(), es: es.sort((a, b) => new Date(a.clockIn).getTime() - new Date(b.clockIn).getTime()) })).sort((a, b) => b.ms - a.ms);
+  const dayLabel = (ms: number) => new Date(ms).toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' });
   if (!meEmp) return null;
   return (
     <div className="bg-white rounded-xl border">
       <div className="flex items-center justify-between px-3 py-2 border-b">
-        <button onClick={() => setOpen(o => !o)} className="text-xs font-black uppercase tracking-widest" style={{ color: PALERMO.slate }}>{open ? '▾' : '▸'} My hours · fix a punch</button>
-        <button onClick={() => setForm({ mode: 'add' })} className="text-xs px-2 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Add entry</button>
+        <span className="text-xs font-black uppercase tracking-widest" style={{ color: PALERMO.slate }}>My hours</span>
+        <button onClick={() => setForm({ mode: 'add' })} className="text-xs px-2 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>+ Add missed entry</button>
       </div>
-      {open && (
-        <div className="divide-y">
-          {mine.length === 0 && <div className="p-3 text-xs text-gray-400">No entries in the last 30 days.</div>}
-          {mine.map(e => (
-            <div key={e.id} className="p-2.5 text-sm flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div>{d(e.clockIn)} · {e.manualHoursOnly ? `${round2(dur(e))}h (hours)` : <>{t(e.clockIn)} → {e.clockOut ? t(e.clockOut) : <span className="text-emerald-600">active</span>}</>} <b className="text-gray-500">{round2(dur(e))}h</b></div>
-                {e.workNote && <div className="text-[11px] text-gray-500 italic">“{e.workNote}”</div>}
-                {e.editedBy && <div className="text-[10px] text-gray-300">edited</div>}
-              </div>
-              <button onClick={() => setForm({ mode: 'edit', entry: e })} className="text-[11px] shrink-0" style={{ color: PALERMO.slate }}>edit</button>
-            </div>
-          ))}
+      {/* Totals — the record at a glance (reuses the pay-period lens). */}
+      <div className="grid grid-cols-2 divide-x border-b">
+        <div className="p-2.5 text-center">
+          <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">This week</div>
+          <div className="text-xl font-black" style={{ color: PALERMO.slate }}>{round2(weekTotal)}h</div>
         </div>
-      )}
+        <div className="p-2.5 text-center">
+          <div className="text-[9px] font-black uppercase tracking-widest" style={{ color: '#1E8449' }}>This period · {periodCard.rangeLabel}</div>
+          <div className="text-xl font-black" style={{ color: '#1E8449' }}>{periodCard.hours.toFixed(1)}h</div>
+          <div className="text-[10px] text-gray-400">pays {periodCard.payDate}</div>
+        </div>
+      </div>
+      {/* The log — days, times, daily totals, notes. Tap a day to correct it. */}
+      <div className="divide-y">
+        {days.length === 0 && <div className="p-3 text-xs text-gray-400 text-center">No punches in the last 30 days. Tap “Add missed entry” to log one.</div>}
+        {days.map(day => {
+          const dayTotal = day.es.reduce((s, e) => s + dur(e), 0);
+          const edited = day.es.some(e => e.editedBy);
+          return (
+            <div key={day.k} className="px-3 py-2">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-sm text-slate-700">{dayLabel(day.ms)}{edited && <span className="ml-1.5 text-[9px] font-black uppercase tracking-wider px-1 py-0.5 rounded bg-amber-100 text-amber-700">edited</span>}</span>
+                <span className="font-mono font-black text-sm" style={{ color: PALERMO.slate }}>{round2(dayTotal)}h</span>
+              </div>
+              <div className="mt-1 space-y-1">
+                {day.es.map(e => (
+                  <button key={e.id} onClick={() => setForm({ mode: 'edit', entry: e })} className="w-full text-left flex items-start justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-slate-50">
+                    <span className="min-w-0">
+                      <span className="text-sm text-slate-600">{e.manualHoursOnly ? `${round2(dur(e))}h entered` : <>{t(e.clockIn)} → {e.clockOut ? t(e.clockOut) : <span className="text-emerald-600 font-semibold">active</span>}</>}{e.manualEntry && <span className="text-[9px] ml-1 px-1 rounded bg-slate-100 text-slate-500">manual</span>}</span>
+                      {e.workNote && <span className="block text-[11px] text-gray-500 italic">“{e.workNote}”</span>}
+                    </span>
+                    <span className="text-[11px] shrink-0 mt-0.5" style={{ color: PALERMO.slate }}>{e.editedBy ? 'edit ✎' : 'edit'}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="px-3 py-1.5 text-[10px] text-gray-400 border-t">Editing a punch corrects it in place (audited) — it never adds a duplicate.</div>
       {form && <ContractingTimeEditForm mode={form.mode} worker={meEmp} entry={form.entry} currentUser={me} onClose={() => setForm(null)} onSave={(e, reason) => { onSaveOwn(e, reason); setForm(null); }} />}
     </div>
   );
