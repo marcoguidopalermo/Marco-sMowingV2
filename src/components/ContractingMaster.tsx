@@ -972,7 +972,7 @@ function ReportsTab(p: Ctx & { rates: ContractingRateCard; reports: ContractingP
 // payroll timeEntries; never writes them. Report math is unchanged by its
 // presence. Shows each contractor's punched hours in the report's date range
 // (per day + period total) beside the BILLED total, with a neutral delta.
-function TimeMasterRefPanel({ report, contractors, payrollTimeEntries, onUsePunched }: { report: ContractingProgressReport; contractors: Employee[]; payrollTimeEntries: TimeEntry[]; onUsePunched: (contractorId: string, hours: number, note?: string) => void }) {
+function TimeMasterRefPanel({ report, contractors, payrollTimeEntries, onBreakdown }: { report: ContractingProgressReport; contractors: Employee[]; payrollTimeEntries: TimeEntry[]; onBreakdown: (contractorId: string) => void }) {
   const [open, setOpen] = useState(false);
   const startTs = report.startAt;
   const endTs = report.endAt || Date.now();
@@ -987,9 +987,7 @@ function TimeMasterRefPanel({ report, contractors, payrollTimeEntries, onUsePunc
     const punches = entries.map(e => ({ day: new Date(e.clockIn).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }), hours: dur(e), note: e.workNote })).sort((a, b) => a.day.localeCompare(b.day));
     const punched = entries.reduce((s, e) => s + dur(e), 0);
     const billed = billedByC.get(c.id) || 0;
-    // Distinct notes → carried into the prefill description.
-    const combinedNote = [...new Set(punches.map(p => (p.note || '').trim()).filter(Boolean))].join(' · ') || undefined;
-    return { c, punched, billed, punches, combinedNote };
+    return { c, punched, billed, punches };
   }).filter(r => r.punched > 0 || r.billed > 0);
   if (rows.length === 0) return null;
   return (
@@ -1008,7 +1006,7 @@ function TimeMasterRefPanel({ report, contractors, payrollTimeEntries, onUsePunc
                   <span className="font-semibold text-sm" style={{ color: PALERMO.slate }}>{r.c.name}</span>
                   <span className="flex items-center gap-2">
                     <span className="text-xs text-gray-600">punched <b>{round2(r.punched)}h</b> · billed <b>{round2(r.billed)}h</b> · <span style={{ color: '#7F8C8D' }}>{delta >= 0 ? '+' : ''}{delta}h</span></span>
-                    {r.punched > 0 && <button onClick={() => onUsePunched(r.c.id, round2(r.punched), r.combinedNote)} className="text-[11px] px-2 py-0.5 rounded border font-semibold whitespace-nowrap" style={{ color: PALERMO.slate }}>use punched</button>}
+                    {r.punched > 0 && <button onClick={() => onBreakdown(r.c.id)} className="text-[11px] px-2 py-0.5 rounded border font-semibold whitespace-nowrap" style={{ color: PALERMO.slate }}>use punched</button>}
                   </span>
                 </div>
                 {/* Per-punch rows — hours + the clock-out note when present. */}
@@ -1028,6 +1026,124 @@ function TimeMasterRefPanel({ report, contractors, payrollTimeEntries, onUsePunc
   );
 }
 
+// Per-day editable billing breakdown for ONE person, opened from "use punched".
+// One row per punched day in the report window: date · punched hours · BILLABLE
+// hours (editable, defaults to punched, 0 allowed) · that day's clock-out note
+// (shown, editable, carried into the line description) · a checkbox (default
+// checked). Days already billed on THIS report (a line already exists for this
+// person+date) are shown separately and excluded from re-adding — no double-
+// billing, same spirit as the one-report-ever guard. Saving emits one OWN
+// manual-hours line per checked day (billable > 0), exactly like a manually-
+// entered daily line. READS payroll timeEntries only — never writes a punch.
+function PunchBreakdownForm({ report, contractor, rates, rateOverrides, currentUser, payrollTimeEntries, onClose, onSave }: { report: ContractingProgressReport; contractor: Employee; rates: ContractingRateCard; rateOverrides: Record<string, number>; currentUser: { id: string; name: string }; payrollTimeEntries: TimeEntry[]; onClose: () => void; onSave: (rows: ContractingTimeEntry[]) => void }) {
+  const startTs = report.startAt;
+  const endTs = report.endAt || Date.now();
+  const dur = (e: TimeEntry) => { const end = e.clockOut ? new Date(e.clockOut).getTime() : Date.now(); return Math.max(0, (end - new Date(e.clockIn).getTime()) / 3_600_000); };
+  const email = (contractor.linkedUserEmail || contractor.email || '').toLowerCase();
+  const role = (contractor.contractingBillingRole || 'general_labour') as ContractingBillingRole;
+  // The person's rate (override wins, else billing-role rate) — the same rate a
+  // manual daily line resolves to; billable × this is the previewed amount.
+  const rate = rateOverrides[contractor.id] ?? rateFor(role, rates);
+
+  // Days already billed for this person on this report (person+date match).
+  const billedDays = new Set(report.manualTime.filter(t => t.contractorId === contractor.id).map(t => dateInputVal(t.clockIn)));
+
+  // Per-day punched rollup within the window: sum hours, join distinct notes.
+  const days = useMemo(() => {
+    const byDay = new Map<string, { ymd: string; dateMs: number; punched: number; notes: string[] }>();
+    payrollTimeEntries
+      .filter(e => (e.userEmail || '').toLowerCase() === email)
+      .filter(e => { const t = new Date(e.clockIn).getTime(); return t >= startTs && t <= endTs; })
+      .forEach(e => {
+        const ymd = dateInputVal(new Date(e.clockIn).getTime());
+        const cur = byDay.get(ymd) || { ymd, dateMs: dateFromInput(ymd), punched: 0, notes: [] };
+        cur.punched += dur(e);
+        const n = (e.workNote || '').trim(); if (n) cur.notes.push(n);
+        byDay.set(ymd, cur);
+      });
+    return [...byDay.values()]
+      .map(d => ({ ymd: d.ymd, dateMs: d.dateMs, punched: round2(d.punched), note: [...new Set(d.notes)].join(' · ') }))
+      .sort((a, b) => a.ymd.localeCompare(b.ymd));
+  }, [payrollTimeEntries, email, startTs, endTs]);
+
+  const fresh = days.filter(d => !billedDays.has(d.ymd));      // editable rows
+  const already = days.filter(d => billedDays.has(d.ymd));     // shown, excluded
+
+  type St = { billable: string; note: string; checked: boolean };
+  const seed = (): Record<string, St> => Object.fromEntries(fresh.map(d => [d.ymd, { billable: String(d.punched), note: d.note, checked: true }]));
+  const [st, setSt] = useState<Record<string, St>>(seed);
+  const setDay = (ymd: string, patch: Partial<St>) => setSt(s => ({ ...s, [ymd]: { ...s[ymd], ...patch } }));
+  // Clean-week shortcut: check every fresh day, billable = punched, note = note.
+  const billAllPunched = () => setSt(Object.fromEntries(fresh.map(d => [d.ymd, { billable: String(d.punched), note: d.note, checked: true }])));
+
+  // A day bills only if checked AND billable > 0 (0 = "doesn't bill").
+  const willBill = fresh.filter(d => st[d.ymd]?.checked && Number(st[d.ymd]?.billable) > 0);
+  const total = willBill.reduce((s, d) => s + Number(st[d.ymd].billable) * rate, 0);
+
+  const commit = () => {
+    const out: ContractingTimeEntry[] = willBill.map(d => ({
+      id: uid('cmt'), projectId: report.projectId, phaseId: report.phaseId,
+      contractorId: contractor.id, contractorName: contractor.name, billingRole: role,
+      clockIn: d.dateMs, manual: true, hours: round2(Number(st[d.ymd].billable)),
+      // Breakdown bills at the person's role/override rate — no per-line odd rate.
+      description: st[d.ymd].note.trim() || undefined,
+      reportId: report.id, status: 'open', createdBy: currentUser, createdAt: Date.now(),
+    }));
+    onSave(out);
+  };
+
+  return (
+    <Modal title={`Bill ${contractor.name}'s punched days`} onClose={onClose}>
+      {fresh.length === 0 ? (
+        <div className="text-sm text-gray-500 py-2">
+          {days.length === 0 ? 'No punched days in this period.' : 'All punched days here are already billed on this report.'}
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-[11px] text-gray-500">Billable defaults to punched — reduce, zero out, or uncheck a day. Rate {money(rate)}/h.</div>
+            <button onClick={billAllPunched} className="text-[11px] px-2 py-0.5 rounded border font-semibold whitespace-nowrap shrink-0" style={{ color: PALERMO.slate }}>bill all as punched</button>
+          </div>
+          <div className="space-y-2">
+            {fresh.map(d => {
+              const s = st[d.ymd]; const reduced = Number(s.billable) !== d.punched;
+              return (
+                <div key={d.ymd} className={`rounded border p-2 ${s.checked ? '' : 'opacity-50'}`} style={{ borderColor: '#D5DBDB' }}>
+                  <div className="flex items-center gap-2">
+                    <input type="checkbox" checked={s.checked} onChange={e => setDay(d.ymd, { checked: e.target.checked })} className="w-4 h-4 shrink-0" />
+                    <span className="font-semibold text-sm shrink-0" style={{ color: PALERMO.slate }}>{fmtShort(d.dateMs)}</span>
+                    <span className="text-xs text-gray-500 shrink-0">punched <b>{round2(d.punched)}h</b></span>
+                    <span className="text-xs text-gray-400">→</span>
+                    <label className="text-xs text-gray-500 flex items-center gap-1 ml-auto shrink-0">billable
+                      <input type="number" step="0.25" min="0" value={s.billable} onChange={e => setDay(d.ymd, { billable: e.target.value })} className="inp w-16" />h
+                    </label>
+                  </div>
+                  <input className="inp text-sm mt-1.5" placeholder="Note / description (carried onto the line)" value={s.note} onChange={e => setDay(d.ymd, { note: e.target.value })} />
+                  {reduced && s.checked && Number(s.billable) >= 0 && <div className="text-[10px] mt-0.5" style={{ color: '#7F8C8D' }}>{round2(d.punched - Number(s.billable))}h deducted from punched</div>}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+      {already.length > 0 && (
+        <div className="mt-2 pt-2 border-t">
+          <div className="text-[10px] font-black uppercase tracking-wide text-gray-400 mb-1">Already billed on this report</div>
+          {already.map(d => (
+            <div key={d.ymd} className="text-[11px] text-gray-400 flex items-center gap-2"><span>{fmtShort(d.dateMs)}</span><span>· punched {round2(d.punched)}h</span><span className="italic">· already billed</span></div>
+          ))}
+        </div>
+      )}
+      {fresh.length > 0 && (
+        <>
+          <div className="text-sm mt-2">{willBill.length} day line(s) · <b style={{ color: PALERMO.gold }}>{money(total)}</b></div>
+          <ModalActions onClose={onClose} disabled={willBill.length === 0} onSave={commit} />
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function OpenReport(p: Ctx & { report: ContractingProgressReport; project: ContractingProject; phase: ContractingPhase; rates: ContractingRateCard; timeEntries: ContractingTimeEntry[]; reports: ContractingProgressReport[]; contractors: Employee[]; rateOverrides: Record<string, number>; nav: Nav }) {
   const { report, canManage } = p;
   const rc = ratesOrDefault(p.rates);
@@ -1036,7 +1152,8 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
   const manualRate = (t: ContractingTimeEntry) => (t.rateOverride != null && t.rateOverride > 0) ? t.rateOverride : (p.rateOverrides[t.contractorId] ?? rateFor(t.billingRole, rc));
 
   const [batchOpen, setBatchOpen] = useState(false);
-  const [batchPrefill, setBatchPrefill] = useState<{ contractorId: string; hours: number; note?: string } | null>(null);
+  // "use punched" → per-day breakdown for one person (their id).
+  const [breakdownCid, setBreakdownCid] = useState<string | null>(null);
   const [editManual, setEditManual] = useState<ContractingTimeEntry | null>(null);
   const [addingMaterial, setAddingMaterial] = useState(false);
   const [editReceipt, setEditReceipt] = useState<ContractingReceipt | null>(null);
@@ -1081,7 +1198,7 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
       </div>
 
       {/* TimeMaster punched-hours reference (Marco/Tony only) */}
-      {canManage && <TimeMasterRefPanel report={report} contractors={p.contractors} payrollTimeEntries={p.payrollTimeEntries} onUsePunched={(cid, hrs, note) => { setBatchPrefill({ contractorId: cid, hours: hrs, note }); setBatchOpen(true); }} />}
+      {canManage && <TimeMasterRefPanel report={report} contractors={p.contractors} payrollTimeEntries={p.payrollTimeEntries} onBreakdown={(cid) => setBreakdownCid(cid)} />}
 
       {/* Materials */}
       <div className="mt-2">
@@ -1117,7 +1234,10 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
         </div>
       )}
 
-      {batchOpen && <BatchHoursForm report={report} contractors={p.contractors} rates={rc} rateOverrides={p.rateOverrides} currentUser={p.currentUser} prefill={batchPrefill} payrollTimeEntries={p.payrollTimeEntries} onClose={() => { setBatchOpen(false); setBatchPrefill(null); }} onSave={rows => { saveReport({ manualTime: [...report.manualTime, ...rows] }); p.onLogEdit(`Added ${rows.length} hours line(s) to report #${report.reportNumber}`); setBatchOpen(false); setBatchPrefill(null); }} />}
+      {batchOpen && <BatchHoursForm report={report} contractors={p.contractors} rates={rc} rateOverrides={p.rateOverrides} currentUser={p.currentUser} prefill={null} payrollTimeEntries={p.payrollTimeEntries} onClose={() => setBatchOpen(false)} onSave={rows => { saveReport({ manualTime: [...report.manualTime, ...rows] }); p.onLogEdit(`Added ${rows.length} hours line(s) to report #${report.reportNumber}`); setBatchOpen(false); }} />}
+      {breakdownCid && (() => { const c = p.contractors.find(x => x.id === breakdownCid); if (!c) return null; return (
+        <PunchBreakdownForm report={report} contractor={c} rates={rc} rateOverrides={p.rateOverrides} currentUser={p.currentUser} payrollTimeEntries={p.payrollTimeEntries} onClose={() => setBreakdownCid(null)} onSave={rows => { saveReport({ manualTime: [...report.manualTime, ...rows] }); p.onLogEdit(`Added ${rows.length} day line(s) for ${c.name} from punched hours to report #${report.reportNumber}`); setBreakdownCid(null); }} />
+      ); })()}
       {editManual && <ManualLineEditForm line={editManual} rates={rc} rateOverrides={p.rateOverrides} onClose={() => setEditManual(null)} onSave={upd => { saveReport({ manualTime: report.manualTime.map(x => x.id === upd.id ? upd : x) }); p.onLogEdit(`Edited ${upd.contractorName} hours line on report #${report.reportNumber}`); setEditManual(null); }} />}
       {addingMaterial && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} addAnother onClose={() => setAddingMaterial(false)} onSave={rc2 => saveReport({ receipts: [...report.receipts, rc2] })} />}
       {editReceipt && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} initial={editReceipt} onClose={() => setEditReceipt(null)} onSave={rc2 => { saveReport({ receipts: report.receipts.map(x => x.id === rc2.id ? rc2 : x) }); p.onLogEdit(`Edited material "${rc2.description}" on report #${report.reportNumber}`); setEditReceipt(null); }} />}
