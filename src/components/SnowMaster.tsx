@@ -36,7 +36,7 @@ interface Props {
   initial?: { grid?: number[][]; premium?: boolean; busyRoad?: boolean; danger?: number };
 }
 
-export default function SnowTab({ quotes, currentUser, isAdmin, onSave, onDelete, initial }: Props) {
+export default function SnowMaster({ quotes, currentUser, isAdmin, onSave, onDelete, initial }: Props) {
   const [sub, setSub] = useState<'quote' | 'saved' | 'report'>('quote');
 
   // ── Traced shape + inputs ────────────────────────────────────────────────
