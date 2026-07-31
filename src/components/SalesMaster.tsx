@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
-import { Calculator, Sliders, Plus, Trash2, DollarSign, TrendingUp, Info, RotateCcw, Save, FilePlus, Search, FolderOpen, Ruler } from 'lucide-react';
-import { SalesRates, SalesService, SalesMaterial, SalesMaterialUnit, SalesQuote } from '../types';
+import { Calculator, Sliders, Plus, Trash2, DollarSign, TrendingUp, Info, RotateCcw, Save, FilePlus, Search, FolderOpen, Ruler, Snowflake } from 'lucide-react';
+import { SalesRates, SalesService, SalesMaterial, SalesMaterialUnit, SalesQuote, SnowQuote } from '../types';
 import {
   computeQuote, computeProfitTable, bhFromPrice, labourCostFor, money, buildQuoteSnapshot, MaterialLine, round2,
   coverageQty, roundUpHalf, hasCoverage, coverageWorking,
 } from '../lib/salesMaster';
+import SnowTab from './SnowTab';
 
 interface Props {
   rates: SalesRates;
@@ -14,14 +15,17 @@ interface Props {
   onSaveRates: (r: SalesRates) => void;
   onSaveQuote: (q: SalesQuote) => void;
   onDeleteQuote: (id: string) => void;
+  snowQuotes: Record<string, SnowQuote>;
+  onSaveSnowQuote: (q: SnowQuote) => void;
+  onDeleteSnowQuote: (id: string) => void;
 }
 
 const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 const UNITS: SalesMaterialUnit[] = ['sqft', 'yard', 'load', 'each', 'tonne'];
 const fmtWhen = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 
-export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSaveRates, onSaveQuote, onDeleteQuote }: Props) {
-  const [tab, setTab] = useState<'calculator' | 'saved' | 'rates'>('calculator');
+export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSaveRates, onSaveQuote, onDeleteQuote, snowQuotes, onSaveSnowQuote, onDeleteSnowQuote }: Props) {
+  const [tab, setTab] = useState<'calculator' | 'saved' | 'rates' | 'snow'>('calculator');
   const activeServices = useMemo(() => rates.services.filter(s => s.active), [rates]);
   const activeMaterials = useMemo(() => rates.materials.filter(m => m.active), [rates]);
 
@@ -108,6 +112,7 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
           <div className="flex flex-wrap bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
             <button onClick={() => setTab('calculator')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'calculator' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Calculator</button>
             <button onClick={() => setTab('saved')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'saved' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Saved quotes</button>
+            <button onClick={() => setTab('snow')} className={`px-3 py-1.5 text-sm font-bold rounded-md inline-flex items-center gap-1 ${tab === 'snow' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}><Snowflake className="w-3.5 h-3.5" /> Snow</button>
             {isAdmin && <button onClick={() => setTab('rates')} className={`px-3 py-1.5 text-sm font-bold rounded-md ${tab === 'rates' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>Rates sheet</button>}
           </div>
         </div>
@@ -281,6 +286,8 @@ export default function SalesMaster({ rates, quotes, isAdmin, currentUser, onSav
         )}
 
         {tab === 'saved' && <SavedQuotes quotes={quotes} currentUser={currentUser} isAdmin={isAdmin} onOpen={loadQuote} onDelete={onDeleteQuote} />}
+
+        {tab === 'snow' && <SnowTab quotes={snowQuotes} currentUser={currentUser} isAdmin={isAdmin} onSave={onSaveSnowQuote} onDelete={onDeleteSnowQuote} />}
 
         {tab === 'rates' && isAdmin && <RatesEditor rates={rates} onSave={onSaveRates} />}
       </div>

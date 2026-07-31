@@ -1,0 +1,393 @@
+import { useMemo, useState } from 'react';
+import { Snowflake, RotateCcw, Save, FolderOpen, Trash2, Search, AlertTriangle, BarChart3, Car } from 'lucide-react';
+import { SnowQuote } from '../types';
+import {
+  priceSnow, SNOW_PRICING_CONFIG, SNOW_PRICING_CONFIG_VERSION, SnowPrice,
+} from '../lib/snowPricing';
+
+// House style.
+const GREEN = '#1c4634';
+const GOLD = '#cdbd8f';
+
+const ROWS = 6;
+const COLS = 4;
+const emptyGrid = (): number[][] => Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+const money = (n: number) => `$${(Number(n) || 0).toLocaleString('en-US')}`;
+const fmtWhen = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+// Effective quoted price: the season total, or — for a custom quote whose total
+// is null — the floor (base + add-ons), so the report can count it.
+const addsOf = (q: SnowQuote): number =>
+  (q.dragCount || 0) * SNOW_PRICING_CONFIG.DRAG_RATE +
+  (q.premium ? SNOW_PRICING_CONFIG.PREMIUM : 0) +
+  (q.busyRoad ? SNOW_PRICING_CONFIG.BUSY_ROAD : 0) +
+  (q.danger || 0);
+const priceOf = (q: SnowQuote): number => q.total ?? (q.basePrice + addsOf(q));
+// Label an unnamed quote by its shape + price, e.g. "1×3 · 3 car · Tier 1 · $599".
+const shapeLabel = (q: SnowQuote): string =>
+  `${q.lanes}×${q.depth} · ${q.cars} car · ${q.isCustom ? 'Custom' : 'Tier ' + q.tier} · ${q.isCustom ? 'min ' : ''}${money(priceOf(q))}`;
+
+interface Props {
+  quotes: Record<string, SnowQuote>;
+  currentUser: { email: string; name: string };
+  isAdmin: boolean;
+  onSave: (q: SnowQuote) => void;
+  onDelete: (id: string) => void;
+  // Optional initial seed for the tracer (used by previews / future deep-links).
+  initial?: { grid?: number[][]; premium?: boolean; busyRoad?: boolean; danger?: number };
+}
+
+export default function SnowTab({ quotes, currentUser, isAdmin, onSave, onDelete, initial }: Props) {
+  const [sub, setSub] = useState<'quote' | 'saved' | 'report'>('quote');
+
+  // ── Traced shape + inputs ────────────────────────────────────────────────
+  const [grid, setGrid] = useState<number[][]>(() => initial?.grid?.map(r => [...r]) || emptyGrid());
+  const [premium, setPremium] = useState(!!initial?.premium);
+  const [busyRoad, setBusyRoad] = useState(!!initial?.busyRoad);
+  const [danger, setDanger] = useState(initial?.danger || 0);
+  const [loadedId, setLoadedId] = useState<string | null>(null);
+  // Optional label. The Snow tab only FINDS a price — the real quote is written
+  // in Jobber. A saved record exists to feed the report, so the name is never
+  // required; it's just there for anyone who wants to find a shape at renewal.
+  const [name, setName] = useState('');
+
+  const price = useMemo<SnowPrice | null>(
+    () => priceSnow(grid, { premium, busyRoad, danger }),
+    [grid, premium, busyRoad, danger],
+  );
+
+  // Tap cycles a cell: empty → open → drag → empty. (Tap-cycle, not double-tap.)
+  const cycle = (r: number, c: number) =>
+    setGrid(g => g.map((row, i) => i === r ? row.map((v, j) => j === c ? (v + 1) % 3 : v) : row));
+
+  const clearAll = () => {
+    if (price && !window.confirm('Clear the driveway and all inputs?')) return;
+    setGrid(emptyGrid()); setPremium(false); setBusyRoad(false); setDanger(0);
+    setLoadedId(null); setName('');
+  };
+
+  // One tap, no blocking dialog — the report is only useful if estimators
+  // actually save, so there's zero friction. Name is optional.
+  const save = () => {
+    if (!price) return;
+    const label = name.trim();
+    const id = loadedId || `snow-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const q: SnowQuote = {
+      id, name: label, client: label || undefined,
+      grid: grid.map(r => [...r]),
+      lanes: price.lanes, depth: price.depth, cars: price.cars, dragCount: price.dragCount,
+      tier: price.tier, basePrice: price.basePrice,
+      premium, busyRoad, danger,
+      total: price.total, isCustom: price.isCustom,
+      pricingConfigVersion: SNOW_PRICING_CONFIG_VERSION,
+      quotedBy: currentUser, quotedAt: Date.now(),
+    };
+    onSave(q);
+    setLoadedId(id);
+  };
+
+  const load = (q: SnowQuote) => {
+    setGrid((q.grid && q.grid.length ? q.grid.map(r => [...r]) : emptyGrid()));
+    setPremium(!!q.premium); setBusyRoad(!!q.busyRoad); setDanger(q.danger || 0);
+    setLoadedId(q.id); setName(q.name || '');
+    setSub('quote');
+  };
+
+  const chip = (label: string, value: number | string) => (
+    <div className="flex-1 min-w-[64px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-center">
+      <div className="text-2xl font-black text-slate-900 leading-none">{value}</div>
+      <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mt-1">{label}</div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      {/* Sub-tabs */}
+      <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm w-fit">
+        {(['quote', 'saved', 'report'] as const).map(t => (
+          <button key={t} onClick={() => setSub(t)}
+            className={`px-3 py-1.5 text-sm font-bold rounded-md capitalize ${sub === t ? 'text-white' : 'text-gray-500'}`}
+            style={sub === t ? { backgroundColor: GREEN } : undefined}>
+            {t === 'quote' ? 'Quote' : t === 'saved' ? 'Saved' : 'Report'}
+          </button>
+        ))}
+      </div>
+
+      {sub === 'quote' && (
+        <div className="grid md:grid-cols-2 gap-4 items-start">
+          {/* ── LEFT: tracer + inputs ─────────────────────────────────────── */}
+          <div className="space-y-4">
+            {loadedId && (
+              <div className="rounded-lg px-3 py-1.5 text-[12px] font-bold flex items-center gap-1.5"
+                style={{ backgroundColor: '#eef4f0', color: GREEN }}>
+                <FolderOpen className="w-3.5 h-3.5" /> Editing saved shape{name.trim() ? `: ${name.trim()}` : ''}
+              </div>
+            )}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Trace the driveway</div>
+                <div className="text-[10px] font-bold text-slate-400">Tap: empty → spot → DRAG</div>
+              </div>
+              <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${COLS}, minmax(0, 1fr))` }}>
+                {grid.map((row, r) => row.map((v, c) => (
+                  <button key={`${r}-${c}`} onClick={() => cycle(r, c)}
+                    aria-label={`Cell row ${r + 1} column ${c + 1}: ${v === 0 ? 'empty' : v === 1 ? 'spot' : 'drag'}`}
+                    className="aspect-square rounded-xl flex flex-col items-center justify-center transition-colors select-none"
+                    style={
+                      v === 1 ? { backgroundColor: GREEN, color: 'white' }
+                        : v === 2 ? { backgroundColor: '#c9d8cf', color: GREEN, border: `2px dashed ${GREEN}` }
+                          : { backgroundColor: '#f1f5f9', border: '2px dashed #cbd5e1', color: '#94a3b8' }
+                    }>
+                    {v === 1 && <Car className="w-6 h-6" />}
+                    {v === 2 && <span className="text-[11px] font-black uppercase tracking-widest">Drag</span>}
+                  </button>
+                )))}
+              </div>
+              {/* Gold street bar at the street (bottom) end */}
+              <div className="mt-2 rounded-full h-3" style={{ backgroundColor: GOLD }} />
+              <div className="text-center text-[10px] font-black uppercase tracking-widest text-slate-400 mt-1">Street</div>
+            </div>
+
+            {/* Inputs */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
+              <Toggle label="Premium" sub="Premium service" on={premium} onClick={() => setPremium(p => !p)} />
+              <Toggle label="Busy road" sub="Main-road frontage" on={busyRoad} onClick={() => setBusyRoad(b => !b)} />
+              <div>
+                <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Danger charge</div>
+                <div className="grid grid-cols-4 gap-2">
+                  {SNOW_PRICING_CONFIG.DANGER_OPTIONS.map(d => (
+                    <button key={d} onClick={() => setDanger(d)}
+                      className="min-h-[44px] rounded-xl text-sm font-black border transition-colors"
+                      style={danger === d
+                        ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN }
+                        : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
+                      {d === 0 ? 'None' : `$${d}`}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+                  Retaining walls, drop-offs, steep grade, tight turns, posts or structures close to the blower.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ── RIGHT: live price + breakdown ─────────────────────────────── */}
+          <div className="space-y-4">
+            <PriceReadout price={price} />
+
+            {price && (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
+                <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Shape</div>
+                <div className="flex gap-2">
+                  {chip('Lanes', price.lanes)}
+                  {chip('Depth', price.depth)}
+                  {chip('Cars', price.cars)}
+                  {chip('Drag', price.dragCount)}
+                </div>
+
+                <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 pt-1">Breakdown</div>
+                <div className="space-y-1 text-sm">
+                  <Row label={price.isCustom ? `Custom floor` : `Tier ${price.tier} base`} value={money(price.basePrice)} />
+                  {price.addBreakdown.drag > 0 && <Row label={`Drag × ${price.dragCount} @ $${SNOW_PRICING_CONFIG.DRAG_RATE}`} value={money(price.addBreakdown.drag)} />}
+                  {price.addBreakdown.premium > 0 && <Row label="Premium" value={money(price.addBreakdown.premium)} />}
+                  {price.addBreakdown.busyRoad > 0 && <Row label="Busy road" value={money(price.addBreakdown.busyRoad)} />}
+                  {price.addBreakdown.danger > 0 && <Row label="Danger" value={money(price.addBreakdown.danger)} />}
+                  <div className="flex justify-between border-t-2 border-slate-200 pt-1.5 mt-1 font-black text-slate-900">
+                    <span className="uppercase tracking-widest text-[12px] text-slate-500 self-center">{price.isCustom ? 'Minimum (floor)' : 'Season total'}</span>
+                    <span className="text-lg font-mono">{money(price.isCustom ? price.floor! : price.total!)}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Optional label — for finding a shape again at renewal. Saving
+                never requires it; the quote itself is written in Jobber. */}
+            <input value={name} onChange={e => setName(e.target.value)}
+              placeholder="Client / address (optional)"
+              className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-slate-400" />
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={clearAll}
+                className="min-h-[48px] inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-black uppercase tracking-widest">
+                <RotateCcw className="w-4 h-4" /> Clear
+              </button>
+              <button onClick={save} disabled={!price}
+                className="min-h-[48px] inline-flex items-center justify-center gap-1.5 rounded-xl text-white text-xs font-black uppercase tracking-widest disabled:opacity-40"
+                style={{ backgroundColor: GREEN }}>
+                <Save className="w-4 h-4" /> {loadedId ? 'Update' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {sub === 'saved' && (
+        <SavedSnowQuotes quotes={quotes} currentUser={currentUser} isAdmin={isAdmin} onOpen={load} onDelete={onDelete} />
+      )}
+
+      {sub === 'report' && <SnowReport quotes={quotes} />}
+    </div>
+  );
+}
+
+// ── Live price readout ──────────────────────────────────────────────────────
+function PriceReadout({ price }: { price: SnowPrice | null }) {
+  if (!price) {
+    return (
+      <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white p-6 text-center">
+        <Snowflake className="w-8 h-8 mx-auto text-slate-300" />
+        <div className="text-sm font-bold text-slate-400 mt-2">Trace a driveway to price it</div>
+      </div>
+    );
+  }
+  if (price.isCustom) {
+    return (
+      <div className="rounded-2xl border-2 p-5 shadow-sm" style={{ backgroundColor: '#fffbeb', borderColor: '#f59e0b' }}>
+        <div className="flex items-center gap-2 text-amber-800 font-black uppercase tracking-widest text-[12px]">
+          <AlertTriangle className="w-4 h-4" /> Custom — James quotes
+        </div>
+        <div className="mt-2 text-4xl font-black text-amber-900 font-mono">{money(price.floor!)}<span className="text-base font-bold text-amber-700"> min</span></div>
+        <div className="text-[12px] text-amber-800 mt-1">Floor {money(SNOW_PRICING_CONFIG.CUSTOM_FLOOR)} + adds {money(price.adds)} — a minimum.</div>
+        <div className="text-[12px] font-black text-amber-900 mt-2">Do not quote below the floor without Marco.</div>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-2xl p-5 shadow-sm text-white" style={{ backgroundColor: GREEN }}>
+      <div className="text-[11px] font-black uppercase tracking-widest" style={{ color: GOLD }}>Season price · Tier {price.tier}</div>
+      <div className="text-5xl font-black font-mono mt-1">{money(price.total!)}</div>
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return <div className="flex justify-between text-slate-600"><span>{label}</span><span className="font-mono">{value}</span></div>;
+}
+
+function Toggle({ label, sub, on, onClick }: { label: string; sub: string; on: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="w-full flex items-center justify-between gap-3 min-h-[48px] rounded-xl border px-3 transition-colors"
+      style={on ? { backgroundColor: '#eef4f0', borderColor: GREEN } : { backgroundColor: 'white', borderColor: '#e2e8f0' }}>
+      <div className="text-left">
+        <div className="text-sm font-black" style={{ color: on ? GREEN : '#334155' }}>{label}</div>
+        <div className="text-[11px] text-slate-400">{sub}</div>
+      </div>
+      <div className="w-12 h-7 rounded-full p-1 transition-colors shrink-0" style={{ backgroundColor: on ? GREEN : '#cbd5e1' }}>
+        <div className="w-5 h-5 rounded-full bg-white transition-transform" style={{ transform: on ? 'translateX(20px)' : 'none' }} />
+      </div>
+    </button>
+  );
+}
+
+// ── Saved snow quotes ───────────────────────────────────────────────────────
+function SavedSnowQuotes({ quotes, currentUser, isAdmin, onOpen, onDelete }: {
+  quotes: Record<string, SnowQuote>; currentUser: { email: string; name: string }; isAdmin: boolean;
+  onOpen: (q: SnowQuote) => void; onDelete: (id: string) => void;
+}) {
+  const [search, setSearch] = useState('');
+  const list = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    return Object.values(quotes)
+      .filter(x => !s || `${x.name} ${x.client || ''}`.toLowerCase().includes(s))
+      .sort((a, b) => (b.updatedAt || b.quotedAt || 0) - (a.updatedAt || a.quotedAt || 0));
+  }, [quotes, search]);
+  const canDelete = (x: SnowQuote) => isAdmin || (x.quotedBy?.email || '').toLowerCase() === currentUser.email.toLowerCase();
+
+  return (
+    <div className="space-y-3">
+      <div className="relative">
+        <Search className="w-4 h-4 text-slate-400 absolute left-2 top-1/2 -translate-y-1/2" />
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by client / address…"
+          className="w-full border border-slate-200 rounded-lg pl-8 pr-3 py-2 text-sm outline-none" />
+      </div>
+      {list.length === 0 ? (
+        <div className="text-center text-slate-400 py-8">{Object.keys(quotes).length === 0 ? 'No snow quotes yet — trace a driveway and hit Save.' : 'No quotes match.'}</div>
+      ) : (
+        <div className="space-y-2">
+          {list.map(x => {
+            const named = (x.name || '').trim();
+            const title = named || shapeLabel(x);
+            return (
+            <div key={x.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-3 flex items-center justify-between gap-3">
+              <button onClick={() => onOpen(x)} className="min-w-0 text-left flex-1">
+                <div className="font-bold text-slate-800 truncate">{title}</div>
+                {/* When unnamed the title already carries shape + price, so only
+                    named quotes repeat the detail line. */}
+                {named && (
+                  <div className="text-[12px] text-slate-500">
+                    {x.isCustom
+                      ? <span className="font-mono font-bold text-amber-700">Custom · min {money(priceOf(x))}</span>
+                      : <><span className="font-mono font-bold text-slate-700">{money(x.total || 0)}</span> · Tier {x.tier}</>}
+                    {' '}· {x.lanes}×{x.depth} · {x.cars} cars{x.dragCount ? ` · ${x.dragCount} drag` : ''}
+                  </div>
+                )}
+                <div className="text-[10px] text-slate-400">{(x.updatedBy || x.quotedBy)?.name || '—'} · {fmtWhen(x.updatedAt || x.quotedAt)}{x.dragCount && !named ? ` · ${x.dragCount} drag` : ''}</div>
+              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button onClick={() => onOpen(x)} title="Open the traced shape" className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><FolderOpen className="w-4 h-4" /></button>
+                {canDelete(x) && <button onClick={() => { if (window.confirm(`Delete snow quote "${title}"?`)) onDelete(x.id); }} title="Delete" className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 className="w-4 h-4" /></button>}
+              </div>
+            </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Report — the numbers the season model currently guesses at ──────────────
+function SnowReport({ quotes }: { quotes: Record<string, SnowQuote> }) {
+  const stats = useMemo(() => {
+    const all = Object.values(quotes);
+    const n = all.length;
+    if (!n) return null;
+    const tiers: Record<string, number> = { '1': 0, '2': 0, '3': 0, custom: 0 };
+    let dragTotal = 0, withDrag = 0, busy = 0, danger = 0, priceTotal = 0;
+    for (const q of all) {
+      tiers[String(q.tier)] = (tiers[String(q.tier)] || 0) + 1;
+      dragTotal += q.dragCount || 0;
+      if ((q.dragCount || 0) > 0) withDrag++;
+      if (q.busyRoad) busy++;
+      if ((q.danger || 0) > 0) danger++;
+      priceTotal += priceOf(q);
+    }
+    return {
+      n, tiers,
+      avgDrag: dragTotal / n,
+      pctWithDrag: (withDrag / n) * 100,
+      pctBusy: (busy / n) * 100,
+      pctDanger: (danger / n) * 100,
+      customCount: tiers.custom,
+      avgPrice: priceTotal / n,
+    };
+  }, [quotes]);
+
+  if (!stats) return <div className="text-center text-slate-400 py-8">No snow quotes yet — the report fills in as quotes are saved.</div>;
+
+  const pct = (part: number) => `${Math.round((part / stats.n) * 100)}%`;
+  const Stat = ({ label, value, note }: { label: string; value: string; note?: string }) => (
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+      <div className="text-[11px] font-black uppercase tracking-widest text-slate-400">{label}</div>
+      <div className="text-3xl font-black text-slate-900 mt-1">{value}</div>
+      {note && <div className="text-[11px] text-slate-500 mt-0.5">{note}</div>}
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="text-[12px] text-slate-500 flex items-center gap-1.5"><BarChart3 className="w-4 h-4" /> {stats.n} saved snow quote{stats.n === 1 ? '' : 's'}</div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {(['1', '2', '3', 'custom'] as const).map(t => (
+          <Stat key={t} label={t === 'custom' ? 'Custom' : `Tier ${t}`} value={String(stats.tiers[t] || 0)} note={pct(stats.tiers[t] || 0) + ' of quotes'} />
+        ))}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <Stat label="Avg drag spots" value={stats.avgDrag.toFixed(1)} note={`${Math.round(stats.pctWithDrag)}% have any drag`} />
+        <Stat label="On busy roads" value={`${Math.round(stats.pctBusy)}%`} />
+        <Stat label="With danger charge" value={`${Math.round(stats.pctDanger)}%`} />
+        <Stat label="Custom quotes" value={String(stats.customCount)} />
+        <Stat label="Avg quoted price" value={money(Math.round(stats.avgPrice))} note="custom counted at floor" />
+      </div>
+    </div>
+  );
+}

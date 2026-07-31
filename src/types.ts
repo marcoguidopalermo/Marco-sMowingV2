@@ -1160,6 +1160,36 @@ export interface SalesQuote {
   updatedAt?: number;
 }
 
+// ── SalesMaster · Snow — driveway snow-clearing season quotes. The estimator
+// traces the driveway on a grid; snowPricing.ts (the single source of truth for
+// snow pricing) turns it into a tier + price. Saved so the traced shape can be
+// reopened at renewal instead of re-measured. Own subcollection snowQuotes/{id}
+// — this list GROWS (never in the appData main doc). Stores the full grid + the
+// derived numbers + the pricing config version in force at save time, so a
+// quote saved under old rates still explains itself after rates change.
+export interface SnowQuote {
+  id: string;
+  name: string;                 // free-form label, usually the client / address
+  client?: string;              // client the quote belongs to (reused at renewal)
+  grid: number[][];             // the traced shape (0 empty, 1 open, 2 drag)
+  lanes: number;
+  depth: number;
+  cars: number;
+  dragCount: number;
+  tier: 1 | 2 | 3 | 'custom';
+  basePrice: number;
+  premium: boolean;
+  busyRoad: boolean;
+  danger: number;
+  total: number | null;         // null when custom
+  isCustom: boolean;
+  pricingConfigVersion: string; // snapshot of the config that priced this quote
+  quotedBy?: { email: string; name: string };
+  quotedAt?: number;
+  updatedBy?: { email: string; name: string };
+  updatedAt?: number;
+}
+
 export type BulletinAudienceRole = 'admin' | 'manager' | 'foreman' | 'mechanic' | 'worker';
 
 // TaskMaster — admin-assigned tasks for employees. Distinct from
@@ -1522,6 +1552,7 @@ export interface AppData {
   roleMasterPolicies?: Record<string, RoleMasterPolicy>;
   roleMasterPolicyRequests?: Record<string, RoleMasterPolicyRequest>;
   salesMasterQuotes?: Record<string, SalesQuote>;
+  snowQuotes?: Record<string, SnowQuote>;
   // ── ContractingMaster (Palermo's) — namespaced subcollections, overlaid
   // live. ZERO contact with performance/BH/bonus/pay. Never in the main doc.
   contractingProjects?: Record<string, ContractingProject>;

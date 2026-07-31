@@ -23,7 +23,7 @@ import {
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary,
-  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, RoleTaskInstance,
+  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, RoleTaskInstance,
   ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
@@ -215,6 +215,7 @@ export default function App() {
   const subRoleMasterPoliciesRef = useRef<Record<string, RoleMasterPolicy>>({});
   const subRoleMasterPolicyRequestsRef = useRef<Record<string, RoleMasterPolicyRequest>>({});
   const subSalesMasterQuotesRef = useRef<Record<string, SalesQuote>>({});
+  const subSnowQuotesRef = useRef<Record<string, SnowQuote>>({});
   const subRoleTaskInstancesRef = useRef<Record<string, RoleTaskInstance>>({});
   // ContractingMaster (Palermo's) — namespaced subcollections, own tenant.
   const subContractingProjectsRef = useRef<Record<string, ContractingProject>>({});
@@ -902,6 +903,7 @@ export default function App() {
           roleMasterPolicies: subRoleMasterPoliciesRef.current,
           roleMasterPolicyRequests: subRoleMasterPolicyRequestsRef.current,
           salesMasterQuotes: subSalesMasterQuotesRef.current,
+          snowQuotes: subSnowQuotesRef.current,
           roleTaskInstances: subRoleTaskInstancesRef.current,
           // ContractingMaster — overlaid from namespaced subcollections.
           contractingProjects: subContractingProjectsRef.current,
@@ -1186,6 +1188,7 @@ export default function App() {
     const u6 = mk('roleMasterPolicies', subRoleMasterPoliciesRef, 'roleMasterPolicies');
     const u7 = mk('salesMasterQuotes', subSalesMasterQuotesRef, 'salesMasterQuotes');
     const u8 = mk('roleMasterPolicyRequests', subRoleMasterPolicyRequestsRef, 'roleMasterPolicyRequests');
+    const u9 = mk('snowQuotes', subSnowQuotesRef, 'snowQuotes');
     // ContractingMaster (Palermo's) — namespaced subcollections.
     const c1 = mk('contractingProjects', subContractingProjectsRef, 'contractingProjects');
     const c2 = mk('contractingTimeEntries', subContractingTimeEntriesRef, 'contractingTimeEntries');
@@ -1195,7 +1198,7 @@ export default function App() {
     const c6 = mk('contractingShoppingList', subContractingShoppingListRef, 'contractingShoppingList');
     const c7 = mk('contractingPersonalItems', subContractingPersonalItemsRef, 'contractingPersonalItems');
     const c8 = mk('contractingPropertyDocs', subContractingPropertyDocsRef, 'contractingPropertyDocs');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); };
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); };
   }, [user]);
 
   useEffect(() => {
@@ -2243,6 +2246,31 @@ export default function App() {
     if (!isAdmin && !isCreator) { showToastMsg(PERMISSION_DENIED); return; }
     await deleteDoc(doc(roleColl('salesMasterQuotes'), id));
     showToastMsg('Quote deleted.');
+  };
+  // Snow quotes — own subcollection snowQuotes/{id} (grows; never the main doc).
+  // Same access model as sales quotes: admin + manager create/edit; delete is
+  // admin OR the quote's author. The traced grid is stored so a quote can be
+  // reopened at renewal instead of re-measured.
+  const saveSnowQuote = async (qz: SnowQuote) => {
+    if (!isManager) { showToastMsg(PERMISSION_DENIED); return; }
+    const existing = appData.snowQuotes?.[qz.id];
+    const now = Date.now();
+    const rec: SnowQuote = {
+      ...qz,
+      quotedBy: existing?.quotedBy || qz.quotedBy || { email: displayEmail, name: displayName },
+      quotedAt: existing?.quotedAt || qz.quotedAt || now,
+      updatedBy: { email: displayEmail, name: displayName },
+      updatedAt: now,
+    };
+    await setDoc(doc(roleColl('snowQuotes'), qz.id), cleanRM(rec));
+    showToastMsg('Snow quote saved.');
+  };
+  const deleteSnowQuote = async (id: string) => {
+    const qz = appData.snowQuotes?.[id];
+    const isAuthor = (qz?.quotedBy?.email || '').toLowerCase() === displayEmail.toLowerCase();
+    if (!isAdmin && !isAuthor) { showToastMsg(PERMISSION_DENIED); return; }
+    await deleteDoc(doc(roleColl('snowQuotes'), id));
+    showToastMsg('Snow quote deleted.');
   };
   const setRoleMasterMaster = async (enabled: boolean) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
@@ -4914,6 +4942,9 @@ export default function App() {
           onSaveRates={saveSalesRates}
           onSaveQuote={saveSalesQuote}
           onDeleteQuote={deleteSalesQuote}
+          snowQuotes={appData.snowQuotes || {}}
+          onSaveSnowQuote={saveSnowQuote}
+          onDeleteSnowQuote={deleteSnowQuote}
         />
       ) : currentView === 'contracting' ? (
         <ContractingMaster
