@@ -14,7 +14,10 @@
 // ── EDITABLE CONFIG (the numbers). No UI control may change these — the rate
 // sheet is a separate super-admin build. ──────────────────────────────────
 export interface LawnTier { maxSqFt: number | null; weekly: number }
-export interface LawnTravelZone { key: string; label: string; weekly: number }
+// Travel is PER VISIT (the only exception to the 0.75 ratio) — the season figure
+// derives from the cut count, so a biweekly client isn't overcharged for drives
+// they don't get.
+export interface LawnTravelZone { key: string; label: string; perVisit: number }
 export interface LawnPackageDef { key: string; label: string; visits: number }
 export type LawnPackagePrices = Record<string, number>;
 export interface LawnConfig {
@@ -54,10 +57,10 @@ export const LAWN_CONFIG_V1: LawnConfig = {
   ],
   MOWING_EXTRAS: { PUSH_MOW_ONLY: 200, VERY_HILLY: 200, CLUTTER: 200 },
   TRAVEL_ZONES: [
-    { key: 'in_town', label: 'In town', weekly: 0 },
-    { key: 'km5', label: 'Within 5 km', weekly: 200 },
-    { key: 'km10', label: 'Within 10 km', weekly: 400 },
-    { key: 'km15', label: 'Within 15 km', weekly: 800 },
+    { key: 'in_town', label: 'In town', perVisit: 0 },
+    { key: 'km5', label: 'Within 5 km', perVisit: 10 },
+    { key: 'km10', label: 'Within 10 km', perVisit: 20 },
+    { key: 'km15', label: 'Within 15 km', perVisit: 40 },
   ],
   WEEKLY_CUTS: 20,
   BIWEEKLY_CUTS: 12,
@@ -149,16 +152,18 @@ export interface MowingPrice {
   tierLabel: string;
   weeklyBase: number;
   extras: { pushMow: number; veryHilly: number; clutter: number };
-  travel: { key: string; label: string; weekly: number };
-  weeklyTotal: number;    // annual weekly-basis total
-  biweeklyTotal: number;  // = weeklyTotal * BIWEEKLY_RATIO
+  travel: { key: string; label: string; perVisit: number; weeklySeason: number; biweeklySeason: number };
+  weeklyTotal: number;
+  biweeklyTotal: number;
   weekly: MowingFreq;
   biweekly: MowingFreq;
 }
 
 /**
- * Price mowing for a resolved tier. The biweekly ratio applies to the WHOLE
- * weekly total (tier + extras + travel) — one ratio, no exceptions.
+ * Price mowing for a resolved tier. The 0.75 ratio applies to the base tier and
+ * the season-based extras (push mow / hilly / clutter). TRAVEL is the exception:
+ * it is a per-visit amount × the frequency's cut count, so a biweekly client
+ * (12 drives) isn't charged 75% of a 20-visit travel cost.
  */
 export function priceMowing(tierIndex: number, flags: MowingFlags, config: LawnConfig = LAWN_CONFIG_V1): MowingPrice {
   const weeklyBase = config.TIERS[tierIndex].weekly;
@@ -167,15 +172,18 @@ export function priceMowing(tierIndex: number, flags: MowingFlags, config: LawnC
     veryHilly: flags.veryHilly ? config.MOWING_EXTRAS.VERY_HILLY : 0,
     clutter: flags.clutter ? config.MOWING_EXTRAS.CLUTTER : 0,
   };
+  const ratioed = weeklyBase + extras.pushMow + extras.veryHilly + extras.clutter; // 0.75 applies to this
   const zone = config.TRAVEL_ZONES.find(z => z.key === flags.travelZone) || config.TRAVEL_ZONES[0];
-  const weeklyTotal = weeklyBase + extras.pushMow + extras.veryHilly + extras.clutter + zone.weekly;
-  const biweeklyTotal = weeklyTotal * config.BIWEEKLY_RATIO;
+  const weeklySeason = zone.perVisit * config.WEEKLY_CUTS;
+  const biweeklySeason = zone.perVisit * config.BIWEEKLY_CUTS;
+  const weeklyTotal = ratioed + weeklySeason;
+  const biweeklyTotal = ratioed * config.BIWEEKLY_RATIO + biweeklySeason;
   const freq = (annual: number, cuts: number): MowingFreq => ({
     annual, monthly: annual / config.MONTHS, perCut: annual / cuts,
   });
   return {
     tierIndex, tierLabel: tierLabel(tierIndex, config), weeklyBase, extras,
-    travel: { key: zone.key, label: zone.label, weekly: zone.weekly },
+    travel: { key: zone.key, label: zone.label, perVisit: zone.perVisit, weeklySeason, biweeklySeason },
     weeklyTotal, biweeklyTotal,
     weekly: freq(weeklyTotal, config.WEEKLY_CUTS),
     biweekly: freq(biweeklyTotal, config.BIWEEKLY_CUTS),
@@ -277,74 +285,95 @@ export function elapsedSeasonWeeks(startDate: string, config: LawnConfig = LAWN_
 export function overgrownReductionPct(multiplier: number, config: LawnConfig = LAWN_CONFIG_V1): number {
   return (multiplier - 1) * config.DISCOUNT_PER_WEEK;
 }
-/** Month-ends AFTER the signup month, through October (month 10). */
-export function remainingInstalments(startDate: string): number {
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/** Month-ends from the signup month THROUGH October (inclusive). */
+export function availableMonthEnds(startDate: string): number {
   const month = Number(String(startDate).slice(5, 7)) || 1;
-  return Math.max(0, 10 - month);
+  return Math.max(0, 11 - month);
+}
+function monthEndYmd(year: number, month1to12: number): string {
+  const dt = new Date(Date.UTC(year, month1to12, 0)); // day 0 of next month = last day of this
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+}
+/** The last `count` month-ends through October (month 10) of `year`. */
+export function billingDates(year: number, count: number): string[] {
+  const out: string[] = [];
+  for (let m = 10 - count + 1; m <= 10; m++) if (m >= 1) out.push(monthEndYmd(year, m));
+  return out;
 }
 
 export interface SeasonDiscount {
   elapsedWeeks: number;
-  baseDiscountPct: number;         // elapsedWeeks × DISCOUNT_PER_WEEK
+  seasonDiscountPct: number;       // elapsedWeeks × DISCOUNT_PER_WEEK — never negative
   overgrownKey: string;
   overgrownLabel: string;
   overgrownMultiplier: number;
-  overgrownReductionPct: number;   // (mult − 1) × DISCOUNT_PER_WEEK
-  netDiscountPct: number;          // base − reduction, MAY BE NEGATIVE (a surcharge)
-  isSurcharge: boolean;            // netDiscountPct < 0
+  catchUpPct: number;              // (mult − 1) × DISCOUNT_PER_WEEK — billed separately
 }
 export interface SeasonFreqPlan {
   fullPrice: number;               // full seasonal price (the renewal anchor)
   cuts: number;
-  proratedTotal: number;           // fullPrice × (1 − netDiscount)
-  monthly: number;                 // fullPrice / MONTHS — the STANDARD recurring amount
-  deposit: number;                 // proratedTotal − remaining × monthly, floored at 0
-  depositNegative: boolean;        // true if the raw deposit was < 0 (flag it)
+  proratedTotal: number;           // fullPrice × (1 − seasonDiscount) — never a surcharge
+  monthly: number;                 // fullPrice / MONTHS — STANDARD recurring amount
+  instalments: number;             // count, chosen so the deposit fits one payment
+  deposit: number;                 // proratedTotal − instalments × monthly ∈ [0, monthly]
+  catchUpCharge: number;           // one-time, billed separately from the season
+  firstInvoice: number;            // deposit + catchUpCharge
+  cutsLeft: number;
+  internalPPC: number;             // proratedTotal / cutsLeft — internal only
   bhPerVisit: number;              // full price / full cuts / rate
   firstVisitBH: number;            // bhPerVisit × overgrown multiplier
+  billingDates: string[];          // the instalment month-ends (last N through Oct 31)
 }
 export interface SeasonPlan {
   startDate: string;
   seasonEnd: string;
-  remainingInstalments: number;
   discount: SeasonDiscount;
   weekly: SeasonFreqPlan;
   biweekly: SeasonFreqPlan;
 }
 
 /**
- * The mid-season plan for a mowing quote. Discount is shared; proration,
- * deposit, and BH are computed per frequency from the FULL seasonal price (BH
- * and the deposit's monthly instalment never use the prorated figure — a crew
- * does the same work per cut, and the recurring job always bills the standard
- * amount). The surcharge (negative net discount) is NOT clamped.
+ * Mid-season plan for a mowing quote. The season discount only ever REDUCES the
+ * price (no surcharge). The overgrown catch-up is a SEPARATE one-time charge so
+ * it can't distort the recurring instalment maths. Instalment count is chosen so
+ * the deposit always fits inside one monthly payment. BH uses full price + full
+ * cut count. Packages are never involved.
  */
 export function computeSeasonPlan(
   mowing: MowingPrice, startDate: string, overgrownKey: string, config: LawnConfig = LAWN_CONFIG_V1,
 ): SeasonPlan {
   const elapsedWeeks = elapsedSeasonWeeks(startDate, config);
-  const baseDiscountPct = elapsedWeeks * config.DISCOUNT_PER_WEEK;
+  const seasonDiscountPct = elapsedWeeks * config.DISCOUNT_PER_WEEK; // never negative
   const og = config.OVERGROWN.find(o => o.key === overgrownKey) || config.OVERGROWN[0];
-  const reduction = overgrownReductionPct(og.multiplier, config);
-  const netDiscountPct = baseDiscountPct - reduction;
-  const remaining = remainingInstalments(startDate);
+  const catchUpPct = overgrownReductionPct(og.multiplier, config);   // billed separately
+  const avail = availableMonthEnds(startDate);
+  const weeksLeft = Math.max(0, config.WEEKS_IN_SEASON - elapsedWeeks);
+  const year = Number(String(startDate).slice(0, 4)) || Number(String(config.SEASON_START).slice(0, 4));
+
   const freq = (fullPrice: number, cuts: number): SeasonFreqPlan => {
-    const proratedTotal = fullPrice * (1 - netDiscountPct / 100);
-    const monthly = config.MONTHS > 0 ? fullPrice / config.MONTHS : 0;
-    const depositRaw = proratedTotal - remaining * monthly;
+    const proratedTotal = round2(fullPrice * (1 - seasonDiscountPct / 100));
+    const monthly = config.MONTHS > 0 ? round2(fullPrice / config.MONTHS) : 0;
+    const maxByPrice = monthly > 0 ? Math.floor(proratedTotal / monthly) : 0;
+    const instalments = Math.max(0, Math.min(avail, maxByPrice));
+    const deposit = round2(proratedTotal - instalments * monthly);
+    const catchUpCharge = round2((catchUpPct / 100) * fullPrice);
+    const cutsLeft = config.WEEKS_IN_SEASON > 0 ? Math.round(cuts * weeksLeft / config.WEEKS_IN_SEASON) : 0;
     const bhPerVisit = cuts > 0 ? fullPrice / cuts / config.MOWING_ALLOCATION_RATE : 0;
     return {
-      fullPrice, cuts, proratedTotal, monthly,
-      deposit: Math.max(0, depositRaw), depositNegative: depositRaw < 0,
+      fullPrice, cuts, proratedTotal, monthly, instalments, deposit, catchUpCharge,
+      firstInvoice: round2(deposit + catchUpCharge),
+      cutsLeft, internalPPC: cutsLeft > 0 ? round2(proratedTotal / cutsLeft) : 0,
       bhPerVisit, firstVisitBH: bhPerVisit * og.multiplier,
+      billingDates: billingDates(year, instalments),
     };
   };
   return {
-    startDate, seasonEnd: seasonEndDate(config), remainingInstalments: remaining,
+    startDate, seasonEnd: seasonEndDate(config),
     discount: {
-      elapsedWeeks, baseDiscountPct, overgrownKey: og.key, overgrownLabel: og.label,
-      overgrownMultiplier: og.multiplier, overgrownReductionPct: reduction,
-      netDiscountPct, isSurcharge: netDiscountPct < 0,
+      elapsedWeeks, seasonDiscountPct, overgrownKey: og.key, overgrownLabel: og.label,
+      overgrownMultiplier: og.multiplier, catchUpPct,
     },
     weekly: freq(mowing.weeklyTotal, config.WEEKLY_CUTS),
     biweekly: freq(mowing.biweeklyTotal, config.BIWEEKLY_CUTS),
@@ -374,7 +403,7 @@ function flattenLawn(c: LawnConfig): FlatEntry[] {
   push('extras.clutter', 'Mowing · Clutter', c.MOWING_EXTRAS.CLUTTER);
   c.TRAVEL_ZONES.forEach((z, i) => {
     push(`zone${i}.label`, `Travel zone ${i + 1} · Label`, z.label);
-    push(`zone${i}.weekly`, `Travel zone ${i + 1} · Weekly`, z.weekly);
+    push(`zone${i}.perVisit`, `Travel zone ${i + 1} · Per visit`, z.perVisit);
   });
   push('pkgExtra.hilly', 'Package · Very hilly', c.PACKAGE_EXTRAS.VERY_HILLY);
   push('pkgExtra.clutter', 'Package · Clutter', c.PACKAGE_EXTRAS.CLUTTER);
@@ -438,7 +467,7 @@ export function validateLawnConfig(c: LawnConfig): string[] {
   // Extras + travel amounts >= 0.
   const nn = (v: unknown) => Number(v) >= 0;
   if (!nn(c.MOWING_EXTRAS.PUSH_MOW_ONLY) || !nn(c.MOWING_EXTRAS.VERY_HILLY) || !nn(c.MOWING_EXTRAS.CLUTTER)) errs.push('Mowing extras cannot be negative.');
-  if (c.TRAVEL_ZONES.some(z => !nn(z.weekly))) errs.push('Travel zone prices cannot be negative.');
+  if (c.TRAVEL_ZONES.some(z => !nn(z.perVisit))) errs.push('Travel zone per-visit prices cannot be negative.');
   if (!nn(c.PACKAGE_EXTRAS.VERY_HILLY) || !nn(c.PACKAGE_EXTRAS.CLUTTER)) errs.push('Package extras cannot be negative.');
   if (c.PACKAGE_TRAVEL_PER_VISIT.some(v => !nn(v))) errs.push('Package travel amounts cannot be negative.');
   // Ratio strictly between 0 and 1.

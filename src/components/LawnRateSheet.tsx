@@ -176,13 +176,16 @@ function Editor({ config, activeVersion, versions, onSave, onRevert, initial }: 
           ))}
         </Group>
 
-        {/* Mowing travel zones — addable/removable */}
-        <Group title="Mowing travel zones (from city limits)" onAdd={() => edit(n => n.TRAVEL_ZONES.push({ key: `zone_${n.TRAVEL_ZONES.length}_${n.TRAVEL_ZONES.reduce((a, z) => a + z.label.length, 0)}`, label: 'New zone', weekly: 0 }))}>
+        {/* Mowing travel zones — PER VISIT; season totals derived read-only */}
+        <Group title="Mowing travel zones — per visit" onAdd={() => edit(n => n.TRAVEL_ZONES.push({ key: `zone_${n.TRAVEL_ZONES.length}_${n.TRAVEL_ZONES.reduce((a, z) => a + z.label.length, 0)}`, label: 'New zone', perVisit: 0 }))}>
           {draft.TRAVEL_ZONES.map((z, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <input value={z.label} onChange={e => edit(n => { n.TRAVEL_ZONES[i].label = e.target.value; })} className="flex-1 border border-slate-200 rounded px-2 py-1.5 text-sm" />
-              <input type="number" value={z.weekly} onChange={e => edit(n => { n.TRAVEL_ZONES[i].weekly = num(e.target.value); })} className="w-24 border border-slate-200 rounded px-2 py-1.5 text-right font-mono text-sm" />
-              <button onClick={() => edit(n => { n.TRAVEL_ZONES.splice(i, 1); })} className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
+            <div key={i} className="space-y-0.5">
+              <div className="flex items-center gap-2">
+                <input value={z.label} onChange={e => edit(n => { n.TRAVEL_ZONES[i].label = e.target.value; })} className="flex-1 border border-slate-200 rounded px-2 py-1.5 text-sm" />
+                <div className="flex items-center gap-1"><span className="text-slate-400 text-sm">$</span><input type="number" value={z.perVisit} onChange={e => edit(n => { n.TRAVEL_ZONES[i].perVisit = num(e.target.value); })} className="w-16 border border-slate-200 rounded px-2 py-1.5 text-right font-mono text-sm" /><span className="text-[11px] text-slate-400">/visit</span></div>
+                <button onClick={() => edit(n => { n.TRAVEL_ZONES.splice(i, 1); })} className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
+              </div>
+              <div className="text-[10px] text-slate-400 text-right">season: <span className="font-mono">${z.perVisit * draft.WEEKLY_CUTS}</span> wk / <span className="font-mono">${z.perVisit * draft.BIWEEKLY_CUTS}</span> bw</div>
             </div>
           ))}
         </Group>

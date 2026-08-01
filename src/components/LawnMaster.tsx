@@ -9,8 +9,6 @@ import {
 import LawnRateSheet from './LawnRateSheet';
 
 const todayYmd = () => new Date().toISOString().slice(0, 10);
-const bh = (n: number) => `${(Math.round((Number(n) || 0) * 100) / 100).toFixed(2)} BH`;
-const pctLabel = (n: number) => `${n > 0 ? '+' : ''}${Math.round(n * 100) / 100}%`;
 
 // House style.
 const GREEN = '#1c4634';
@@ -118,15 +116,15 @@ export default function LawnMaster({
       selectedPackage: sel && sel.priced ? sel.key : null,
       packageTravelPerVisit: pkgTravel,
       packageTotal: sel && sel.priced ? sel.total : null,
-      // Mid-season plan (mowing only).
-      startDate, elapsedWeeks: plan.discount.elapsedWeeks, baseDiscountPct: plan.discount.baseDiscountPct,
-      overgrownKey, overgrownMultiplier: plan.discount.overgrownMultiplier,
-      finalDiscountPct: plan.discount.netDiscountPct, isSurcharge: plan.discount.isSurcharge,
-      remainingInstalments: plan.remainingInstalments,
-      weeklyProrated: plan.weekly.proratedTotal, weeklyDeposit: plan.weekly.deposit,
-      weeklyBhPerVisit: plan.weekly.bhPerVisit, weeklyFirstVisitBH: plan.weekly.firstVisitBH,
-      biweeklyProrated: plan.biweekly.proratedTotal, biweeklyDeposit: plan.biweekly.deposit,
-      biweeklyBhPerVisit: plan.biweekly.bhPerVisit, biweeklyFirstVisitBH: plan.biweekly.firstVisitBH,
+      // Mid-season plan (mowing only). Season discount + separate catch-up.
+      startDate, elapsedWeeks: plan.discount.elapsedWeeks, seasonDiscountPct: plan.discount.seasonDiscountPct,
+      overgrownKey, overgrownMultiplier: plan.discount.overgrownMultiplier, catchUpPct: plan.discount.catchUpPct,
+      weeklyProrated: plan.weekly.proratedTotal, weeklyInstalments: plan.weekly.instalments,
+      weeklyDeposit: plan.weekly.deposit, weeklyCatchUp: plan.weekly.catchUpCharge, weeklyFirstInvoice: plan.weekly.firstInvoice,
+      weeklyCutsLeft: plan.weekly.cutsLeft, weeklyBhPerVisit: plan.weekly.bhPerVisit, weeklyFirstVisitBH: plan.weekly.firstVisitBH,
+      biweeklyProrated: plan.biweekly.proratedTotal, biweeklyInstalments: plan.biweekly.instalments,
+      biweeklyDeposit: plan.biweekly.deposit, biweeklyCatchUp: plan.biweekly.catchUpCharge, biweeklyFirstInvoice: plan.biweekly.firstInvoice,
+      biweeklyCutsLeft: plan.biweekly.cutsLeft, biweeklyBhPerVisit: plan.biweekly.bhPerVisit, biweeklyFirstVisitBH: plan.biweekly.firstVisitBH,
       pricingConfigVersion: viewVersion,
       quotedBy: currentUser, quotedAt: Date.now(),
     };
@@ -242,7 +240,7 @@ export default function LawnMaster({
                     <button key={z.key} onClick={() => { touch(); setTravelZone(z.key); }}
                       className="min-h-[48px] rounded-xl text-sm font-black border transition-colors px-2 flex items-center justify-between gap-1"
                       style={on ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN } : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
-                      <span className="text-left leading-tight">{z.label}{z.weekly ? <span className="block text-[10px] font-bold opacity-70">+{money(z.weekly)}/wk</span> : <span className="block text-[10px] font-bold opacity-70">no travel</span>}</span>
+                      <span className="text-left leading-tight">{z.label}<span className="block text-[10px] font-bold opacity-70">{z.perVisit ? `$${z.perVisit}/visit` : 'no travel'}</span></span>
                       <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${on ? 'bg-white/20' : 'bg-slate-100 text-slate-500'}`}>{n}</span>
                     </button>
                   );
@@ -316,84 +314,94 @@ export default function LawnMaster({
   );
 }
 
-// ── Mowing block — full seasonal anchor + mid-season plan, weekly | biweekly ─
+const MONTHS3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const fmtMD = (ymd: string) => { const [, m, d] = ymd.split('-').map(Number); return `${MONTHS3[(m || 1) - 1]} ${d}`; };
+const bn = (n: number) => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2); // BH number, 2dp
+
+// ── Mowing block — compact quote cards + shared breakdown + billing + ops ────
 function MowingBlock({ price, config, plan, frequency, onFrequency }: {
   price: LawnPrice; config: LawnConfig; plan: SeasonPlan; frequency: 'weekly' | 'biweekly' | null; onFrequency: (f: 'weekly' | 'biweekly') => void;
 }) {
   const m = price.mowing;
   const d = plan.discount;
   const overgrown = d.overgrownMultiplier > 1;
-  const anyDepositNeg = plan.weekly.depositNegative || plan.biweekly.depositNegative;
+  const both = <T,>(w: T, b: T) => `${w} wk / ${b} bw`;
 
-  const pr = (sel: boolean, label: string, value: string, opts?: { strong?: boolean; internal?: boolean }) => (
-    <div className={`flex justify-between ${opts?.internal ? (sel ? 'text-white/50' : 'text-slate-400') : ''}`}>
-      <span className={opts?.strong ? 'font-black' : ''}>{label}{opts?.internal && <span className="ml-1 text-[9px] uppercase tracking-widest">internal · do not quote</span>}</span>
-      <span className={`font-mono ${opts?.strong ? 'font-black' : ''}`}>{value}</span>
+  const cardRow = (sel: boolean, label: string, value: string, internal?: boolean) => (
+    <div className={`flex justify-between ${internal ? (sel ? 'text-white/60' : 'text-slate-400') : ''}`}>
+      <span>{label}{internal && <span className="block text-[9px] uppercase tracking-widest -mt-0.5">internal · do not quote</span>}</span>
+      <span className="font-mono">{value}</span>
     </div>
   );
-  const col = (title: string, sel: boolean, f: 'weekly' | 'biweekly', fp: typeof plan.weekly, perCut: number) => (
+  const card = (title: string, sel: boolean, f: 'weekly' | 'biweekly', fp: typeof plan.weekly) => (
     <button onClick={() => onFrequency(f)} className="text-left rounded-2xl p-3 shadow-sm border-2 transition-colors w-full"
       style={sel ? { backgroundColor: GREEN, color: 'white', borderColor: GOLD } : { backgroundColor: '#eef4f0', borderColor: '#d5e2da' }}>
       <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: sel ? GOLD : GREEN }}>{title}{sel ? ' · going with' : ''}</div>
-      <div className="text-2xl md:text-3xl font-black font-mono leading-none mt-0.5" style={{ color: sel ? 'white' : GREEN }}>{money(fp.fullPrice)}<span className="text-[10px] font-bold opacity-70">/yr full</span></div>
+      <div className="text-3xl md:text-4xl font-black font-mono leading-none mt-0.5" style={{ color: sel ? 'white' : GREEN }}>{money(fp.proratedTotal)}</div>
+      <div className={`text-[11px] font-bold ${sel ? 'text-white/70' : 'text-slate-500'}`}>full {money(fp.fullPrice)} · renewal anchor</div>
       <div className="mt-2 space-y-0.5 text-[12px]">
-        {pr(sel, 'Prorated total', money(fp.proratedTotal), { strong: true })}
-        {pr(sel, 'Monthly (standard)', money(fp.monthly))}
-        {pr(sel, 'Deposit', fp.depositNegative ? '$0' : money(fp.deposit))}
-        {pr(sel, 'BH / visit', bh(fp.bhPerVisit).replace(' BH', ''))}
-        {overgrown && pr(sel, '1st-visit BH', bh(fp.firstVisitBH).replace(' BH', ''))}
-        {pr(sel, 'per cut', money(perCut), { internal: true })}
+        {cardRow(sel, 'Monthly', money(fp.monthly))}
+        {cardRow(sel, 'Instalments left', String(fp.instalments))}
+        {cardRow(sel, 'Cuts left', String(fp.cutsLeft))}
+        {cardRow(sel, 'Deposit', money(fp.deposit))}
+        {cardRow(sel, 'Internal PPC', money(fp.internalPPC), true)}
       </div>
     </button>
   );
-
-  return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Mowing · {m.tierLabel}</div>
-        <div className="text-[10px] font-bold text-slate-400">full price = renewal anchor</div>
-      </div>
-
-      {/* Discount breakdown — shared. Never shown as a single negative discount. */}
-      <div className="rounded-xl border p-3 text-sm space-y-1" style={d.isSurcharge ? { borderColor: '#f59e0b', backgroundColor: '#fffbeb' } : { borderColor: '#e2e8f0' }}>
-        <div className="flex justify-between text-slate-600"><span>Season discount (week {d.elapsedWeeks})</span><span className="font-mono">{pctLabel(d.baseDiscountPct)}</span></div>
-        {overgrown && <div className="flex justify-between text-slate-600"><span>Overgrown catch-up ({d.overgrownLabel})</span><span className="font-mono">−{d.overgrownReductionPct}%</span></div>}
-        {d.isSurcharge ? (
-          <>
-            <div className="flex justify-between border-t border-amber-300 pt-1 mt-1 font-black text-amber-800"><span>Overgrown surcharge</span><span className="font-mono">{Math.round(Math.abs(d.netDiscountPct) * 100) / 100}%</span></div>
-            <div className="text-[11px] font-bold text-amber-700">Client pays {Math.round((100 - d.netDiscountPct) * 100) / 100}% of the seasonal price — catch-up surcharge.</div>
-          </>
-        ) : (
-          <div className="flex justify-between border-t border-slate-200 pt-1 mt-1 font-black" style={{ color: GREEN }}><span>Net discount</span><span className="font-mono">{Math.round(d.netDiscountPct * 100) / 100}%</span></div>
-        )}
-      </div>
-
-      <div className="grid grid-cols-2 gap-2">
-        {col('Weekly', frequency === 'weekly', 'weekly', plan.weekly, m.weekly.perCut)}
-        {col('Biweekly', frequency === 'biweekly', 'biweekly', plan.biweekly, m.biweekly.perCut)}
-      </div>
-
-      <div className="flex items-center justify-between text-[12px] text-slate-500">
-        <span>{plan.remainingInstalments} remaining instalment{plan.remainingInstalments === 1 ? '' : 's'} · deposit replaces the signup-month bill</span>
-      </div>
-      {anyDepositNeg && (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 p-2.5 text-[12px] font-bold text-amber-800 flex items-start gap-1.5">
-          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>Instalments exceed the prorated total — check the start date with the office.</span>
-        </div>
-      )}
-
-      {/* Full-price build-up (the anchor) — how the full seasonal price is made. */}
-      <div className="space-y-0.5 text-[12px] text-slate-500 border-t border-slate-100 pt-2">
-        <div className="font-black uppercase tracking-widest text-[10px] text-slate-400">Full seasonal build-up</div>
-        <Row label="Tier base (weekly)" value={money(m.weeklyBase)} />
-        {m.extras.pushMow > 0 && <Row label="Push mow only" value={money(m.extras.pushMow)} />}
-        {m.extras.veryHilly > 0 && <Row label="Very hilly" value={money(m.extras.veryHilly)} />}
-        {m.extras.clutter > 0 && <Row label="Clutter" value={money(m.extras.clutter)} />}
-        {m.travel.weekly > 0 && <Row label={`Travel · ${m.travel.label}`} value={money(m.travel.weekly)} />}
-        <Row label={`Weekly / biweekly full (×${config.BIWEEKLY_RATIO})`} value={`${money(m.weeklyTotal)} / ${money(m.biweeklyTotal)}`} />
+  const billCol = (title: string, fp: typeof plan.weekly) => (
+    <div className="rounded-xl border border-slate-200 p-3">
+      <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Billing · {fp.instalments} cycle{fp.instalments === 1 ? '' : 's'} left · {title}</div>
+      <div className="mt-1.5 space-y-0.5 text-[12px]">
+        <Row label="Initial deposit (on approval)" value={money(fp.deposit)} />
+        {overgrown && <Row label={`Overgrown catch-up (${d.overgrownLabel})`} value={money(fp.catchUpCharge)} />}
+        {fp.billingDates.map(bd => <Row key={bd} label={fmtMD(bd)} value={money(fp.monthly)} />)}
+        <div className="flex justify-between border-t border-slate-200 pt-1 mt-1 font-black text-slate-800"><span>Total</span><span className="font-mono">{money(fp.deposit + fp.catchUpCharge + fp.instalments * fp.monthly)}</span></div>
       </div>
     </div>
+  );
+
+  return (
+    <>
+      {/* Quote cards + shared breakdown */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
+        <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Mowing · {m.tierLabel}</div>
+        <div className="grid grid-cols-2 gap-2">
+          {card('Weekly', frequency === 'weekly', 'weekly', plan.weekly)}
+          {card('Biweekly', frequency === 'biweekly', 'biweekly', plan.biweekly)}
+        </div>
+        {/* Shared breakdown — once, not per card. */}
+        <div className="space-y-0.5 text-[12px] text-slate-600 border-t border-slate-100 pt-2">
+          <Row label="Tier base (weekly)" value={money(m.weeklyBase)} />
+          {m.extras.pushMow > 0 && <Row label="Push mow only" value={money(m.extras.pushMow)} />}
+          {m.extras.veryHilly > 0 && <Row label="Very hilly" value={money(m.extras.veryHilly)} />}
+          {m.extras.clutter > 0 && <Row label="Clutter" value={money(m.extras.clutter)} />}
+          {m.travel.perVisit > 0 && <Row label={`Travel · ${m.travel.label}`} value={`$${m.travel.perVisit}/visit · ${both(money(m.travel.weeklySeason), money(m.travel.biweeklySeason))}`} />}
+          <Row label={`Season discount (week ${d.elapsedWeeks})`} value={`${d.seasonDiscountPct}%`} />
+          {overgrown && <Row label={`Overgrown catch-up (${d.overgrownLabel})`} value={both(money(plan.weekly.catchUpCharge), money(plan.biweekly.catchUpCharge))} />}
+          <Row label="BH per visit" value={both(bn(plan.weekly.bhPerVisit), bn(plan.biweekly.bhPerVisit))} />
+          {overgrown && <Row label="First-visit BH" value={both(bn(plan.weekly.firstVisitBH), bn(plan.biweekly.firstVisitBH))} />}
+        </div>
+      </div>
+
+      {/* Billing — dated schedule, per frequency side by side */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+        <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">Billing schedule</div>
+        <div className="grid grid-cols-2 gap-2">
+          {billCol('Weekly', plan.weekly)}
+          {billCol('Biweekly', plan.biweekly)}
+        </div>
+      </div>
+
+      {/* Operations — crew-facing */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+        <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Operations</div>
+        <div className="space-y-0.5 text-[12px] text-slate-600">
+          <Row label="Cuts left" value={both(plan.weekly.cutsLeft, plan.biweekly.cutsLeft)} />
+          <Row label="BH per visit" value={both(bn(plan.weekly.bhPerVisit), bn(plan.biweekly.bhPerVisit))} />
+          {overgrown && <Row label="First-visit BH" value={both(bn(plan.weekly.firstVisitBH), bn(plan.biweekly.firstVisitBH))} />}
+        </div>
+      </div>
+    </>
   );
 }
 

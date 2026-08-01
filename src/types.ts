@@ -1269,14 +1269,14 @@ export interface LawnQuote {
   // quotes predate this and resolve against their stamped config as before. ──
   startDate?: string;
   elapsedWeeks?: number;
-  baseDiscountPct?: number;
+  seasonDiscountPct?: number;        // never negative — no surcharge
   overgrownKey?: string;
   overgrownMultiplier?: number;
-  finalDiscountPct?: number;         // net (may be negative = surcharge)
-  isSurcharge?: boolean;
-  remainingInstalments?: number;
-  weeklyProrated?: number; weeklyDeposit?: number; weeklyBhPerVisit?: number; weeklyFirstVisitBH?: number;
-  biweeklyProrated?: number; biweeklyDeposit?: number; biweeklyBhPerVisit?: number; biweeklyFirstVisitBH?: number;
+  catchUpPct?: number;               // (mult−1)×DISCOUNT_PER_WEEK — billed separately
+  weeklyProrated?: number; weeklyInstalments?: number; weeklyDeposit?: number;
+  weeklyCatchUp?: number; weeklyFirstInvoice?: number; weeklyCutsLeft?: number; weeklyBhPerVisit?: number; weeklyFirstVisitBH?: number;
+  biweeklyProrated?: number; biweeklyInstalments?: number; biweeklyDeposit?: number;
+  biweeklyCatchUp?: number; biweeklyFirstInvoice?: number; biweeklyCutsLeft?: number; biweeklyBhPerVisit?: number; biweeklyFirstVisitBH?: number;
   pricingConfigVersion: string;
   quotedBy?: { email: string; name: string };
   quotedAt?: number;
