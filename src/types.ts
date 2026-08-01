@@ -1181,7 +1181,12 @@ export interface SnowQuote {
   premium: boolean;
   busyRoad: boolean;
   danger: number;
-  total: number | null;         // null when custom
+  total: number | null;         // STANDARD total; null when custom
+  // Premium total (Standard + config.PREMIUM); null when custom. Added when
+  // Standard + Premium became always-shown side by side. Older quotes predate
+  // this field — the other total is derived from the stamped config version and
+  // old records are never rewritten.
+  premiumTotal?: number | null;
   isCustom: boolean;
   pricingConfigVersion: string; // snapshot of the config that priced this quote
   quotedBy?: { email: string; name: string };

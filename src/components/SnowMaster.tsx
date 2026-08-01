@@ -62,8 +62,10 @@ export default function SnowMaster({
   }, [configs]);
 
   // ── Traced shape + inputs ────────────────────────────────────────────────
+  // Premium is no longer a toggle — Standard and Premium are shown side by side,
+  // always. Premium = Standard + config.PREMIUM. So the live price is computed
+  // WITHOUT premium; the Premium column derives from it.
   const [grid, setGrid] = useState<number[][]>(() => initial?.grid?.map(r => [...r]) || emptyGrid());
-  const [premium, setPremium] = useState(!!initial?.premium);
   const [busyRoad, setBusyRoad] = useState(!!initial?.busyRoad);
   const [danger, setDanger] = useState(initial?.danger || 0);
   const [loadedId, setLoadedId] = useState<string | null>(null);
@@ -80,10 +82,19 @@ export default function SnowMaster({
   // required; it's just there for anyone who wants to find a shape at renewal.
   const [name, setName] = useState('');
 
+  // Standard price (no premium). The Premium column adds config.PREMIUM on top.
   const price = useMemo<SnowPrice | null>(
-    () => priceSnow(grid, { premium, busyRoad, danger }, viewConfig, viewVersion),
-    [grid, premium, busyRoad, danger, viewConfig, viewVersion],
+    () => priceSnow(grid, { premium: false, busyRoad, danger }, viewConfig, viewVersion),
+    [grid, busyRoad, danger, viewConfig, viewVersion],
   );
+  const premiumAdd = viewConfig.PREMIUM;
+  // Standard vs Premium totals (non-custom) / floors (custom). Derived from the
+  // one Standard price + the version's PREMIUM value, so both respect the
+  // loaded quote's stamped config.
+  const stdTotal = price && !price.isCustom ? price.total! : null;
+  const premTotal = stdTotal != null ? stdTotal + premiumAdd : null;
+  const stdFloor = price && price.isCustom ? price.floor! : null;
+  const premFloor = stdFloor != null ? stdFloor + premiumAdd : null;
 
   // Tap cycles a cell: empty → open → drag → empty. (Tap-cycle, not double-tap.)
   // Any edit marks the trace dirty → prices at the ACTIVE (current) version.
@@ -91,13 +102,12 @@ export default function SnowMaster({
     setDirty(true);
     setGrid(g => g.map((row, i) => i === r ? row.map((v, j) => j === c ? (v + 1) % 3 : v) : row));
   };
-  const editPremium = () => { setDirty(true); setPremium(p => !p); };
   const editBusyRoad = () => { setDirty(true); setBusyRoad(b => !b); };
   const editDanger = (d: number) => { setDirty(true); setDanger(d); };
 
   const clearAll = () => {
     if (price && !window.confirm('Clear the driveway and all inputs?')) return;
-    setGrid(emptyGrid()); setPremium(false); setBusyRoad(false); setDanger(0);
+    setGrid(emptyGrid()); setBusyRoad(false); setDanger(0);
     setLoadedId(null); setName(''); setLoadedVersion(null); setDirty(false);
   };
 
@@ -113,8 +123,11 @@ export default function SnowMaster({
       grid: grid.map(r => [...r]),
       lanes: price.lanes, depth: price.depth, cars: price.cars, dragCount: price.dragCount,
       tier: price.tier, basePrice: price.basePrice,
-      premium, busyRoad, danger,
-      total: price.total, isCustom: price.isCustom,
+      // Premium is no longer a toggle: the Standard price is the base, and BOTH
+      // totals are recorded. `total` keeps its meaning (Standard total / null for
+      // custom); `premiumTotal` is new. `premium: false` since Standard is base.
+      premium: false, busyRoad, danger,
+      total: stdTotal, premiumTotal: premTotal, isCustom: price.isCustom,
       pricingConfigVersion: viewVersion,
       quotedBy: currentUser, quotedAt: Date.now(),
     };
@@ -124,7 +137,7 @@ export default function SnowMaster({
 
   const load = (q: SnowQuote) => {
     setGrid((q.grid && q.grid.length ? q.grid.map(r => [...r]) : emptyGrid()));
-    setPremium(!!q.premium); setBusyRoad(!!q.busyRoad); setDanger(q.danger || 0);
+    setBusyRoad(!!q.busyRoad); setDanger(q.danger || 0);
     setLoadedId(q.id); setName(q.name || '');
     setLoadedVersion(q.pricingConfigVersion || 'snow-v1'); setDirty(false);
     setSub('quote');
@@ -193,9 +206,9 @@ export default function SnowMaster({
               <div className="text-center text-[10px] font-black uppercase tracking-widest text-slate-400 mt-1">Street</div>
             </div>
 
-            {/* Inputs */}
+            {/* Inputs — Premium is no longer here; it's shown as its own column
+                in the readout, always, so it can be quoted without a tap. */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
-              <Toggle label="Premium" sub="Premium service" on={premium} onClick={editPremium} />
               <Toggle label="Busy road" sub="Main-road frontage" on={busyRoad} onClick={editBusyRoad} />
               <div>
                 <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Danger charge</div>
@@ -219,7 +232,8 @@ export default function SnowMaster({
 
           {/* ── RIGHT: live price + breakdown ─────────────────────────────── */}
           <div className="space-y-4">
-            <PriceReadout price={price} config={viewConfig} />
+            <PriceReadout price={price} premiumAdd={premiumAdd}
+              stdTotal={stdTotal} premTotal={premTotal} stdFloor={stdFloor} premFloor={premFloor} />
 
             {price && (
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
@@ -231,16 +245,20 @@ export default function SnowMaster({
                   {chip('Drag', price.dragCount)}
                 </div>
 
+                {/* Breakdown: shared lines once, then Standard + Premium totals. */}
                 <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 pt-1">Breakdown</div>
                 <div className="space-y-1 text-sm">
                   <Row label={price.isCustom ? `Custom floor` : `Tier ${price.tier} base`} value={money(price.basePrice)} />
                   {price.addBreakdown.drag > 0 && <Row label={`Drag × ${price.dragCount} @ $${viewConfig.DRAG_RATE}`} value={money(price.addBreakdown.drag)} />}
-                  {price.addBreakdown.premium > 0 && <Row label="Premium" value={money(price.addBreakdown.premium)} />}
                   {price.addBreakdown.busyRoad > 0 && <Row label="Busy road" value={money(price.addBreakdown.busyRoad)} />}
                   {price.addBreakdown.danger > 0 && <Row label="Danger" value={money(price.addBreakdown.danger)} />}
-                  <div className="flex justify-between border-t-2 border-slate-200 pt-1.5 mt-1 font-black text-slate-900">
-                    <span className="uppercase tracking-widest text-[12px] text-slate-500 self-center">{price.isCustom ? 'Minimum (floor)' : 'Season total'}</span>
-                    <span className="text-lg font-mono">{money(price.isCustom ? price.floor! : price.total!)}</span>
+                  <div className="flex justify-between border-t-2 border-slate-200 pt-1.5 mt-1 font-bold text-slate-700">
+                    <span className="uppercase tracking-widest text-[12px] text-slate-500 self-center">{price.isCustom ? 'Standard floor' : 'Standard total'}</span>
+                    <span className="text-base font-mono">{money(price.isCustom ? stdFloor! : stdTotal!)}</span>
+                  </div>
+                  <div className="flex justify-between font-black text-slate-900">
+                    <span className="uppercase tracking-widest text-[12px] self-center" style={{ color: GREEN }}>{price.isCustom ? 'Premium floor' : 'Premium total'} <span className="text-slate-400 font-bold normal-case tracking-normal">(+{money(premiumAdd)})</span></span>
+                    <span className="text-lg font-mono">{money(price.isCustom ? premFloor! : premTotal!)}</span>
                   </div>
                 </div>
               </div>
@@ -286,8 +304,11 @@ export default function SnowMaster({
   );
 }
 
-// ── Live price readout ──────────────────────────────────────────────────────
-function PriceReadout({ price, config }: { price: SnowPrice | null; config: SnowConfig }) {
+// ── Live price readout — Standard + Premium always shown side by side ────────
+function PriceReadout({ price, premiumAdd, stdTotal, premTotal, stdFloor, premFloor }: {
+  price: SnowPrice | null; premiumAdd: number;
+  stdTotal: number | null; premTotal: number | null; stdFloor: number | null; premFloor: number | null;
+}) {
   if (!price) {
     return (
       <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white p-6 text-center">
@@ -296,22 +317,43 @@ function PriceReadout({ price, config }: { price: SnowPrice | null; config: Snow
       </div>
     );
   }
+
   if (price.isCustom) {
+    // Both floors, adds applied to each. Two compact columns, never stacked.
     return (
-      <div className="rounded-2xl border-2 p-5 shadow-sm" style={{ backgroundColor: '#fffbeb', borderColor: '#f59e0b' }}>
+      <div className="rounded-2xl border-2 p-4 shadow-sm" style={{ backgroundColor: '#fffbeb', borderColor: '#f59e0b' }}>
         <div className="flex items-center gap-2 text-amber-800 font-black uppercase tracking-widest text-[12px]">
           <AlertTriangle className="w-4 h-4" /> Custom — James quotes
         </div>
-        <div className="mt-2 text-4xl font-black text-amber-900 font-mono">{money(price.floor!)}<span className="text-base font-bold text-amber-700"> min</span></div>
-        <div className="text-[12px] text-amber-800 mt-1">Floor {money(config.CUSTOM_FLOOR)} + adds {money(price.adds)} — a minimum.</div>
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          <div className="rounded-xl bg-white/70 border border-amber-200 p-3">
+            <div className="text-[10px] font-black uppercase tracking-widest text-amber-700">Standard floor</div>
+            <div className="text-2xl md:text-3xl font-black text-amber-900 font-mono leading-tight">{money(stdFloor!)}<span className="text-xs font-bold text-amber-600"> min</span></div>
+          </div>
+          <div className="rounded-xl p-3 text-white shadow-sm" style={{ backgroundColor: '#92400e', border: `2px solid ${GOLD}` }}>
+            <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: GOLD }}>Premium floor</div>
+            <div className="text-2xl md:text-3xl font-black font-mono leading-tight">{money(premFloor!)}<span className="text-xs font-bold text-amber-200"> min</span></div>
+            <div className="text-[10px] font-bold text-amber-200">+{money(premiumAdd)} premium</div>
+          </div>
+        </div>
         <div className="text-[12px] font-black text-amber-900 mt-2">Do not quote below the floor without Marco.</div>
       </div>
     );
   }
+
+  // Standard vs Premium — two columns. Premium reads as the upsell (solid green,
+  // gold accent, slightly larger), Standard as a lighter card. Both always shown.
   return (
-    <div className="rounded-2xl p-5 shadow-sm text-white" style={{ backgroundColor: GREEN }}>
-      <div className="text-[11px] font-black uppercase tracking-widest" style={{ color: GOLD }}>Season price · Tier {price.tier}</div>
-      <div className="text-5xl font-black font-mono mt-1">{money(price.total!)}</div>
+    <div className="grid grid-cols-2 gap-2">
+      <div className="rounded-2xl p-4 shadow-sm border" style={{ backgroundColor: '#eef4f0', borderColor: '#d5e2da' }}>
+        <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: GREEN }}>Standard · Tier {price.tier}</div>
+        <div className="text-3xl md:text-4xl font-black font-mono mt-1 leading-none" style={{ color: GREEN }}>{money(stdTotal!)}</div>
+      </div>
+      <div className="rounded-2xl p-4 shadow-sm text-white" style={{ backgroundColor: GREEN, border: `2px solid ${GOLD}` }}>
+        <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: GOLD }}>Premium · Tier {price.tier}</div>
+        <div className="text-4xl md:text-5xl font-black font-mono mt-1 leading-none">{money(premTotal!)}</div>
+        <div className="text-[10px] font-bold mt-0.5" style={{ color: GOLD }}>+{money(premiumAdd)} vs standard</div>
+      </div>
     </div>
   );
 }
