@@ -1190,6 +1190,33 @@ export interface SnowQuote {
   updatedAt?: number;
 }
 
+// ── SalesMaster · Snow rate config — the editable pricing NUMBERS, stored as
+// IMMUTABLE VERSIONS (never overwritten in place). Each save appends a new
+// version doc; quotes stamp the version they were priced under so a historical
+// quote always resolves to its original prices. v1 is the hard-coded default in
+// snowPricing.ts and is never written here. Super-admin only (enforced in the
+// rate-sheet screen, the write handlers, and firestore.rules).
+// Lives in a TOP-LEVEL `snowRateConfigs` collection (outside artifacts/**) so a
+// dedicated rule can restrict WRITES to the super-admin — the artifacts/** rule
+// grants write to every authorized user and cannot be narrowed. The shape below
+// mirrors SnowConfig in src/lib/snowPricing.ts (the single source of truth).
+export interface SnowConfigShape {
+  TIER_1: number; TIER_2: number; TIER_3: number; CUSTOM_FLOOR: number;
+  PREMIUM: number; BUSY_ROAD: number; DRAG_RATE: number;
+  DRAG_COUNTS_TOWARD_SIZE: boolean; DANGER_OPTIONS: number[];
+}
+export interface SnowRateAuditChange { field: string; key: string; from: string; to: string }
+export interface SnowRateConfigVersion {
+  id: string;                       // = version, e.g. 'snow-v2'
+  version: string;                  // 'snow-v2'
+  config: SnowConfigShape;          // the full config snapshot for this version
+  changes: SnowRateAuditChange[];   // field-level diff vs the previous version
+  note?: string;                    // e.g. "Reverted to snow-v1"
+  revertedFrom?: string;            // set when this version was created by a revert
+  createdBy?: { email: string; name: string };
+  createdAt?: number;
+}
+
 export type BulletinAudienceRole = 'admin' | 'manager' | 'foreman' | 'mechanic' | 'worker';
 
 // TaskMaster — admin-assigned tasks for employees. Distinct from
@@ -1553,6 +1580,7 @@ export interface AppData {
   roleMasterPolicyRequests?: Record<string, RoleMasterPolicyRequest>;
   salesMasterQuotes?: Record<string, SalesQuote>;
   snowQuotes?: Record<string, SnowQuote>;
+  snowRateConfigs?: Record<string, SnowRateConfigVersion>;
   // ── ContractingMaster (Palermo's) — namespaced subcollections, overlaid
   // live. ZERO contact with performance/BH/bonus/pay. Never in the main doc.
   contractingProjects?: Record<string, ContractingProject>;

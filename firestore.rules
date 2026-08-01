@@ -27,5 +27,17 @@ service cloud.firestore {
     match /artifacts/{document=**} {
       allow read, write: if isAuthorized() || isSuperAdmin();
     }
+
+    // Snow rate configs — immutable pricing-config versions. Kept OUTSIDE
+    // artifacts/** on purpose: the artifacts/** rule grants write to every
+    // authorized user and OR-semantics mean it can't be narrowed, so the rate
+    // config lives here where WRITES can be locked to the super-admin.
+    // Read stays open to authorized users so estimators price at current rates
+    // (the numbers are the same ones shown on every quote). The rate-sheet
+    // SCREEN and the write path are super-admin only.
+    match /snowRateConfigs/{version} {
+      allow read: if isAuthorized() || isSuperAdmin();
+      allow write: if isSuperAdmin();
+    }
   }
 }

@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
-import { Snowflake, RotateCcw, Save, FolderOpen, Trash2, Search, AlertTriangle, BarChart3, Car } from 'lucide-react';
-import { SnowQuote } from '../types';
+import { Snowflake, RotateCcw, Save, FolderOpen, Trash2, Search, AlertTriangle, BarChart3, Car, SlidersHorizontal } from 'lucide-react';
+import { SnowQuote, SnowRateConfigVersion } from '../types';
 import {
-  priceSnow, SNOW_PRICING_CONFIG, SNOW_PRICING_CONFIG_VERSION, SnowPrice,
+  priceSnow, SnowConfig, SNOW_CONFIG_V1, SnowPrice, resolveSnowConfig,
 } from '../lib/snowPricing';
+import SnowRateSheet from './SnowRateSheet';
 
 // House style.
 const GREEN = '#1c4634';
@@ -15,16 +16,18 @@ const emptyGrid = (): number[][] => Array.from({ length: ROWS }, () => Array(COL
 const money = (n: number) => `$${(Number(n) || 0).toLocaleString('en-US')}`;
 const fmtWhen = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 // Effective quoted price: the season total, or — for a custom quote whose total
-// is null — the floor (base + add-ons), so the report can count it.
-const addsOf = (q: SnowQuote): number =>
-  (q.dragCount || 0) * SNOW_PRICING_CONFIG.DRAG_RATE +
-  (q.premium ? SNOW_PRICING_CONFIG.PREMIUM : 0) +
-  (q.busyRoad ? SNOW_PRICING_CONFIG.BUSY_ROAD : 0) +
+// is null — the floor (base + add-ons), so the report can count it. Add-ons are
+// resolved against the QUOTE'S OWN config version, never the current one, so a
+// historical quote never reprices.
+const addsOf = (q: SnowQuote, cfg: SnowConfig): number =>
+  (q.dragCount || 0) * cfg.DRAG_RATE +
+  (q.premium ? cfg.PREMIUM : 0) +
+  (q.busyRoad ? cfg.BUSY_ROAD : 0) +
   (q.danger || 0);
-const priceOf = (q: SnowQuote): number => q.total ?? (q.basePrice + addsOf(q));
+const priceOf = (q: SnowQuote, cfg: SnowConfig): number => q.total ?? (q.basePrice + addsOf(q, cfg));
 // Label an unnamed quote by its shape + price, e.g. "1×3 · 3 car · Tier 1 · $599".
-const shapeLabel = (q: SnowQuote): string =>
-  `${q.lanes}×${q.depth} · ${q.cars} car · ${q.isCustom ? 'Custom' : 'Tier ' + q.tier} · ${q.isCustom ? 'min ' : ''}${money(priceOf(q))}`;
+const shapeLabel = (q: SnowQuote, cfg: SnowConfig): string =>
+  `${q.lanes}×${q.depth} · ${q.cars} car · ${q.isCustom ? 'Custom' : 'Tier ' + q.tier} · ${q.isCustom ? 'min ' : ''}${money(priceOf(q, cfg))}`;
 
 interface Props {
   quotes: Record<string, SnowQuote>;
@@ -32,12 +35,31 @@ interface Props {
   isAdmin: boolean;
   onSave: (q: SnowQuote) => void;
   onDelete: (id: string) => void;
+  // Pricing config (super-admin editable, versioned). Defaults keep the preview
+  // harness and any un-wired caller working against the v1 hard-coded numbers.
+  isSuperAdmin?: boolean;
+  config?: SnowConfig;                                 // active config
+  activeVersion?: string;                              // active version id
+  configs?: Record<string, SnowRateConfigVersion>;     // all stored versions
+  onSaveConfig?: (next: SnowConfig) => Promise<boolean>;
+  onRevertConfig?: (versionId: string) => Promise<boolean>;
   // Optional initial seed for the tracer (used by previews / future deep-links).
   initial?: { grid?: number[][]; premium?: boolean; busyRoad?: boolean; danger?: number };
 }
 
-export default function SnowMaster({ quotes, currentUser, isAdmin, onSave, onDelete, initial }: Props) {
-  const [sub, setSub] = useState<'quote' | 'saved' | 'report'>('quote');
+export default function SnowMaster({
+  quotes, currentUser, isAdmin, onSave, onDelete, initial,
+  isSuperAdmin = false, config = SNOW_CONFIG_V1, activeVersion = 'snow-v1', configs = {},
+  onSaveConfig, onRevertConfig,
+}: Props) {
+  const [sub, setSub] = useState<'quote' | 'saved' | 'report' | 'rates'>('quote');
+
+  // Config version map for resolving any quote's original prices.
+  const versionMap = useMemo(() => {
+    const m: Record<string, { version: string; config: SnowConfig }> = {};
+    for (const v of Object.values(configs)) m[v.id] = { version: v.version, config: v.config as SnowConfig };
+    return m;
+  }, [configs]);
 
   // ── Traced shape + inputs ────────────────────────────────────────────────
   const [grid, setGrid] = useState<number[][]>(() => initial?.grid?.map(r => [...r]) || emptyGrid());
@@ -45,28 +67,43 @@ export default function SnowMaster({ quotes, currentUser, isAdmin, onSave, onDel
   const [busyRoad, setBusyRoad] = useState(!!initial?.busyRoad);
   const [danger, setDanger] = useState(initial?.danger || 0);
   const [loadedId, setLoadedId] = useState<string | null>(null);
+  // Version-safe display: a freshly-loaded, UN-edited quote resolves against the
+  // version it was quoted under (loadedVersion); a fresh trace or any edit uses
+  // the ACTIVE version (re-quoting at current rates). This is what stops a saved
+  // quote from silently repricing when rates change.
+  const [loadedVersion, setLoadedVersion] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const viewVersion = (loadedVersion && !dirty) ? loadedVersion : activeVersion;
+  const viewConfig = resolveSnowConfig(viewVersion, versionMap);
   // Optional label. The Snow tab only FINDS a price — the real quote is written
   // in Jobber. A saved record exists to feed the report, so the name is never
   // required; it's just there for anyone who wants to find a shape at renewal.
   const [name, setName] = useState('');
 
   const price = useMemo<SnowPrice | null>(
-    () => priceSnow(grid, { premium, busyRoad, danger }),
-    [grid, premium, busyRoad, danger],
+    () => priceSnow(grid, { premium, busyRoad, danger }, viewConfig, viewVersion),
+    [grid, premium, busyRoad, danger, viewConfig, viewVersion],
   );
 
   // Tap cycles a cell: empty → open → drag → empty. (Tap-cycle, not double-tap.)
-  const cycle = (r: number, c: number) =>
+  // Any edit marks the trace dirty → prices at the ACTIVE (current) version.
+  const cycle = (r: number, c: number) => {
+    setDirty(true);
     setGrid(g => g.map((row, i) => i === r ? row.map((v, j) => j === c ? (v + 1) % 3 : v) : row));
+  };
+  const editPremium = () => { setDirty(true); setPremium(p => !p); };
+  const editBusyRoad = () => { setDirty(true); setBusyRoad(b => !b); };
+  const editDanger = (d: number) => { setDirty(true); setDanger(d); };
 
   const clearAll = () => {
     if (price && !window.confirm('Clear the driveway and all inputs?')) return;
     setGrid(emptyGrid()); setPremium(false); setBusyRoad(false); setDanger(0);
-    setLoadedId(null); setName('');
+    setLoadedId(null); setName(''); setLoadedVersion(null); setDirty(false);
   };
 
   // One tap, no blocking dialog — the report is only useful if estimators
-  // actually save, so there's zero friction. Name is optional.
+  // actually save, so there's zero friction. Name is optional. The quote stamps
+  // the version it was priced under (viewVersion).
   const save = () => {
     if (!price) return;
     const label = name.trim();
@@ -78,17 +115,18 @@ export default function SnowMaster({ quotes, currentUser, isAdmin, onSave, onDel
       tier: price.tier, basePrice: price.basePrice,
       premium, busyRoad, danger,
       total: price.total, isCustom: price.isCustom,
-      pricingConfigVersion: SNOW_PRICING_CONFIG_VERSION,
+      pricingConfigVersion: viewVersion,
       quotedBy: currentUser, quotedAt: Date.now(),
     };
     onSave(q);
-    setLoadedId(id);
+    setLoadedId(id); setLoadedVersion(viewVersion); setDirty(false);
   };
 
   const load = (q: SnowQuote) => {
     setGrid((q.grid && q.grid.length ? q.grid.map(r => [...r]) : emptyGrid()));
     setPremium(!!q.premium); setBusyRoad(!!q.busyRoad); setDanger(q.danger || 0);
     setLoadedId(q.id); setName(q.name || '');
+    setLoadedVersion(q.pricingConfigVersion || 'snow-v1'); setDirty(false);
     setSub('quote');
   };
 
@@ -101,13 +139,14 @@ export default function SnowMaster({ quotes, currentUser, isAdmin, onSave, onDel
 
   return (
     <div className="space-y-4">
-      {/* Sub-tabs */}
+      {/* Sub-tabs — Rate sheet is super-admin only (also hard-guarded in the
+          component + write handlers + firestore.rules). */}
       <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm w-fit">
-        {(['quote', 'saved', 'report'] as const).map(t => (
+        {(['quote', 'saved', 'report', ...(isSuperAdmin ? ['rates'] as const : [])] as const).map(t => (
           <button key={t} onClick={() => setSub(t)}
-            className={`px-3 py-1.5 text-sm font-bold rounded-md capitalize ${sub === t ? 'text-white' : 'text-gray-500'}`}
+            className={`px-3 py-1.5 text-sm font-bold rounded-md inline-flex items-center gap-1 ${sub === t ? 'text-white' : 'text-gray-500'}`}
             style={sub === t ? { backgroundColor: GREEN } : undefined}>
-            {t === 'quote' ? 'Quote' : t === 'saved' ? 'Saved' : 'Report'}
+            {t === 'quote' ? 'Quote' : t === 'saved' ? 'Saved' : t === 'report' ? 'Report' : <><SlidersHorizontal className="w-3.5 h-3.5" /> Rate sheet</>}
           </button>
         ))}
       </div>
@@ -120,6 +159,13 @@ export default function SnowMaster({ quotes, currentUser, isAdmin, onSave, onDel
               <div className="rounded-lg px-3 py-1.5 text-[12px] font-bold flex items-center gap-1.5"
                 style={{ backgroundColor: '#eef4f0', color: GREEN }}>
                 <FolderOpen className="w-3.5 h-3.5" /> Editing saved shape{name.trim() ? `: ${name.trim()}` : ''}
+              </div>
+            )}
+            {/* Historical view: an un-edited loaded quote is priced at ITS
+                version, not today's. Editing re-quotes at current rates. */}
+            {loadedVersion && !dirty && loadedVersion !== activeVersion && (
+              <div className="rounded-lg px-3 py-1.5 text-[12px] font-bold flex items-center gap-1.5 bg-amber-50 text-amber-800 border border-amber-200">
+                <AlertTriangle className="w-3.5 h-3.5" /> Showing prices as quoted ({loadedVersion}). Current rates are {activeVersion} — edit to re-quote.
               </div>
             )}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
@@ -149,13 +195,13 @@ export default function SnowMaster({ quotes, currentUser, isAdmin, onSave, onDel
 
             {/* Inputs */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
-              <Toggle label="Premium" sub="Premium service" on={premium} onClick={() => setPremium(p => !p)} />
-              <Toggle label="Busy road" sub="Main-road frontage" on={busyRoad} onClick={() => setBusyRoad(b => !b)} />
+              <Toggle label="Premium" sub="Premium service" on={premium} onClick={editPremium} />
+              <Toggle label="Busy road" sub="Main-road frontage" on={busyRoad} onClick={editBusyRoad} />
               <div>
                 <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Danger charge</div>
                 <div className="grid grid-cols-4 gap-2">
-                  {SNOW_PRICING_CONFIG.DANGER_OPTIONS.map(d => (
-                    <button key={d} onClick={() => setDanger(d)}
+                  {viewConfig.DANGER_OPTIONS.map(d => (
+                    <button key={d} onClick={() => editDanger(d)}
                       className="min-h-[44px] rounded-xl text-sm font-black border transition-colors"
                       style={danger === d
                         ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN }
@@ -173,7 +219,7 @@ export default function SnowMaster({ quotes, currentUser, isAdmin, onSave, onDel
 
           {/* ── RIGHT: live price + breakdown ─────────────────────────────── */}
           <div className="space-y-4">
-            <PriceReadout price={price} />
+            <PriceReadout price={price} config={viewConfig} />
 
             {price && (
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
@@ -188,7 +234,7 @@ export default function SnowMaster({ quotes, currentUser, isAdmin, onSave, onDel
                 <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 pt-1">Breakdown</div>
                 <div className="space-y-1 text-sm">
                   <Row label={price.isCustom ? `Custom floor` : `Tier ${price.tier} base`} value={money(price.basePrice)} />
-                  {price.addBreakdown.drag > 0 && <Row label={`Drag × ${price.dragCount} @ $${SNOW_PRICING_CONFIG.DRAG_RATE}`} value={money(price.addBreakdown.drag)} />}
+                  {price.addBreakdown.drag > 0 && <Row label={`Drag × ${price.dragCount} @ $${viewConfig.DRAG_RATE}`} value={money(price.addBreakdown.drag)} />}
                   {price.addBreakdown.premium > 0 && <Row label="Premium" value={money(price.addBreakdown.premium)} />}
                   {price.addBreakdown.busyRoad > 0 && <Row label="Busy road" value={money(price.addBreakdown.busyRoad)} />}
                   {price.addBreakdown.danger > 0 && <Row label="Danger" value={money(price.addBreakdown.danger)} />}
@@ -221,16 +267,27 @@ export default function SnowMaster({ quotes, currentUser, isAdmin, onSave, onDel
       )}
 
       {sub === 'saved' && (
-        <SavedSnowQuotes quotes={quotes} currentUser={currentUser} isAdmin={isAdmin} onOpen={load} onDelete={onDelete} />
+        <SavedSnowQuotes quotes={quotes} currentUser={currentUser} isAdmin={isAdmin} versionMap={versionMap} onOpen={load} onDelete={onDelete} />
       )}
 
-      {sub === 'report' && <SnowReport quotes={quotes} />}
+      {sub === 'report' && <SnowReport quotes={quotes} versionMap={versionMap} />}
+
+      {sub === 'rates' && (
+        <SnowRateSheet
+          isSuperAdmin={isSuperAdmin}
+          config={config}
+          activeVersion={activeVersion}
+          versions={configs}
+          onSave={onSaveConfig || (async () => false)}
+          onRevert={onRevertConfig || (async () => false)}
+        />
+      )}
     </div>
   );
 }
 
 // ── Live price readout ──────────────────────────────────────────────────────
-function PriceReadout({ price }: { price: SnowPrice | null }) {
+function PriceReadout({ price, config }: { price: SnowPrice | null; config: SnowConfig }) {
   if (!price) {
     return (
       <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white p-6 text-center">
@@ -246,7 +303,7 @@ function PriceReadout({ price }: { price: SnowPrice | null }) {
           <AlertTriangle className="w-4 h-4" /> Custom — James quotes
         </div>
         <div className="mt-2 text-4xl font-black text-amber-900 font-mono">{money(price.floor!)}<span className="text-base font-bold text-amber-700"> min</span></div>
-        <div className="text-[12px] text-amber-800 mt-1">Floor {money(SNOW_PRICING_CONFIG.CUSTOM_FLOOR)} + adds {money(price.adds)} — a minimum.</div>
+        <div className="text-[12px] text-amber-800 mt-1">Floor {money(config.CUSTOM_FLOOR)} + adds {money(price.adds)} — a minimum.</div>
         <div className="text-[12px] font-black text-amber-900 mt-2">Do not quote below the floor without Marco.</div>
       </div>
     );
@@ -279,8 +336,9 @@ function Toggle({ label, sub, on, onClick }: { label: string; sub: string; on: b
 }
 
 // ── Saved snow quotes ───────────────────────────────────────────────────────
-function SavedSnowQuotes({ quotes, currentUser, isAdmin, onOpen, onDelete }: {
+function SavedSnowQuotes({ quotes, currentUser, isAdmin, versionMap, onOpen, onDelete }: {
   quotes: Record<string, SnowQuote>; currentUser: { email: string; name: string }; isAdmin: boolean;
+  versionMap: Record<string, { version: string; config: SnowConfig }>;
   onOpen: (q: SnowQuote) => void; onDelete: (id: string) => void;
 }) {
   const [search, setSearch] = useState('');
@@ -305,7 +363,8 @@ function SavedSnowQuotes({ quotes, currentUser, isAdmin, onOpen, onDelete }: {
         <div className="space-y-2">
           {list.map(x => {
             const named = (x.name || '').trim();
-            const title = named || shapeLabel(x);
+            const cfg = resolveSnowConfig(x.pricingConfigVersion, versionMap);
+            const title = named || shapeLabel(x, cfg);
             return (
             <div key={x.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-3 flex items-center justify-between gap-3">
               <button onClick={() => onOpen(x)} className="min-w-0 text-left flex-1">
@@ -315,7 +374,7 @@ function SavedSnowQuotes({ quotes, currentUser, isAdmin, onOpen, onDelete }: {
                 {named && (
                   <div className="text-[12px] text-slate-500">
                     {x.isCustom
-                      ? <span className="font-mono font-bold text-amber-700">Custom · min {money(priceOf(x))}</span>
+                      ? <span className="font-mono font-bold text-amber-700">Custom · min {money(priceOf(x, cfg))}</span>
                       : <><span className="font-mono font-bold text-slate-700">{money(x.total || 0)}</span> · Tier {x.tier}</>}
                     {' '}· {x.lanes}×{x.depth} · {x.cars} cars{x.dragCount ? ` · ${x.dragCount} drag` : ''}
                   </div>
@@ -336,7 +395,7 @@ function SavedSnowQuotes({ quotes, currentUser, isAdmin, onOpen, onDelete }: {
 }
 
 // ── Report — the numbers the season model currently guesses at ──────────────
-function SnowReport({ quotes }: { quotes: Record<string, SnowQuote> }) {
+function SnowReport({ quotes, versionMap }: { quotes: Record<string, SnowQuote>; versionMap: Record<string, { version: string; config: SnowConfig }> }) {
   const stats = useMemo(() => {
     const all = Object.values(quotes);
     const n = all.length;
@@ -349,7 +408,7 @@ function SnowReport({ quotes }: { quotes: Record<string, SnowQuote> }) {
       if ((q.dragCount || 0) > 0) withDrag++;
       if (q.busyRoad) busy++;
       if ((q.danger || 0) > 0) danger++;
-      priceTotal += priceOf(q);
+      priceTotal += priceOf(q, resolveSnowConfig(q.pricingConfigVersion, versionMap));
     }
     return {
       n, tiers,
@@ -360,7 +419,7 @@ function SnowReport({ quotes }: { quotes: Record<string, SnowQuote> }) {
       customCount: tiers.custom,
       avgPrice: priceTotal / n,
     };
-  }, [quotes]);
+  }, [quotes, versionMap]);
 
   if (!stats) return <div className="text-center text-slate-400 py-8">No snow quotes yet — the report fills in as quotes are saved.</div>;
 

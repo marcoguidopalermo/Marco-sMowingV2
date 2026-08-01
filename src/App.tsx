@@ -23,7 +23,7 @@ import {
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary,
-  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, RoleTaskInstance,
+  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, RoleTaskInstance,
   ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
@@ -73,6 +73,9 @@ import { useStorageStats } from './components/ManageResourcesModal';
 import { useQuietNow } from './components/NotificationCenter';
 import { refreshPushToken, onForegroundMessage } from './lib/messaging';
 import { ratesOrDefault } from './lib/salesMaster';
+import {
+  SNOW_CONFIG_V1, SnowConfig, snowVersionId, snowVersionNum, activeSnowVersionId, resolveSnowConfig, diffSnowConfig,
+} from './lib/snowPricing';
 import RoleInstanceModal from './components/RoleInstanceModal';
 import RequestTimeOffModal, { type RequestTimeOffSubmit } from './components/RequestTimeOffModal';
 
@@ -216,6 +219,7 @@ export default function App() {
   const subRoleMasterPolicyRequestsRef = useRef<Record<string, RoleMasterPolicyRequest>>({});
   const subSalesMasterQuotesRef = useRef<Record<string, SalesQuote>>({});
   const subSnowQuotesRef = useRef<Record<string, SnowQuote>>({});
+  const subSnowRateConfigsRef = useRef<Record<string, SnowRateConfigVersion>>({});
   const subRoleTaskInstancesRef = useRef<Record<string, RoleTaskInstance>>({});
   // ContractingMaster (Palermo's) — namespaced subcollections, own tenant.
   const subContractingProjectsRef = useRef<Record<string, ContractingProject>>({});
@@ -904,6 +908,7 @@ export default function App() {
           roleMasterPolicyRequests: subRoleMasterPolicyRequestsRef.current,
           salesMasterQuotes: subSalesMasterQuotesRef.current,
           snowQuotes: subSnowQuotesRef.current,
+          snowRateConfigs: subSnowRateConfigsRef.current,
           roleTaskInstances: subRoleTaskInstancesRef.current,
           // ContractingMaster — overlaid from namespaced subcollections.
           contractingProjects: subContractingProjectsRef.current,
@@ -1189,6 +1194,18 @@ export default function App() {
     const u7 = mk('salesMasterQuotes', subSalesMasterQuotesRef, 'salesMasterQuotes');
     const u8 = mk('roleMasterPolicyRequests', subRoleMasterPolicyRequestsRef, 'roleMasterPolicyRequests');
     const u9 = mk('snowQuotes', subSnowQuotesRef, 'snowQuotes');
+    // Snow rate configs — TOP-LEVEL collection (outside artifacts/**) so a
+    // dedicated firestore rule can restrict WRITES to the super-admin (the
+    // artifacts/** rule grants write to any authorized user and can't be
+    // narrowed). Reads are allowed to authorized users so estimators price at
+    // current rates; if the read is ever denied/empty, pricing falls back to
+    // the v1 hard-coded defaults.
+    const u10 = onSnapshot(collection(db, 'snowRateConfigs'), (snap) => {
+      const map: Record<string, SnowRateConfigVersion> = {};
+      snap.forEach((d) => { const v = d.data() as SnowRateConfigVersion; if (v && v.id) map[v.id] = v; });
+      subSnowRateConfigsRef.current = map;
+      setAppData((prev) => ({ ...prev, snowRateConfigs: map }));
+    }, (err) => { console.error('snowRateConfigs listen error:', err); });
     // ContractingMaster (Palermo's) — namespaced subcollections.
     const c1 = mk('contractingProjects', subContractingProjectsRef, 'contractingProjects');
     const c2 = mk('contractingTimeEntries', subContractingTimeEntriesRef, 'contractingTimeEntries');
@@ -1198,7 +1215,7 @@ export default function App() {
     const c6 = mk('contractingShoppingList', subContractingShoppingListRef, 'contractingShoppingList');
     const c7 = mk('contractingPersonalItems', subContractingPersonalItemsRef, 'contractingPersonalItems');
     const c8 = mk('contractingPropertyDocs', subContractingPropertyDocsRef, 'contractingPropertyDocs');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); };
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); };
   }, [user]);
 
   useEffect(() => {
@@ -2271,6 +2288,36 @@ export default function App() {
     if (!isAdmin && !isAuthor) { showToastMsg(PERMISSION_DENIED); return; }
     await deleteDoc(doc(roleColl('snowQuotes'), id));
     showToastMsg('Snow quote deleted.');
+  };
+  // ── Snow rate config — SUPER-ADMIN ONLY. Immutable versions: every save
+  // appends a new snow-v{N} doc (never overwrites). The audit `changes` are the
+  // field-level diff vs the previous version. Writes are also enforced
+  // super-admin-only in firestore.rules; a non-super-admin's write is rejected.
+  const snowConfigMap = appData.snowRateConfigs || {};
+  const snowActiveVersion = activeSnowVersionId(snowConfigMap);
+  const snowActiveConfig = resolveSnowConfig(snowActiveVersion, snowConfigMap);
+  const commitSnowConfig = async (
+    nextConfig: SnowConfig, opts?: { revertedFrom?: string },
+  ): Promise<boolean> => {
+    if (!isSuperAdmin) { showToastMsg(PERMISSION_DENIED); return false; }
+    const changes = diffSnowConfig(snowActiveConfig, nextConfig);
+    if (!changes.length) { showToastMsg('No changes to save.'); return false; }
+    const nextNum = snowVersionNum(snowActiveVersion) + 1;
+    const id = snowVersionId(nextNum);
+    const rec: SnowRateConfigVersion = {
+      id, version: id, config: nextConfig, changes,
+      ...(opts?.revertedFrom ? { note: `Reverted to ${opts.revertedFrom}`, revertedFrom: opts.revertedFrom } : {}),
+      createdBy: { email: displayEmail, name: displayName },
+      createdAt: Date.now(),
+    };
+    await setDoc(doc(collection(db, 'snowRateConfigs'), id), cleanRM(rec));
+    showToastMsg(`Snow rates saved — now ${id}.`);
+    return true;
+  };
+  const saveSnowConfig = (nextConfig: SnowConfig) => commitSnowConfig(nextConfig);
+  const revertSnowConfig = (toVersionId: string) => {
+    const target = resolveSnowConfig(toVersionId, snowConfigMap);
+    return commitSnowConfig(target, { revertedFrom: toVersionId });
   };
   const setRoleMasterMaster = async (enabled: boolean) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
@@ -4945,6 +4992,12 @@ export default function App() {
           snowQuotes={appData.snowQuotes || {}}
           onSaveSnowQuote={saveSnowQuote}
           onDeleteSnowQuote={deleteSnowQuote}
+          isSuperAdmin={isSuperAdmin}
+          snowConfigs={snowConfigMap}
+          snowActiveVersion={snowActiveVersion}
+          snowActiveConfig={snowActiveConfig}
+          onSaveSnowConfig={saveSnowConfig}
+          onRevertSnowConfig={revertSnowConfig}
         />
       ) : currentView === 'contracting' ? (
         <ContractingMaster

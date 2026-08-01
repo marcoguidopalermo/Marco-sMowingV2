@@ -6,7 +6,8 @@
 // received to the right module.
 import { useState } from 'react';
 import { Calculator, Snowflake, Sprout } from 'lucide-react';
-import { SalesRates, SalesQuote, SnowQuote } from '../types';
+import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion } from '../types';
+import { SnowConfig } from '../lib/snowPricing';
 import ProjectMaster from './ProjectMaster';
 import SnowMaster from './SnowMaster';
 import LawnMaster from './LawnMaster';
@@ -22,6 +23,13 @@ interface Props {
   snowQuotes: Record<string, SnowQuote>;
   onSaveSnowQuote: (q: SnowQuote) => void;
   onDeleteSnowQuote: (id: string) => void;
+  // Snow rate config (super-admin editable, versioned).
+  isSuperAdmin: boolean;
+  snowConfigs: Record<string, SnowRateConfigVersion>;
+  snowActiveVersion: string;
+  snowActiveConfig: SnowConfig;
+  onSaveSnowConfig: (next: SnowConfig) => Promise<boolean>;
+  onRevertSnowConfig: (versionId: string) => Promise<boolean>;
 }
 
 type ModuleKey = 'project' | 'snow' | 'lawn';
@@ -35,6 +43,7 @@ export default function SalesMaster(props: Props) {
   const {
     rates, quotes, isAdmin, currentUser, onSaveRates, onSaveQuote, onDeleteQuote,
     snowQuotes, onSaveSnowQuote, onDeleteSnowQuote,
+    isSuperAdmin, snowConfigs, snowActiveVersion, snowActiveConfig, onSaveSnowConfig, onRevertSnowConfig,
   } = props;
   const [module, setModule] = useState<ModuleKey>('project');
 
@@ -72,6 +81,12 @@ export default function SalesMaster(props: Props) {
             isAdmin={isAdmin}
             onSave={onSaveSnowQuote}
             onDelete={onDeleteSnowQuote}
+            isSuperAdmin={isSuperAdmin}
+            config={snowActiveConfig}
+            activeVersion={snowActiveVersion}
+            configs={snowConfigs}
+            onSaveConfig={onSaveSnowConfig}
+            onRevertConfig={onRevertSnowConfig}
           />
         )}
 
