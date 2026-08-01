@@ -1222,6 +1222,37 @@ export interface SnowRateConfigVersion {
   createdAt?: number;
 }
 
+// ── SalesMaster · Lawn — mowing (weekly/biweekly, by sq ft tier) + lawn-care
+// packages. Priced by lawnPricing.ts (single source of truth). Mirrors
+// SnowQuote: own subcollection lawnQuotes/{id} (GROWS; never the main appData
+// doc), version-stamped so a loaded quote resolves against its own config.
+export interface LawnQuote {
+  id: string;
+  client?: string;                 // optional free-text
+  sqft: number;
+  tierIndex: number;
+  tierLabel: string;
+  mowingBase: number;              // weekly tier base at quote time
+  veryHilly: boolean;
+  pushMow: boolean;
+  clutter: boolean;
+  travelZone: string;              // mowing travel zone key
+  // Which frequency the client is going with (optional marker — both are always
+  // shown/saved; this only feeds the report's weekly/biweekly split).
+  frequency?: 'weekly' | 'biweekly' | null;
+  weeklyAnnual: number; weeklyMonthly: number; weeklyPerCut: number;
+  biweeklyAnnual: number; biweeklyMonthly: number; biweeklyPerCut: number;
+  // Packages — optional single attachment on the quote.
+  selectedPackage?: string | null;   // package key or null
+  packageTravelPerVisit: number;
+  packageTotal?: number | null;
+  pricingConfigVersion: string;
+  quotedBy?: { email: string; name: string };
+  quotedAt?: number;
+  updatedBy?: { email: string; name: string };
+  updatedAt?: number;
+}
+
 export type BulletinAudienceRole = 'admin' | 'manager' | 'foreman' | 'mechanic' | 'worker';
 
 // TaskMaster — admin-assigned tasks for employees. Distinct from
@@ -1586,6 +1617,7 @@ export interface AppData {
   salesMasterQuotes?: Record<string, SalesQuote>;
   snowQuotes?: Record<string, SnowQuote>;
   snowRateConfigs?: Record<string, SnowRateConfigVersion>;
+  lawnQuotes?: Record<string, LawnQuote>;
   // ── ContractingMaster (Palermo's) — namespaced subcollections, overlaid
   // live. ZERO contact with performance/BH/bonus/pay. Never in the main doc.
   contractingProjects?: Record<string, ContractingProject>;
