@@ -39,5 +39,12 @@ service cloud.firestore {
       allow read: if isAuthorized() || isSuperAdmin();
       allow write: if isSuperAdmin();
     }
+
+    // Lawn rate configs — same model as snowRateConfigs. Read open to authorized
+    // users so estimators price at current rates; WRITE locked to the super-admin.
+    match /lawnRateConfigs/{version} {
+      allow read: if isAuthorized() || isSuperAdmin();
+      allow write: if isSuperAdmin();
+    }
   }
 }

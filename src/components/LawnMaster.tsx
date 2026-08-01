@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
-import { Sprout, RotateCcw, Save, FolderOpen, Trash2, Search, BarChart3, AlertTriangle } from 'lucide-react';
-import { LawnQuote } from '../types';
+import { Sprout, RotateCcw, Save, FolderOpen, Trash2, Search, BarChart3, AlertTriangle, SlidersHorizontal } from 'lucide-react';
+import { LawnQuote, LawnRateConfigVersion } from '../types';
 import {
-  LawnConfig, LAWN_CONFIG_V1, StoredLawnVersion, resolveLawnConfig,
+  LawnConfig, LAWN_CONFIG_V1, resolveLawnConfig,
   resolveTierIndex, tierLabel, priceLawn, LawnPrice, PackagePrice,
 } from '../lib/lawnPricing';
+import LawnRateSheet from './LawnRateSheet';
 
 // House style.
 const GREEN = '#1c4634';
@@ -18,19 +19,23 @@ interface Props {
   isAdmin: boolean;
   onSave: (q: LawnQuote) => void;
   onDelete: (id: string) => void;
-  // Pricing config (rate sheet is a later build). Defaults to the v1 hard-coded
-  // numbers; version-safe display is wired so historical quotes resolve to their
-  // stamped version once the rate sheet exists.
+  // Pricing config (super-admin editable, versioned). Defaults to the v1
+  // hard-coded numbers; version-safe display resolves historical quotes to
+  // their stamped version.
+  isSuperAdmin?: boolean;
   config?: LawnConfig;
   activeVersion?: string;
-  configs?: Record<string, StoredLawnVersion>;
+  configs?: Record<string, LawnRateConfigVersion>;
+  onSaveConfig?: (next: LawnConfig) => Promise<boolean>;
+  onRevertConfig?: (versionId: string) => Promise<boolean>;
 }
 
 export default function LawnMaster({
   quotes, currentUser, isAdmin, onSave, onDelete,
-  config = LAWN_CONFIG_V1, activeVersion = 'lawn-v1', configs = {},
+  isSuperAdmin = false, config = LAWN_CONFIG_V1, activeVersion = 'lawn-v1', configs = {},
+  onSaveConfig, onRevertConfig,
 }: Props) {
-  const [sub, setSub] = useState<'quote' | 'saved' | 'report'>('quote');
+  const [sub, setSub] = useState<'quote' | 'saved' | 'report' | 'rates'>('quote');
 
   // ── Inputs ───────────────────────────────────────────────────────────────
   const [sqft, setSqft] = useState(0);
@@ -115,12 +120,15 @@ export default function LawnMaster({
 
   return (
     <div className="space-y-4">
-      {/* Sub-tabs */}
+      {/* Sub-tabs — Rate sheet is super-admin only (also hard-guarded in the
+          component + write handlers + firestore.rules). */}
       <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm w-fit">
-        {(['quote', 'saved', 'report'] as const).map(t => (
+        {(['quote', 'saved', 'report', ...(isSuperAdmin ? ['rates'] as const : [])] as const).map(t => (
           <button key={t} onClick={() => setSub(t)}
-            className={`px-3 py-1.5 text-sm font-bold rounded-md capitalize ${sub === t ? 'text-white' : 'text-gray-500'}`}
-            style={sub === t ? { backgroundColor: GREEN } : undefined}>{t}</button>
+            className={`px-3 py-1.5 text-sm font-bold rounded-md inline-flex items-center gap-1 ${sub === t ? 'text-white' : 'text-gray-500'}`}
+            style={sub === t ? { backgroundColor: GREEN } : undefined}>
+            {t === 'rates' ? <><SlidersHorizontal className="w-3.5 h-3.5" /> Rate sheet</> : <span className="capitalize">{t}</span>}
+          </button>
         ))}
       </div>
 
@@ -237,6 +245,16 @@ export default function LawnMaster({
 
       {sub === 'saved' && <SavedLawnQuotes quotes={quotes} currentUser={currentUser} isAdmin={isAdmin} onOpen={load} onDelete={onDelete} />}
       {sub === 'report' && <LawnReport quotes={quotes} config={config} />}
+      {sub === 'rates' && (
+        <LawnRateSheet
+          isSuperAdmin={isSuperAdmin}
+          config={config}
+          activeVersion={activeVersion}
+          versions={configs}
+          onSave={onSaveConfig || (async () => false)}
+          onRevert={onRevertConfig || (async () => false)}
+        />
+      )}
     </div>
   );
 }

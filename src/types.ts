@@ -1,3 +1,5 @@
+import type { LawnConfig } from './lib/lawnPricing';
+
 export type UserRole = 'admin' | 'manager' | 'foreman' | 'worker' | 'mechanic' | 'contractor' | 'property_manager';
 
 export type ManagedDivision = 'lawn' | 'small' | 'large' | 'all';
@@ -1222,6 +1224,23 @@ export interface SnowRateConfigVersion {
   createdAt?: number;
 }
 
+// ── SalesMaster · Lawn rate config — same immutable-version model as the snow
+// one. Top-level `lawnRateConfigs` collection so a dedicated rule locks WRITES
+// to the super-admin. The config snapshot is the LawnConfig from lawnPricing.ts
+// (referenced rather than re-declared, so the doc shape can't drift from the
+// engine's — a small, deliberate difference from the snow types).
+export type LawnRateAuditChange = SnowRateAuditChange;
+export interface LawnRateConfigVersion {
+  id: string;                       // = version, e.g. 'lawn-v2'
+  version: string;
+  config: LawnConfig;
+  changes: LawnRateAuditChange[];
+  note?: string;
+  revertedFrom?: string;
+  createdBy?: { email: string; name: string };
+  createdAt?: number;
+}
+
 // ── SalesMaster · Lawn — mowing (weekly/biweekly, by sq ft tier) + lawn-care
 // packages. Priced by lawnPricing.ts (single source of truth). Mirrors
 // SnowQuote: own subcollection lawnQuotes/{id} (GROWS; never the main appData
@@ -1618,6 +1637,7 @@ export interface AppData {
   snowQuotes?: Record<string, SnowQuote>;
   snowRateConfigs?: Record<string, SnowRateConfigVersion>;
   lawnQuotes?: Record<string, LawnQuote>;
+  lawnRateConfigs?: Record<string, LawnRateConfigVersion>;
   // ── ContractingMaster (Palermo's) — namespaced subcollections, overlaid
   // live. ZERO contact with performance/BH/bonus/pay. Never in the main doc.
   contractingProjects?: Record<string, ContractingProject>;

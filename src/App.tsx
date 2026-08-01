@@ -23,7 +23,7 @@ import {
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary,
-  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, RoleTaskInstance,
+  RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, RoleTaskInstance,
   ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
@@ -76,6 +76,9 @@ import { ratesOrDefault } from './lib/salesMaster';
 import {
   SNOW_CONFIG_V1, SnowConfig, snowVersionId, snowVersionNum, activeSnowVersionId, resolveSnowConfig, diffSnowConfig,
 } from './lib/snowPricing';
+import {
+  LawnConfig, lawnVersionId, lawnVersionNum, activeLawnVersionId, resolveLawnConfig, diffLawnConfig,
+} from './lib/lawnPricing';
 import RoleInstanceModal from './components/RoleInstanceModal';
 import RequestTimeOffModal, { type RequestTimeOffSubmit } from './components/RequestTimeOffModal';
 
@@ -221,6 +224,7 @@ export default function App() {
   const subSnowQuotesRef = useRef<Record<string, SnowQuote>>({});
   const subSnowRateConfigsRef = useRef<Record<string, SnowRateConfigVersion>>({});
   const subLawnQuotesRef = useRef<Record<string, LawnQuote>>({});
+  const subLawnRateConfigsRef = useRef<Record<string, LawnRateConfigVersion>>({});
   const subRoleTaskInstancesRef = useRef<Record<string, RoleTaskInstance>>({});
   // ContractingMaster (Palermo's) — namespaced subcollections, own tenant.
   const subContractingProjectsRef = useRef<Record<string, ContractingProject>>({});
@@ -911,6 +915,7 @@ export default function App() {
           snowQuotes: subSnowQuotesRef.current,
           snowRateConfigs: subSnowRateConfigsRef.current,
           lawnQuotes: subLawnQuotesRef.current,
+          lawnRateConfigs: subLawnRateConfigsRef.current,
           roleTaskInstances: subRoleTaskInstancesRef.current,
           // ContractingMaster — overlaid from namespaced subcollections.
           contractingProjects: subContractingProjectsRef.current,
@@ -1209,6 +1214,13 @@ export default function App() {
       subSnowRateConfigsRef.current = map;
       setAppData((prev) => ({ ...prev, snowRateConfigs: map }));
     }, (err) => { console.error('snowRateConfigs listen error:', err); });
+    // Lawn rate configs — same top-level pattern as snowRateConfigs.
+    const u12 = onSnapshot(collection(db, 'lawnRateConfigs'), (snap) => {
+      const map: Record<string, LawnRateConfigVersion> = {};
+      snap.forEach((d) => { const v = d.data() as LawnRateConfigVersion; if (v && v.id) map[v.id] = v; });
+      subLawnRateConfigsRef.current = map;
+      setAppData((prev) => ({ ...prev, lawnRateConfigs: map }));
+    }, (err) => { console.error('lawnRateConfigs listen error:', err); });
     // ContractingMaster (Palermo's) — namespaced subcollections.
     const c1 = mk('contractingProjects', subContractingProjectsRef, 'contractingProjects');
     const c2 = mk('contractingTimeEntries', subContractingTimeEntriesRef, 'contractingTimeEntries');
@@ -1218,7 +1230,7 @@ export default function App() {
     const c6 = mk('contractingShoppingList', subContractingShoppingListRef, 'contractingShoppingList');
     const c7 = mk('contractingPersonalItems', subContractingPersonalItemsRef, 'contractingPersonalItems');
     const c8 = mk('contractingPropertyDocs', subContractingPropertyDocsRef, 'contractingPropertyDocs');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); };
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); };
   }, [user]);
 
   useEffect(() => {
@@ -2345,6 +2357,35 @@ export default function App() {
   const revertSnowConfig = (toVersionId: string) => {
     const target = resolveSnowConfig(toVersionId, snowConfigMap);
     return commitSnowConfig(target, { revertedFrom: toVersionId });
+  };
+  // ── Lawn rate config — SUPER-ADMIN ONLY. Identical model to snow: immutable
+  // lawn-v{N} versions with an audit diff, top-level lawnRateConfigs collection,
+  // write enforced here + in firestore.rules.
+  const lawnConfigMap = appData.lawnRateConfigs || {};
+  const lawnActiveVersion = activeLawnVersionId(lawnConfigMap);
+  const lawnActiveConfig = resolveLawnConfig(lawnActiveVersion, lawnConfigMap);
+  const commitLawnConfig = async (
+    nextConfig: LawnConfig, opts?: { revertedFrom?: string },
+  ): Promise<boolean> => {
+    if (!isSuperAdmin) { showToastMsg(PERMISSION_DENIED); return false; }
+    const changes = diffLawnConfig(lawnActiveConfig, nextConfig);
+    if (!changes.length) { showToastMsg('No changes to save.'); return false; }
+    const nextNum = lawnVersionNum(lawnActiveVersion) + 1;
+    const id = lawnVersionId(nextNum);
+    const rec: LawnRateConfigVersion = {
+      id, version: id, config: nextConfig, changes,
+      ...(opts?.revertedFrom ? { note: `Reverted to ${opts.revertedFrom}`, revertedFrom: opts.revertedFrom } : {}),
+      createdBy: { email: displayEmail, name: displayName },
+      createdAt: Date.now(),
+    };
+    await setDoc(doc(collection(db, 'lawnRateConfigs'), id), cleanRM(rec));
+    showToastMsg(`Lawn rates saved — now ${id}.`);
+    return true;
+  };
+  const saveLawnConfig = (nextConfig: LawnConfig) => commitLawnConfig(nextConfig);
+  const revertLawnConfig = (toVersionId: string) => {
+    const target = resolveLawnConfig(toVersionId, lawnConfigMap);
+    return commitLawnConfig(target, { revertedFrom: toVersionId });
   };
   const setRoleMasterMaster = async (enabled: boolean) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
@@ -5028,6 +5069,11 @@ export default function App() {
           lawnQuotes={appData.lawnQuotes || {}}
           onSaveLawnQuote={saveLawnQuote}
           onDeleteLawnQuote={deleteLawnQuote}
+          lawnConfigs={lawnConfigMap}
+          lawnActiveVersion={lawnActiveVersion}
+          lawnActiveConfig={lawnActiveConfig}
+          onSaveLawnConfig={saveLawnConfig}
+          onRevertLawnConfig={revertLawnConfig}
         />
       ) : currentView === 'contracting' ? (
         <ContractingMaster

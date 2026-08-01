@@ -3,8 +3,8 @@
 //   npx tsx src/lib/lawnPricing.test.ts
 import assert from 'node:assert/strict';
 import {
-  LAWN_CONFIG_V1, resolveTierIndex, priceMowing, pricePackages, priceLawn, tierLabel,
-  resolveLawnConfig, activeLawnVersionId, lawnVersionId,
+  LAWN_CONFIG_V1, LawnConfig, resolveTierIndex, priceMowing, pricePackages, priceLawn, tierLabel,
+  resolveLawnConfig, activeLawnVersionId, lawnVersionId, validateLawnConfig, diffLawnConfig,
 } from './lawnPricing';
 
 let pass = 0, fail = 0;
@@ -150,6 +150,61 @@ test('biweekly = weekly × 0.75 for every tier', () => {
     const m = priceMowing(i, {});
     assert.equal(m.biweeklyTotal, m.weeklyTotal * 0.75);
   });
+});
+
+// ── Rate-sheet: validation + diff + historical resolution ───────────────────
+console.log('\nLawn rate sheet — validation + diff + historical resolution:');
+const clone = (): LawnConfig => structuredClone(LAWN_CONFIG_V1);
+
+test('validateLawnConfig accepts v1 defaults', () => {
+  assert.deepEqual(validateLawnConfig(LAWN_CONFIG_V1), []);
+});
+test('validation: weekly must be > 0 for every tier', () => {
+  const c = clone(); c.TIERS[2].weekly = 0;
+  assert.ok(validateLawnConfig(c).some(e => /weekly price must be greater than 0/i.test(e)));
+});
+test('validation: package prices >= 0 allowed (0 is valid), negative rejected', () => {
+  const zero = clone(); // all package zeros already present → still valid
+  assert.deepEqual(validateLawnConfig(zero), []);
+  const neg = clone(); neg.PACKAGE_PRICES[1].bronze = -1;
+  assert.ok(validateLawnConfig(neg).length > 0);
+});
+test('validation: sq ft bounds must be strictly ascending (no gaps/overlaps)', () => {
+  const c = clone(); c.TIERS[2].maxSqFt = 3000; // now 4000 then 3000 → not ascending
+  assert.ok(validateLawnConfig(c).some(e => /ascending/i.test(e)));
+});
+test('validation: last tier must be open-ended', () => {
+  const c = clone(); c.TIERS[c.TIERS.length - 1].maxSqFt = 99999;
+  assert.ok(validateLawnConfig(c).some(e => /open-ended/i.test(e)));
+});
+test('validation: ratio must be between 0 and 1; cuts/months/visits > 0', () => {
+  assert.ok(validateLawnConfig({ ...clone(), BIWEEKLY_RATIO: 1 }).length > 0);
+  assert.ok(validateLawnConfig({ ...clone(), BIWEEKLY_RATIO: 0 }).length > 0);
+  assert.ok(validateLawnConfig({ ...clone(), MONTHS: 0 }).length > 0);
+  const badVisits = clone(); badVisits.PACKAGES[0].visits = 0;
+  assert.ok(validateLawnConfig(badVisits).some(e => /visit counts/i.test(e)));
+});
+test('diffLawnConfig reports only changed fields, old → new', () => {
+  const c = clone(); c.TIERS[1].weekly = 1300; c.PACKAGE_PRICES[1].bronze = 279;
+  const changes = diffLawnConfig(LAWN_CONFIG_V1, c);
+  assert.equal(changes.length, 2);
+  assert.ok(changes.find(x => x.key === 'tier1.weekly' && x.from === '1200' && x.to === '1300'));
+  assert.ok(changes.find(x => x.key === 'tier1.bronze' && x.from === '249' && x.to === '279'));
+  assert.deepEqual(diffLawnConfig(LAWN_CONFIG_V1, LAWN_CONFIG_V1), []);
+});
+test('HISTORICAL RESOLUTION: an April (v1) quote keeps its price after v2 raises the tier', () => {
+  const V2 = clone(); V2.TIERS[1].weekly = 1320; // 4,000-tier weekly 1200 → 1320
+  const versions = { 'lawn-v2': { version: 'lawn-v2', config: V2 } };
+  // April quote priced under v1.
+  const april = priceMowing(resolveTierIndex(4000, resolveLawnConfig('lawn-v1', versions))!, {}, resolveLawnConfig('lawn-v1', versions));
+  assert.equal(april.weeklyTotal, 1200);
+  // August: a NEW quote at v2 is higher.
+  const augustNew = priceMowing(resolveTierIndex(4000, resolveLawnConfig('lawn-v2', versions))!, {}, resolveLawnConfig('lawn-v2', versions));
+  assert.equal(augustNew.weeklyTotal, 1320);
+  // The April quote re-resolved against ITS version still shows 1200.
+  const aprilReopened = priceMowing(resolveTierIndex(4000, resolveLawnConfig('lawn-v1', versions))!, {}, resolveLawnConfig('lawn-v1', versions));
+  assert.equal(aprilReopened.weeklyTotal, 1200, 'historical lawn quote must NOT reprice');
+  assert.equal(activeLawnVersionId(versions), 'lawn-v2');
 });
 
 console.log(`\n${fail === 0 ? '✅' : '❌'} ${pass} passed, ${fail} failed`);

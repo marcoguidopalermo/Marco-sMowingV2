@@ -6,8 +6,9 @@
 // received to the right module.
 import { useState } from 'react';
 import { Calculator, Snowflake, Sprout } from 'lucide-react';
-import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote } from '../types';
+import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion } from '../types';
 import { SnowConfig } from '../lib/snowPricing';
+import { LawnConfig } from '../lib/lawnPricing';
 import ProjectMaster from './ProjectMaster';
 import SnowMaster from './SnowMaster';
 import LawnMaster from './LawnMaster';
@@ -33,6 +34,11 @@ interface Props {
   lawnQuotes: Record<string, LawnQuote>;
   onSaveLawnQuote: (q: LawnQuote) => void;
   onDeleteLawnQuote: (id: string) => void;
+  lawnConfigs: Record<string, LawnRateConfigVersion>;
+  lawnActiveVersion: string;
+  lawnActiveConfig: LawnConfig;
+  onSaveLawnConfig: (next: LawnConfig) => Promise<boolean>;
+  onRevertLawnConfig: (versionId: string) => Promise<boolean>;
 }
 
 type ModuleKey = 'project' | 'snow' | 'lawn';
@@ -48,6 +54,7 @@ export default function SalesMaster(props: Props) {
     snowQuotes, onSaveSnowQuote, onDeleteSnowQuote,
     isSuperAdmin, snowConfigs, snowActiveVersion, snowActiveConfig, onSaveSnowConfig, onRevertSnowConfig,
     lawnQuotes, onSaveLawnQuote, onDeleteLawnQuote,
+    lawnConfigs, lawnActiveVersion, lawnActiveConfig, onSaveLawnConfig, onRevertLawnConfig,
   } = props;
   const [module, setModule] = useState<ModuleKey>('project');
 
@@ -101,6 +108,12 @@ export default function SalesMaster(props: Props) {
             isAdmin={isAdmin}
             onSave={onSaveLawnQuote}
             onDelete={onDeleteLawnQuote}
+            isSuperAdmin={isSuperAdmin}
+            config={lawnActiveConfig}
+            activeVersion={lawnActiveVersion}
+            configs={lawnConfigs}
+            onSaveConfig={onSaveLawnConfig}
+            onRevertConfig={onRevertLawnConfig}
           />
         )}
       </div>
