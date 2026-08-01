@@ -1268,7 +1268,8 @@ export interface LawnQuote {
   // ── Mid-season proration + overgrown + BH (mowing only). Optional — older
   // quotes predate this and resolve against their stamped config as before. ──
   startDate?: string;
-  elapsedWeeks?: number;
+  firstCut?: 'this' | 'next';        // first-cut timing (restores the button state)
+  signupWeek?: number;               // season week the signup falls in (1-indexed; 0 before season)
   seasonDiscountPct?: number;        // never negative — no surcharge
   overgrownKey?: string;
   overgrownMultiplier?: number;

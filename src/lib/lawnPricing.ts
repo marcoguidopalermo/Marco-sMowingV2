@@ -271,15 +271,17 @@ export function isValidYmd(ymd: string): boolean {
   const dt = new Date(Date.UTC(y, m - 1, d));
   return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
 }
-/** Season end = SEASON_START + WEEKS_IN_SEASON weeks. */
+/** The LAST cutting week's Monday = SEASON_START + (WEEKS_IN_SEASON − 1) weeks.
+ *  (Not a season-end instant — the 20th cutting week begins here.) */
 export function seasonEndDate(config: LawnConfig = LAWN_CONFIG_V1): string {
-  return dayNumToYmd(ymdToDayNum(config.SEASON_START) + config.WEEKS_IN_SEASON * 7);
+  return dayNumToYmd(ymdToDayNum(config.SEASON_START) + (config.WEEKS_IN_SEASON - 1) * 7);
 }
-/** Whole weeks elapsed since SEASON_START, clamped 0..WEEKS_IN_SEASON. */
-export function elapsedSeasonWeeks(startDate: string, config: LawnConfig = LAWN_CONFIG_V1): number {
+/** The season week the signup falls IN (1-indexed). 0 = before the season
+ *  starts (full season, no discount). Clamped to WEEKS_IN_SEASON. */
+export function signupSeasonWeek(startDate: string, config: LawnConfig = LAWN_CONFIG_V1): number {
   const diff = ymdToDayNum(startDate) - ymdToDayNum(config.SEASON_START);
-  if (!Number.isFinite(diff)) return 0;
-  return Math.max(0, Math.min(config.WEEKS_IN_SEASON, Math.floor(diff / 7)));
+  if (!Number.isFinite(diff) || diff < 0) return 0;
+  return Math.max(1, Math.min(config.WEEKS_IN_SEASON, Math.floor(diff / 7) + 1));
 }
 /** Overgrown discount reduction, always derived: (multiplier − 1) × DISCOUNT_PER_WEEK. */
 export function overgrownReductionPct(multiplier: number, config: LawnConfig = LAWN_CONFIG_V1): number {
@@ -303,9 +305,13 @@ export function billingDates(year: number, count: number): string[] {
   return out;
 }
 
+export type FirstCut = 'this' | 'next';
 export interface SeasonDiscount {
-  elapsedWeeks: number;
-  seasonDiscountPct: number;       // elapsedWeeks × DISCOUNT_PER_WEEK — never negative
+  signupWeek: number;              // week the signup falls in (1-indexed; 0 = before season)
+  firstCut: FirstCut;
+  firstServiceWeek: number;        // first week actually serviced
+  weeksServiced: number;           // WEEKS − firstServiceWeek + 1
+  seasonDiscountPct: number;       // (WEEKS − weeksServiced) / WEEKS × 100 — never negative
   overgrownKey: string;
   overgrownLabel: string;
   overgrownMultiplier: number;
@@ -335,21 +341,33 @@ export interface SeasonPlan {
 }
 
 /**
- * Mid-season plan for a mowing quote. The season discount only ever REDUCES the
- * price (no surcharge). The overgrown catch-up is a SEPARATE one-time charge so
- * it can't distort the recurring instalment maths. Instalment count is chosen so
- * the deposit always fits inside one monthly payment. BH uses full price + full
- * cut count. Packages are never involved.
+ * Mid-season plan for a mowing quote. The discount reflects the weeks the client
+ * is actually SERVICED, which depends on the signup week AND whether they can be
+ * fitted into this week's route or the next. Returns NULL when no cutting weeks
+ * remain (a "next week" signup in the last week, or a signup past the season) —
+ * there is no price to quote. The overgrown catch-up is a separate one-time
+ * charge; instalments are chosen so the deposit fits one payment; BH uses full
+ * price + full cut count. Packages are never involved.
  */
 export function computeSeasonPlan(
-  mowing: MowingPrice, startDate: string, overgrownKey: string, config: LawnConfig = LAWN_CONFIG_V1,
-): SeasonPlan {
-  const elapsedWeeks = elapsedSeasonWeeks(startDate, config);
-  const seasonDiscountPct = elapsedWeeks * config.DISCOUNT_PER_WEEK; // never negative
+  mowing: MowingPrice, startDate: string, overgrownKey: string,
+  firstCut: FirstCut = 'next', config: LawnConfig = LAWN_CONFIG_V1,
+): SeasonPlan | null {
+  const WEEKS = config.WEEKS_IN_SEASON;
+  const diff = ymdToDayNum(startDate) - ymdToDayNum(config.SEASON_START);
+  const beforeSeason = !Number.isFinite(diff) || diff < 0;
+  // Raw week is unclamped upward so a signup past the last cutting week resolves
+  // to 0 weeks serviced (and is blocked below).
+  const rawWeek = beforeSeason ? 0 : Math.floor(diff / 7) + 1;
+  const signupWeek = beforeSeason ? 0 : Math.min(WEEKS, rawWeek);
+  const firstServiceWeek = signupWeek === 0 ? 1 : (firstCut === 'this' ? rawWeek : rawWeek + 1);
+  const weeksServiced = Math.max(0, WEEKS - firstServiceWeek + 1);
+  if (weeksServiced <= 0) return null; // no cuts remaining this season
+
+  const seasonDiscountPct = round2((WEEKS - weeksServiced) / WEEKS * 100);
   const og = config.OVERGROWN.find(o => o.key === overgrownKey) || config.OVERGROWN[0];
-  const catchUpPct = overgrownReductionPct(og.multiplier, config);   // billed separately
+  const catchUpPct = overgrownReductionPct(og.multiplier, config);
   const avail = availableMonthEnds(startDate);
-  const weeksLeft = Math.max(0, config.WEEKS_IN_SEASON - elapsedWeeks);
   const year = Number(String(startDate).slice(0, 4)) || Number(String(config.SEASON_START).slice(0, 4));
 
   const freq = (fullPrice: number, cuts: number): SeasonFreqPlan => {
@@ -359,7 +377,7 @@ export function computeSeasonPlan(
     const instalments = Math.max(0, Math.min(avail, maxByPrice));
     const deposit = round2(proratedTotal - instalments * monthly);
     const catchUpCharge = round2((catchUpPct / 100) * fullPrice);
-    const cutsLeft = config.WEEKS_IN_SEASON > 0 ? Math.round(cuts * weeksLeft / config.WEEKS_IN_SEASON) : 0;
+    const cutsLeft = WEEKS > 0 ? Math.round(cuts * weeksServiced / WEEKS) : 0;
     const bhPerVisit = cuts > 0 ? fullPrice / cuts / config.MOWING_ALLOCATION_RATE : 0;
     return {
       fullPrice, cuts, proratedTotal, monthly, instalments, deposit, catchUpCharge,
@@ -372,8 +390,8 @@ export function computeSeasonPlan(
   return {
     startDate, seasonEnd: seasonEndDate(config),
     discount: {
-      elapsedWeeks, seasonDiscountPct, overgrownKey: og.key, overgrownLabel: og.label,
-      overgrownMultiplier: og.multiplier, catchUpPct,
+      signupWeek, firstCut, firstServiceWeek, weeksServiced, seasonDiscountPct,
+      overgrownKey: og.key, overgrownLabel: og.label, overgrownMultiplier: og.multiplier, catchUpPct,
     },
     weekly: freq(mowing.weeklyTotal, config.WEEKLY_CUTS),
     biweekly: freq(mowing.biweeklyTotal, config.BIWEEKLY_CUTS),

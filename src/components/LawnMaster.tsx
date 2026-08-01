@@ -4,7 +4,7 @@ import { LawnQuote, LawnRateConfigVersion } from '../types';
 import {
   LawnConfig, LAWN_CONFIG_V1, resolveLawnConfig,
   resolveTierIndex, tierLabel, priceLawn, LawnPrice, PackagePrice,
-  computeSeasonPlan, SeasonPlan, overgrownReductionPct,
+  computeSeasonPlan, SeasonPlan, FirstCut, overgrownReductionPct, signupSeasonWeek, seasonEndDate,
 } from '../lib/lawnPricing';
 import LawnRateSheet from './LawnRateSheet';
 
@@ -32,7 +32,7 @@ interface Props {
   onSaveConfig?: (next: LawnConfig) => Promise<boolean>;
   onRevertConfig?: (versionId: string) => Promise<boolean>;
   // Optional seed for previews/deep-links only. Never used in normal operation.
-  initial?: { sqft?: number; startDate?: string; overgrownKey?: string };
+  initial?: { sqft?: number; startDate?: string; overgrownKey?: string; firstCut?: FirstCut };
 }
 
 export default function LawnMaster({
@@ -51,6 +51,7 @@ export default function LawnMaster({
   const [pkgTravel, setPkgTravel] = useState(0);
   const [startDate, setStartDate] = useState(initial?.startDate || todayYmd());  // mid-season start, defaults today
   const [overgrownKey, setOvergrownKey] = useState(initial?.overgrownKey || 'normal'); // catch-up selector
+  const [firstCut, setFirstCut] = useState<FirstCut>(initial?.firstCut || 'next'); // default Next week (safe)
   const [frequency, setFrequency] = useState<'weekly' | 'biweekly' | null>(null);
   const [selectedPackage, setSelectedPackage] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -68,11 +69,13 @@ export default function LawnMaster({
     [sqft, pushMow, veryHilly, clutter, travelZone, pkgTravel, viewConfig],
   );
   const tierIdx = resolveTierIndex(sqft, viewConfig);
-  // Mid-season plan (mowing only). Discount + proration + deposit + BH.
+  // Mid-season plan (mowing only). Null when no cutting weeks remain (blocked).
   const plan = useMemo<SeasonPlan | null>(
-    () => price ? computeSeasonPlan(price.mowing, startDate, overgrownKey, viewConfig) : null,
-    [price, startDate, overgrownKey, viewConfig],
+    () => price ? computeSeasonPlan(price.mowing, startDate, overgrownKey, firstCut, viewConfig) : null,
+    [price, startDate, overgrownKey, firstCut, viewConfig],
   );
+  const signupWeek = useMemo(() => signupSeasonWeek(startDate, viewConfig), [startDate, viewConfig]);
+  const blocked = !!price && !plan; // has a lawn size but no serviceable cutting weeks left
 
   const touch = () => setDirty(true);
   const pickTier = (i: number) => {
@@ -95,13 +98,13 @@ export default function LawnMaster({
   const clearAll = () => {
     if (price && !window.confirm('Clear the lawn quote and all inputs?')) return;
     setSqft(0); setVeryHilly(false); setPushMow(false); setClutter(false);
-    setTravelZone('in_town'); setPkgTravel(0); setStartDate(todayYmd()); setOvergrownKey('normal');
+    setTravelZone('in_town'); setPkgTravel(0); setStartDate(todayYmd()); setOvergrownKey('normal'); setFirstCut('next');
     setFrequency(null); setSelectedPackage(null);
     setName(''); setLoadedId(null); setLoadedVersion(null); setDirty(false);
   };
 
   const save = () => {
-    if (!price || !plan) return;
+    if (!price) return; // packages may still be sellable even when mowing is blocked
     const m = price.mowing;
     const sel = selectedPackage ? price.packages.find(p => p.key === selectedPackage) : null;
     const label = name.trim();
@@ -116,15 +119,17 @@ export default function LawnMaster({
       selectedPackage: sel && sel.priced ? sel.key : null,
       packageTravelPerVisit: pkgTravel,
       packageTotal: sel && sel.priced ? sel.total : null,
-      // Mid-season plan (mowing only). Season discount + separate catch-up.
-      startDate, elapsedWeeks: plan.discount.elapsedWeeks, seasonDiscountPct: plan.discount.seasonDiscountPct,
-      overgrownKey, overgrownMultiplier: plan.discount.overgrownMultiplier, catchUpPct: plan.discount.catchUpPct,
-      weeklyProrated: plan.weekly.proratedTotal, weeklyInstalments: plan.weekly.instalments,
-      weeklyDeposit: plan.weekly.deposit, weeklyCatchUp: plan.weekly.catchUpCharge, weeklyFirstInvoice: plan.weekly.firstInvoice,
-      weeklyCutsLeft: plan.weekly.cutsLeft, weeklyBhPerVisit: plan.weekly.bhPerVisit, weeklyFirstVisitBH: plan.weekly.firstVisitBH,
-      biweeklyProrated: plan.biweekly.proratedTotal, biweeklyInstalments: plan.biweekly.instalments,
-      biweeklyDeposit: plan.biweekly.deposit, biweeklyCatchUp: plan.biweekly.catchUpCharge, biweeklyFirstInvoice: plan.biweekly.firstInvoice,
-      biweeklyCutsLeft: plan.biweekly.cutsLeft, biweeklyBhPerVisit: plan.biweekly.bhPerVisit, biweeklyFirstVisitBH: plan.biweekly.firstVisitBH,
+      // Mid-season plan (mowing only). Restores button state exactly on reload.
+      startDate, firstCut, signupWeek, overgrownKey,
+      ...(plan ? {
+        seasonDiscountPct: plan.discount.seasonDiscountPct, overgrownMultiplier: plan.discount.overgrownMultiplier, catchUpPct: plan.discount.catchUpPct,
+        weeklyProrated: plan.weekly.proratedTotal, weeklyInstalments: plan.weekly.instalments,
+        weeklyDeposit: plan.weekly.deposit, weeklyCatchUp: plan.weekly.catchUpCharge, weeklyFirstInvoice: plan.weekly.firstInvoice,
+        weeklyCutsLeft: plan.weekly.cutsLeft, weeklyBhPerVisit: plan.weekly.bhPerVisit, weeklyFirstVisitBH: plan.weekly.firstVisitBH,
+        biweeklyProrated: plan.biweekly.proratedTotal, biweeklyInstalments: plan.biweekly.instalments,
+        biweeklyDeposit: plan.biweekly.deposit, biweeklyCatchUp: plan.biweekly.catchUpCharge, biweeklyFirstInvoice: plan.biweekly.firstInvoice,
+        biweeklyCutsLeft: plan.biweekly.cutsLeft, biweeklyBhPerVisit: plan.biweekly.bhPerVisit, biweeklyFirstVisitBH: plan.biweekly.firstVisitBH,
+      } : {}),
       pricingConfigVersion: viewVersion,
       quotedBy: currentUser, quotedAt: Date.now(),
     };
@@ -135,7 +140,7 @@ export default function LawnMaster({
   const load = (q: LawnQuote) => {
     setSqft(q.sqft || 0); setVeryHilly(!!q.veryHilly); setPushMow(!!q.pushMow); setClutter(!!q.clutter);
     setTravelZone(q.travelZone || 'in_town'); setPkgTravel(q.packageTravelPerVisit || 0);
-    setStartDate(q.startDate || todayYmd()); setOvergrownKey(q.overgrownKey || 'normal');
+    setStartDate(q.startDate || todayYmd()); setOvergrownKey(q.overgrownKey || 'normal'); setFirstCut(q.firstCut || 'next');
     setFrequency(q.frequency || null); setSelectedPackage(q.selectedPackage || null);
     setName(q.client || ''); setLoadedId(q.id); setLoadedVersion(q.pricingConfigVersion || 'lawn-v1'); setDirty(false);
     setSub('quote');
@@ -197,18 +202,34 @@ export default function LawnMaster({
               <Toggle label="Clutter" sub="Obstacles to work around" on={clutter} onClick={() => { touch(); setClutter(v => !v); }} />
             </div>
 
-            {/* Mid-season start date + overgrown catch-up (mowing only) */}
+            {/* Mid-season start date + first cut + overgrown catch-up (mowing only) */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">Start date</span>
                 <input type="date" value={startDate} onChange={e => { touch(); setStartDate(e.target.value); }}
                   className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold" />
               </div>
-              {plan && (
-                <div className="text-[11px] text-slate-500">
-                  Season {viewConfig.SEASON_START} → {plan.seasonEnd} · week {plan.discount.elapsedWeeks} of {viewConfig.WEEKS_IN_SEASON}
+              <div className="text-[11px] text-slate-500">
+                Last cutting week: <span className="font-bold">{fmtMD(seasonEndDate(viewConfig))}</span> · {signupWeek === 0 ? 'before season — full price' : `signup week ${signupWeek} of ${viewConfig.WEEKS_IN_SEASON}`}
+              </div>
+
+              {/* First cut — only relevant once the season has started. */}
+              {signupWeek > 0 && (
+                <div>
+                  <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">First cut</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(['this', 'next'] as const).map(fc => (
+                      <button key={fc} onClick={() => { touch(); setFirstCut(fc); }}
+                        className="min-h-[44px] rounded-xl text-sm font-black border transition-colors"
+                        style={firstCut === fc ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN } : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
+                        {fc === 'this' ? 'This week' : 'Next week'}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1.5">Defaults to <b>Next week</b> — only upgrade to “This week” when the route can fit them, or you charge for a cut you can’t deliver.</div>
                 </div>
               )}
+
               <div>
                 <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Overgrown catch-up</div>
                 <div className="grid grid-cols-5 gap-1.5">
@@ -220,12 +241,12 @@ export default function LawnMaster({
                         className="min-h-[52px] rounded-xl text-[11px] font-black border transition-colors px-1 flex flex-col items-center justify-center leading-tight"
                         style={on ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN } : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
                         <span>{o.multiplier}×</span>
-                        <span className="opacity-70 text-[9px] font-bold">{red ? `−${red}%` : '—'}</span>
+                        <span className="opacity-70 text-[9px] font-bold">{red ? `+${red}%` : '—'}</span>
                       </button>
                     );
                   })}
                 </div>
-                <div className="text-[11px] text-slate-500 mt-1.5">Reduces the season discount to recover catch-up work — the price isn’t adjusted directly.</div>
+                <div className="text-[11px] text-slate-500 mt-1.5">Billed as a separate one-time charge on the first invoice — the season discount is unaffected.</div>
               </div>
             </div>
 
@@ -279,7 +300,14 @@ export default function LawnMaster({
               </div>
             ) : (
               <>
-                <MowingBlock price={price} config={viewConfig} plan={plan!} frequency={frequency} onFrequency={f => { touch(); setFrequency(cur => cur === f ? null : f); }} />
+                {plan ? (
+                  <MowingBlock price={price} config={viewConfig} plan={plan} frequency={frequency} onFrequency={f => { touch(); setFrequency(cur => cur === f ? null : f); }} />
+                ) : (
+                  <div className="rounded-2xl border-2 p-5" style={{ backgroundColor: '#fffbeb', borderColor: '#f59e0b' }}>
+                    <div className="flex items-center gap-2 text-amber-800 font-black uppercase tracking-widest text-[12px]"><AlertTriangle className="w-4 h-4" /> No mowing this season</div>
+                    <div className="text-[13px] font-bold text-amber-900 mt-1">No cuts remaining this season — quote for next season instead.</div>
+                  </div>
+                )}
                 <PackageBlock packages={price.packages} selected={selectedPackage} onSelect={k => { touch(); setSelectedPackage(cur => cur === k ? null : k); }} />
               </>
             )}
@@ -376,7 +404,7 @@ function MowingBlock({ price, config, plan, frequency, onFrequency }: {
           {m.extras.veryHilly > 0 && <Row label="Very hilly" value={money(m.extras.veryHilly)} />}
           {m.extras.clutter > 0 && <Row label="Clutter" value={money(m.extras.clutter)} />}
           {m.travel.perVisit > 0 && <Row label={`Travel · ${m.travel.label}`} value={`$${m.travel.perVisit}/visit · ${both(money(m.travel.weeklySeason), money(m.travel.biweeklySeason))}`} />}
-          <Row label={`Season discount (week ${d.elapsedWeeks})`} value={`${d.seasonDiscountPct}%`} />
+          <Row label={`Season discount (signup week ${d.signupWeek}, ${d.firstCut === 'this' ? 'this' : 'next'} cut)`} value={`${d.seasonDiscountPct}%`} />
           {overgrown && <Row label={`Overgrown catch-up (${d.overgrownLabel})`} value={both(money(plan.weekly.catchUpCharge), money(plan.biweekly.catchUpCharge))} />}
           <Row label="BH per visit" value={both(bn(plan.weekly.bhPerVisit), bn(plan.biweekly.bhPerVisit))} />
           {overgrown && <Row label="First-visit BH" value={both(bn(plan.weekly.firstVisitBH), bn(plan.biweekly.firstVisitBH))} />}
