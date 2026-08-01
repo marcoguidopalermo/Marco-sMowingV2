@@ -98,6 +98,9 @@ interface PerformanceBoardProps {
   // it to a pending draft (mirrors onUnapprove).
   onWaive: (crewId: string, log: PerformanceLog, reason: string) => void;
   onUnwaive: (crewId: string) => void;
+  // Bulk-waive every content-less placeholder crew-day in a month ('no work
+  // recorded'), so month-end cleanup isn't a scavenger hunt.
+  onBulkWaiveEmpty: (ym: string) => void;
 
   jobberConnected: boolean;
   canSyncJobber: boolean;
@@ -149,6 +152,7 @@ export default function PerformanceBoard({
   onUnapprove,
   onWaive,
   onUnwaive,
+  onBulkWaiveEmpty,
   jobberConnected,
   canSyncJobber,
   showToastMsg,
@@ -258,6 +262,14 @@ export default function PerformanceBoard({
     const code = divisionNameToCode(o.division);
     setDivisionFilter(prev => (prev === 'all' || prev === code ? prev : 'all'));
     setFocusCrewTarget({ date: o.date, crewId: o.crewId });
+  };
+  // Month Sheets drill-through: same as above but also switch to the Daily
+  // Entry tab (the rollup lives in the Advanced Reports tab). Accepts the
+  // enriched unsettled/empty crew-day (shares date/crewId/division).
+  const [expandedMonth, setExpandedMonth] = useState<string | null>(null);
+  const goToCrewDay = (u: { date: string; crewId: string; division: string }) => {
+    setPerfTab('entry');
+    goToOutstanding({ ...u, crewNumber: 0, crewLabel: '', isAdHoc: false } as OutstandingCrewDay);
   };
   useEffect(() => {
     if (!focusCrewTarget || perfDate !== focusCrewTarget.date) return;
@@ -2811,29 +2823,65 @@ export default function PerformanceBoard({
                     {candidates.map(ym => {
                       const settle = monthSettlementStatus(performance, ym);
                       const busy = pushingMonth === ym;
+                      const hasUnsettled = settle.blocking.length > 0;
+                      const emptyCount = settle.emptyPending.length;
+                      const open = expandedMonth === ym;
+                      const canDrill = hasUnsettled || emptyCount > 0;
+                      const detail = (u: import('../lib/performanceMonths').UnsettledCrewDay) =>
+                        `${u.date.slice(8)} · ${u.crewLabel} · ${u.hasWork ? `${u.jobCount} job${u.jobCount === 1 ? '' : 's'}${u.ah ? ` · ${u.ah} AH` : ''}` : 'no work recorded'} · ${u.status}`;
+                      const rowBtn = (u: import('../lib/performanceMonths').UnsettledCrewDay) => (
+                        <button key={`${u.date}-${u.crewId}`} type="button" onClick={() => goToCrewDay(u)}
+                          className="w-full flex items-center justify-between gap-2 text-left text-[11px] px-2 py-1.5 rounded-md hover:bg-slate-50 border border-slate-100">
+                          <span className="text-slate-600 truncate">{detail(u)}</span>
+                          <span className="shrink-0 text-emerald-700 font-bold">Open →</span>
+                        </button>
+                      );
                       return (
-                        <div key={ym} className="flex items-center justify-between gap-3 border border-slate-200 rounded-lg px-3 py-2">
-                          <div className="min-w-0">
-                            <div className="text-sm font-bold text-slate-800">{fmtMonth(ym)}</div>
-                            <div className="text-[11px] text-slate-500">
-                              {settle.dayCount} day{settle.dayCount === 1 ? '' : 's'} · {settle.crewDayCount} crew-days ·{' '}
-                              {settle.settled
-                                ? <span className="text-emerald-600 font-bold">all settled</span>
-                                : <span className="text-amber-600 font-bold">{settle.blocking.length} unsettled — approve/waive first</span>}
+                        <div key={ym} className="border border-slate-200 rounded-lg">
+                          <div className="flex items-center justify-between gap-3 px-3 py-2">
+                            <div className="min-w-0">
+                              <div className="text-sm font-bold text-slate-800">{fmtMonth(ym)}</div>
+                              <div className="text-[11px] text-slate-500">
+                                {settle.dayCount} day{settle.dayCount === 1 ? '' : 's'} · {settle.crewDayCount} crew-days ·{' '}
+                                {hasUnsettled
+                                  ? <button type="button" onClick={() => setExpandedMonth(open ? null : ym)} className="text-amber-600 font-bold underline decoration-dotted">{settle.blocking.length} unsettled — approve/waive first ▾</button>
+                                  : <span className="text-emerald-600 font-bold">all worked days settled</span>}
+                                {emptyCount > 0 && <> · <button type="button" onClick={() => setExpandedMonth(open ? null : ym)} className="text-slate-500 font-bold underline decoration-dotted">{emptyCount} empty day{emptyCount === 1 ? '' : 's'} ▾</button></>}
+                              </div>
                             </div>
+                            <button
+                              type="button"
+                              disabled={!settle.settled || busy || pushingMonth !== null}
+                              onClick={async () => {
+                                if (!confirm(`Push ${fmtMonth(ym)} to its own sheet?\n\nThe month's full data is MOVED to a separate sheet (nothing deleted) and stays viewable in reports. The month becomes locked — no more edits or approvals.`)) return;
+                                setPushingMonth(ym);
+                                try { await onPushMonth(ym); } finally { setPushingMonth(null); }
+                              }}
+                              className={`shrink-0 text-[11px] font-black uppercase tracking-widest px-3 py-2 rounded-lg flex items-center gap-1.5 ${(!settle.settled || pushingMonth !== null) ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-700 hover:bg-slate-800 text-white'}`}
+                            >
+                              <Archive className="w-3.5 h-3.5" /> {busy ? 'Pushing…' : 'Push Month'}
+                            </button>
                           </div>
-                          <button
-                            type="button"
-                            disabled={!settle.settled || busy || pushingMonth !== null}
-                            onClick={async () => {
-                              if (!confirm(`Push ${fmtMonth(ym)} to its own sheet?\n\nThe month's full data is MOVED to a separate sheet (nothing deleted) and stays viewable in reports. The month becomes locked — no more edits or approvals.`)) return;
-                              setPushingMonth(ym);
-                              try { await onPushMonth(ym); } finally { setPushingMonth(null); }
-                            }}
-                            className={`shrink-0 text-[11px] font-black uppercase tracking-widest px-3 py-2 rounded-lg flex items-center gap-1.5 ${(!settle.settled || pushingMonth !== null) ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-700 hover:bg-slate-800 text-white'}`}
-                          >
-                            <Archive className="w-3.5 h-3.5" /> {busy ? 'Pushing…' : 'Push Month'}
-                          </button>
+                          {open && canDrill && (
+                            <div className="border-t border-slate-100 px-3 py-2 space-y-2">
+                              {hasUnsettled && (
+                                <div className="space-y-1">
+                                  <div className="text-[10px] font-black uppercase tracking-widest text-amber-600">Unsettled — approve or waive (blocks push)</div>
+                                  {settle.blocking.map(rowBtn)}
+                                </div>
+                              )}
+                              {emptyCount > 0 && (
+                                <div className="space-y-1">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Empty scheduled days — no work recorded (don’t block push)</div>
+                                    <button type="button" onClick={() => { if (confirm(`Waive ${emptyCount} empty scheduled day${emptyCount === 1 ? '' : 's'} in ${fmtMonth(ym)}?\n\nEach is a scheduled crew that never recorded work. They'll be waived with reason "no work recorded" (audited).`)) onBulkWaiveEmpty(ym); }}
+                                      className="shrink-0 text-[10px] font-black uppercase tracking-widest px-2.5 py-1.5 rounded-md bg-amber-500 hover:bg-amber-600 text-white">Waive empty days</button>
+                                  </div>
+                                  {settle.emptyPending.map(rowBtn)}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}

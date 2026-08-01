@@ -38,6 +38,27 @@ export function isCrewDaySettled(log: PerformanceLog): boolean {
   return log?.approvalStatus === 'approved' || log?.approvalStatus === 'waived';
 }
 
+// Whether a crew-day has ANY real work. The scheduled sync writes a pending
+// PerformanceLog for EVERY crew on the day's schedule, including crews that had
+// zero synced work (jobs:[], employeeAH:{}) — a no-work placeholder. This is the
+// SINGLE source of truth for "real work", shared by the month-finalize gate and
+// the outstanding-days banner (approvalOversight) so the two rules can never
+// disagree about which crew-days matter.
+export function logHasRealWork(log: PerformanceLog): boolean {
+  if ((log?.jobs?.length ?? 0) > 0) return true;
+  for (const v of Object.values(log?.employeeAH || {})) if ((Number(v) || 0) > 0) return true;
+  const ts = (log as { employeeTimesheets?: Record<string, unknown> })?.employeeTimesheets;
+  if (ts && Object.keys(ts).length > 0) return true;
+  return false;
+}
+
+// Sum of a crew-day's attributed actual hours (employeeAH).
+export function logActualHours(log: PerformanceLog): number {
+  let ah = 0;
+  for (const v of Object.values(log?.employeeAH || {})) ah += Number(v) || 0;
+  return Math.round(ah * 10) / 10;
+}
+
 // ── Rolling partial push (per-day archiving) ─────────────────────────────
 // Settled days older than this window archive to their month sheet, keeping
 // the main doc lean continuously so it never hits the 1 MiB cap mid-month.
@@ -133,30 +154,52 @@ export function groupDatesByMonth(dates: string[]): Record<string, string[]> {
   return out;
 }
 
+export interface UnsettledCrewDay {
+  date: string;
+  crewId: string;
+  division: string;
+  crewNumber: number;
+  crewLabel: string;
+  status: string;      // 'pending' | legacy
+  ah: number;          // attributed actual hours (0 for a placeholder)
+  jobCount: number;
+  hasWork: boolean;    // logHasRealWork — the finalize gate only counts these
+}
 export interface MonthSettlement {
-  settled: boolean;
+  settled: boolean;              // no REAL-work crew-day is unsettled
   dayCount: number;
   crewDayCount: number;
-  blocking: Array<{ date: string; crewLabel: string; status: string }>;
+  blocking: UnsettledCrewDay[];      // unsettled AND has real work — GATES the month
+  emptyPending: UnsettledCrewDay[];  // unsettled placeholders (no work) — do NOT gate
 }
 
-// Is every crew-day in `ym` settled? Returns the blocking crew-days if not.
+// Settlement status for a month. Split into what actually gates finalization
+// (unsettled crew-days WITH real work) and content-less placeholders (a
+// scheduled crew that never worked). Placeholders no longer block a push — an
+// empty crew that carries no BH/AH/timesheets has no pay data to lock — but they
+// are still returned so the UI can surface and bulk-clean them.
 export function monthSettlementStatus(performance: PerfMap, ym: string): MonthSettlement {
   const dates = datesInMonth(performance, ym);
-  const blocking: MonthSettlement['blocking'] = [];
+  const blocking: UnsettledCrewDay[] = [];
+  const emptyPending: UnsettledCrewDay[] = [];
   let crewDayCount = 0;
   for (const date of dates) {
     const dayMap = performance[date] || {};
-    for (const [, log] of Object.entries(dayMap)) {
+    for (const [crewId, log] of Object.entries(dayMap)) {
       crewDayCount++;
-      if (!isCrewDaySettled(log)) {
-        blocking.push({
-          date,
-          crewLabel: `${log.division ?? '?'} #${log.crewNumber ?? '?'}`,
-          status: log.approvalStatus || 'pending',
-        });
-      }
+      if (isCrewDaySettled(log)) continue;
+      const entry: UnsettledCrewDay = {
+        date, crewId,
+        division: log.division ?? 'Unassigned',
+        crewNumber: log.crewNumber ?? 0,
+        crewLabel: `${log.division ?? '?'} #${log.crewNumber ?? '?'}`,
+        status: log.approvalStatus || 'pending',
+        ah: logActualHours(log),
+        jobCount: log.jobs?.length ?? 0,
+        hasWork: logHasRealWork(log),
+      };
+      (entry.hasWork ? blocking : emptyPending).push(entry);
     }
   }
-  return { settled: blocking.length === 0, dayCount: dates.length, crewDayCount, blocking };
+  return { settled: blocking.length === 0, dayCount: dates.length, crewDayCount, blocking, emptyPending };
 }

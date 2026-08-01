@@ -1,4 +1,5 @@
 import { PerformanceLog, ManagedDivision } from '../types';
+import { logHasRealWork } from './performanceMonths';
 
 // Cross-date oversight for crew-days that are neither approved nor
 // waived — i.e. still "outstanding." Read-derived from the in-memory
@@ -26,25 +27,11 @@ function isOutstanding(log: Pick<PerformanceLog, 'approvalStatus'>): boolean {
   return s !== 'approved' && s !== 'waived';
 }
 
-// Whether a crew-day has ANY real work. The scheduled sync writes a
-// pending PerformanceLog for EVERY crew on the day's schedule, including
-// crews that had zero synced work (jobs:[], employeeAH:{}) — a no-work
-// placeholder. Those must NOT count as "outstanding" (nothing to approve).
-// A day counts as real work if it has any job row, any positive attributed
-// hours (employeeAH — covers Jobber, TimeMaster, and manual AH splits), or
-// any captured timesheet interval. This guard is self-protecting: a real
-// unapproved day still flags, and a sync-gap day (case (b)) — which BY
-// DEFINITION has Jobber visits or clock-ins, i.e. jobs/employeeAH/timesheets
-// — still flags, so it can never accidentally hide a genuine gap.
-function hasRealWork(log: PerformanceLog): boolean {
-  if ((log.jobs?.length ?? 0) > 0) return true;
-  for (const v of Object.values(log.employeeAH || {})) {
-    if ((Number(v) || 0) > 0) return true;
-  }
-  const ts = (log as { employeeTimesheets?: Record<string, unknown> }).employeeTimesheets;
-  if (ts && Object.keys(ts).length > 0) return true;
-  return false;
-}
+// "Real work" is defined once in performanceMonths.logHasRealWork and shared by
+// BOTH the month-finalize gate and this outstanding-days scan, so a placeholder
+// day can never be counted by one rule and hidden by the other (the bug that let
+// empty crew-days block a month while staying invisible in the banner).
+const hasRealWork = logHasRealWork;
 
 // Outstanding-tracking start date. The approval workflow launched
 // 2026-07-01, so every June-and-earlier crew-day would read as

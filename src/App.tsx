@@ -4164,6 +4164,39 @@ export default function App() {
         });
         showToastMsg("Un-waived — fields are editable.");
       }}
+      onBulkWaiveEmpty={(ym) => {
+        if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
+        if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+        // Waive every content-less placeholder crew-day in the month in ONE
+        // write. Same terminal 'waived' state + audit as a manual waive; the
+        // reason is auto-noted so month-end cleanup isn't a scavenger hunt.
+        const empties = monthSettlementStatus(appData.performance || {}, ym).emptyPending;
+        if (empties.length === 0) { showToastMsg('No empty days to waive.'); return; }
+        const REASON = 'no work recorded';
+        const nowIso = new Date().toISOString();
+        const newPerf = { ...(appData.performance || {}) };
+        for (const e of empties) {
+          const day = { ...(newPerf[e.date] || {}) };
+          const log = day[e.crewId];
+          if (!log || log.approvalStatus === 'approved' || log.approvalStatus === 'waived') continue;
+          day[e.crewId] = {
+            ...log,
+            approvalStatus: 'waived', waivedReason: REASON, waivedAt: nowIso,
+            waivedBy: displayEmail, waivedByName: displayName,
+            approvedAt: undefined, approvedBy: undefined, approvedByName: undefined,
+          };
+          newPerf[e.date] = day;
+          // If the waived day is the one on screen, keep the in-view copy in sync.
+          if (e.date === perfDate) setDailyLogs(prev => ({ ...prev, [e.crewId]: day[e.crewId] }));
+          logPerfActivity({
+            type: 'approval_waived', targetDate: e.date, crewId: e.crewId,
+            crewLabel: e.crewLabel, userId: user?.uid || displayEmail, userName: displayName,
+            userRole: effectiveRole, reasonNote: REASON,
+          });
+        }
+        syncToCloud({ ...appData, performance: newPerf });
+        showToastMsg(`Waived ${empties.length} empty day${empties.length === 1 ? '' : 's'} — no work recorded.`);
+      }}
       jobberConnected={jobberConnected}
       canSyncJobber={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
       showToastMsg={showToastMsg}
