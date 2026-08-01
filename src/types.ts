@@ -1265,6 +1265,18 @@ export interface LawnQuote {
   selectedPackage?: string | null;   // package key or null
   packageTravelPerVisit: number;
   packageTotal?: number | null;
+  // ── Mid-season proration + overgrown + BH (mowing only). Optional — older
+  // quotes predate this and resolve against their stamped config as before. ──
+  startDate?: string;
+  elapsedWeeks?: number;
+  baseDiscountPct?: number;
+  overgrownKey?: string;
+  overgrownMultiplier?: number;
+  finalDiscountPct?: number;         // net (may be negative = surcharge)
+  isSurcharge?: boolean;
+  remainingInstalments?: number;
+  weeklyProrated?: number; weeklyDeposit?: number; weeklyBhPerVisit?: number; weeklyFirstVisitBH?: number;
+  biweeklyProrated?: number; biweeklyDeposit?: number; biweeklyBhPerVisit?: number; biweeklyFirstVisitBH?: number;
   pricingConfigVersion: string;
   quotedBy?: { email: string; name: string };
   quotedAt?: number;

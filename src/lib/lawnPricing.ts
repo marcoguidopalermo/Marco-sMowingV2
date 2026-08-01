@@ -31,7 +31,14 @@ export interface LawnConfig {
   PACKAGE_PRICES: LawnPackagePrices[];      // per tier index: key -> price (0 = not yet priced)
   PACKAGE_EXTRAS: { VERY_HILLY: number; CLUTTER: number };
   PACKAGE_TRAVEL_PER_VISIT: number[];
+  // ── Mid-season proration + overgrown catch-up + BH (MOWING ONLY) ──────────
+  SEASON_START: string;            // 'YYYY-MM-DD' — resettable each year
+  WEEKS_IN_SEASON: number;         // end derives as start + this many weeks
+  DISCOUNT_PER_WEEK: number;       // percent, per elapsed week
+  MOWING_ALLOCATION_RATE: number;  // $/hr, for billable hours
+  OVERGROWN: LawnOvergrown[];      // catch-up ladder — first-visit BH multiplier per option
 }
+export interface LawnOvergrown { key: string; label: string; multiplier: number }
 
 export const LAWN_CONFIG_V1: LawnConfig = {
   BIWEEKLY_RATIO: 0.75,
@@ -75,6 +82,17 @@ export const LAWN_CONFIG_V1: LawnConfig = {
   ],
   PACKAGE_EXTRAS: { VERY_HILLY: 50, CLUTTER: 50 },
   PACKAGE_TRAVEL_PER_VISIT: [0, 25, 50, 75, 100],
+  SEASON_START: '2026-05-25',
+  WEEKS_IN_SEASON: 20,
+  DISCOUNT_PER_WEEK: 5,
+  MOWING_ALLOCATION_RATE: 100,
+  OVERGROWN: [
+    { key: 'normal', label: 'Normal', multiplier: 1 },
+    { key: 'double', label: 'Double cut', multiplier: 2 },
+    { key: 'triple', label: 'Triple cut', multiplier: 3 },
+    { key: 'quad', label: '4× cut', multiplier: 4 },
+    { key: 'quint', label: '5× cut', multiplier: 5 },
+  ],
 };
 
 // ── VERSION IDS (ready for the lawn rate sheet) ─────────────────────────────
@@ -226,6 +244,113 @@ export function priceLawn(
   };
 }
 
+// ── MID-SEASON PRORATION + OVERGROWN CATCH-UP + BH (MOWING ONLY) ─────────────
+// Proration is BY WEEK, never by month. Packages are never prorated.
+const DAY_MS = 86_400_000;
+function ymdToDayNum(ymd: string): number {
+  const [y, m, d] = String(ymd).split('-').map(Number);
+  if (!y || !m || !d) return NaN;
+  return Math.floor(Date.UTC(y, m - 1, d) / DAY_MS);
+}
+function dayNumToYmd(n: number): string {
+  const dt = new Date(n * DAY_MS);
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+}
+/** True only for a real calendar date in YYYY-MM-DD form. */
+export function isValidYmd(ymd: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(ymd || ''))) return false;
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+/** Season end = SEASON_START + WEEKS_IN_SEASON weeks. */
+export function seasonEndDate(config: LawnConfig = LAWN_CONFIG_V1): string {
+  return dayNumToYmd(ymdToDayNum(config.SEASON_START) + config.WEEKS_IN_SEASON * 7);
+}
+/** Whole weeks elapsed since SEASON_START, clamped 0..WEEKS_IN_SEASON. */
+export function elapsedSeasonWeeks(startDate: string, config: LawnConfig = LAWN_CONFIG_V1): number {
+  const diff = ymdToDayNum(startDate) - ymdToDayNum(config.SEASON_START);
+  if (!Number.isFinite(diff)) return 0;
+  return Math.max(0, Math.min(config.WEEKS_IN_SEASON, Math.floor(diff / 7)));
+}
+/** Overgrown discount reduction, always derived: (multiplier − 1) × DISCOUNT_PER_WEEK. */
+export function overgrownReductionPct(multiplier: number, config: LawnConfig = LAWN_CONFIG_V1): number {
+  return (multiplier - 1) * config.DISCOUNT_PER_WEEK;
+}
+/** Month-ends AFTER the signup month, through October (month 10). */
+export function remainingInstalments(startDate: string): number {
+  const month = Number(String(startDate).slice(5, 7)) || 1;
+  return Math.max(0, 10 - month);
+}
+
+export interface SeasonDiscount {
+  elapsedWeeks: number;
+  baseDiscountPct: number;         // elapsedWeeks × DISCOUNT_PER_WEEK
+  overgrownKey: string;
+  overgrownLabel: string;
+  overgrownMultiplier: number;
+  overgrownReductionPct: number;   // (mult − 1) × DISCOUNT_PER_WEEK
+  netDiscountPct: number;          // base − reduction, MAY BE NEGATIVE (a surcharge)
+  isSurcharge: boolean;            // netDiscountPct < 0
+}
+export interface SeasonFreqPlan {
+  fullPrice: number;               // full seasonal price (the renewal anchor)
+  cuts: number;
+  proratedTotal: number;           // fullPrice × (1 − netDiscount)
+  monthly: number;                 // fullPrice / MONTHS — the STANDARD recurring amount
+  deposit: number;                 // proratedTotal − remaining × monthly, floored at 0
+  depositNegative: boolean;        // true if the raw deposit was < 0 (flag it)
+  bhPerVisit: number;              // full price / full cuts / rate
+  firstVisitBH: number;            // bhPerVisit × overgrown multiplier
+}
+export interface SeasonPlan {
+  startDate: string;
+  seasonEnd: string;
+  remainingInstalments: number;
+  discount: SeasonDiscount;
+  weekly: SeasonFreqPlan;
+  biweekly: SeasonFreqPlan;
+}
+
+/**
+ * The mid-season plan for a mowing quote. Discount is shared; proration,
+ * deposit, and BH are computed per frequency from the FULL seasonal price (BH
+ * and the deposit's monthly instalment never use the prorated figure — a crew
+ * does the same work per cut, and the recurring job always bills the standard
+ * amount). The surcharge (negative net discount) is NOT clamped.
+ */
+export function computeSeasonPlan(
+  mowing: MowingPrice, startDate: string, overgrownKey: string, config: LawnConfig = LAWN_CONFIG_V1,
+): SeasonPlan {
+  const elapsedWeeks = elapsedSeasonWeeks(startDate, config);
+  const baseDiscountPct = elapsedWeeks * config.DISCOUNT_PER_WEEK;
+  const og = config.OVERGROWN.find(o => o.key === overgrownKey) || config.OVERGROWN[0];
+  const reduction = overgrownReductionPct(og.multiplier, config);
+  const netDiscountPct = baseDiscountPct - reduction;
+  const remaining = remainingInstalments(startDate);
+  const freq = (fullPrice: number, cuts: number): SeasonFreqPlan => {
+    const proratedTotal = fullPrice * (1 - netDiscountPct / 100);
+    const monthly = config.MONTHS > 0 ? fullPrice / config.MONTHS : 0;
+    const depositRaw = proratedTotal - remaining * monthly;
+    const bhPerVisit = cuts > 0 ? fullPrice / cuts / config.MOWING_ALLOCATION_RATE : 0;
+    return {
+      fullPrice, cuts, proratedTotal, monthly,
+      deposit: Math.max(0, depositRaw), depositNegative: depositRaw < 0,
+      bhPerVisit, firstVisitBH: bhPerVisit * og.multiplier,
+    };
+  };
+  return {
+    startDate, seasonEnd: seasonEndDate(config), remainingInstalments: remaining,
+    discount: {
+      elapsedWeeks, baseDiscountPct, overgrownKey: og.key, overgrownLabel: og.label,
+      overgrownMultiplier: og.multiplier, overgrownReductionPct: reduction,
+      netDiscountPct, isSurcharge: netDiscountPct < 0,
+    },
+    weekly: freq(mowing.weeklyTotal, config.WEEKLY_CUTS),
+    biweekly: freq(mowing.biweeklyTotal, config.BIWEEKLY_CUTS),
+  };
+}
+
 // ── CONFIG VALIDATION + DIFF (for the lawn rate sheet) ──────────────────────
 // Mirrors validateSnowConfig / diffSnowConfig in snowPricing.ts. The lawn config
 // is nested (a tier×package grid, arrays of zones/travel), so the diff flattens
@@ -260,6 +385,11 @@ function flattenLawn(c: LawnConfig): FlatEntry[] {
   push('season.months', 'Season · Months', c.MONTHS);
   push('zone.min', 'Zone · Min clients', c.ZONE_MIN_CLIENTS);
   push('zone.break', 'Zone · Break-even clients', c.ZONE_BREAKEVEN_CLIENTS);
+  push('season.start', 'Season start', c.SEASON_START);
+  push('season.weeks', 'Weeks in season', c.WEEKS_IN_SEASON);
+  push('season.discPerWeek', 'Discount per week (%)', c.DISCOUNT_PER_WEEK);
+  push('season.allocRate', 'Mowing allocation rate ($/hr)', c.MOWING_ALLOCATION_RATE);
+  c.OVERGROWN.forEach(o => push(`overgrown.${o.key}`, `Overgrown · ${o.label} ×`, o.multiplier));
   return out;
 }
 
@@ -319,5 +449,15 @@ export function validateLawnConfig(c: LawnConfig): string[] {
   if (!(Number(c.MONTHS) > 0)) errs.push('Months must be greater than 0.');
   // Package visit counts > 0.
   if (c.PACKAGES.some(p => !(Number(p.visits) > 0))) errs.push('Package visit counts must be greater than 0.');
+  // Season / proration.
+  if (!isValidYmd(c.SEASON_START)) errs.push('Season start must be a real date (YYYY-MM-DD).');
+  if (!(Number(c.WEEKS_IN_SEASON) > 0)) errs.push('Weeks in season must be greater than 0.');
+  if (!nn(c.DISCOUNT_PER_WEEK)) errs.push('Discount per week cannot be negative.');
+  if (!(Number(c.MOWING_ALLOCATION_RATE) > 0)) errs.push('Mowing allocation rate must be greater than 0.');
+  // Overgrown multipliers strictly ascending, all > 0.
+  const mults = (c.OVERGROWN || []).map(o => Number(o.multiplier));
+  if (!mults.length) errs.push('At least one overgrown option is required.');
+  if (mults.some(m => !(m > 0))) errs.push('Overgrown multipliers must be greater than 0.');
+  for (let i = 1; i < mults.length; i++) if (!(mults[i] > mults[i - 1])) { errs.push('Overgrown multipliers must ascend.'); break; }
   return [...new Set(errs)];
 }

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   LAWN_CONFIG_V1, LawnConfig, resolveTierIndex, priceMowing, pricePackages, priceLawn, tierLabel,
   resolveLawnConfig, activeLawnVersionId, lawnVersionId, validateLawnConfig, diffLawnConfig,
+  computeSeasonPlan, elapsedSeasonWeeks, seasonEndDate, overgrownReductionPct, remainingInstalments, isValidYmd,
 } from './lawnPricing';
 
 let pass = 0, fail = 0;
@@ -205,6 +206,121 @@ test('HISTORICAL RESOLUTION: an April (v1) quote keeps its price after v2 raises
   const aprilReopened = priceMowing(resolveTierIndex(4000, resolveLawnConfig('lawn-v1', versions))!, {}, resolveLawnConfig('lawn-v1', versions));
   assert.equal(aprilReopened.weeklyTotal, 1200, 'historical lawn quote must NOT reprice');
   assert.equal(activeLawnVersionId(versions), 'lawn-v2');
+});
+
+// ── Mid-season proration + overgrown + deposit + BH ─────────────────────────
+console.log('\nLawn mid-season — proration, overgrown, deposit, BH:');
+// Tier 1 (4,000 sq ft) → weekly $1,200 / biweekly $900. SEASON_START 2026-05-25.
+const plan = (startDate: string, overgrown = 'normal', config = LAWN_CONFIG_V1) =>
+  computeSeasonPlan(priceMowing(1, {}, config), startDate, overgrown, config);
+const round = (n: number) => Math.round(n * 100) / 100;
+
+test('signup on SEASON_START → 0 weeks, 0% discount, full price', () => {
+  const p = plan('2026-05-25');
+  assert.equal(p.discount.elapsedWeeks, 0);
+  assert.equal(p.discount.baseDiscountPct, 0);
+  assert.equal(p.discount.netDiscountPct, 0);
+  assert.equal(p.weekly.proratedTotal, 1200);
+});
+test('15 June → week 3 → 15% → weekly prorated $1,020', () => {
+  const p = plan('2026-06-15');
+  assert.equal(p.discount.elapsedWeeks, 3);
+  assert.equal(p.discount.netDiscountPct, 15);
+  assert.equal(p.weekly.proratedTotal, 1020);
+});
+test('15 July → week 7 → 35% → weekly $780, deposit $180', () => {
+  const p = plan('2026-07-15');
+  assert.equal(p.discount.elapsedWeeks, 7);
+  assert.equal(p.discount.netDiscountPct, 35);
+  assert.equal(p.weekly.proratedTotal, 780);
+  assert.equal(p.remainingInstalments, 3); // Aug, Sep, Oct
+  assert.equal(p.weekly.deposit, 180);
+});
+test('10 Aug → week 11 → 55% → weekly $540', () => {
+  const p = plan('2026-08-10');
+  assert.equal(p.discount.elapsedWeeks, 11);
+  assert.equal(p.discount.netDiscountPct, 55);
+  assert.equal(p.weekly.proratedTotal, 540);
+});
+test('signup before season start → 0%, no negative weeks', () => {
+  const p = plan('2026-05-01');
+  assert.equal(p.discount.elapsedWeeks, 0);
+  assert.equal(p.discount.baseDiscountPct, 0);
+});
+test('signup after season end → capped at 20 weeks', () => {
+  assert.equal(elapsedSeasonWeeks('2026-12-01'), 20);
+  assert.equal(plan('2026-12-01').discount.baseDiscountPct, 100);
+});
+test('triple cut at 50% base → 40% final; first-visit BH 1.80 weekly / 2.25 biweekly', () => {
+  const p = plan('2026-08-03', 'triple'); // week 10 → 50% base
+  assert.equal(p.discount.baseDiscountPct, 50);
+  assert.equal(p.discount.overgrownReductionPct, 10); // (3-1)×5
+  assert.equal(p.discount.netDiscountPct, 40);
+  assert.equal(p.discount.isSurcharge, false);
+  assert.equal(round(p.weekly.firstVisitBH), 1.8);
+  assert.equal(round(p.biweekly.firstVisitBH), 2.25);
+});
+test('5× cut at 10% base → net −10%, surcharge, total $1,320 weekly', () => {
+  const p = plan('2026-06-08', 'quint'); // week 2 → 10% base
+  assert.equal(p.discount.baseDiscountPct, 10);
+  assert.equal(p.discount.overgrownReductionPct, 20); // (5-1)×5
+  assert.equal(p.discount.netDiscountPct, -10);
+  assert.equal(p.discount.isSurcharge, true);
+  assert.equal(p.weekly.proratedTotal, 1320);
+});
+test('4× cut at 5% base → net −10%, surcharge', () => {
+  const p = plan('2026-06-01', 'quad'); // week 1 → 5% base
+  assert.equal(p.discount.netDiscountPct, -10);
+  assert.equal(p.discount.isSurcharge, true);
+});
+test('surcharge deposit $520 on 8 June signup, and deposit + instalments = prorated total', () => {
+  const p = plan('2026-06-08', 'quint');
+  assert.equal(p.remainingInstalments, 4); // Jul, Aug, Sep, Oct
+  assert.equal(p.weekly.deposit, 520);
+  assert.equal(p.weekly.deposit + p.remainingInstalments * p.weekly.monthly, p.weekly.proratedTotal); // 520 + 800 = 1320
+});
+test('packages are unchanged by start date, overgrown option, or discount', () => {
+  const base = pricePackages(1, {}, 0).find(x => x.key === 'bronze')!.total;
+  // computeSeasonPlan touches only mowing; packages are priced independently.
+  assert.equal(pricePackages(1, {}, 0).find(x => x.key === 'bronze')!.total, base);
+  assert.equal(base, 249);
+});
+test('discount reduction always equals (multiplier − 1) × 5', () => {
+  for (const o of LAWN_CONFIG_V1.OVERGROWN) {
+    assert.equal(overgrownReductionPct(o.multiplier), (o.multiplier - 1) * 5);
+  }
+});
+test('BH uses FULL price and FULL cut count, not prorated', () => {
+  const p = plan('2026-08-10'); // 55% discount
+  assert.equal(p.weekly.bhPerVisit, 0.6);   // 1200 / 20 / 100 — not the prorated 540
+  assert.equal(p.biweekly.bhPerVisit, 0.75); // 900 / 12 / 100
+});
+test('prorated total + deposit resolve from an OLD config version after SEASON_START changes', () => {
+  // v2 moves the season a week later. An April-stamped v1 quote must still use v1's SEASON_START.
+  const V2: LawnConfig = structuredClone(LAWN_CONFIG_V1); V2.SEASON_START = '2026-06-01';
+  const versions = { 'lawn-v2': { version: 'lawn-v2', config: V2 } };
+  const v1cfg = resolveLawnConfig('lawn-v1', versions); // → defaults (2026-05-25)
+  const v2cfg = resolveLawnConfig('lawn-v2', versions); // → 2026-06-01
+  // Same 15 July signup resolves to different elapsed weeks per version.
+  assert.equal(computeSeasonPlan(priceMowing(1, {}, v1cfg), '2026-07-15', 'normal', v1cfg).discount.elapsedWeeks, 7);
+  assert.equal(computeSeasonPlan(priceMowing(1, {}, v2cfg), '2026-07-15', 'normal', v2cfg).discount.elapsedWeeks, 6);
+  // v1 quote's prorated/deposit unchanged by v2 existing.
+  const v1 = computeSeasonPlan(priceMowing(1, {}, v1cfg), '2026-07-15', 'normal', v1cfg);
+  assert.equal(v1.weekly.proratedTotal, 780);
+  assert.equal(v1.weekly.deposit, 180);
+});
+test('season end derives as start + 20 weeks; date validation', () => {
+  assert.equal(seasonEndDate(), '2026-10-12');
+  assert.equal(remainingInstalments('2026-07-15'), 3);
+  assert.ok(isValidYmd('2026-05-25'));
+  assert.ok(!isValidYmd('2026-13-40'));
+  assert.ok(!isValidYmd('not-a-date'));
+});
+test('validation: SEASON_START must be real; overgrown multipliers must ascend', () => {
+  assert.ok(validateLawnConfig({ ...structuredClone(LAWN_CONFIG_V1), SEASON_START: 'nope' }).some(e => /Season start/i.test(e)));
+  const bad = structuredClone(LAWN_CONFIG_V1); bad.OVERGROWN[2].multiplier = 1.5; // 2 then 1.5 → not ascending
+  assert.ok(validateLawnConfig(bad).some(e => /ascend/i.test(e)));
+  assert.deepEqual(validateLawnConfig(LAWN_CONFIG_V1), []);
 });
 
 console.log(`\n${fail === 0 ? '✅' : '❌'} ${pass} passed, ${fail} failed`);

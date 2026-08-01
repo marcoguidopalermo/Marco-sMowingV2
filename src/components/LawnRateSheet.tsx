@@ -9,6 +9,7 @@ import { Lock, ShieldAlert, History, RotateCcw, Check, X, AlertTriangle, Plus, T
 import { LawnRateConfigVersion } from '../types';
 import {
   LawnConfig, LAWN_CONFIG_V1, validateLawnConfig, diffLawnConfig, RateAuditChange, lawnVersionNum,
+  seasonEndDate, isValidYmd,
 } from '../lib/lawnPricing';
 
 const GREEN = '#1c4634';
@@ -197,6 +198,29 @@ function Editor({ config, activeVersion, versions, onSave, onRevert, initial }: 
               </div>
             ))}
           </div>
+        </Group>
+
+        {/* Season & proration (mowing only) */}
+        <Group title="Season & proration (mowing only)">
+          <label className="flex items-center justify-between gap-3">
+            <span className="text-[12px] font-bold text-slate-600">Season start</span>
+            <input type="date" value={draft.SEASON_START} onChange={e => edit(n => { n.SEASON_START = e.target.value; })} className="border border-slate-200 rounded px-2 py-1.5 text-sm font-mono" />
+          </label>
+          <div className="text-[11px] text-slate-500 text-right">End (derived, +{draft.WEEKS_IN_SEASON} wks): <span className="font-mono font-bold text-slate-700">{isValidYmd(draft.SEASON_START) ? seasonEndDate(draft) : '—'}</span></div>
+          <Field label="Weeks in season"><input type="number" value={draft.WEEKS_IN_SEASON} onChange={e => edit(n => { n.WEEKS_IN_SEASON = num(e.target.value); })} className={cell} /></Field>
+          <Field label="Discount per week (%)"><input type="number" value={draft.DISCOUNT_PER_WEEK} onChange={e => edit(n => { n.DISCOUNT_PER_WEEK = num(e.target.value); })} className={cell} /></Field>
+          <Field label="Mowing allocation rate ($/hr)"><input type="number" value={draft.MOWING_ALLOCATION_RATE} onChange={e => edit(n => { n.MOWING_ALLOCATION_RATE = num(e.target.value); })} className={cell} /></Field>
+        </Group>
+
+        {/* Overgrown catch-up ladder — first-visit BH multiplier per option */}
+        <Group title="Overgrown ladder (first-visit BH ×)" onAdd={() => edit(n => n.OVERGROWN.push({ key: `og_${n.OVERGROWN.length}`, label: 'New option', multiplier: (n.OVERGROWN[n.OVERGROWN.length - 1]?.multiplier || 0) + 1 }))}>
+          {draft.OVERGROWN.map((o, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input value={o.label} onChange={e => edit(n => { n.OVERGROWN[i].label = e.target.value; })} className="flex-1 border border-slate-200 rounded px-2 py-1.5 text-sm" />
+              <div className="flex items-center gap-1"><input type="number" step="0.5" value={o.multiplier} onChange={e => edit(n => { n.OVERGROWN[i].multiplier = num(e.target.value); })} className="w-16 border border-slate-200 rounded px-2 py-1.5 text-right font-mono text-sm" /><span className="text-slate-400 text-sm">×</span></div>
+              <button onClick={() => edit(n => { n.OVERGROWN.splice(i, 1); })} className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
+            </div>
+          ))}
         </Group>
       </div>
 

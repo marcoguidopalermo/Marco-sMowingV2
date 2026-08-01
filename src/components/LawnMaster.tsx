@@ -4,8 +4,13 @@ import { LawnQuote, LawnRateConfigVersion } from '../types';
 import {
   LawnConfig, LAWN_CONFIG_V1, resolveLawnConfig,
   resolveTierIndex, tierLabel, priceLawn, LawnPrice, PackagePrice,
+  computeSeasonPlan, SeasonPlan, overgrownReductionPct,
 } from '../lib/lawnPricing';
 import LawnRateSheet from './LawnRateSheet';
+
+const todayYmd = () => new Date().toISOString().slice(0, 10);
+const bh = (n: number) => `${(Math.round((Number(n) || 0) * 100) / 100).toFixed(2)} BH`;
+const pctLabel = (n: number) => `${n > 0 ? '+' : ''}${Math.round(n * 100) / 100}%`;
 
 // House style.
 const GREEN = '#1c4634';
@@ -28,22 +33,26 @@ interface Props {
   configs?: Record<string, LawnRateConfigVersion>;
   onSaveConfig?: (next: LawnConfig) => Promise<boolean>;
   onRevertConfig?: (versionId: string) => Promise<boolean>;
+  // Optional seed for previews/deep-links only. Never used in normal operation.
+  initial?: { sqft?: number; startDate?: string; overgrownKey?: string };
 }
 
 export default function LawnMaster({
   quotes, currentUser, isAdmin, onSave, onDelete,
   isSuperAdmin = false, config = LAWN_CONFIG_V1, activeVersion = 'lawn-v1', configs = {},
-  onSaveConfig, onRevertConfig,
+  onSaveConfig, onRevertConfig, initial,
 }: Props) {
   const [sub, setSub] = useState<'quote' | 'saved' | 'report' | 'rates'>('quote');
 
   // ── Inputs ───────────────────────────────────────────────────────────────
-  const [sqft, setSqft] = useState(0);
+  const [sqft, setSqft] = useState(initial?.sqft || 0);
   const [veryHilly, setVeryHilly] = useState(false);
   const [pushMow, setPushMow] = useState(false);
   const [clutter, setClutter] = useState(false);
   const [travelZone, setTravelZone] = useState('in_town');
   const [pkgTravel, setPkgTravel] = useState(0);
+  const [startDate, setStartDate] = useState(initial?.startDate || todayYmd());  // mid-season start, defaults today
+  const [overgrownKey, setOvergrownKey] = useState(initial?.overgrownKey || 'normal'); // catch-up selector
   const [frequency, setFrequency] = useState<'weekly' | 'biweekly' | null>(null);
   const [selectedPackage, setSelectedPackage] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -61,6 +70,11 @@ export default function LawnMaster({
     [sqft, pushMow, veryHilly, clutter, travelZone, pkgTravel, viewConfig],
   );
   const tierIdx = resolveTierIndex(sqft, viewConfig);
+  // Mid-season plan (mowing only). Discount + proration + deposit + BH.
+  const plan = useMemo<SeasonPlan | null>(
+    () => price ? computeSeasonPlan(price.mowing, startDate, overgrownKey, viewConfig) : null,
+    [price, startDate, overgrownKey, viewConfig],
+  );
 
   const touch = () => setDirty(true);
   const pickTier = (i: number) => {
@@ -83,12 +97,13 @@ export default function LawnMaster({
   const clearAll = () => {
     if (price && !window.confirm('Clear the lawn quote and all inputs?')) return;
     setSqft(0); setVeryHilly(false); setPushMow(false); setClutter(false);
-    setTravelZone('in_town'); setPkgTravel(0); setFrequency(null); setSelectedPackage(null);
+    setTravelZone('in_town'); setPkgTravel(0); setStartDate(todayYmd()); setOvergrownKey('normal');
+    setFrequency(null); setSelectedPackage(null);
     setName(''); setLoadedId(null); setLoadedVersion(null); setDirty(false);
   };
 
   const save = () => {
-    if (!price) return;
+    if (!price || !plan) return;
     const m = price.mowing;
     const sel = selectedPackage ? price.packages.find(p => p.key === selectedPackage) : null;
     const label = name.trim();
@@ -103,6 +118,15 @@ export default function LawnMaster({
       selectedPackage: sel && sel.priced ? sel.key : null,
       packageTravelPerVisit: pkgTravel,
       packageTotal: sel && sel.priced ? sel.total : null,
+      // Mid-season plan (mowing only).
+      startDate, elapsedWeeks: plan.discount.elapsedWeeks, baseDiscountPct: plan.discount.baseDiscountPct,
+      overgrownKey, overgrownMultiplier: plan.discount.overgrownMultiplier,
+      finalDiscountPct: plan.discount.netDiscountPct, isSurcharge: plan.discount.isSurcharge,
+      remainingInstalments: plan.remainingInstalments,
+      weeklyProrated: plan.weekly.proratedTotal, weeklyDeposit: plan.weekly.deposit,
+      weeklyBhPerVisit: plan.weekly.bhPerVisit, weeklyFirstVisitBH: plan.weekly.firstVisitBH,
+      biweeklyProrated: plan.biweekly.proratedTotal, biweeklyDeposit: plan.biweekly.deposit,
+      biweeklyBhPerVisit: plan.biweekly.bhPerVisit, biweeklyFirstVisitBH: plan.biweekly.firstVisitBH,
       pricingConfigVersion: viewVersion,
       quotedBy: currentUser, quotedAt: Date.now(),
     };
@@ -113,6 +137,7 @@ export default function LawnMaster({
   const load = (q: LawnQuote) => {
     setSqft(q.sqft || 0); setVeryHilly(!!q.veryHilly); setPushMow(!!q.pushMow); setClutter(!!q.clutter);
     setTravelZone(q.travelZone || 'in_town'); setPkgTravel(q.packageTravelPerVisit || 0);
+    setStartDate(q.startDate || todayYmd()); setOvergrownKey(q.overgrownKey || 'normal');
     setFrequency(q.frequency || null); setSelectedPackage(q.selectedPackage || null);
     setName(q.client || ''); setLoadedId(q.id); setLoadedVersion(q.pricingConfigVersion || 'lawn-v1'); setDirty(false);
     setSub('quote');
@@ -174,6 +199,38 @@ export default function LawnMaster({
               <Toggle label="Clutter" sub="Obstacles to work around" on={clutter} onClick={() => { touch(); setClutter(v => !v); }} />
             </div>
 
+            {/* Mid-season start date + overgrown catch-up (mowing only) */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">Start date</span>
+                <input type="date" value={startDate} onChange={e => { touch(); setStartDate(e.target.value); }}
+                  className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold" />
+              </div>
+              {plan && (
+                <div className="text-[11px] text-slate-500">
+                  Season {viewConfig.SEASON_START} → {plan.seasonEnd} · week {plan.discount.elapsedWeeks} of {viewConfig.WEEKS_IN_SEASON}
+                </div>
+              )}
+              <div>
+                <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Overgrown catch-up</div>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {viewConfig.OVERGROWN.map(o => {
+                    const on = overgrownKey === o.key;
+                    const red = overgrownReductionPct(o.multiplier, viewConfig);
+                    return (
+                      <button key={o.key} onClick={() => { touch(); setOvergrownKey(o.key); }}
+                        className="min-h-[52px] rounded-xl text-[11px] font-black border transition-colors px-1 flex flex-col items-center justify-center leading-tight"
+                        style={on ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN } : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
+                        <span>{o.multiplier}×</span>
+                        <span className="opacity-70 text-[9px] font-bold">{red ? `−${red}%` : '—'}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1.5">Reduces the season discount to recover catch-up work — the price isn’t adjusted directly.</div>
+              </div>
+            </div>
+
             {/* Mowing travel zone + density */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-2">
               <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Mowing travel — from city limits</div>
@@ -224,7 +281,7 @@ export default function LawnMaster({
               </div>
             ) : (
               <>
-                <MowingBlock price={price} config={viewConfig} frequency={frequency} onFrequency={f => { touch(); setFrequency(cur => cur === f ? null : f); }} />
+                <MowingBlock price={price} config={viewConfig} plan={plan!} frequency={frequency} onFrequency={f => { touch(); setFrequency(cur => cur === f ? null : f); }} />
                 <PackageBlock packages={price.packages} selected={selectedPackage} onSelect={k => { touch(); setSelectedPackage(cur => cur === k ? null : k); }} />
               </>
             )}
@@ -259,41 +316,82 @@ export default function LawnMaster({
   );
 }
 
-// ── Mowing block — weekly + biweekly side by side ───────────────────────────
-function MowingBlock({ price, config, frequency, onFrequency }: {
-  price: LawnPrice; config: LawnConfig; frequency: 'weekly' | 'biweekly' | null; onFrequency: (f: 'weekly' | 'biweekly') => void;
+// ── Mowing block — full seasonal anchor + mid-season plan, weekly | biweekly ─
+function MowingBlock({ price, config, plan, frequency, onFrequency }: {
+  price: LawnPrice; config: LawnConfig; plan: SeasonPlan; frequency: 'weekly' | 'biweekly' | null; onFrequency: (f: 'weekly' | 'biweekly') => void;
 }) {
   const m = price.mowing;
-  const col = (title: string, sel: boolean, f: 'weekly' | 'biweekly', fr: { annual: number; monthly: number; perCut: number }, cuts: number) => (
-    <button onClick={() => onFrequency(f)} className="text-left rounded-2xl p-4 shadow-sm border-2 transition-colors"
+  const d = plan.discount;
+  const overgrown = d.overgrownMultiplier > 1;
+  const anyDepositNeg = plan.weekly.depositNegative || plan.biweekly.depositNegative;
+
+  const pr = (sel: boolean, label: string, value: string, opts?: { strong?: boolean; internal?: boolean }) => (
+    <div className={`flex justify-between ${opts?.internal ? (sel ? 'text-white/50' : 'text-slate-400') : ''}`}>
+      <span className={opts?.strong ? 'font-black' : ''}>{label}{opts?.internal && <span className="ml-1 text-[9px] uppercase tracking-widest">internal · do not quote</span>}</span>
+      <span className={`font-mono ${opts?.strong ? 'font-black' : ''}`}>{value}</span>
+    </div>
+  );
+  const col = (title: string, sel: boolean, f: 'weekly' | 'biweekly', fp: typeof plan.weekly, perCut: number) => (
+    <button onClick={() => onFrequency(f)} className="text-left rounded-2xl p-3 shadow-sm border-2 transition-colors w-full"
       style={sel ? { backgroundColor: GREEN, color: 'white', borderColor: GOLD } : { backgroundColor: '#eef4f0', borderColor: '#d5e2da' }}>
       <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: sel ? GOLD : GREEN }}>{title}{sel ? ' · going with' : ''}</div>
-      <div className="text-3xl md:text-4xl font-black font-mono leading-none mt-1" style={{ color: sel ? 'white' : GREEN }}>{money(fr.annual)}<span className="text-xs font-bold opacity-70">/yr</span></div>
-      <div className={`text-[12px] font-bold mt-1 ${sel ? 'text-white/80' : 'text-slate-500'}`}>{money(fr.monthly)}/mo · {money(fr.perCut)}/cut · {cuts} cuts</div>
+      <div className="text-2xl md:text-3xl font-black font-mono leading-none mt-0.5" style={{ color: sel ? 'white' : GREEN }}>{money(fp.fullPrice)}<span className="text-[10px] font-bold opacity-70">/yr full</span></div>
+      <div className="mt-2 space-y-0.5 text-[12px]">
+        {pr(sel, 'Prorated total', money(fp.proratedTotal), { strong: true })}
+        {pr(sel, 'Monthly (standard)', money(fp.monthly))}
+        {pr(sel, 'Deposit', fp.depositNegative ? '$0' : money(fp.deposit))}
+        {pr(sel, 'BH / visit', bh(fp.bhPerVisit).replace(' BH', ''))}
+        {overgrown && pr(sel, '1st-visit BH', bh(fp.firstVisitBH).replace(' BH', ''))}
+        {pr(sel, 'per cut', money(perCut), { internal: true })}
+      </div>
     </button>
   );
+
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
-      <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Mowing · {m.tierLabel}</div>
-      <div className="grid grid-cols-2 gap-2">
-        {col('Weekly', frequency === 'weekly', 'weekly', m.weekly, config.WEEKLY_CUTS)}
-        {col('Biweekly', frequency === 'biweekly', 'biweekly', m.biweekly, config.BIWEEKLY_CUTS)}
+      <div className="flex items-center justify-between">
+        <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Mowing · {m.tierLabel}</div>
+        <div className="text-[10px] font-bold text-slate-400">full price = renewal anchor</div>
       </div>
-      {/* Shared breakdown once, then the two totals. */}
-      <div className="space-y-1 text-sm">
+
+      {/* Discount breakdown — shared. Never shown as a single negative discount. */}
+      <div className="rounded-xl border p-3 text-sm space-y-1" style={d.isSurcharge ? { borderColor: '#f59e0b', backgroundColor: '#fffbeb' } : { borderColor: '#e2e8f0' }}>
+        <div className="flex justify-between text-slate-600"><span>Season discount (week {d.elapsedWeeks})</span><span className="font-mono">{pctLabel(d.baseDiscountPct)}</span></div>
+        {overgrown && <div className="flex justify-between text-slate-600"><span>Overgrown catch-up ({d.overgrownLabel})</span><span className="font-mono">−{d.overgrownReductionPct}%</span></div>}
+        {d.isSurcharge ? (
+          <>
+            <div className="flex justify-between border-t border-amber-300 pt-1 mt-1 font-black text-amber-800"><span>Overgrown surcharge</span><span className="font-mono">{Math.round(Math.abs(d.netDiscountPct) * 100) / 100}%</span></div>
+            <div className="text-[11px] font-bold text-amber-700">Client pays {Math.round((100 - d.netDiscountPct) * 100) / 100}% of the seasonal price — catch-up surcharge.</div>
+          </>
+        ) : (
+          <div className="flex justify-between border-t border-slate-200 pt-1 mt-1 font-black" style={{ color: GREEN }}><span>Net discount</span><span className="font-mono">{Math.round(d.netDiscountPct * 100) / 100}%</span></div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        {col('Weekly', frequency === 'weekly', 'weekly', plan.weekly, m.weekly.perCut)}
+        {col('Biweekly', frequency === 'biweekly', 'biweekly', plan.biweekly, m.biweekly.perCut)}
+      </div>
+
+      <div className="flex items-center justify-between text-[12px] text-slate-500">
+        <span>{plan.remainingInstalments} remaining instalment{plan.remainingInstalments === 1 ? '' : 's'} · deposit replaces the signup-month bill</span>
+      </div>
+      {anyDepositNeg && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-2.5 text-[12px] font-bold text-amber-800 flex items-start gap-1.5">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>Instalments exceed the prorated total — check the start date with the office.</span>
+        </div>
+      )}
+
+      {/* Full-price build-up (the anchor) — how the full seasonal price is made. */}
+      <div className="space-y-0.5 text-[12px] text-slate-500 border-t border-slate-100 pt-2">
+        <div className="font-black uppercase tracking-widest text-[10px] text-slate-400">Full seasonal build-up</div>
         <Row label="Tier base (weekly)" value={money(m.weeklyBase)} />
         {m.extras.pushMow > 0 && <Row label="Push mow only" value={money(m.extras.pushMow)} />}
         {m.extras.veryHilly > 0 && <Row label="Very hilly" value={money(m.extras.veryHilly)} />}
         {m.extras.clutter > 0 && <Row label="Clutter" value={money(m.extras.clutter)} />}
         {m.travel.weekly > 0 && <Row label={`Travel · ${m.travel.label}`} value={money(m.travel.weekly)} />}
-        <div className="flex justify-between border-t-2 border-slate-200 pt-1.5 mt-1 font-bold text-slate-700">
-          <span className="uppercase tracking-widest text-[12px] text-slate-500 self-center">Weekly total</span>
-          <span className="text-base font-mono">{money(m.weeklyTotal)}</span>
-        </div>
-        <div className="flex justify-between font-black text-slate-900">
-          <span className="uppercase tracking-widest text-[12px] self-center" style={{ color: GREEN }}>Biweekly total <span className="text-slate-400 font-bold normal-case tracking-normal">(×{config.BIWEEKLY_RATIO})</span></span>
-          <span className="text-base font-mono">{money(m.biweeklyTotal)}</span>
-        </div>
+        <Row label={`Weekly / biweekly full (×${config.BIWEEKLY_RATIO})`} value={`${money(m.weeklyTotal)} / ${money(m.biweeklyTotal)}`} />
       </div>
     </div>
   );
@@ -303,7 +401,11 @@ function MowingBlock({ price, config, frequency, onFrequency }: {
 function PackageBlock({ packages, selected, onSelect }: { packages: PackagePrice[]; selected: string | null; onSelect: (k: string) => void }) {
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-2">
-      <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Lawn care packages</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Lawn care packages</div>
+        <div className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full" style={{ backgroundColor: '#eef4f0', color: GREEN }}>Full season rate</div>
+      </div>
+      <div className="text-[11px] font-bold text-slate-500">Packages are not prorated — full season rate.</div>
       <div className="grid grid-cols-2 gap-2">
         {packages.map(p => {
           const sel = selected === p.key;
