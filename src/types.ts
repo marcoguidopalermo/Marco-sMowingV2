@@ -680,7 +680,10 @@ export type PerfActivityType =
   | 'performance_month_pushed'
   | 'performance_day_archived'
   | 'performance_day_unlocked'
-  | 'schedule_month_archived';
+  | 'schedule_month_archived'
+  | 'partial_resolved_complete'
+  | 'partial_resolved_carry'
+  | 'partial_resolved_void';
 
 export interface PerfActivityEntry {
   id: string;
@@ -751,6 +754,19 @@ export interface MultiDayJob {
   dismissedCarryForward?: boolean;
   dismissedCarryForwardAt?: number;
   dismissedCarryForwardBy?: { email: string; name: string };
+  // ── Month-end resolution of a blocking partial job. Set by the drill-through
+  // resolution actions. NEVER recomputes completionHistory / already-credited
+  // BH — 'voided' closes only the uncredited remainder; 'completed'/'carried'
+  // are markers (the BH credit for 'completed' is an ordinary completionHistory
+  // entry). `resolvedMonth` scopes the post-finalize resolutions summary. ──
+  resolvedKind?: 'completed' | 'carried' | 'voided';
+  resolvedMonth?: string;                 // 'YYYY-MM' the resolution settled
+  resolvedBH?: number;                     // remaining BH affected at resolution time
+  resolvedAt?: number;
+  resolvedBy?: { email: string; name: string };
+  // Void metadata (resolvedKind === 'voided'). The uncredited remainder is
+  // closed; credited BH on prior days is untouched.
+  voidedRemainder?: { bh: number; reason: string; byEmail: string; byName: string; at: number };
 }
 
 export interface PerformanceLog {

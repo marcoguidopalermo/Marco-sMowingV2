@@ -18,7 +18,7 @@ import {
 
 import {
   Employee, FleetItem, DefectDetail, MechanicTask, StoredFile, FleetDocument,
-  Inspection, InventoryItem, Crew, Job, PerformanceLog, AppData,
+  Inspection, InventoryItem, Crew, Job, PerformanceLog, PerformanceJobRow, AppData,
   TaskActivity, TaskActivityType, BulletinAudienceRole, TaskNote, UnitNote, AppSettings, UserRole, RolePermissionsOverride, JobberUser, PrimaryCrew, PRIMARY_CREWS,
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
@@ -110,6 +110,9 @@ import {
   monthOfDate, extractMonth, monthSettlementStatus,
   SHEET_SIZE_WARN_BYTES,
 } from './lib/performanceMonths';
+import {
+  scanBlockingPartialJobs, remainingBHOf, rowBlocksApproval, voidLedger, carryLedger, completeLedger, BlockingPartialJob,
+} from './lib/multiDayResolution';
 import { buildMonthlySummary } from './lib/monthlySummary';
 import { nextUnusedColorKey } from './lib/roleCategories';
 import { callGeminiWithRetry } from './lib/gemini';
@@ -2035,6 +2038,104 @@ export default function App() {
   // current month and any month with unsettled (non-approved/waived)
   // crew-days. MERGES with a partially-filled sheet (rolling archive may
   // already have moved some of the month's days) — never overwrites it.
+  // ── Month-end resolution of blocking partial (multi-day) jobs. All three
+  // actions preserve already-credited BH; only which days GATE the month, or
+  // (for COMPLETE) the crediting of the uncredited remainder, change. Audited.
+  const resolutionActor = () => ({ email: displayEmail, name: displayName });
+  const canResolvePartials = () => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return false; }
+    return true;
+  };
+  // Clear the awaiting-review flag on this visit's blocking rows in a month
+  // (unblocks the day). `asContinuation` keeps the visit live (carry forward).
+  const clearBlockingRows = (perf: AppData['performance'], item: BlockingPartialJob, asContinuation: boolean) => {
+    for (const b of item.blockingDays) {
+      const day = { ...(perf[b.date] || {}) };
+      const log = day[b.crewId]; if (!log) continue;
+      day[b.crewId] = { ...log, jobs: log.jobs.map(r => {
+        if (r.jobberVisitId !== item.jobberVisitId || !rowBlocksApproval(r)) return r;
+        const next: PerformanceJobRow = { ...r };
+        delete next.awaitingCompletionReview;
+        if (asContinuation) { next.isIncompleteVisit = true; next.bh = 0; } // stays open, no credit
+        return next;
+      }) };
+      perf[b.date] = day;
+    }
+  };
+  const onResolveComplete = (visitId: string, ym: string, targetDate: string, targetCrewId: string) => {
+    if (!canResolvePartials()) return;
+    const item = scanBlockingPartialJobs(appData.performance || {}, appData.multiDayJobs || {}, ym).find(i => i.jobberVisitId === visitId);
+    const ledger = (appData.multiDayJobs || {})[visitId];
+    if (!item || !ledger) { showToastMsg('Job not found.'); return; }
+    const remaining = remainingBHOf(ledger);
+    const now = Date.now();
+    const perf = { ...(appData.performance || {}) };
+    // Clear blocking rows first (unblock every day this visit gated).
+    clearBlockingRows(perf, item, false);
+    // Credit the remaining BH to the chosen crew-day's visit row (or a synthetic
+    // row if that day has none), exactly like CompletionReviewModal's write.
+    const day = { ...(perf[targetDate] || {}) };
+    const tLog = day[targetCrewId];
+    if (tLog) {
+      let hit = false;
+      const jobs = tLog.jobs.map(r => {
+        if (r.jobberVisitId === visitId) { hit = true; const u: PerformanceJobRow = { ...r, bh: remaining }; delete u.awaitingCompletionReview; delete u.isIncompleteVisit; return u; }
+        return r;
+      });
+      if (!hit) jobs.push({ desc: item.title, bh: remaining, source: 'jobber', jobberVisitId: visitId, jobberJobId: item.jobberJobId, totalBH: item.totalBH });
+      day[targetCrewId] = { ...tLog, jobs };
+      perf[targetDate] = day;
+    }
+    const crewKey = tLog ? `${(tLog.division || '').toLowerCase()}-${tLog.crewNumber}` : undefined;
+    const nextLedger: MultiDayJob = completeLedger({
+      ...ledger,
+      completionHistory: [...(ledger.completionHistory || []), {
+        targetDate, percentComplete: 100, creditedBH: remaining, crewId: targetCrewId, crewKey,
+        markedAt: now, markedBy: displayEmail, markedByName: displayName, isRetroactive: true,
+        reasonNote: 'Completed at month-end resolution',
+      }],
+    }, remaining, resolutionActor(), ym, now);
+    syncToCloud({ ...appData, performance: perf, multiDayJobs: { ...(appData.multiDayJobs || {}), [visitId]: nextLedger } });
+    logPerfActivity({ type: 'partial_resolved_complete', targetDate, crewId: targetCrewId, crewLabel: item.defaultTarget?.crewLabel || '', userId: user?.uid || displayEmail, userName: displayName, userRole: effectiveRole, jobberJobId: item.jobberJobId, sourceJobberVisitId: visitId, jobTitle: item.title, valueLabel: 'BH', valueAfter: remaining, reasonNote: `Month-end COMPLETE — credited ${remaining} BH to ${item.defaultTarget?.crewLabel || targetCrewId} on ${targetDate}` });
+    showToastMsg(`Completed — ${remaining} BH credited.`);
+  };
+  const onResolveCarry = (visitId: string, ym: string) => {
+    if (!canResolvePartials()) return;
+    const item = scanBlockingPartialJobs(appData.performance || {}, appData.multiDayJobs || {}, ym).find(i => i.jobberVisitId === visitId);
+    const ledger = (appData.multiDayJobs || {})[visitId];
+    if (!item || !ledger) { showToastMsg('Job not found.'); return; }
+    const now = Date.now();
+    const perf = { ...(appData.performance || {}) };
+    clearBlockingRows(perf, item, true); // convert to non-blocking continuation
+    const nextLedger = carryLedger(ledger, resolutionActor(), ym, now);
+    syncToCloud({ ...appData, performance: perf, multiDayJobs: { ...(appData.multiDayJobs || {}), [visitId]: nextLedger } });
+    logPerfActivity({ type: 'partial_resolved_carry', targetDate: item.blockingDays[0]?.date || '', crewId: item.blockingDays[0]?.crewId || '', crewLabel: item.blockingDays[0]?.crewLabel || '', userId: user?.uid || displayEmail, userName: displayName, userRole: effectiveRole, jobberJobId: item.jobberJobId, sourceJobberVisitId: visitId, jobTitle: item.title, valueLabel: 'BH', valueAfter: item.remainingBH, reasonNote: `Month-end CARRY FORWARD — ${item.remainingBH} BH stays live for a future day` });
+    showToastMsg(`Carried forward — ${item.remainingBH} BH stays live. ${ym} no longer blocked by "${item.title}".`);
+  };
+  const onResolveVoid = (visitIds: string[], ym: string, reason: string) => {
+    if (!canResolvePartials()) return;
+    const trimmed = (reason || '').trim();
+    if (!trimmed) { showToastMsg('A reason is required to void.'); return; }
+    const items = scanBlockingPartialJobs(appData.performance || {}, appData.multiDayJobs || {}, ym);
+    const now = Date.now();
+    const perf = { ...(appData.performance || {}) };
+    const nextMdj = { ...(appData.multiDayJobs || {}) };
+    let voidedBH = 0, count = 0;
+    for (const visitId of visitIds) {
+      const item = items.find(i => i.jobberVisitId === visitId);
+      const ledger = nextMdj[visitId];
+      if (!item || !ledger) continue;
+      clearBlockingRows(perf, item, false);          // unblock the days (bh stays 0 — remainder is voided)
+      nextMdj[visitId] = voidLedger(ledger, trimmed, resolutionActor(), ym, now);
+      voidedBH = Math.round((voidedBH + item.remainingBH) * 10) / 10; count++;
+      logPerfActivity({ type: 'partial_resolved_void', targetDate: item.blockingDays[0]?.date || '', crewId: item.blockingDays[0]?.crewId || '', crewLabel: item.blockingDays[0]?.crewLabel || '', userId: user?.uid || displayEmail, userName: displayName, userRole: effectiveRole, jobberJobId: item.jobberJobId, sourceJobberVisitId: visitId, jobTitle: item.title, valueLabel: 'BH', valueAfter: 0, reasonNote: `Month-end VOID — ${item.remainingBH} BH remainder voided (${trimmed}); credited BH unchanged` });
+    }
+    if (count === 0) { showToastMsg('Nothing to void.'); return; }
+    syncToCloud({ ...appData, performance: perf, multiDayJobs: nextMdj });
+    showToastMsg(`Voided ${voidedBH} BH across ${count} item${count === 1 ? '' : 's'} — credited BH unchanged.`);
+  };
+
   const pushMonth = async (ym: string, opts?: { auto?: boolean }): Promise<boolean> => {
     if (isViewingAs) { if (!opts?.auto) showToastMsg('View Only — exit "View As" to make changes.'); return false; }
     if (!isAdmin) { if (!opts?.auto) showToastMsg(PERMISSION_DENIED); return false; }
@@ -4197,6 +4298,9 @@ export default function App() {
         syncToCloud({ ...appData, performance: newPerf });
         showToastMsg(`Waived ${empties.length} empty day${empties.length === 1 ? '' : 's'} — no work recorded.`);
       }}
+      onResolveComplete={onResolveComplete}
+      onResolveCarry={onResolveCarry}
+      onResolveVoid={onResolveVoid}
       jobberConnected={jobberConnected}
       canSyncJobber={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
       showToastMsg={showToastMsg}

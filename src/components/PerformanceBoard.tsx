@@ -11,6 +11,7 @@ import { functions, db, appId } from '../lib/firebase';
 import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole } from '../types';
 import { logPerfActivity } from '../lib/perfAudit';
 import { monthsPresent, monthOfDate, monthSettlementStatus } from '../lib/performanceMonths';
+import { scanBlockingPartialJobs, monthResolutionSummary, BlockingPartialJob } from '../lib/multiDayResolution';
 import { scanOutstandingCrewDays, groupOutstandingByDivision, divisionNameToCode, OutstandingCrewDay } from '../lib/approvalOversight';
 import CompletionReviewModal from './CompletionReviewModal';
 import AHSplitModal from './AHSplitModal';
@@ -101,6 +102,10 @@ interface PerformanceBoardProps {
   // Bulk-waive every content-less placeholder crew-day in a month ('no work
   // recorded'), so month-end cleanup isn't a scavenger hunt.
   onBulkWaiveEmpty: (ym: string) => void;
+  // Month-end resolution of blocking partial (multi-day) jobs.
+  onResolveComplete: (visitId: string, ym: string, targetDate: string, targetCrewId: string) => void;
+  onResolveCarry: (visitId: string, ym: string) => void;
+  onResolveVoid: (visitIds: string[], ym: string, reason: string) => void;
 
   jobberConnected: boolean;
   canSyncJobber: boolean;
@@ -153,6 +158,9 @@ export default function PerformanceBoard({
   onWaive,
   onUnwaive,
   onBulkWaiveEmpty,
+  onResolveComplete,
+  onResolveCarry,
+  onResolveVoid,
   jobberConnected,
   canSyncJobber,
   showToastMsg,
@@ -2822,11 +2830,13 @@ export default function PerformanceBoard({
                   <div className="space-y-2 mb-3">
                     {candidates.map(ym => {
                       const settle = monthSettlementStatus(performance, ym);
+                      const partials = scanBlockingPartialJobs(performance, multiDayJobs, ym);
+                      const resSummary = monthResolutionSummary(multiDayJobs, ym);
                       const busy = pushingMonth === ym;
                       const hasUnsettled = settle.blocking.length > 0;
                       const emptyCount = settle.emptyPending.length;
                       const open = expandedMonth === ym;
-                      const canDrill = hasUnsettled || emptyCount > 0;
+                      const canDrill = hasUnsettled || emptyCount > 0 || partials.length > 0;
                       const detail = (u: import('../lib/performanceMonths').UnsettledCrewDay) =>
                         `${u.date.slice(8)} · ${u.crewLabel} · ${u.hasWork ? `${u.jobCount} job${u.jobCount === 1 ? '' : 's'}${u.ah ? ` · ${u.ah} AH` : ''}` : 'no work recorded'} · ${u.status}`;
                       const rowBtn = (u: import('../lib/performanceMonths').UnsettledCrewDay) => (
@@ -2847,7 +2857,13 @@ export default function PerformanceBoard({
                                   ? <button type="button" onClick={() => setExpandedMonth(open ? null : ym)} className="text-amber-600 font-bold underline decoration-dotted">{settle.blocking.length} unsettled — approve/waive first ▾</button>
                                   : <span className="text-emerald-600 font-bold">all worked days settled</span>}
                                 {emptyCount > 0 && <> · <button type="button" onClick={() => setExpandedMonth(open ? null : ym)} className="text-slate-500 font-bold underline decoration-dotted">{emptyCount} empty day{emptyCount === 1 ? '' : 's'} ▾</button></>}
+                                {partials.length > 0 && <> · <button type="button" onClick={() => setExpandedMonth(open ? null : ym)} className="text-rose-600 font-bold underline decoration-dotted">{partials.length} partial job{partials.length === 1 ? '' : 's'} ▾</button></>}
                               </div>
+                              {(resSummary.completed.n + resSummary.carried.n + resSummary.voided.n > 0) && (
+                                <div className="text-[10px] text-slate-400 mt-0.5">
+                                  Resolutions: {resSummary.completed.n} completed ({resSummary.completed.bh} BH) · {resSummary.carried.n} carried ({resSummary.carried.bh} BH) · {resSummary.voided.n} voided ({resSummary.voided.bh} BH)
+                                </div>
+                              )}
                             </div>
                             <button
                               type="button"
@@ -2879,6 +2895,13 @@ export default function PerformanceBoard({
                                   </div>
                                   {settle.emptyPending.map(rowBtn)}
                                 </div>
+                              )}
+                              {partials.length > 0 && (
+                                <PartialJobsResolver
+                                  ym={ym} items={partials} performance={performance}
+                                  onOpenDay={(date, crewId, division) => goToCrewDay({ date, crewId, division })}
+                                  onComplete={onResolveComplete} onCarry={onResolveCarry} onVoid={onResolveVoid}
+                                />
                               )}
                             </div>
                           )}
@@ -3027,6 +3050,120 @@ export default function PerformanceBoard({
             </div>
             <div className="px-5 py-3 border-t border-slate-200 flex items-center justify-end gap-2 shrink-0">
               <button onClick={() => setShiftPickerCtx(null)} className="min-h-[44px] px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-100 rounded-lg">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Month-end resolver for BLOCKING PARTIAL (multi-day) jobs ─────────────────
+// Complete (credit remaining BH to a chosen crew-day), Carry forward (default —
+// stays open for a future day), or Void the remainder (reason + consequence).
+const VOID_REASONS = ['Job cancelled', 'Scope changed', 'Data error — never worked', 'Other'];
+const r1 = (n: number) => Math.round((Number(n) || 0) * 10) / 10;
+
+export function PartialJobsResolver({ ym, items, performance, onOpenDay, onComplete, onCarry, onVoid }: {
+  ym: string;
+  items: BlockingPartialJob[];
+  performance: Record<string, Record<string, PerformanceLog>>;
+  onOpenDay: (date: string, crewId: string, division: string) => void;
+  onComplete: (visitId: string, ym: string, targetDate: string, targetCrewId: string) => void;
+  onCarry: (visitId: string, ym: string) => void;
+  onVoid: (visitIds: string[], ym: string, reason: string) => void;
+}) {
+  const [sel, setSel] = useState<Record<string, boolean>>({});
+  const [voidItems, setVoidItems] = useState<BlockingPartialJob[] | null>(null);
+  const [reasonChoice, setReasonChoice] = useState(VOID_REASONS[0]);
+  const [reasonText, setReasonText] = useState('');
+  const [completeItem, setCompleteItem] = useState<BlockingPartialJob | null>(null);
+  const [target, setTarget] = useState<{ date: string; crewId: string } | null>(null);
+
+  const selected = items.filter(i => sel[i.jobberVisitId]);
+  const selectedBH = r1(selected.reduce((s, i) => s + i.remainingBH, 0));
+
+  // Crew-days that worked a visit (Complete target options), newest first.
+  const workedDays = (visitId: string) => {
+    const out: { date: string; crewId: string; crewLabel: string }[] = [];
+    for (const [date, dayMap] of Object.entries(performance || {})) {
+      for (const [crewId, log] of Object.entries(dayMap || {})) {
+        if ((log.jobs || []).some(r => r.jobberVisitId === visitId)) out.push({ date, crewId, crewLabel: `${log.division} #${log.crewNumber}` });
+      }
+    }
+    return out.sort((a, b) => a.date < b.date ? 1 : -1);
+  };
+
+  const reason = reasonChoice === 'Other' ? reasonText.trim() : reasonChoice;
+  const doVoid = () => { if (!voidItems || !reason) return; onVoid(voidItems.map(i => i.jobberVisitId), ym, reason); setVoidItems(null); setSel({}); setReasonText(''); setReasonChoice(VOID_REASONS[0]); };
+  const doComplete = () => { if (!completeItem || !target) return; onComplete(completeItem.jobberVisitId, ym, target.date, target.crewId); setCompleteItem(null); setTarget(null); };
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[10px] font-black uppercase tracking-widest text-rose-600">Blocking partial jobs — resolve, then approve the day</div>
+        {selected.length > 0 && (
+          <button type="button" onClick={() => setVoidItems(selected)} className="shrink-0 text-[10px] font-black uppercase tracking-widest px-2.5 py-1.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white">Void selected ({selected.length}) · {selectedBH} BH</button>
+        )}
+      </div>
+      {items.map(it => (
+        <div key={it.jobberVisitId} className="border border-slate-100 rounded-md px-2 py-1.5">
+          <div className="flex items-start gap-2">
+            <input type="checkbox" checked={!!sel[it.jobberVisitId]} onChange={e => setSel(s => ({ ...s, [it.jobberVisitId]: e.target.checked }))} className="mt-0.5" />
+            <div className="min-w-0 flex-1">
+              <div className="text-[12px] font-bold text-slate-800 truncate">{it.title}</div>
+              <div className="text-[11px] text-slate-500">Prior {it.creditedPct}% credited{it.priorDate ? ` on ${it.priorDate}` : ''} · <span className="font-mono font-bold text-rose-600">{it.remainingBH} BH</span> remaining of {it.totalBH} BH</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+            <button type="button" onClick={() => { setCompleteItem(it); setTarget(it.defaultTarget ? { date: it.defaultTarget.date, crewId: it.defaultTarget.crewId } : null); }} className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white">Complete</button>
+            <button type="button" onClick={() => onCarry(it.jobberVisitId, ym)} className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded bg-slate-700 hover:bg-slate-800 text-white">Carry forward <span className="opacity-70 normal-case">(suggested)</span></button>
+            <button type="button" onClick={() => setVoidItems([it])} className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border border-rose-300 text-rose-700 hover:bg-rose-50">Void</button>
+            {it.blockingDays[0] && <button type="button" onClick={() => onOpenDay(it.blockingDays[0].date, it.blockingDays[0].crewId, '')} className="text-[10px] font-bold text-emerald-700 ml-auto">Open day →</button>}
+          </div>
+        </div>
+      ))}
+
+      {/* VOID confirm — consequence in plain numbers + required reason */}
+      {voidItems && (
+        <div className="fixed inset-0 z-[130] bg-black/40 flex items-center justify-center p-4" onClick={() => setVoidItems(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-5" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-2 text-slate-800 font-black"><Ban className="w-5 h-5 text-rose-500" /> Void remaining BH</div>
+            <div className="text-[13px] text-slate-700 mt-2 font-bold">
+              {voidItems.length === 1
+                ? `Void ${voidItems[0].remainingBH} BH remaining on ${voidItems[0].title} — this BH will not be credited to any crew. Already-credited ${voidItems[0].creditedBH} BH is unchanged.`
+                : `Void ${r1(voidItems.reduce((s, i) => s + i.remainingBH, 0))} BH across ${voidItems.length} items — this BH will not be credited to any crew. Already-credited BH is unchanged.`}
+            </div>
+            <div className="mt-3">
+              <label className="text-[11px] font-black uppercase tracking-widest text-slate-500">Reason (required)</label>
+              <select value={reasonChoice} onChange={e => setReasonChoice(e.target.value)} className="w-full border border-slate-300 rounded-lg px-2 py-2 text-sm mt-1">
+                {VOID_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+              {reasonChoice === 'Other' && <input value={reasonText} onChange={e => setReasonText(e.target.value)} placeholder="Reason…" className="w-full border border-slate-300 rounded-lg px-2 py-2 text-sm mt-2" />}
+            </div>
+            <div className="flex items-center justify-end gap-2 mt-4">
+              <button type="button" onClick={() => setVoidItems(null)} className="min-h-[40px] px-4 rounded-lg border border-slate-300 text-slate-700 text-xs font-black uppercase tracking-widest hover:bg-slate-50">Cancel</button>
+              <button type="button" onClick={doVoid} disabled={!reason} className="min-h-[40px] px-4 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-black uppercase tracking-widest disabled:opacity-40">Void remainder</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* COMPLETE — pick the crew-day that gets the remaining BH */}
+      {completeItem && (
+        <div className="fixed inset-0 z-[130] bg-black/40 flex items-center justify-center p-4" onClick={() => setCompleteItem(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-5" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-2 text-slate-800 font-black"><CheckCircle className="w-5 h-5 text-emerald-600" /> Complete — credit {completeItem.remainingBH} BH</div>
+            <div className="text-[12px] text-slate-500 mt-1">Marks the job 100% and credits the remaining {completeItem.remainingBH} BH to the chosen crew-day (counts toward its efficiency/bonus). Already-credited BH is unchanged.</div>
+            <div className="mt-3">
+              <label className="text-[11px] font-black uppercase tracking-widest text-slate-500">Credit to crew-day</label>
+              <select value={target ? `${target.date}|${target.crewId}` : ''} onChange={e => { const [date, crewId] = e.target.value.split('|'); setTarget({ date, crewId }); }} className="w-full border border-slate-300 rounded-lg px-2 py-2 text-sm mt-1">
+                {workedDays(completeItem.jobberVisitId).map(d => <option key={`${d.date}|${d.crewId}`} value={`${d.date}|${d.crewId}`}>{d.date} · {d.crewLabel}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center justify-end gap-2 mt-4">
+              <button type="button" onClick={() => setCompleteItem(null)} className="min-h-[40px] px-4 rounded-lg border border-slate-300 text-slate-700 text-xs font-black uppercase tracking-widest hover:bg-slate-50">Cancel</button>
+              <button type="button" onClick={doComplete} disabled={!target} className="min-h-[40px] px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-widest disabled:opacity-40">Complete &amp; credit</button>
             </div>
           </div>
         </div>

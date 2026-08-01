@@ -61,6 +61,9 @@ export const ACTIVITY_TYPE_LABELS: Record<PerfActivityEntry['type'], string> = {
   approval_waived: 'Approval waived (no approval needed)',
   chunk_marked_paid: 'Pay chunk marked paid',
   chunk_payment_reversed: 'Pay chunk payment reversed',
+  partial_resolved_complete: 'Partial job completed (month-end)',
+  partial_resolved_carry: 'Partial job carried forward (month-end)',
+  partial_resolved_void: 'Partial job remainder voided (month-end)',
   performance_month_pushed: 'Month pushed to sheet',
   performance_day_archived: 'Day archived to sheet',
   performance_day_unlocked: 'Archived day unlocked',
@@ -107,4 +110,7 @@ export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amb
   performance_day_archived: 'slate',
   performance_day_unlocked: 'amber',
   schedule_month_archived: 'slate',
+  partial_resolved_complete: 'green',
+  partial_resolved_carry: 'slate',
+  partial_resolved_void: 'rose',
 };
