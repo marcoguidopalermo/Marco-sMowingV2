@@ -4,7 +4,7 @@ import { LawnQuote, LawnRateConfigVersion } from '../types';
 import {
   LawnConfig, LAWN_CONFIG_V1, resolveLawnConfig,
   resolveTierIndex, tierLabel, priceLawn, priceMowingBase, LawnPrice, MowingPrice, PackagePrice,
-  computeSeasonPlanFC, SeasonPlan, overgrownReductionPct, firstCutSeasonWeek, seasonEndDate, mondayOfNextWeek, migrateFirstCutDate,
+  computeSeasonPlanFC, SeasonPlan, overgrownReductionPct, firstCutSeasonWeek, cutsRemaining, seasonEndDate, mondayOfNextWeek, migrateFirstCutDate,
 } from '../lib/lawnPricing';
 import LawnRateSheet from './LawnRateSheet';
 
@@ -95,8 +95,7 @@ export default function LawnMaster({
     [mowing, firstCutDate, overgrownKey, viewConfig],
   );
   const firstCutWeek = useMemo(() => firstCutSeasonWeek(firstCutDate, viewConfig), [firstCutDate, viewConfig]);
-  const weeksServiced = viewConfig.WEEKS_IN_SEASON - firstCutWeek + 1;
-  const weeklyCutsPreview = Math.round(viewConfig.WEEKLY_CUTS * weeksServiced / viewConfig.WEEKS_IN_SEASON);
+  const weeklyCutsPreview = useMemo(() => cutsRemaining('weekly', firstCutWeek, viewConfig), [firstCutWeek, viewConfig]);
   // Full weekly season price drives the overgrown catch-up dollar amounts.
   const fullSeasonPrice = mowing ? mowing.weeklyTotal : 0;
 
@@ -464,7 +463,51 @@ function BillingSchedule({ plan }: { plan: SeasonPlan }) {
 }
 
 // ── Package block — all packages shown together (mode A only) ────────────────
+// Each package carries an ACCENT (a left bar) so the four scan apart at a
+// glance; an unpriced one keeps its accent so it reads as pending, not broken.
+// Accent only — never a fill, never on the price text (several accents fail the
+// 3.0 large-text contrast minimum, so prices stay in ink to compare directly).
+// Dethatching is set apart (dashed divider + dashed card) — a one-visit add-on
+// takeable with any package or none, not the rung above Gold.
+const PKG_ACCENT: Record<string, string> = { bronze: '#9c6b3f', silver: '#8c959d', gold: '#c2a15c', dethatch: '#cdbd8f' };
+
 function PackageBlock({ packages, selected, onSelect }: { packages: PackagePrice[]; selected: string | null; onSelect: (k: string) => void }) {
+  const card = (p: PackagePrice) => {
+    const accent = PKG_ACCENT[p.key] || '#e2e8f0';
+    const sel = selected === p.key;
+    const addon = p.key === 'dethatch';
+    const borderStyle = { borderLeftColor: accent, borderLeftWidth: 5 } as const;
+    if (!p.priced) return (
+      <div key={p.key} className={`rounded-xl border-2 ${addon ? 'border-dashed' : ''} bg-slate-50 p-3`}
+        style={{ borderColor: '#e2e8f0', ...borderStyle }}>
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-black text-slate-600">{p.label}</div>
+          <div className="text-[10px] font-bold text-slate-400">{p.visits} visit{p.visits === 1 ? '' : 's'}</div>
+        </div>
+        <div className="text-[12px] font-bold text-slate-400 mt-1">Not yet priced</div>
+      </div>
+    );
+    return (
+      <button key={p.key} onClick={() => onSelect(p.key)}
+        className={`text-left rounded-xl border-2 ${addon ? 'border-dashed' : ''} p-3 transition-colors w-full`}
+        style={sel ? { backgroundColor: GREEN, borderColor: GOLD, ...borderStyle } : { backgroundColor: 'white', borderColor: '#e2e8f0', ...borderStyle }}>
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-black" style={{ color: sel ? 'white' : '#1e293b' }}>{p.label}</div>
+          <div className="text-[10px] font-bold" style={{ color: sel ? 'rgba(255,255,255,0.7)' : '#94a3b8' }}>{p.visits} visit{p.visits === 1 ? '' : 's'}</div>
+        </div>
+        {/* Price stays in ink (white on the selected fill) — never the accent. */}
+        <div className="text-2xl font-black font-mono mt-0.5" style={{ color: sel ? 'white' : '#1e293b' }}>{money(p.total)}</div>
+        {(p.extras > 0 || p.travel > 0) && (
+          <div className={`text-[10px] font-bold ${sel ? 'text-white/70' : 'text-slate-400'}`}>
+            {money(p.base)} base{p.extras ? ` · +${money(p.extras)} extras` : ''}{p.travel ? ` · +${money(p.travel)} travel` : ''}
+          </div>
+        )}
+      </button>
+    );
+  };
+
+  const tiers = packages.filter(p => p.key !== 'dethatch');
+  const addon = packages.find(p => p.key === 'dethatch');
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -473,32 +516,14 @@ function PackageBlock({ packages, selected, onSelect }: { packages: PackagePrice
       </div>
       <div className="text-[11px] font-bold text-slate-500">Packages are not prorated — full season rate.</div>
       <div className="grid grid-cols-2 gap-2">
-        {packages.map(p => {
-          const sel = selected === p.key;
-          if (!p.priced) return (
-            <div key={p.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3 opacity-70">
-              <div className="text-sm font-black text-slate-600">{p.label}</div>
-              <div className="text-[12px] font-bold text-slate-400 mt-1">Not yet priced</div>
-            </div>
-          );
-          return (
-            <button key={p.key} onClick={() => onSelect(p.key)}
-              className="text-left rounded-xl border-2 p-3 transition-colors"
-              style={sel ? { backgroundColor: GREEN, color: 'white', borderColor: GOLD } : { backgroundColor: 'white', borderColor: '#e2e8f0' }}>
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-black" style={{ color: sel ? 'white' : '#1e293b' }}>{p.label}</div>
-                <div className="text-[10px] font-bold opacity-70">{p.visits} visit{p.visits === 1 ? '' : 's'}</div>
-              </div>
-              <div className="text-2xl font-black font-mono mt-0.5" style={{ color: sel ? 'white' : GREEN }}>{money(p.total)}</div>
-              {(p.extras > 0 || p.travel > 0) && (
-                <div className={`text-[10px] font-bold ${sel ? 'text-white/70' : 'text-slate-400'}`}>
-                  {money(p.base)} base{p.extras ? ` · +${money(p.extras)} extras` : ''}{p.travel ? ` · +${money(p.travel)} travel` : ''}
-                </div>
-              )}
-            </button>
-          );
-        })}
+        {tiers.map(card)}
       </div>
+      {addon && (
+        <div className="pt-2 mt-1 border-t border-dashed border-slate-200">
+          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5">One-time add-on — any package or none</div>
+          <div className="grid grid-cols-2 gap-2">{card(addon)}</div>
+        </div>
+      )}
       <div className="text-[10px] text-slate-400">Packages price independently of mowing frequency. Tap to attach one to this quote.</div>
     </div>
   );

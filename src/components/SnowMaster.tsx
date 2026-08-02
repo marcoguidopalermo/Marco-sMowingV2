@@ -320,19 +320,22 @@ function PriceReadout({ price, premiumAdd, stdTotal, premTotal, stdFloor, premFl
 
   if (price.isCustom) {
     // Both floors, adds applied to each. Two compact columns, never stacked.
+    // The floors are peers (equal weight) — size BOTH by the longer (premium)
+    // so a 3-digit / 4-digit pair steps down together and stays aligned.
+    const floorCls = (premFloor ?? 0) >= 1000 ? 'text-xl md:text-2xl' : 'text-2xl md:text-3xl';
     return (
       <div className="rounded-2xl border-2 p-4 shadow-sm" style={{ backgroundColor: '#fffbeb', borderColor: '#f59e0b' }}>
         <div className="flex items-center gap-2 text-amber-800 font-black uppercase tracking-widest text-[12px]">
           <AlertTriangle className="w-4 h-4" /> Custom — James quotes
         </div>
         <div className="grid grid-cols-2 gap-2 mt-2">
-          <div className="rounded-xl bg-white/70 border border-amber-200 p-3">
+          <div className="rounded-xl bg-white/70 border border-amber-200 p-3 min-w-0">
             <div className="text-[10px] font-black uppercase tracking-widest text-amber-700">Standard floor</div>
-            <div className="text-2xl md:text-3xl font-black text-amber-900 font-mono leading-tight">{money(stdFloor!)}<span className="text-xs font-bold text-amber-600"> min</span></div>
+            <div className={`${floorCls} font-black text-amber-900 font-mono leading-tight whitespace-nowrap`}>{money(stdFloor!)}<span className="text-xs font-bold text-amber-600"> min</span></div>
           </div>
-          <div className="rounded-xl p-3 text-white shadow-sm" style={{ backgroundColor: '#92400e', border: `2px solid ${GOLD}` }}>
+          <div className="rounded-xl p-3 text-white shadow-sm min-w-0" style={{ backgroundColor: '#92400e', border: `2px solid ${GOLD}` }}>
             <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: GOLD }}>Premium floor</div>
-            <div className="text-2xl md:text-3xl font-black font-mono leading-tight">{money(premFloor!)}<span className="text-xs font-bold text-amber-200"> min</span></div>
+            <div className={`${floorCls} font-black font-mono leading-tight whitespace-nowrap`}>{money(premFloor!)}<span className="text-xs font-bold text-amber-200"> min</span></div>
             <div className="text-[10px] font-bold text-amber-200">+{money(premiumAdd)} premium</div>
           </div>
         </div>
@@ -342,16 +345,22 @@ function PriceReadout({ price, premiumAdd, stdTotal, premTotal, stdFloor, premFl
   }
 
   // Standard vs Premium — two columns. Premium reads as the upsell (solid green,
-  // gold accent, slightly larger), Standard as a lighter card. Both always shown.
+  // gold accent, larger), Standard lighter. Each price sizes by its OWN digit
+  // count: three-digit stays large; four-digit ($1,000–$9,999) steps down one
+  // notch so it never runs past the rounded card edge — on desktop AND mobile,
+  // never clipped, never wrapped. Premium's step-down lands it at Standard's
+  // un-stepped size, so a $949 / $1,149 pair reads level, not ragged.
+  const stdCls = (stdTotal ?? 0) >= 1000 ? 'text-2xl md:text-3xl' : 'text-3xl md:text-4xl';
+  const premCls = (premTotal ?? 0) >= 1000 ? 'text-3xl md:text-4xl' : 'text-4xl md:text-5xl';
   return (
-    <div className="grid grid-cols-2 gap-2">
-      <div className="rounded-2xl p-4 shadow-sm border" style={{ backgroundColor: '#eef4f0', borderColor: '#d5e2da' }}>
+    <div className="grid grid-cols-2 gap-2 items-stretch">
+      <div className="rounded-2xl p-4 shadow-sm border min-w-0" style={{ backgroundColor: '#eef4f0', borderColor: '#d5e2da' }}>
         <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: GREEN }}>Standard · Tier {price.tier}</div>
-        <div className="text-3xl md:text-4xl font-black font-mono mt-1 leading-none" style={{ color: GREEN }}>{money(stdTotal!)}</div>
+        <div className={`${stdCls} font-black font-mono mt-1 leading-none whitespace-nowrap`} style={{ color: GREEN }}>{money(stdTotal!)}</div>
       </div>
-      <div className="rounded-2xl p-4 shadow-sm text-white" style={{ backgroundColor: GREEN, border: `2px solid ${GOLD}` }}>
+      <div className="rounded-2xl p-4 shadow-sm text-white min-w-0" style={{ backgroundColor: GREEN, border: `2px solid ${GOLD}` }}>
         <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: GOLD }}>Premium · Tier {price.tier}</div>
-        <div className="text-4xl md:text-5xl font-black font-mono mt-1 leading-none">{money(premTotal!)}</div>
+        <div className={`${premCls} font-black font-mono mt-1 leading-none whitespace-nowrap`}>{money(premTotal!)}</div>
         <div className="text-[10px] font-bold mt-0.5" style={{ color: GOLD }}>+{money(premiumAdd)} vs standard</div>
       </div>
     </div>

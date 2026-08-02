@@ -9,7 +9,7 @@ import { Lock, ShieldAlert, History, RotateCcw, Check, X, AlertTriangle, Plus, T
 import { LawnRateConfigVersion } from '../types';
 import {
   LawnConfig, LAWN_CONFIG_V1, validateLawnConfig, diffLawnConfig, RateAuditChange, lawnVersionNum,
-  seasonEndDate, isValidYmd,
+  seasonEndDate, isValidYmd, cutWeeks,
 } from '../lib/lawnPricing';
 
 const GREEN = '#1c4634';
@@ -196,6 +196,8 @@ function Editor({ config, activeVersion, versions, onSave, onRevert, initial }: 
           </label>
           <div className="text-[11px] text-slate-500 text-right">End (derived, +{draft.WEEKS_IN_SEASON} wks): <span className="font-mono font-bold text-slate-700">{isValidYmd(draft.SEASON_START) ? seasonEndDate(draft) : '—'}</span></div>
           <Field label="Weeks in season"><input type="number" value={draft.WEEKS_IN_SEASON} onChange={e => edit(n => { n.WEEKS_IN_SEASON = num(e.target.value); })} className={cell} /></Field>
+          <Field label="Spring weekly weeks"><input type="number" value={draft.SPRING_WEEKLY_WEEKS} onChange={e => edit(n => { n.SPRING_WEEKLY_WEEKS = num(e.target.value); })} className={cell} /></Field>
+          <div className="text-[11px] text-slate-500 text-right">Biweekly schedule (derived): <span className="font-mono font-bold text-slate-700">{cutWeeks('biweekly', draft).length}</span> cuts — must equal Biweekly cuts ({draft.BIWEEKLY_CUTS})</div>
           <Field label="Discount per week (%)"><input type="number" value={draft.DISCOUNT_PER_WEEK} onChange={e => edit(n => { n.DISCOUNT_PER_WEEK = num(e.target.value); })} className={cell} /></Field>
           <Field label="Mowing allocation rate ($/hr)"><input type="number" value={draft.MOWING_ALLOCATION_RATE} onChange={e => edit(n => { n.MOWING_ALLOCATION_RATE = num(e.target.value); })} className={cell} /></Field>
         </Group>

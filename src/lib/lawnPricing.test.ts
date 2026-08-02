@@ -6,7 +6,7 @@ import {
   LAWN_CONFIG_V1, LawnConfig, resolveTierIndex, priceMowing, priceMowingBase, pricePackages, priceLawn, tierLabel,
   resolveLawnConfig, activeLawnVersionId, lawnVersionId, validateLawnConfig, diffLawnConfig,
   computeSeasonPlan, computeSeasonPlanFC, signupSeasonWeek, firstCutSeasonWeek, seasonEndDate, overgrownReductionPct,
-  availableMonthEnds, billingDates, isValidYmd, mondayOfNextWeek, migrateFirstCutDate,
+  availableMonthEnds, billingDates, isValidYmd, mondayOfNextWeek, migrateFirstCutDate, cutWeeks, cutsRemaining,
 } from './lawnPricing';
 
 let pass = 0, fail = 0;
@@ -539,6 +539,72 @@ test('packages unaffected by first cut date, discount and overgrown; first-cut-d
   const late = computeSeasonPlanFC(priceMowing(1, {}), '2026-11-30', 'normal');
   assert.equal(late.discount.firstCutWeek, 20);
   assert.equal(late.weekly.cutsLeft, 1);
+});
+
+// ── BIWEEKLY CUTS REMAINING — spring-weekly schedule, not even proration ─────
+console.log('\nLawn — biweekly cuts remaining (spring-weekly schedule):');
+// firstCutWeek → [weekly, biweekly] from the spec table.
+const CUTS_TABLE: Array<[number, number, number]> = [
+  [1, 20, 12], [3, 18, 10], [5, 16, 8], [7, 14, 7], [11, 10, 5], [15, 6, 3], [20, 1, 1],
+];
+test('cutsLeft counts scheduled weeks ≥ firstCutWeek, per frequency', () => {
+  const m = priceMowing(1, {});
+  for (const [wk, weekly, biweekly] of CUTS_TABLE) {
+    const p = computeSeasonPlanFC(m, dateForWeek(wk), 'normal');
+    assert.equal(p.discount.firstCutWeek, wk, `wk ${wk}`);
+    assert.equal(p.weekly.cutsLeft, weekly, `wk ${wk} weekly`);
+    assert.equal(p.biweekly.cutsLeft, biweekly, `wk ${wk} biweekly (was even-prorated)`);
+  }
+});
+test('weekly cutsLeft unchanged = weeksServiced at every week', () => {
+  const m = priceMowing(1, {});
+  for (let wk = 1; wk <= 20; wk++) {
+    const p = computeSeasonPlanFC(m, dateForWeek(wk), 'normal');
+    assert.equal(p.weekly.cutsLeft, 20 - wk + 1, `wk ${wk}`);
+  }
+});
+test('derived biweekly schedule = [1,2,3,4,6,8,…,20]; length == BIWEEKLY_CUTS', () => {
+  assert.deepEqual(cutWeeks('biweekly'), [1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20]);
+  assert.equal(cutWeeks('biweekly').length, LAWN_CONFIG_V1.BIWEEKLY_CUTS);
+  assert.deepEqual(cutWeeks('weekly'), Array.from({ length: 20 }, (_, i) => i + 1));
+  assert.equal(cutWeeks('weekly').length, LAWN_CONFIG_V1.WEEKLY_CUTS);
+});
+test('cutsRemaining helper matches the table', () => {
+  for (const [wk, weekly, biweekly] of CUTS_TABLE) {
+    assert.equal(cutsRemaining('weekly', wk), weekly, `wk ${wk} weekly`);
+    assert.equal(cutsRemaining('biweekly', wk), biweekly, `wk ${wk} biweekly`);
+  }
+});
+test('a broken biweekly schedule fails validation loudly', () => {
+  const bad = structuredClone(LAWN_CONFIG_V1); bad.SPRING_WEEKLY_WEEKS = 0; // → 10 cuts ≠ 12
+  assert.equal(cutWeeks('biweekly', bad).length, 10);
+  assert.ok(validateLawnConfig(bad).some(e => /biweekly schedule mismatch/i.test(e)));
+  // Aligning BIWEEKLY_CUTS to the derived count clears it.
+  const fixed = structuredClone(LAWN_CONFIG_V1); fixed.SPRING_WEEKLY_WEEKS = 0; fixed.BIWEEKLY_CUTS = 10;
+  assert.deepEqual(validateLawnConfig(fixed).filter(e => /schedule mismatch/i.test(e)), []);
+  assert.deepEqual(validateLawnConfig(LAWN_CONFIG_V1), []); // v1 defaults valid
+  // SPRING_WEEKLY_WEEKS is diffed/versioned like every other value.
+  const edit = structuredClone(LAWN_CONFIG_V1); edit.SPRING_WEEKLY_WEEKS = 3; edit.BIWEEKLY_CUTS = 12;
+  assert.ok(diffLawnConfig(LAWN_CONFIG_V1, edit).some(x => x.key === 'season.springWeekly' && x.from === '4' && x.to === '3'));
+});
+test('internalPPC uses the corrected cutsLeft (biweekly moves; weekly unchanged)', () => {
+  const m = priceMowing(1, {});
+  const p = computeSeasonPlanFC(m, dateForWeek(5), 'normal'); // week 5 → 20% discount
+  assert.equal(p.weekly.cutsLeft, 16);
+  assert.equal(p.biweekly.cutsLeft, 8);   // was 10 under even proration
+  assert.equal(p.weekly.internalPPC, round(p.weekly.proratedTotal / 16));
+  assert.equal(p.biweekly.internalPPC, round(p.biweekly.proratedTotal / 8));
+});
+test('discount is week-based and IDENTICAL for weekly and biweekly at every week', () => {
+  const m = priceMowing(1, {});
+  for (let wk = 1; wk <= 20; wk++) {
+    const p = computeSeasonPlanFC(m, dateForWeek(wk), 'normal');
+    assert.equal(p.discount.seasonDiscountPct, round(wk === 1 ? 0 : (wk - 1) / 20 * 100), `wk ${wk} disc value`);
+    // The proration factor is the same for both frequencies (never cut-based).
+    const wkFactor = round(p.weekly.proratedTotal / p.weekly.fullPrice);
+    const bwFactor = round(p.biweekly.proratedTotal / p.biweekly.fullPrice);
+    assert.equal(wkFactor, bwFactor, `wk ${wk} proration factor differs by frequency`);
+  }
 });
 
 console.log(`\n${fail === 0 ? '✅' : '❌'} ${pass} passed, ${fail} failed`);

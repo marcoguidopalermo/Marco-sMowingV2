@@ -30,6 +30,11 @@ export interface LawnConfig {
   TRAVEL_ZONES: LawnTravelZone[];
   WEEKLY_CUTS: number;
   BIWEEKLY_CUTS: number;
+  // Spring flush weeks cut WEEKLY even for a biweekly client (fast growth). The
+  // biweekly schedule is these weeks, then every 2nd week to season end — this
+  // is where BIWEEKLY_CUTS' two "extra" cuts come from. cutsLeft counts the
+  // scheduled weeks a mid-season client still gets, per frequency.
+  SPRING_WEEKLY_WEEKS: number;
   MONTHS: number;
   PACKAGES: LawnPackageDef[];
   PACKAGE_PRICES: LawnPackagePrices[];      // per tier index: key -> price (0 = not yet priced)
@@ -65,6 +70,7 @@ export const LAWN_CONFIG_V1: LawnConfig = {
   ],
   WEEKLY_CUTS: 20,
   BIWEEKLY_CUTS: 12,
+  SPRING_WEEKLY_WEEKS: 4,
   MONTHS: 6,
   PACKAGES: [
     { key: 'bronze', label: 'Bronze', visits: 2 },
@@ -347,6 +353,29 @@ export function firstCutSeasonWeek(firstCutDate: string, config: LawnConfig = LA
   return Math.max(1, Math.min(config.WEEKS_IN_SEASON, Math.floor(diff / 7) + 1));
 }
 
+/**
+ * The season weeks a client of `freq` is actually cut, DERIVED (never hard-
+ * coded). Weekly = every week 1..WEEKS. Biweekly = the spring flush cut weekly
+ * (weeks 1..SPRING_WEEKLY_WEEKS), then every 2nd week to season end. With the v1
+ * numbers the biweekly schedule is [1,2,3,4,6,8,…,20] = 12 cuts = BIWEEKLY_CUTS.
+ */
+export function cutWeeks(freq: 'weekly' | 'biweekly', config: LawnConfig = LAWN_CONFIG_V1): number[] {
+  const WEEKS = config.WEEKS_IN_SEASON;
+  const weeks: number[] = [];
+  if (freq === 'weekly') { for (let w = 1; w <= WEEKS; w++) weeks.push(w); return weeks; }
+  const spring = Math.max(0, Math.min(WEEKS, config.SPRING_WEEKLY_WEEKS));
+  for (let w = 1; w <= spring; w++) weeks.push(w);          // weekly through the flush
+  for (let w = spring + 2; w <= WEEKS; w += 2) weeks.push(w); // biweekly thereafter
+  return weeks;
+}
+
+/** Cuts a mid-season client still receives: scheduled cut weeks ≥ firstCutWeek.
+ *  Biweekly is NOT an even proration — the missed cuts are the heavy spring
+ *  ones, which is exactly why biweekly has fewer visits at a higher per-cut. */
+export function cutsRemaining(freq: 'weekly' | 'biweekly', firstCutWeek: number, config: LawnConfig = LAWN_CONFIG_V1): number {
+  return cutWeeks(freq, config).filter(w => w >= firstCutWeek).length;
+}
+
 export interface SeasonDiscount {
   firstCutWeek: number;            // the season week the first cut falls in (1-indexed)
   signupWeek: number;              // week the signup falls in (1-indexed; 0 = before season)
@@ -465,7 +494,7 @@ export function computeSeasonPlanFC(
   const avail = availableMonthEnds(firstCutDate);
   const year = Number(String(firstCutDate).slice(0, 4)) || Number(String(config.SEASON_START).slice(0, 4));
 
-  const freq = (fullPrice: number, cuts: number): SeasonFreqPlan => {
+  const freq = (fullPrice: number, cuts: number, cutsLeft: number): SeasonFreqPlan => {
     const proratedTotal = round2(fullPrice * (1 - seasonDiscountPct / 100));
     // Monthly kept UNROUNDED internally so an exact split (e.g. 3 × 10000/6 =
     // 5000) yields a $0 deposit and the full instalment count, not a rounding
@@ -476,7 +505,9 @@ export function computeSeasonPlanFC(
     const instalments = Math.max(0, Math.min(avail, maxByPrice));
     const deposit = Math.max(0, round2(proratedTotal - instalments * monthlyRaw));
     const catchUpCharge = round2((catchUpPct / 100) * fullPrice);
-    const cutsLeft = WEEKS > 0 ? Math.round(cuts * weeksServiced / WEEKS) : 0;
+    // cutsLeft is passed per frequency from the DERIVED schedule (weekly cuts
+    // every week; biweekly cuts the spring flush then every 2nd week). BH still
+    // uses the FULL cut count, not cutsLeft — the rate is a full-season figure.
     const bhPerVisit = cuts > 0 ? fullPrice / cuts / config.MOWING_ALLOCATION_RATE : 0;
     return {
       // monthly kept UNROUNDED so deposit + instalments × monthly == prorated
@@ -495,8 +526,8 @@ export function computeSeasonPlanFC(
       weeksServiced, seasonDiscountPct,
       overgrownKey: og.key, overgrownLabel: og.label, overgrownMultiplier: og.multiplier, catchUpPct,
     },
-    weekly: freq(mowing.weeklyTotal, config.WEEKLY_CUTS),
-    biweekly: freq(mowing.biweeklyTotal, config.BIWEEKLY_CUTS),
+    weekly: freq(mowing.weeklyTotal, config.WEEKLY_CUTS, cutsRemaining('weekly', firstCutWeek, config)),
+    biweekly: freq(mowing.biweeklyTotal, config.BIWEEKLY_CUTS, cutsRemaining('biweekly', firstCutWeek, config)),
   };
 }
 
@@ -538,6 +569,7 @@ function flattenLawn(c: LawnConfig): FlatEntry[] {
   c.PACKAGES.forEach(p => push(`visits.${p.key}`, `${p.label} · visits`, p.visits));
   push('season.weeklyCuts', 'Season · Weekly cuts', c.WEEKLY_CUTS);
   push('season.biweeklyCuts', 'Season · Biweekly cuts', c.BIWEEKLY_CUTS);
+  push('season.springWeekly', 'Season · Spring weekly weeks', c.SPRING_WEEKLY_WEEKS);
   push('season.months', 'Season · Months', c.MONTHS);
   push('season.start', 'Season start', c.SEASON_START);
   push('season.weeks', 'Weeks in season', c.WEEKS_IN_SEASON);
@@ -600,6 +632,16 @@ export function validateLawnConfig(c: LawnConfig): string[] {
   if (!(Number(c.WEEKLY_CUTS) > 0)) errs.push('Weekly cuts must be greater than 0.');
   if (!(Number(c.BIWEEKLY_CUTS) > 0)) errs.push('Biweekly cuts must be greater than 0.');
   if (!(Number(c.MONTHS) > 0)) errs.push('Months must be greater than 0.');
+  // Spring-weekly weeks in [0, WEEKS], and the DERIVED biweekly schedule must
+  // have exactly BIWEEKLY_CUTS cuts — fail loudly if a config edit breaks it.
+  if (!(Number(c.SPRING_WEEKLY_WEEKS) >= 0) || Number(c.SPRING_WEEKLY_WEEKS) > Number(c.WEEKS_IN_SEASON)) {
+    errs.push('Spring weekly weeks must be between 0 and the weeks in season.');
+  } else {
+    const derived = cutWeeks('biweekly', c).length;
+    if (derived !== Number(c.BIWEEKLY_CUTS)) {
+      errs.push(`Biweekly schedule mismatch: spring-weekly ${c.SPRING_WEEKLY_WEEKS} + biweekly to week ${c.WEEKS_IN_SEASON} yields ${derived} cuts, but Biweekly cuts is set to ${c.BIWEEKLY_CUTS}. Align them.`);
+    }
+  }
   // Package visit counts > 0.
   if (c.PACKAGES.some(p => !(Number(p.visits) > 0))) errs.push('Package visit counts must be greater than 0.');
   // Season / proration.
