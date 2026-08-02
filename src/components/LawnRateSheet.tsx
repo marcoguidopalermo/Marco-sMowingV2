@@ -165,11 +165,6 @@ function Editor({ config, activeVersion, versions, onSave, onRevert, initial }: 
           <Field label="Clutter"><input type="number" value={draft.PACKAGE_EXTRAS.CLUTTER} onChange={e => edit(n => { n.PACKAGE_EXTRAS.CLUTTER = num(e.target.value); })} className={cell} /></Field>
         </Group>
 
-        <Group title="Zone thresholds">
-          <Field label="Minimum clients"><input type="number" value={draft.ZONE_MIN_CLIENTS} onChange={e => edit(n => { n.ZONE_MIN_CLIENTS = num(e.target.value); })} className={cell} /></Field>
-          <Field label="Break-even clients"><input type="number" value={draft.ZONE_BREAKEVEN_CLIENTS} onChange={e => edit(n => { n.ZONE_BREAKEVEN_CLIENTS = num(e.target.value); })} className={cell} /></Field>
-        </Group>
-
         <Group title="Package visit counts (multiply per-visit travel)">
           {draft.PACKAGES.map((p, i) => (
             <Field key={p.key} label={`${p.label} visits`}><input type="number" value={p.visits} onChange={e => edit(n => { n.PACKAGES[i].visits = num(e.target.value); })} className={cell} /></Field>
@@ -190,18 +185,8 @@ function Editor({ config, activeVersion, versions, onSave, onRevert, initial }: 
           ))}
         </Group>
 
-        {/* Package travel ladder — addable/removable */}
-        <Group title="Package travel per visit (ladder)" onAdd={() => edit(n => n.PACKAGE_TRAVEL_PER_VISIT.push(0))}>
-          <div className="flex flex-wrap gap-2">
-            {draft.PACKAGE_TRAVEL_PER_VISIT.map((v, i) => (
-              <div key={i} className="flex items-center gap-1 border border-slate-200 rounded-lg pl-2 pr-1 py-1">
-                <span className="text-slate-400 font-bold text-sm">$</span>
-                <input type="number" value={v} onChange={e => edit(n => { n.PACKAGE_TRAVEL_PER_VISIT[i] = num(e.target.value); })} className="w-14 text-right font-mono font-bold outline-none" />
-                <button onClick={() => edit(n => { n.PACKAGE_TRAVEL_PER_VISIT.splice(i, 1); })} className="text-slate-300 hover:text-rose-500"><Trash2 className="w-3.5 h-3.5" /></button>
-              </div>
-            ))}
-          </div>
-        </Group>
+        {/* Packages now use the mowing travel zone's per-visit rate × the
+            package's visit count — there is no separate package-travel ladder. */}
 
         {/* Season & proration (mowing only) */}
         <Group title="Season & proration (mowing only)">

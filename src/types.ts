@@ -1277,15 +1277,22 @@ export interface LawnQuote {
   frequency?: 'weekly' | 'biweekly' | null;
   weeklyAnnual: number; weeklyMonthly: number; weeklyPerCut: number;
   biweeklyAnnual: number; biweeklyMonthly: number; biweeklyPerCut: number;
+  // Price entry mode (A sq ft · B weekly seasonal · C weekly per-cut). Absent on
+  // pre-mode quotes → treated as 'sqft'. Modes B/C carry the typed base and have
+  // no tier / packages.
+  priceMode?: 'sqft' | 'seasonal' | 'percut';
+  basePriceInput?: number;           // the typed weekly figure for modes B / C
   // Packages — optional single attachment on the quote.
   selectedPackage?: string | null;   // package key or null
-  packageTravelPerVisit: number;
+  packageTravelPerVisit?: number;    // legacy; packages now use the mowing zone's per-visit rate
   packageTotal?: number | null;
   // ── Mid-season proration + overgrown + BH (mowing only). Optional — older
   // quotes predate this and resolve against their stamped config as before. ──
-  startDate?: string;
-  firstCut?: 'this' | 'next';        // first-cut timing (restores the button state)
-  signupWeek?: number;               // season week the signup falls in (1-indexed; 0 before season)
+  firstCutDate?: string;             // the first-cut-date model (replaces startDate + firstCut)
+  firstCutWeek?: number;             // season week the first cut falls in (1-indexed)
+  startDate?: string;                // LEGACY — migrated to firstCutDate on read
+  firstCut?: 'this' | 'next';        // LEGACY — first-cut timing
+  signupWeek?: number;               // LEGACY — season week the signup falls in
   seasonDiscountPct?: number;        // never negative — no surcharge
   overgrownKey?: string;
   overgrownMultiplier?: number;

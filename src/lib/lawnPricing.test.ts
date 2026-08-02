@@ -3,9 +3,10 @@
 //   npx tsx src/lib/lawnPricing.test.ts
 import assert from 'node:assert/strict';
 import {
-  LAWN_CONFIG_V1, LawnConfig, resolveTierIndex, priceMowing, pricePackages, priceLawn, tierLabel,
+  LAWN_CONFIG_V1, LawnConfig, resolveTierIndex, priceMowing, priceMowingBase, pricePackages, priceLawn, tierLabel,
   resolveLawnConfig, activeLawnVersionId, lawnVersionId, validateLawnConfig, diffLawnConfig,
-  computeSeasonPlan, signupSeasonWeek, seasonEndDate, overgrownReductionPct, availableMonthEnds, billingDates, isValidYmd,
+  computeSeasonPlan, computeSeasonPlanFC, signupSeasonWeek, firstCutSeasonWeek, seasonEndDate, overgrownReductionPct,
+  availableMonthEnds, billingDates, isValidYmd, mondayOfNextWeek, migrateFirstCutDate,
 } from './lawnPricing';
 
 let pass = 0, fail = 0;
@@ -67,27 +68,27 @@ test('4000 + push mow → weekly 1400 / biweekly 1050', () => {
   const m = mow(4000, { pushMow: true });
   assert.equal(m.weeklyTotal, 1400); assert.equal(m.biweeklyTotal, 1050);
 });
-test('travel per-visit: 5 km → weekly $200/season, biweekly $120/season', () => {
+test('travel per-visit: 5 km → weekly $500/season, biweekly $300/season', () => {
   const m = mow(4000, { travelZone: 'km5' });
-  assert.equal(m.travel.perVisit, 10);
-  assert.equal(m.travel.weeklySeason, 200);   // 10 × 20 cuts
-  assert.equal(m.travel.biweeklySeason, 120);  // 10 × 12 cuts (NOT 0.75 × 200 = 150)
-  assert.equal(m.weeklyTotal, 1400);           // 1200 + 200
-  assert.equal(m.biweeklyTotal, 1020);         // 1200×0.75 + 120 = 900 + 120
+  assert.equal(m.travel.perVisit, 25);
+  assert.equal(m.travel.weeklySeason, 500);    // 25 × 20 cuts
+  assert.equal(m.travel.biweeklySeason, 300);  // 25 × 12 cuts (NOT 0.75 × 500)
+  assert.equal(m.weeklyTotal, 1700);           // 1200 + 500
+  assert.equal(m.biweeklyTotal, 1200);         // 1200×0.75 + 300 = 900 + 300
 });
 test('base tier + push/hilly/clutter still use the 0.75 ratio (travel is the only exception)', () => {
   const m = mow(4000, { pushMow: true, veryHilly: true, clutter: true }); // no travel
   assert.equal(m.weeklyTotal, 1800);           // 1200 + 3×200
   assert.equal(m.biweeklyTotal, 1350);         // 1800 × 0.75
 });
-test('4000 + push + hilly + clutter + 15 km → weekly 2600 / biweekly 1830', () => {
+test('4000 + push + hilly + clutter + 15 km → weekly 3300 / biweekly 2250', () => {
   const m = mow(4000, { pushMow: true, veryHilly: true, clutter: true, travelZone: 'km15' });
-  assert.equal(m.weeklyTotal, 2600);           // 1800 + 40×20 = 1800 + 800
-  assert.equal(m.biweeklyTotal, 1830);         // 1350 + 40×12 = 1350 + 480
+  assert.equal(m.weeklyTotal, 3300);           // 1800 + 75×20 = 1800 + 1500
+  assert.equal(m.biweeklyTotal, 2250);         // 1350 + 75×12 = 1350 + 900
 });
-test('travel zones do not stack — 10 km replaces 5 km (weekly $400/season)', () => {
-  assert.equal(mow(4000, { travelZone: 'km10' }).travel.weeklySeason, 400); // 20 × 20
-  assert.equal(mow(4000, { travelZone: 'km10' }).weeklyTotal, 1600);
+test('travel zones do not stack — 10 km replaces 5 km (weekly $1,000/season)', () => {
+  assert.equal(mow(4000, { travelZone: 'km10' }).travel.weeklySeason, 1000); // 50 × 20
+  assert.equal(mow(4000, { travelZone: 'km10' }).weeklyTotal, 2200);
 });
 
 // ── Packages (tier index 1) ─────────────────────────────────────────────────
@@ -360,6 +361,184 @@ test('validation: SEASON_START must be real; overgrown multipliers must ascend',
   const bad = structuredClone(LAWN_CONFIG_V1); bad.OVERGROWN[2].multiplier = 1.5;
   assert.ok(validateLawnConfig(bad).some(e => /ascend/i.test(e)));
   assert.deepEqual(validateLawnConfig(LAWN_CONFIG_V1), []);
+});
+
+// ── CONSOLIDATED BUILD: first-cut-date model, unified travel, price modes ────
+console.log('\nLawn consolidated — first-cut-date model:');
+// `round` and `dateForWeek` are declared with the mid-season tests above.
+const fcPlan = (mow: ReturnType<typeof priceMowing>, firstCutDate: string, og = 'normal', cfg = LAWN_CONFIG_V1) =>
+  computeSeasonPlanFC(mow, firstCutDate, og, cfg);
+
+test('first cut 1 Jun 2026 → week 2, 19 cuts, 5% discount, $2,052 weekly on $2,160 base', () => {
+  const m = priceMowing(5, {}); // tier 5 = $2,160 weekly
+  assert.equal(m.weeklyTotal, 2160);
+  const p = fcPlan(m, '2026-06-01');
+  assert.equal(p.discount.firstCutWeek, 2);
+  assert.equal(p.discount.seasonDiscountPct, 5);
+  assert.equal(p.weekly.cutsLeft, 19);
+  assert.equal(p.weekly.proratedTotal, 2052);
+  assert.equal(firstCutSeasonWeek('2026-06-01'), 2);
+});
+test('first cut before SEASON_START → week 1, 20 cuts, 0% discount, never blocked', () => {
+  const p = fcPlan(priceMowing(1, {}), '2026-05-01');
+  assert.equal(p.discount.firstCutWeek, 1);
+  assert.equal(p.discount.seasonDiscountPct, 0);
+  assert.equal(p.weekly.cutsLeft, 20);
+  assert.equal(p.biweekly.cutsLeft, 12);
+  assert.equal(firstCutSeasonWeek('2026-05-01'), 1);
+});
+test('default first cut date is the Monday of next week', () => {
+  // 2026-06-01 is a Monday → next Monday is 2026-06-08.
+  assert.equal(mondayOfNextWeek('2026-06-01'), '2026-06-08');
+  // From a mid-week / weekend day, still lands on the Monday of the next week.
+  assert.equal(mondayOfNextWeek('2026-06-03'), '2026-06-08'); // Wed → next Mon
+  assert.equal(mondayOfNextWeek('2026-06-07'), '2026-06-08'); // Sun → Mon
+  assert.equal(mondayOfNextWeek('2026-06-06'), '2026-06-08'); // Sat → Mon
+  // Result is always a Monday.
+  for (const d of ['2026-04-14', '2026-07-31', '2026-12-25', '2026-01-01']) {
+    const mon = mondayOfNextWeek(d);
+    assert.equal(firstCutSeasonWeek(mon) >= 1, true);
+    assert.equal(new Date(`${mon}T00:00:00Z`).getUTCDay(), 1, `${mon} should be a Monday`);
+  }
+});
+test('OLD saved quote (startDate + firstCut) prices identically after migration', () => {
+  const m = priceMowing(1, {}); // $1,200 weekly
+  for (const [startDate, fc] of [['2026-06-08', 'next'], ['2026-07-27', 'this'], ['2026-05-01', 'next']] as const) {
+    const old = computeSeasonPlan(m, startDate, 'triple', fc);
+    if (!old) continue;
+    const migratedDate = migrateFirstCutDate(startDate, fc);
+    const now = computeSeasonPlanFC(m, migratedDate, 'triple');
+    assert.equal(now.weekly.proratedTotal, old.weekly.proratedTotal, `${startDate}/${fc} prorated`);
+    assert.equal(now.weekly.cutsLeft, old.weekly.cutsLeft, `${startDate}/${fc} cuts`);
+    assert.equal(now.discount.seasonDiscountPct, old.discount.seasonDiscountPct, `${startDate}/${fc} disc`);
+    assert.equal(now.weekly.catchUpCharge, old.weekly.catchUpCharge, `${startDate}/${fc} catch-up`);
+  }
+});
+
+console.log('\nLawn consolidated — one travel rate for everything:');
+const TRAVEL: Array<{ key: string; pv: number; weekly: number; biweekly: number; bronze: number; silver: number; gold: number; dethatch: number }> = [
+  { key: 'in_town', pv: 0, weekly: 0, biweekly: 0, bronze: 0, silver: 0, gold: 0, dethatch: 0 },
+  { key: 'km5', pv: 25, weekly: 500, biweekly: 300, bronze: 50, silver: 75, gold: 100, dethatch: 25 },
+  { key: 'km10', pv: 50, weekly: 1000, biweekly: 600, bronze: 100, silver: 150, gold: 200, dethatch: 50 },
+  { key: 'km15', pv: 75, weekly: 1500, biweekly: 900, bronze: 150, silver: 225, gold: 300, dethatch: 75 },
+  { key: 'km20', pv: 100, weekly: 2000, biweekly: 1200, bronze: 200, silver: 300, gold: 400, dethatch: 100 },
+];
+test('all five travel zones: per-visit × cut count (weekly 20 / biweekly 12)', () => {
+  assert.equal(LAWN_CONFIG_V1.TRAVEL_ZONES.length, 5);
+  for (const t of TRAVEL) {
+    const m = mow(4000, { travelZone: t.key });
+    assert.equal(m.travel.perVisit, t.pv, `${t.key} perVisit`);
+    assert.equal(m.travel.weeklySeason, t.weekly, `${t.key} weekly season`);
+    assert.equal(m.travel.biweeklySeason, t.biweekly, `${t.key} biweekly season`);
+  }
+});
+test('travel applies to packages at the same per-visit rate × package visit count', () => {
+  for (const t of TRAVEL) {
+    // Bronze 2 visits, Silver 3, Gold 4 (all priced in tier 1).
+    assert.equal(pricePackages(1, {}, t.pv).find(p => p.key === 'bronze')!.travel, t.bronze, `${t.key} bronze`);
+    assert.equal(pricePackages(1, {}, t.pv).find(p => p.key === 'silver')!.travel, t.silver, `${t.key} silver`);
+    assert.equal(pricePackages(1, {}, t.pv).find(p => p.key === 'gold')!.travel, t.gold, `${t.key} gold`);
+  }
+  // Per-visit-count sanity: 20 km × Gold's 4 visits = $400 travel on top of base.
+  assert.equal(pricePackages(1, {}, 100).find(p => p.key === 'gold')!.total, 499 + 400);
+});
+test('20 km is the maximum serviced zone — no sixth zone exists', () => {
+  const keys = LAWN_CONFIG_V1.TRAVEL_ZONES.map(z => z.key);
+  assert.deepEqual(keys, ['in_town', 'km5', 'km10', 'km15', 'km20']);
+});
+test('NO ZONE_MIN_CLIENTS / ZONE_BREAKEVEN_CLIENTS / PACKAGE_TRAVEL_PER_VISIT remain in config', () => {
+  assert.equal((LAWN_CONFIG_V1 as any).ZONE_MIN_CLIENTS, undefined);
+  assert.equal((LAWN_CONFIG_V1 as any).ZONE_BREAKEVEN_CLIENTS, undefined);
+  assert.equal((LAWN_CONFIG_V1 as any).PACKAGE_TRAVEL_PER_VISIT, undefined);
+  // Diff/flatten no longer surface those keys either.
+  const c = structuredClone(LAWN_CONFIG_V1); c.TIERS[1].weekly = 9999;
+  const changes = diffLawnConfig(LAWN_CONFIG_V1, c);
+  assert.ok(!changes.some(x => /zone\.(min|break)|pkgTravel/i.test(x.key)));
+});
+test('travel is still the only exception to the 0.75 ratio', () => {
+  // Base + season extras ratio at 0.75; travel does not.
+  const m = mow(4000, { pushMow: true, travelZone: 'km20' });
+  const ratioed = 1200 + 200;           // base + push
+  assert.equal(m.weeklyTotal, ratioed + 2000);          // + 100×20 travel (not ratioed)
+  assert.equal(m.biweeklyTotal, ratioed * 0.75 + 1200); // + 100×12 travel (not ratioed)
+});
+
+console.log('\nLawn consolidated — price entry modes B (seasonal) & C (per-cut):');
+test('Mode B: $10,000 weekly, first cut week 11 → prorated $5,000, BH 5.00, monthly $1,667, deposit $0, PPC $500', () => {
+  const m = priceMowingBase(10000, { travelZone: 'in_town' });
+  assert.equal(m.tierIndex, -1);
+  assert.equal(m.weeklyTotal, 10000);
+  const p = computeSeasonPlanFC(m, dateForWeek(11), 'normal');
+  assert.equal(p.discount.firstCutWeek, 11);
+  assert.equal(p.discount.seasonDiscountPct, 50);
+  assert.equal(p.weekly.fullPrice, 10000);
+  assert.equal(p.weekly.proratedTotal, 5000);
+  assert.equal(p.weekly.bhPerVisit, 5);               // 10000 / 20 / 100
+  assert.equal(Math.round(p.weekly.monthly), 1667);   // 10000 / 6 (display-rounded)
+  assert.equal(p.weekly.instalments, 3);
+  assert.equal(p.weekly.deposit, 0);
+  assert.equal(p.weekly.cutsLeft, 10);
+  assert.equal(p.weekly.internalPPC, 500);            // 5000 / 10
+});
+test('Mode C: $500/cut weekly → $10,000 seasonal, identical to Mode B', () => {
+  const perCut = 500, weeklyBase = perCut * LAWN_CONFIG_V1.WEEKLY_CUTS; // 10,000
+  const c = priceMowingBase(weeklyBase, { travelZone: 'in_town' });
+  const b = priceMowingBase(10000, { travelZone: 'in_town' });
+  assert.equal(c.weeklyTotal, 10000);
+  const pc = computeSeasonPlanFC(c, dateForWeek(11), 'normal').weekly;
+  const pb = computeSeasonPlanFC(b, dateForWeek(11), 'normal').weekly;
+  assert.deepEqual(
+    { prorated: pc.proratedTotal, bh: pc.bhPerVisit, monthly: round(pc.monthly), deposit: pc.deposit, ppc: pc.internalPPC },
+    { prorated: pb.proratedTotal, bh: pb.bhPerVisit, monthly: round(pb.monthly), deposit: pb.deposit, ppc: pb.internalPPC },
+  );
+});
+test('Modes B/C support extras, travel, overgrown and the full billing schedule', () => {
+  // $8,000 weekly seasonal + push + very hilly + 10 km travel + triple overgrown.
+  const m = priceMowingBase(8000, { pushMow: true, veryHilly: true, travelZone: 'km10' });
+  assert.equal(m.weeklyTotal, 8000 + 200 + 200 + 50 * 20);   // base + push + hilly + travel(50×20)
+  const p = computeSeasonPlanFC(m, dateForWeek(6), 'triple').weekly;
+  // Overgrown catch-up = (3−1) × 5% × fullPrice.
+  assert.equal(p.catchUpCharge, round((3 - 1) * 5 / 100 * m.weeklyTotal));
+  // Billing balances: deposit + catch-up + instalments×monthly ≈ prorated + catch-up.
+  assert.equal(round(p.deposit + p.catchUpCharge + p.instalments * p.monthly), round(p.proratedTotal + p.catchUpCharge));
+  assert.equal(p.billingDates.length, p.instalments);
+});
+
+console.log('\nLawn consolidated — overgrown label $, deposit-row, invariants:');
+test('overgrown label amount = (multiplier − 1) × 5% × fullSeasonPrice, tracks the base', () => {
+  // The component derives the button dollar amount from the full WEEKLY season price.
+  const amt = (mult: number, full: number) => (mult - 1) * LAWN_CONFIG_V1.DISCOUNT_PER_WEEK / 100 * full;
+  for (const full of [2160, 10000]) {
+    assert.equal(amt(1, full), 0);
+    assert.equal(amt(2, full), 0.05 * full);
+    assert.equal(amt(3, full), 0.10 * full);
+    assert.equal(amt(4, full), 0.15 * full);
+    assert.equal(amt(5, full), 0.20 * full);
+  }
+  // Concretely the spec's $2,160 base → 2×=$108, 3×=$216, 4×=$324, 5×=$432.
+  assert.deepEqual([2, 3, 4, 5].map(mm => amt(mm, 2160)), [108, 216, 324, 432]);
+});
+test('deposit ∈ [0, monthly] and $0 exactly for an even split (row hides at $0)', () => {
+  const p = computeSeasonPlanFC(priceMowingBase(10000, {}), dateForWeek(11), 'normal').weekly;
+  assert.equal(p.deposit, 0); // even 3-way split → no deposit → UI omits the row
+  for (let wk = 1; wk <= 20; wk++) {
+    for (const base of [1200, 10000, 7333]) {
+      const fp = computeSeasonPlanFC(priceMowingBase(base, {}), dateForWeek(wk), 'triple').weekly;
+      assert.ok(fp.deposit >= 0 && fp.deposit <= fp.monthly + 0.01, `wk ${wk} base ${base} deposit ${fp.deposit}/${fp.monthly}`);
+    }
+  }
+});
+test('packages unaffected by first cut date, discount and overgrown; first-cut-date never blocks', () => {
+  assert.equal(pricePackages(1, {}, 0).find(x => x.key === 'bronze')!.total, 249);
+  // Every week resolves to a plan (no null) in the first-cut-date model.
+  for (let wk = 1; wk <= 20; wk++) {
+    const p = computeSeasonPlanFC(priceMowing(1, {}), dateForWeek(wk), 'normal');
+    assert.ok(p.weekly.cutsLeft >= 1);
+  }
+  // A date past the last cutting week clamps to one cut at max discount (not null).
+  const late = computeSeasonPlanFC(priceMowing(1, {}), '2026-11-30', 'normal');
+  assert.equal(late.discount.firstCutWeek, 20);
+  assert.equal(late.weekly.cutsLeft, 1);
 });
 
 console.log(`\n${fail === 0 ? '✅' : '❌'} ${pass} passed, ${fail} failed`);

@@ -3,18 +3,22 @@ import { Sprout, RotateCcw, Save, FolderOpen, Trash2, Search, BarChart3, AlertTr
 import { LawnQuote, LawnRateConfigVersion } from '../types';
 import {
   LawnConfig, LAWN_CONFIG_V1, resolveLawnConfig,
-  resolveTierIndex, tierLabel, priceLawn, LawnPrice, PackagePrice,
-  computeSeasonPlan, SeasonPlan, FirstCut, overgrownReductionPct, signupSeasonWeek, seasonEndDate,
+  resolveTierIndex, tierLabel, priceLawn, priceMowingBase, LawnPrice, MowingPrice, PackagePrice,
+  computeSeasonPlanFC, SeasonPlan, overgrownReductionPct, firstCutSeasonWeek, seasonEndDate, mondayOfNextWeek, migrateFirstCutDate,
 } from '../lib/lawnPricing';
 import LawnRateSheet from './LawnRateSheet';
 
 const todayYmd = () => new Date().toISOString().slice(0, 10);
+const defaultFirstCut = () => mondayOfNextWeek(todayYmd());
 
 // House style.
 const GREEN = '#1c4634';
 const GOLD = '#cdbd8f';
 const money = (n: number) => `$${Math.round(Number(n) || 0).toLocaleString('en-US')}`;
 const fmtWhen = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+
+type PriceMode = 'sqft' | 'seasonal' | 'percut';
+const MODE_LABEL: Record<PriceMode, string> = { sqft: 'Sq ft', seasonal: 'Seasonal price', percut: 'Per-cut price' };
 
 interface Props {
   quotes: Record<string, LawnQuote>;
@@ -32,7 +36,7 @@ interface Props {
   onSaveConfig?: (next: LawnConfig) => Promise<boolean>;
   onRevertConfig?: (versionId: string) => Promise<boolean>;
   // Optional seed for previews/deep-links only. Never used in normal operation.
-  initial?: { sqft?: number; startDate?: string; overgrownKey?: string; firstCut?: FirstCut };
+  initial?: { sqft?: number; firstCutDate?: string; overgrownKey?: string };
 }
 
 export default function LawnMaster({
@@ -43,15 +47,15 @@ export default function LawnMaster({
   const [sub, setSub] = useState<'quote' | 'saved' | 'report' | 'rates'>('quote');
 
   // ── Inputs ───────────────────────────────────────────────────────────────
-  const [sqft, setSqft] = useState(initial?.sqft || 0);
+  const [priceMode, setPriceMode] = useState<PriceMode>('sqft');
+  const [sqft, setSqft] = useState(initial?.sqft || 0);       // mode A
+  const [baseInput, setBaseInput] = useState(0);              // modes B (seasonal) / C (per-cut) weekly figure
   const [veryHilly, setVeryHilly] = useState(false);
   const [pushMow, setPushMow] = useState(false);
   const [clutter, setClutter] = useState(false);
-  const [travelZone, setTravelZone] = useState('in_town');
-  const [pkgTravel, setPkgTravel] = useState(0);
-  const [startDate, setStartDate] = useState(initial?.startDate || todayYmd());  // mid-season start, defaults today
-  const [overgrownKey, setOvergrownKey] = useState(initial?.overgrownKey || 'normal'); // catch-up selector
-  const [firstCut, setFirstCut] = useState<FirstCut>(initial?.firstCut || 'next'); // default Next week (safe)
+  const [travelZone, setTravelZone] = useState('in_town');   // ONE zone → mowing + package travel
+  const [firstCutDate, setFirstCutDate] = useState(initial?.firstCutDate || defaultFirstCut()); // Monday of next week
+  const [overgrownKey, setOvergrownKey] = useState(initial?.overgrownKey || 'normal');
   const [frequency, setFrequency] = useState<'weekly' | 'biweekly' | null>(null);
   const [selectedPackage, setSelectedPackage] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -64,63 +68,74 @@ export default function LawnMaster({
   const viewVersion = (loadedVersion && !dirty) ? loadedVersion : activeVersion;
   const viewConfig = resolveLawnConfig(viewVersion, configs);
 
+  const zone = useMemo(
+    () => viewConfig.TRAVEL_ZONES.find(z => z.key === travelZone) || viewConfig.TRAVEL_ZONES[0],
+    [viewConfig, travelZone],
+  );
+
+  // Mode A: sq ft → tier → mowing + packages. Modes B/C: a typed weekly base →
+  // mowing only (no tier, no packages). Package travel = the mowing zone's
+  // per-visit rate (one travel rate for everything).
+  const flags = { pushMow, veryHilly, clutter, travelZone };
   const price = useMemo<LawnPrice | null>(
-    () => priceLawn(sqft, { pushMow, veryHilly, clutter, travelZone }, pkgTravel, viewConfig),
-    [sqft, pushMow, veryHilly, clutter, travelZone, pkgTravel, viewConfig],
+    () => priceMode === 'sqft' ? priceLawn(sqft, flags, zone.perVisit, viewConfig) : null,
+    [priceMode, sqft, pushMow, veryHilly, clutter, travelZone, zone.perVisit, viewConfig],
   );
+  const mowing = useMemo<MowingPrice | null>(() => {
+    if (priceMode === 'sqft') return price ? price.mowing : null;
+    const weeklyBase = priceMode === 'percut' ? (Number(baseInput) || 0) * viewConfig.WEEKLY_CUTS : (Number(baseInput) || 0);
+    return weeklyBase > 0 ? priceMowingBase(weeklyBase, flags, viewConfig) : null;
+  }, [priceMode, price, baseInput, pushMow, veryHilly, clutter, travelZone, viewConfig]);
+
   const tierIdx = resolveTierIndex(sqft, viewConfig);
-  // Mid-season plan (mowing only). Null when no cutting weeks remain (blocked).
+  // Mid-season plan (mowing only). The first-cut-date model never blocks —
+  // a date past the last cutting week clamps to one cut at max discount.
   const plan = useMemo<SeasonPlan | null>(
-    () => price ? computeSeasonPlan(price.mowing, startDate, overgrownKey, firstCut, viewConfig) : null,
-    [price, startDate, overgrownKey, firstCut, viewConfig],
+    () => mowing ? computeSeasonPlanFC(mowing, firstCutDate, overgrownKey, viewConfig) : null,
+    [mowing, firstCutDate, overgrownKey, viewConfig],
   );
-  const signupWeek = useMemo(() => signupSeasonWeek(startDate, viewConfig), [startDate, viewConfig]);
-  const blocked = !!price && !plan; // has a lawn size but no serviceable cutting weeks left
+  const firstCutWeek = useMemo(() => firstCutSeasonWeek(firstCutDate, viewConfig), [firstCutDate, viewConfig]);
+  const weeksServiced = viewConfig.WEEKS_IN_SEASON - firstCutWeek + 1;
+  const weeklyCutsPreview = Math.round(viewConfig.WEEKLY_CUTS * weeksServiced / viewConfig.WEEKS_IN_SEASON);
+  // Full weekly season price drives the overgrown catch-up dollar amounts.
+  const fullSeasonPrice = mowing ? mowing.weeklyTotal : 0;
 
   const touch = () => setDirty(true);
   const pickTier = (i: number) => {
     touch();
     const t = viewConfig.TIERS[i];
-    // Set a sq ft that resolves back to this tier (its upper bound, or one past
-    // the previous bound for the open-ended last tier).
     setSqft(t.maxSqFt ?? ((viewConfig.TIERS[i - 1]?.maxSqFt ?? 0) + 1));
   };
 
-  // Travel-zone density — saved quotes per mowing zone.
-  const zoneCounts = useMemo(() => {
-    const c: Record<string, number> = {};
-    for (const q of Object.values(quotes)) c[q.travelZone] = (c[q.travelZone] || 0) + 1;
-    return c;
-  }, [quotes]);
-  const selectedZoneCount = zoneCounts[travelZone] || 0;
-  const zoneWarn = !!price && selectedZoneCount < viewConfig.ZONE_MIN_CLIENTS;
-
   const clearAll = () => {
-    if (price && !window.confirm('Clear the lawn quote and all inputs?')) return;
-    setSqft(0); setVeryHilly(false); setPushMow(false); setClutter(false);
-    setTravelZone('in_town'); setPkgTravel(0); setStartDate(todayYmd()); setOvergrownKey('normal'); setFirstCut('next');
+    if (mowing && !window.confirm('Clear the lawn quote and all inputs?')) return;
+    setPriceMode('sqft'); setSqft(0); setBaseInput(0);
+    setVeryHilly(false); setPushMow(false); setClutter(false);
+    setTravelZone('in_town'); setFirstCutDate(defaultFirstCut()); setOvergrownKey('normal');
     setFrequency(null); setSelectedPackage(null);
     setName(''); setLoadedId(null); setLoadedVersion(null); setDirty(false);
   };
 
   const save = () => {
-    if (!price) return; // packages may still be sellable even when mowing is blocked
-    const m = price.mowing;
-    const sel = selectedPackage ? price.packages.find(p => p.key === selectedPackage) : null;
+    if (!mowing) return;
+    const sel = selectedPackage && price ? price.packages.find(p => p.key === selectedPackage) : null;
     const label = name.trim();
     const id = loadedId || `lawn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const q: LawnQuote = {
       id, client: label || undefined,
-      sqft, tierIndex: price.tierIndex, tierLabel: m.tierLabel,
-      mowingBase: m.weeklyBase, veryHilly, pushMow, clutter, travelZone,
+      priceMode,
+      basePriceInput: priceMode === 'sqft' ? undefined : (Number(baseInput) || 0),
+      sqft: priceMode === 'sqft' ? sqft : 0,
+      tierIndex: priceMode === 'sqft' ? mowing.tierIndex : -1,
+      tierLabel: priceMode === 'sqft' ? mowing.tierLabel : MODE_LABEL[priceMode],
+      mowingBase: mowing.weeklyBase, veryHilly, pushMow, clutter, travelZone,
       frequency,
-      weeklyAnnual: m.weekly.annual, weeklyMonthly: m.weekly.monthly, weeklyPerCut: m.weekly.perCut,
-      biweeklyAnnual: m.biweekly.annual, biweeklyMonthly: m.biweekly.monthly, biweeklyPerCut: m.biweekly.perCut,
+      weeklyAnnual: mowing.weekly.annual, weeklyMonthly: mowing.weekly.monthly, weeklyPerCut: mowing.weekly.perCut,
+      biweeklyAnnual: mowing.biweekly.annual, biweeklyMonthly: mowing.biweekly.monthly, biweeklyPerCut: mowing.biweekly.perCut,
       selectedPackage: sel && sel.priced ? sel.key : null,
-      packageTravelPerVisit: pkgTravel,
       packageTotal: sel && sel.priced ? sel.total : null,
-      // Mid-season plan (mowing only). Restores button state exactly on reload.
-      startDate, firstCut, signupWeek, overgrownKey,
+      // First-cut-date model (mowing only). Restores state exactly on reload.
+      firstCutDate, firstCutWeek, overgrownKey,
       ...(plan ? {
         seasonDiscountPct: plan.discount.seasonDiscountPct, overgrownMultiplier: plan.discount.overgrownMultiplier, catchUpPct: plan.discount.catchUpPct,
         weeklyProrated: plan.weekly.proratedTotal, weeklyInstalments: plan.weekly.instalments,
@@ -138,9 +153,15 @@ export default function LawnMaster({
   };
 
   const load = (q: LawnQuote) => {
-    setSqft(q.sqft || 0); setVeryHilly(!!q.veryHilly); setPushMow(!!q.pushMow); setClutter(!!q.clutter);
-    setTravelZone(q.travelZone || 'in_town'); setPkgTravel(q.packageTravelPerVisit || 0);
-    setStartDate(q.startDate || todayYmd()); setOvergrownKey(q.overgrownKey || 'normal'); setFirstCut(q.firstCut || 'next');
+    const mode: PriceMode = q.priceMode || 'sqft';
+    setPriceMode(mode);
+    setSqft(q.sqft || 0);
+    setBaseInput(q.basePriceInput || 0);
+    setVeryHilly(!!q.veryHilly); setPushMow(!!q.pushMow); setClutter(!!q.clutter);
+    setTravelZone(q.travelZone || 'in_town');
+    // Migrate old quotes (startDate + firstCut) → firstCutDate; prices identically.
+    setFirstCutDate(q.firstCutDate || (q.startDate ? migrateFirstCutDate(q.startDate, q.firstCut) : defaultFirstCut()));
+    setOvergrownKey(q.overgrownKey || 'normal');
     setFrequency(q.frequency || null); setSelectedPackage(q.selectedPackage || null);
     setName(q.client || ''); setLoadedId(q.id); setLoadedVersion(q.pricingConfigVersion || 'lawn-v1'); setDirty(false);
     setSub('quote');
@@ -175,24 +196,54 @@ export default function LawnMaster({
               </div>
             )}
 
-            {/* Lawn size */}
+            {/* Price entry mode — how the base price is set */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
-              <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Lawn size</div>
-              <div className="grid grid-cols-2 gap-2">
-                {viewConfig.TIERS.map((_, i) => (
-                  <button key={i} onClick={() => pickTier(i)}
-                    className="min-h-[44px] rounded-xl text-[12px] font-black border transition-colors px-2 text-left leading-tight"
-                    style={tierIdx === i ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN } : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
-                    {tierLabel(i, viewConfig)}
+              <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Price by</div>
+              <div className="grid grid-cols-3 gap-2">
+                {(['sqft', 'seasonal', 'percut'] as const).map(mode => (
+                  <button key={mode} onClick={() => { touch(); setPriceMode(mode); }}
+                    className="min-h-[44px] rounded-xl text-[12px] font-black border transition-colors px-2 leading-tight"
+                    style={priceMode === mode ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN } : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
+                    {MODE_LABEL[mode]}
                   </button>
                 ))}
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">Custom</span>
-                <input type="number" value={sqft || ''} onChange={e => { touch(); setSqft(Number(e.target.value) || 0); }}
-                  placeholder="sq ft" className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-right font-mono font-bold" />
-                <span className="text-[11px] text-slate-400">sq ft</span>
-              </div>
+
+              {priceMode === 'sqft' ? (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    {viewConfig.TIERS.map((_, i) => (
+                      <button key={i} onClick={() => pickTier(i)}
+                        className="min-h-[44px] rounded-xl text-[12px] font-black border transition-colors px-2 text-left leading-tight"
+                        style={tierIdx === i ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN } : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
+                        {tierLabel(i, viewConfig)}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">Custom</span>
+                    <input type="number" value={sqft || ''} onChange={e => { touch(); setSqft(Number(e.target.value) || 0); }}
+                      placeholder="sq ft" className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-right font-mono font-bold" />
+                    <span className="text-[11px] text-slate-400">sq ft</span>
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-black uppercase tracking-widest text-slate-500 flex-1">
+                      {priceMode === 'seasonal' ? 'Weekly seasonal price' : 'Weekly per-cut price'}
+                    </span>
+                    <span className="text-slate-400 font-bold">$</span>
+                    <input type="number" value={baseInput || ''} onChange={e => { touch(); setBaseInput(Number(e.target.value) || 0); }}
+                      placeholder="0" className="w-32 border border-slate-300 rounded-lg px-3 py-2 text-right font-mono font-bold" />
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {priceMode === 'seasonal'
+                      ? 'Full weekly season price. Biweekly derives at ×0.75. No tier or packages.'
+                      : `Per-cut × ${viewConfig.WEEKLY_CUTS} cuts = ${money((Number(baseInput) || 0) * viewConfig.WEEKLY_CUTS)} weekly season. No tier or packages.`}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Terrain / extras */}
@@ -202,113 +253,73 @@ export default function LawnMaster({
               <Toggle label="Clutter" sub="Obstacles to work around" on={clutter} onClick={() => { touch(); setClutter(v => !v); }} />
             </div>
 
-            {/* Mid-season start date + first cut + overgrown catch-up (mowing only) */}
+            {/* First cut date + overgrown catch-up (mowing only) */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">Start date</span>
-                <input type="date" value={startDate} onChange={e => { touch(); setStartDate(e.target.value); }}
+                <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">First cut date</span>
+                <input type="date" value={firstCutDate} onChange={e => { touch(); setFirstCutDate(e.target.value); }}
                   className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold" />
               </div>
-              <div className="text-[11px] text-slate-500">
-                Last cutting week: <span className="font-bold">{fmtMD(seasonEndDate(viewConfig))}</span> · {signupWeek === 0 ? 'before season — full price' : `signup week ${signupWeek} of ${viewConfig.WEEKS_IN_SEASON}`}
+              <div className="text-[12px] text-slate-600 font-bold">
+                Cutting week {firstCutWeek} of {viewConfig.WEEKS_IN_SEASON} · {weeklyCutsPreview} cut{weeklyCutsPreview === 1 ? '' : 's'} · last cutting week {fmtMD(seasonEndDate(viewConfig))}
               </div>
-
-              {/* First cut — only relevant once the season has started. */}
-              {signupWeek > 0 && (
-                <div>
-                  <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">First cut</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {(['this', 'next'] as const).map(fc => (
-                      <button key={fc} onClick={() => { touch(); setFirstCut(fc); }}
-                        className="min-h-[44px] rounded-xl text-sm font-black border transition-colors"
-                        style={firstCut === fc ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN } : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
-                        {fc === 'this' ? 'This week' : 'Next week'}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="text-[11px] text-slate-500 mt-1.5">Defaults to <b>Next week</b> — only upgrade to “This week” when the route can fit them, or you charge for a cut you can’t deliver.</div>
-                </div>
-              )}
+              <div className="text-[11px] text-slate-500">Defaults to the Monday of next week — a new client rarely fits this week’s route. Pull it earlier only when the route allows.</div>
 
               <div>
                 <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Overgrown catch-up</div>
                 <div className="grid grid-cols-5 gap-1.5">
                   {viewConfig.OVERGROWN.map(o => {
                     const on = overgrownKey === o.key;
-                    const red = overgrownReductionPct(o.multiplier, viewConfig);
+                    // Actual one-time dollar amount for THIS quote, not a stale % label.
+                    const amt = (o.multiplier - 1) * viewConfig.DISCOUNT_PER_WEEK / 100 * fullSeasonPrice;
                     return (
                       <button key={o.key} onClick={() => { touch(); setOvergrownKey(o.key); }}
                         className="min-h-[52px] rounded-xl text-[11px] font-black border transition-colors px-1 flex flex-col items-center justify-center leading-tight"
                         style={on ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN } : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
                         <span>{o.multiplier}×</span>
-                        <span className="opacity-70 text-[9px] font-bold">{red ? `+${red}%` : '—'}</span>
+                        <span className="opacity-70 text-[10px] font-bold">{o.multiplier === 1 ? '—' : (fullSeasonPrice > 0 ? money(amt) : `+${overgrownReductionPct(o.multiplier, viewConfig)}%`)}</span>
                       </button>
                     );
                   })}
                 </div>
-                <div className="text-[11px] text-slate-500 mt-1.5">Billed as a separate one-time charge on the first invoice — the season discount is unaffected.</div>
+                <div className="text-[11px] text-slate-500 mt-1.5">A separate one-time charge on the first invoice — the season discount is unaffected.</div>
               </div>
             </div>
 
-            {/* Mowing travel zone + density */}
+            {/* Travel zone — ONE rate for mowing AND packages. Max serviced = 20 km. */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-2">
-              <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Mowing travel — from city limits</div>
+              <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Travel — from city limits</div>
               <div className="grid grid-cols-2 gap-2">
                 {viewConfig.TRAVEL_ZONES.map(z => {
                   const on = travelZone === z.key;
-                  const n = zoneCounts[z.key] || 0;
                   return (
                     <button key={z.key} onClick={() => { touch(); setTravelZone(z.key); }}
-                      className="min-h-[48px] rounded-xl text-sm font-black border transition-colors px-2 flex items-center justify-between gap-1"
+                      className="min-h-[48px] rounded-xl text-sm font-black border transition-colors px-3 text-left leading-tight"
                       style={on ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN } : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
-                      <span className="text-left leading-tight">{z.label}<span className="block text-[10px] font-bold opacity-70">{z.perVisit ? `$${z.perVisit}/visit` : 'no travel'}</span></span>
-                      <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${on ? 'bg-white/20' : 'bg-slate-100 text-slate-500'}`}>{n}</span>
+                      {z.label}
+                      <span className="block text-[10px] font-bold opacity-70">{z.perVisit ? `$${z.perVisit}/visit` : 'no travel'}</span>
                     </button>
                   );
                 })}
               </div>
-              {zoneWarn && (
-                <div className="rounded-xl border border-amber-300 bg-amber-50 p-2.5 text-[12px] font-bold text-amber-800 flex items-start gap-1.5">
-                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>Only {selectedZoneCount} client{selectedZoneCount === 1 ? '' : 's'} in this zone. Travel pricing assumes {viewConfig.ZONE_BREAKEVEN_CLIENTS}. Under {viewConfig.ZONE_MIN_CLIENTS}, decline or quote the true isolated cost — confirm with James.</span>
-                </div>
-              )}
-            </div>
-
-            {/* Package travel per visit */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-2">
-              <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Package travel — per visit</div>
-              <div className="grid grid-cols-5 gap-1.5">
-                {viewConfig.PACKAGE_TRAVEL_PER_VISIT.map(v => (
-                  <button key={v} onClick={() => { touch(); setPkgTravel(v); }}
-                    className="min-h-[44px] rounded-xl text-sm font-black border transition-colors"
-                    style={pkgTravel === v ? { backgroundColor: GREEN, color: 'white', borderColor: GREEN } : { backgroundColor: 'white', color: '#334155', borderColor: '#e2e8f0' }}>
-                    {v === 0 ? '$0' : `$${v}`}
-                  </button>
-                ))}
-              </div>
-              <div className="text-[11px] text-slate-500">$25 in town · $50 within 5 km · $75 within 10 km · $100 beyond</div>
+              <div className="text-[11px] text-slate-500">Per visit × the visit count — {viewConfig.WEEKLY_CUTS} weekly, {viewConfig.BIWEEKLY_CUTS} biweekly, or the package’s visits. 20 km is the maximum serviced distance.</div>
             </div>
           </div>
 
           {/* ── RIGHT: output ───────────────────────────────────────────── */}
           <div className="space-y-4">
-            {!price ? (
+            {!mowing ? (
               <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white p-6 text-center">
                 <Sprout className="w-8 h-8 mx-auto text-slate-300" />
-                <div className="text-sm font-bold text-slate-400 mt-2">Pick a lawn size to price it</div>
+                <div className="text-sm font-bold text-slate-400 mt-2">
+                  {priceMode === 'sqft' ? 'Pick a lawn size to price it' : 'Enter a price to build the quote'}
+                </div>
               </div>
             ) : (
               <>
-                {plan ? (
-                  <MowingBlock price={price} config={viewConfig} plan={plan} frequency={frequency} onFrequency={f => { touch(); setFrequency(cur => cur === f ? null : f); }} />
-                ) : (
-                  <div className="rounded-2xl border-2 p-5" style={{ backgroundColor: '#fffbeb', borderColor: '#f59e0b' }}>
-                    <div className="flex items-center gap-2 text-amber-800 font-black uppercase tracking-widest text-[12px]"><AlertTriangle className="w-4 h-4" /> No mowing this season</div>
-                    <div className="text-[13px] font-bold text-amber-900 mt-1">No cuts remaining this season — quote for next season instead.</div>
-                  </div>
-                )}
-                <PackageBlock packages={price.packages} selected={selectedPackage} onSelect={k => { touch(); setSelectedPackage(cur => cur === k ? null : k); }} />
+                {plan && <MowingComparison mowing={mowing} plan={plan} config={viewConfig} frequency={frequency} onFrequency={f => { touch(); setFrequency(cur => cur === f ? null : f); }} />}
+                {plan && <BillingSchedule plan={plan} />}
+                {price && <PackageBlock packages={price.packages} selected={selectedPackage} onSelect={k => { touch(); setSelectedPackage(cur => cur === k ? null : k); }} />}
               </>
             )}
 
@@ -318,7 +329,7 @@ export default function LawnMaster({
               <button onClick={clearAll} className="min-h-[48px] inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-black uppercase tracking-widest">
                 <RotateCcw className="w-4 h-4" /> Clear
               </button>
-              <button onClick={save} disabled={!price} className="min-h-[48px] inline-flex items-center justify-center gap-1.5 rounded-xl text-white text-xs font-black uppercase tracking-widest disabled:opacity-40" style={{ backgroundColor: GREEN }}>
+              <button onClick={save} disabled={!mowing} className="min-h-[48px] inline-flex items-center justify-center gap-1.5 rounded-xl text-white text-xs font-black uppercase tracking-widest disabled:opacity-40" style={{ backgroundColor: GREEN }}>
                 <Save className="w-4 h-4" /> {loadedId ? 'Update' : 'Save'}
               </button>
             </div>
@@ -346,94 +357,113 @@ const MONTHS3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 
 const fmtMD = (ymd: string) => { const [, m, d] = ymd.split('-').map(Number); return `${MONTHS3[(m || 1) - 1]} ${d}`; };
 const bn = (n: number) => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2); // BH number, 2dp
 
-// ── Mowing block — compact quote cards + shared breakdown + billing + ops ────
-function MowingBlock({ price, config, plan, frequency, onFrequency }: {
-  price: LawnPrice; config: LawnConfig; plan: SeasonPlan; frequency: 'weekly' | 'biweekly' | null; onFrequency: (f: 'weekly' | 'biweekly') => void;
+// ── Mowing comparison — the single at-a-glance table (no cards, no popup) ─────
+// Metrics as rows, Weekly / Biweekly as columns. Season total is the largest
+// figure; discount + BH the next largest. Grouped with whitespace, not boxes.
+function MowingComparison({ mowing, plan, config, frequency, onFrequency }: {
+  mowing: MowingPrice; plan: SeasonPlan; config: LawnConfig;
+  frequency: 'weekly' | 'biweekly' | null; onFrequency: (f: 'weekly' | 'biweekly') => void;
 }) {
-  const m = price.mowing;
   const d = plan.discount;
   const overgrown = d.overgrownMultiplier > 1;
-  const both = <T,>(w: T, b: T) => `${w} wk / ${b} bw`;
+  const w = plan.weekly, b = plan.biweekly;
+  const selW = frequency === 'weekly', selB = frequency === 'biweekly';
 
-  const cardRow = (sel: boolean, label: string, value: string, internal?: boolean) => (
-    <div className={`flex justify-between ${internal ? (sel ? 'text-white/60' : 'text-slate-400') : ''}`}>
-      <span>{label}{internal && <span className="block text-[9px] uppercase tracking-widest -mt-0.5">internal · do not quote</span>}</span>
-      <span className="font-mono">{value}</span>
-    </div>
-  );
-  const card = (title: string, sel: boolean, f: 'weekly' | 'biweekly', fp: typeof plan.weekly) => (
-    <button onClick={() => onFrequency(f)} className="text-left rounded-2xl p-3 shadow-sm border-2 transition-colors w-full"
-      style={sel ? { backgroundColor: GREEN, color: 'white', borderColor: GOLD } : { backgroundColor: '#eef4f0', borderColor: '#d5e2da' }}>
-      <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: sel ? GOLD : GREEN }}>{title}{sel ? ' · going with' : ''}</div>
-      <div className="text-3xl md:text-4xl font-black font-mono leading-none mt-0.5" style={{ color: sel ? 'white' : GREEN }}>{money(fp.proratedTotal)}</div>
-      <div className={`text-[11px] font-bold ${sel ? 'text-white/70' : 'text-slate-500'}`}>full {money(fp.fullPrice)} · renewal anchor</div>
-      <div className="mt-2 space-y-0.5 text-[12px]">
-        {cardRow(sel, 'Monthly', money(fp.monthly))}
-        {cardRow(sel, 'Instalments left', String(fp.instalments))}
-        {cardRow(sel, 'Cuts left', String(fp.cutsLeft))}
-        {cardRow(sel, 'Deposit', money(fp.deposit))}
-        {cardRow(sel, 'Internal PPC', money(fp.internalPPC), true)}
-      </div>
+  const colHead = (f: 'weekly' | 'biweekly', label: string, sel: boolean) => (
+    <button onClick={() => onFrequency(f)}
+      className="text-right rounded-lg px-2 py-1 transition-colors"
+      style={sel ? { backgroundColor: GREEN, color: 'white' } : { color: GREEN }}>
+      <span className="text-[11px] font-black uppercase tracking-widest">{label}</span>
+      {sel && <span className="block text-[9px] font-bold" style={{ color: GOLD }}>going with</span>}
     </button>
   );
+
+  // A metric row: label + two right-aligned value cells. `size` scales the row.
+  const row = (label: string, wv: string, bv: string, opts?: { size?: 'xl' | 'lg' | 'md'; internal?: boolean; note?: string; mt?: boolean }) => {
+    const size = opts?.size;
+    const valCls = size === 'xl' ? 'text-2xl md:text-3xl font-black' : size === 'lg' ? 'text-lg font-black' : size === 'md' ? 'text-base font-black' : 'text-sm font-bold';
+    const labelCls = size === 'xl' ? 'text-[13px] font-black text-slate-700' : opts?.internal ? 'text-[11px] font-bold text-slate-400' : 'text-[12px] font-bold text-slate-500';
+    return (
+      <>
+        <div className={`self-center ${labelCls} ${opts?.mt ? 'mt-2' : ''}`}>
+          {label}
+          {opts?.internal && <span className="block text-[9px] uppercase tracking-widest -mt-0.5">internal · do not quote</span>}
+          {opts?.note && <span className="block text-[10px] font-medium text-slate-400 -mt-0.5">{opts.note}</span>}
+        </div>
+        <div className={`text-right font-mono self-center ${valCls} ${opts?.mt ? 'mt-2' : ''}`} style={{ color: selW ? GREEN : (size ? GREEN : '#334155') }}>{wv}</div>
+        <div className={`text-right font-mono self-center ${valCls} ${opts?.mt ? 'mt-2' : ''}`} style={{ color: selB ? GREEN : (size ? GREEN : '#334155') }}>{bv}</div>
+      </>
+    );
+  };
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+      <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">Mowing · {mowing.tierLabel}</div>
+      <div className="grid grid-cols-[1.15fr_1fr_1fr] gap-x-3 gap-y-1">
+        {/* column headers */}
+        <div />
+        {colHead('weekly', 'Weekly', selW)}
+        {colHead('biweekly', 'Biweekly', selB)}
+
+        {row('Season total', money(w.proratedTotal), money(b.proratedTotal), { size: 'xl' })}
+        {row('Full price', money(w.fullPrice), money(b.fullPrice), { note: 'renewal anchor' })}
+
+        {/* Discount spans both columns — same figure for either frequency. */}
+        <div className="self-center text-[12px] font-bold text-slate-500 mt-2">Discount</div>
+        <div className="col-span-2 text-right self-center mt-2">
+          <span className="text-lg font-black" style={{ color: GREEN }}>{d.seasonDiscountPct}%</span>
+          <span className="text-[11px] font-bold text-slate-400"> · cutting week {d.firstCutWeek} of {config.WEEKS_IN_SEASON}</span>
+        </div>
+
+        {row('Cuts left', String(w.cutsLeft), String(b.cutsLeft))}
+        {row('BH per visit', bn(w.bhPerVisit), bn(b.bhPerVisit), { size: 'md', mt: true })}
+        {overgrown && row('First-visit BH', bn(w.firstVisitBH), bn(b.firstVisitBH), { note: `overgrown ${d.overgrownMultiplier}×` })}
+
+        {row('Monthly', money(w.monthly), money(b.monthly), { mt: true })}
+        {row('Instalments', String(w.instalments), String(b.instalments))}
+        {row('Deposit', money(w.deposit), money(b.deposit))}
+        {row('Internal PPC', money(w.internalPPC), money(b.internalPPC), { internal: true })}
+      </div>
+
+      {/* Shared breakdown of what built the base — compact, once. */}
+      <div className="space-y-0.5 text-[12px] text-slate-600 border-t border-slate-100 mt-3 pt-2">
+        <Row label={mowing.tierIndex >= 0 ? 'Tier base (weekly)' : 'Base price (weekly)'} value={money(mowing.weeklyBase)} />
+        {mowing.extras.pushMow > 0 && <Row label="Push mow only" value={money(mowing.extras.pushMow)} />}
+        {mowing.extras.veryHilly > 0 && <Row label="Very hilly" value={money(mowing.extras.veryHilly)} />}
+        {mowing.extras.clutter > 0 && <Row label="Clutter" value={money(mowing.extras.clutter)} />}
+        {mowing.travel.perVisit > 0 && <Row label={`Travel · ${mowing.travel.label}`} value={`$${mowing.travel.perVisit}/visit · ${money(mowing.travel.weeklySeason)} wk / ${money(mowing.travel.biweeklySeason)} bw`} />}
+        {overgrown && <Row label={`Overgrown catch-up (${d.overgrownLabel})`} value={`${money(w.catchUpCharge)} wk / ${money(b.catchUpCharge)} bw`} />}
+      </div>
+    </div>
+  );
+}
+
+// ── Billing schedule — dated, per frequency. Deposit row hidden at $0. ────────
+function BillingSchedule({ plan }: { plan: SeasonPlan }) {
+  const overgrown = plan.discount.overgrownMultiplier > 1;
   const billCol = (title: string, fp: typeof plan.weekly) => (
     <div className="rounded-xl border border-slate-200 p-3">
       <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Billing · {fp.instalments} cycle{fp.instalments === 1 ? '' : 's'} left · {title}</div>
       <div className="mt-1.5 space-y-0.5 text-[12px]">
-        <Row label="Initial deposit (on approval)" value={money(fp.deposit)} />
-        {overgrown && <Row label={`Overgrown catch-up (${d.overgrownLabel})`} value={money(fp.catchUpCharge)} />}
+        {fp.deposit > 0 && <Row label="Initial deposit (on approval)" value={money(fp.deposit)} />}
+        {overgrown && <Row label={`Overgrown catch-up (${plan.discount.overgrownLabel})`} value={money(fp.catchUpCharge)} />}
         {fp.billingDates.map(bd => <Row key={bd} label={fmtMD(bd)} value={money(fp.monthly)} />)}
         <div className="flex justify-between border-t border-slate-200 pt-1 mt-1 font-black text-slate-800"><span>Total</span><span className="font-mono">{money(fp.deposit + fp.catchUpCharge + fp.instalments * fp.monthly)}</span></div>
       </div>
     </div>
   );
-
   return (
-    <>
-      {/* Quote cards + shared breakdown */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
-        <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Mowing · {m.tierLabel}</div>
-        <div className="grid grid-cols-2 gap-2">
-          {card('Weekly', frequency === 'weekly', 'weekly', plan.weekly)}
-          {card('Biweekly', frequency === 'biweekly', 'biweekly', plan.biweekly)}
-        </div>
-        {/* Shared breakdown — once, not per card. */}
-        <div className="space-y-0.5 text-[12px] text-slate-600 border-t border-slate-100 pt-2">
-          <Row label="Tier base (weekly)" value={money(m.weeklyBase)} />
-          {m.extras.pushMow > 0 && <Row label="Push mow only" value={money(m.extras.pushMow)} />}
-          {m.extras.veryHilly > 0 && <Row label="Very hilly" value={money(m.extras.veryHilly)} />}
-          {m.extras.clutter > 0 && <Row label="Clutter" value={money(m.extras.clutter)} />}
-          {m.travel.perVisit > 0 && <Row label={`Travel · ${m.travel.label}`} value={`$${m.travel.perVisit}/visit · ${both(money(m.travel.weeklySeason), money(m.travel.biweeklySeason))}`} />}
-          <Row label={`Season discount (signup week ${d.signupWeek}, ${d.firstCut === 'this' ? 'this' : 'next'} cut)`} value={`${d.seasonDiscountPct}%`} />
-          {overgrown && <Row label={`Overgrown catch-up (${d.overgrownLabel})`} value={both(money(plan.weekly.catchUpCharge), money(plan.biweekly.catchUpCharge))} />}
-          <Row label="BH per visit" value={both(bn(plan.weekly.bhPerVisit), bn(plan.biweekly.bhPerVisit))} />
-          {overgrown && <Row label="First-visit BH" value={both(bn(plan.weekly.firstVisitBH), bn(plan.biweekly.firstVisitBH))} />}
-        </div>
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+      <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">Billing schedule</div>
+      <div className="grid grid-cols-2 gap-2">
+        {billCol('Weekly', plan.weekly)}
+        {billCol('Biweekly', plan.biweekly)}
       </div>
-
-      {/* Billing — dated schedule, per frequency side by side */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
-        <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">Billing schedule</div>
-        <div className="grid grid-cols-2 gap-2">
-          {billCol('Weekly', plan.weekly)}
-          {billCol('Biweekly', plan.biweekly)}
-        </div>
-      </div>
-
-      {/* Operations — crew-facing */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
-        <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Operations</div>
-        <div className="space-y-0.5 text-[12px] text-slate-600">
-          <Row label="Cuts left" value={both(plan.weekly.cutsLeft, plan.biweekly.cutsLeft)} />
-          <Row label="BH per visit" value={both(bn(plan.weekly.bhPerVisit), bn(plan.biweekly.bhPerVisit))} />
-          {overgrown && <Row label="First-visit BH" value={both(bn(plan.weekly.firstVisitBH), bn(plan.biweekly.firstVisitBH))} />}
-        </div>
-      </div>
-    </>
+    </div>
   );
 }
 
-// ── Package block — all packages shown together ─────────────────────────────
+// ── Package block — all packages shown together (mode A only) ────────────────
 function PackageBlock({ packages, selected, onSelect }: { packages: PackagePrice[]; selected: string | null; onSelect: (k: string) => void }) {
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-2">
@@ -505,7 +535,7 @@ function SavedLawnQuotes({ quotes, currentUser, isAdmin, onOpen, onDelete }: {
       .sort((a, b) => (b.updatedAt || b.quotedAt || 0) - (a.updatedAt || a.quotedAt || 0));
   }, [quotes, search]);
   const canDelete = (x: LawnQuote) => isAdmin || (x.quotedBy?.email || '').toLowerCase() === currentUser.email.toLowerCase();
-  const shape = (x: LawnQuote) => `${(x.sqft || 0).toLocaleString('en-US')} sq ft · ${money(x.weeklyAnnual)} / ${money(x.biweeklyAnnual)}`;
+  const shape = (x: LawnQuote) => `${x.sqft > 0 ? `${(x.sqft).toLocaleString('en-US')} sq ft` : x.tierLabel} · ${money(x.weeklyAnnual)} / ${money(x.biweeklyAnnual)}`;
 
   return (
     <div className="space-y-3">
@@ -525,7 +555,7 @@ function SavedLawnQuotes({ quotes, currentUser, isAdmin, onOpen, onDelete }: {
                   <div className="font-bold text-slate-800 truncate">{named || shape(x)}</div>
                   {named && <div className="text-[12px] text-slate-500">{shape(x)}</div>}
                   <div className="text-[10px] text-slate-400">
-                    {x.selectedPackage ? `${x.selectedPackage} · ` : ''}{(x.updatedBy || x.quotedBy)?.name || '—'} · {fmtWhen(x.updatedAt || x.quotedAt)}
+                    {x.priceMode && x.priceMode !== 'sqft' ? `${MODE_LABEL[x.priceMode]} · ` : ''}{x.selectedPackage ? `${x.selectedPackage} · ` : ''}{(x.updatedBy || x.quotedBy)?.name || '—'} · {fmtWhen(x.updatedAt || x.quotedAt)}
                   </div>
                 </button>
                 <div className="flex items-center gap-1.5 shrink-0">
@@ -552,7 +582,7 @@ function LawnReport({ quotes, config }: { quotes: Record<string, LawnQuote>; con
     let weekly = 0, biweekly = 0, hilly = 0, push = 0, clutter = 0, annualSum = 0;
     const pkg: Record<string, number> = { bronze: 0, silver: 0, gold: 0, dethatch: 0 };
     for (const q of all) {
-      tierCounts[q.tierIndex] = (tierCounts[q.tierIndex] || 0) + 1;
+      if (q.tierIndex >= 0) tierCounts[q.tierIndex] = (tierCounts[q.tierIndex] || 0) + 1;
       zoneCounts[q.travelZone] = (zoneCounts[q.travelZone] || 0) + 1;
       if (q.frequency === 'weekly') weekly++; else if (q.frequency === 'biweekly') biweekly++;
       if (q.veryHilly) hilly++; if (q.pushMow) push++; if (q.clutter) clutter++;
@@ -590,12 +620,11 @@ function LawnReport({ quotes, config }: { quotes: Record<string, LawnQuote>; con
         </div>
       </div>
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
-        <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">Clients by travel zone</div>
+        <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">Quotes by travel zone</div>
         <div className="space-y-1">
           {config.TRAVEL_ZONES.map(z => {
             const c = stats.zoneCounts[z.key] || 0;
-            const under = c > 0 && c < config.ZONE_MIN_CLIENTS;
-            return <div key={z.key} className="flex justify-between text-sm"><span className="text-slate-600">{z.label}</span><span className={`font-mono font-bold ${under ? 'text-amber-600' : ''}`}>{c}{under ? ` ⚠ under ${config.ZONE_MIN_CLIENTS}` : ''}</span></div>;
+            return <div key={z.key} className="flex justify-between text-sm"><span className="text-slate-600">{z.label}</span><span className="font-mono font-bold">{c}</span></div>;
           })}
         </div>
       </div>

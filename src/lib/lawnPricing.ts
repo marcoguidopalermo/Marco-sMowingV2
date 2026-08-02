@@ -24,16 +24,16 @@ export interface LawnConfig {
   BIWEEKLY_RATIO: number;
   TIERS: LawnTier[];
   MOWING_EXTRAS: { PUSH_MOW_ONLY: number; VERY_HILLY: number; CLUTTER: number };
+  // ONE travel rate for everything: perVisit × visitCount. Mowing uses the
+  // frequency's cut count (20 weekly / 12 biweekly); packages use the package's
+  // own visit count. 20 km is the maximum serviced distance — no zone beyond it.
   TRAVEL_ZONES: LawnTravelZone[];
   WEEKLY_CUTS: number;
   BIWEEKLY_CUTS: number;
   MONTHS: number;
-  ZONE_MIN_CLIENTS: number;
-  ZONE_BREAKEVEN_CLIENTS: number;
   PACKAGES: LawnPackageDef[];
   PACKAGE_PRICES: LawnPackagePrices[];      // per tier index: key -> price (0 = not yet priced)
   PACKAGE_EXTRAS: { VERY_HILLY: number; CLUTTER: number };
-  PACKAGE_TRAVEL_PER_VISIT: number[];
   // ── Mid-season proration + overgrown catch-up + BH (MOWING ONLY) ──────────
   SEASON_START: string;            // 'YYYY-MM-DD' — resettable each year
   WEEKS_IN_SEASON: number;         // end derives as start + this many weeks
@@ -58,15 +58,14 @@ export const LAWN_CONFIG_V1: LawnConfig = {
   MOWING_EXTRAS: { PUSH_MOW_ONLY: 200, VERY_HILLY: 200, CLUTTER: 200 },
   TRAVEL_ZONES: [
     { key: 'in_town', label: 'In town', perVisit: 0 },
-    { key: 'km5', label: 'Within 5 km', perVisit: 10 },
-    { key: 'km10', label: 'Within 10 km', perVisit: 20 },
-    { key: 'km15', label: 'Within 15 km', perVisit: 40 },
+    { key: 'km5', label: 'Within 5 km', perVisit: 25 },
+    { key: 'km10', label: 'Within 10 km', perVisit: 50 },
+    { key: 'km15', label: 'Within 15 km', perVisit: 75 },
+    { key: 'km20', label: 'Within 20 km', perVisit: 100 },
   ],
   WEEKLY_CUTS: 20,
   BIWEEKLY_CUTS: 12,
   MONTHS: 6,
-  ZONE_MIN_CLIENTS: 3,
-  ZONE_BREAKEVEN_CLIENTS: 5,
   PACKAGES: [
     { key: 'bronze', label: 'Bronze', visits: 2 },
     { key: 'silver', label: 'Silver', visits: 3 },
@@ -84,7 +83,6 @@ export const LAWN_CONFIG_V1: LawnConfig = {
     { bronze: 0, silver: 0, gold: 0, dethatch: 0 },
   ],
   PACKAGE_EXTRAS: { VERY_HILLY: 50, CLUTTER: 50 },
-  PACKAGE_TRAVEL_PER_VISIT: [0, 25, 50, 75, 100],
   SEASON_START: '2026-05-25',
   WEEKS_IN_SEASON: 20,
   DISCOUNT_PER_WEEK: 5,
@@ -165,8 +163,14 @@ export interface MowingPrice {
  * it is a per-visit amount × the frequency's cut count, so a biweekly client
  * (12 drives) isn't charged 75% of a 20-visit travel cost.
  */
-export function priceMowing(tierIndex: number, flags: MowingFlags, config: LawnConfig = LAWN_CONFIG_V1): MowingPrice {
-  const weeklyBase = config.TIERS[tierIndex].weekly;
+/**
+ * Core mowing builder from an explicit weekly seasonal base. The 0.75 ratio
+ * applies to the base + season extras; travel is the per-visit exception. Used
+ * by both the tier path (priceMowing) and the direct-price modes B/C
+ * (priceMowingBase), so every downstream figure — discount, cuts, BH, billing —
+ * computes identically whether the base came from a tier or was typed in.
+ */
+function buildMowing(weeklyBase: number, tierIndex: number, label: string, flags: MowingFlags, config: LawnConfig): MowingPrice {
   const extras = {
     pushMow: flags.pushMow ? config.MOWING_EXTRAS.PUSH_MOW_ONLY : 0,
     veryHilly: flags.veryHilly ? config.MOWING_EXTRAS.VERY_HILLY : 0,
@@ -182,12 +186,25 @@ export function priceMowing(tierIndex: number, flags: MowingFlags, config: LawnC
     annual, monthly: annual / config.MONTHS, perCut: annual / cuts,
   });
   return {
-    tierIndex, tierLabel: tierLabel(tierIndex, config), weeklyBase, extras,
+    tierIndex, tierLabel: label, weeklyBase, extras,
     travel: { key: zone.key, label: zone.label, perVisit: zone.perVisit, weeklySeason, biweeklySeason },
     weeklyTotal, biweeklyTotal,
     weekly: freq(weeklyTotal, config.WEEKLY_CUTS),
     biweekly: freq(biweeklyTotal, config.BIWEEKLY_CUTS),
   };
+}
+
+/**
+ * Mode B / C: price mowing from a weekly seasonal base typed in directly (no
+ * tier — commercial contracts can't be expressed in sq ft). Mode C callers pass
+ * perCut × WEEKLY_CUTS. Extras + travel add on exactly as they do to a tier.
+ */
+export function priceMowingBase(weeklyBase: number, flags: MowingFlags, config: LawnConfig = LAWN_CONFIG_V1): MowingPrice {
+  return buildMowing(Math.max(0, Number(weeklyBase) || 0), -1, 'Custom price', flags, config);
+}
+
+export function priceMowing(tierIndex: number, flags: MowingFlags, config: LawnConfig = LAWN_CONFIG_V1): MowingPrice {
+  return buildMowing(config.TIERS[tierIndex].weekly, tierIndex, tierLabel(tierIndex, config), flags, config);
 }
 
 // ── PACKAGES ────────────────────────────────────────────────────────────────
@@ -283,6 +300,17 @@ export function signupSeasonWeek(startDate: string, config: LawnConfig = LAWN_CO
   if (!Number.isFinite(diff) || diff < 0) return 0;
   return Math.max(1, Math.min(config.WEEKS_IN_SEASON, Math.floor(diff / 7) + 1));
 }
+/** The Monday of NEXT week relative to `todayYmd`. The safe default first-cut
+ *  date — a new client usually can't be fitted into the current week's route.
+ *  (Epoch day 0 = 1970-01-01 was a Thursday = 4.) */
+export function mondayOfNextWeek(todayYmd: string): string {
+  const n = ymdToDayNum(todayYmd);
+  if (!Number.isFinite(n)) return todayYmd;
+  const dow = ((((n % 7) + 4) % 7) + 7) % 7; // 0 = Sun … 6 = Sat
+  const daysUntilNextMonday = ((8 - dow) % 7) || 7;
+  return dayNumToYmd(n + daysUntilNextMonday);
+}
+
 /** Overgrown discount reduction, always derived: (multiplier − 1) × DISCOUNT_PER_WEEK. */
 export function overgrownReductionPct(multiplier: number, config: LawnConfig = LAWN_CONFIG_V1): number {
   return (multiplier - 1) * config.DISCOUNT_PER_WEEK;
@@ -306,7 +334,21 @@ export function billingDates(year: number, count: number): string[] {
 }
 
 export type FirstCut = 'this' | 'next';
+
+/**
+ * The season week a FIRST CUT DATE falls in (1-indexed). A date before
+ * SEASON_START → week 1 (full season, no discount). Clamped to WEEKS_IN_SEASON —
+ * 20 km / the last cutting week is the far bound, there is nothing beyond it.
+ * This is the single source the first-cut-date model derives everything from.
+ */
+export function firstCutSeasonWeek(firstCutDate: string, config: LawnConfig = LAWN_CONFIG_V1): number {
+  const diff = ymdToDayNum(firstCutDate) - ymdToDayNum(config.SEASON_START);
+  if (!Number.isFinite(diff) || diff < 0) return 1;
+  return Math.max(1, Math.min(config.WEEKS_IN_SEASON, Math.floor(diff / 7) + 1));
+}
+
 export interface SeasonDiscount {
+  firstCutWeek: number;            // the season week the first cut falls in (1-indexed)
   signupWeek: number;              // week the signup falls in (1-indexed; 0 = before season)
   firstCut: FirstCut;
   firstServiceWeek: number;        // first week actually serviced
@@ -390,12 +432,80 @@ export function computeSeasonPlan(
   return {
     startDate, seasonEnd: seasonEndDate(config),
     discount: {
-      signupWeek, firstCut, firstServiceWeek, weeksServiced, seasonDiscountPct,
+      firstCutWeek: firstServiceWeek, signupWeek, firstCut, firstServiceWeek, weeksServiced, seasonDiscountPct,
       overgrownKey: og.key, overgrownLabel: og.label, overgrownMultiplier: og.multiplier, catchUpPct,
     },
     weekly: freq(mowing.weeklyTotal, config.WEEKLY_CUTS),
     biweekly: freq(mowing.biweeklyTotal, config.BIWEEKLY_CUTS),
   };
+}
+
+/**
+ * FIRST-CUT-DATE model (the current LawnMaster). The single date IS the first
+ * cut — no "this / next week" choice. Everything derives from firstCutWeek:
+ *   weeksServiced = WEEKS − firstCutWeek + 1
+ *   discount      = (WEEKS − weeksServiced) / WEEKS × 100
+ *   cutsLeft      = round(cuts × weeksServiced / WEEKS)
+ * The week is clamped to [1, WEEKS], so this NEVER returns null — a date before
+ * the season is week 1 (full season), a date past the last cutting week is week
+ * WEEKS (one cut, max discount). Overgrown catch-up, BH, deposit and billing are
+ * identical to computeSeasonPlan. Prices any base — a tier OR a typed-in
+ * commercial price (modes B/C) — since it only reads the MowingPrice totals.
+ */
+export function computeSeasonPlanFC(
+  mowing: MowingPrice, firstCutDate: string, overgrownKey: string,
+  config: LawnConfig = LAWN_CONFIG_V1,
+): SeasonPlan {
+  const WEEKS = config.WEEKS_IN_SEASON;
+  const firstCutWeek = firstCutSeasonWeek(firstCutDate, config);
+  const weeksServiced = Math.max(1, WEEKS - firstCutWeek + 1);
+  const seasonDiscountPct = round2((WEEKS - weeksServiced) / WEEKS * 100);
+  const og = config.OVERGROWN.find(o => o.key === overgrownKey) || config.OVERGROWN[0];
+  const catchUpPct = overgrownReductionPct(og.multiplier, config);
+  const avail = availableMonthEnds(firstCutDate);
+  const year = Number(String(firstCutDate).slice(0, 4)) || Number(String(config.SEASON_START).slice(0, 4));
+
+  const freq = (fullPrice: number, cuts: number): SeasonFreqPlan => {
+    const proratedTotal = round2(fullPrice * (1 - seasonDiscountPct / 100));
+    // Monthly kept UNROUNDED internally so an exact split (e.g. 3 × 10000/6 =
+    // 5000) yields a $0 deposit and the full instalment count, not a rounding
+    // cent. Display rounds via money(). +0.005 epsilon makes an exact division
+    // count as fitting despite float noise.
+    const monthlyRaw = config.MONTHS > 0 ? fullPrice / config.MONTHS : 0;
+    const maxByPrice = monthlyRaw > 0 ? Math.floor((proratedTotal + 0.005) / monthlyRaw) : 0;
+    const instalments = Math.max(0, Math.min(avail, maxByPrice));
+    const deposit = Math.max(0, round2(proratedTotal - instalments * monthlyRaw));
+    const catchUpCharge = round2((catchUpPct / 100) * fullPrice);
+    const cutsLeft = WEEKS > 0 ? Math.round(cuts * weeksServiced / WEEKS) : 0;
+    const bhPerVisit = cuts > 0 ? fullPrice / cuts / config.MOWING_ALLOCATION_RATE : 0;
+    return {
+      // monthly kept UNROUNDED so deposit + instalments × monthly == prorated
+      // exactly; money() rounds it to whole dollars for display.
+      fullPrice, cuts, proratedTotal, monthly: monthlyRaw, instalments, deposit, catchUpCharge,
+      firstInvoice: round2(deposit + catchUpCharge),
+      cutsLeft, internalPPC: cutsLeft > 0 ? round2(proratedTotal / cutsLeft) : 0,
+      bhPerVisit, firstVisitBH: bhPerVisit * og.multiplier,
+      billingDates: billingDates(year, instalments),
+    };
+  };
+  return {
+    startDate: firstCutDate, seasonEnd: seasonEndDate(config),
+    discount: {
+      firstCutWeek, signupWeek: firstCutWeek, firstCut: 'this', firstServiceWeek: firstCutWeek,
+      weeksServiced, seasonDiscountPct,
+      overgrownKey: og.key, overgrownLabel: og.label, overgrownMultiplier: og.multiplier, catchUpPct,
+    },
+    weekly: freq(mowing.weeklyTotal, config.WEEKLY_CUTS),
+    biweekly: freq(mowing.biweeklyTotal, config.BIWEEKLY_CUTS),
+  };
+}
+
+/** Migrate an old saved quote (startDate + firstCut) to the first-cut-date
+ *  model: firstCutDate = startDate + (firstCut === 'next' ? 7 : 0) days. Prices
+ *  identically to what was saved. */
+export function migrateFirstCutDate(startDate: string, firstCut: FirstCut | undefined): string {
+  if (!isValidYmd(startDate)) return startDate;
+  return dayNumToYmd(ymdToDayNum(startDate) + (firstCut === 'next' ? 7 : 0));
 }
 
 // ── CONFIG VALIDATION + DIFF (for the lawn rate sheet) ──────────────────────
@@ -425,13 +535,10 @@ function flattenLawn(c: LawnConfig): FlatEntry[] {
   });
   push('pkgExtra.hilly', 'Package · Very hilly', c.PACKAGE_EXTRAS.VERY_HILLY);
   push('pkgExtra.clutter', 'Package · Clutter', c.PACKAGE_EXTRAS.CLUTTER);
-  c.PACKAGE_TRAVEL_PER_VISIT.forEach((v, i) => push(`pkgTravel${i}`, `Package travel · slot ${i + 1}`, v));
   c.PACKAGES.forEach(p => push(`visits.${p.key}`, `${p.label} · visits`, p.visits));
   push('season.weeklyCuts', 'Season · Weekly cuts', c.WEEKLY_CUTS);
   push('season.biweeklyCuts', 'Season · Biweekly cuts', c.BIWEEKLY_CUTS);
   push('season.months', 'Season · Months', c.MONTHS);
-  push('zone.min', 'Zone · Min clients', c.ZONE_MIN_CLIENTS);
-  push('zone.break', 'Zone · Break-even clients', c.ZONE_BREAKEVEN_CLIENTS);
   push('season.start', 'Season start', c.SEASON_START);
   push('season.weeks', 'Weeks in season', c.WEEKS_IN_SEASON);
   push('season.discPerWeek', 'Discount per week (%)', c.DISCOUNT_PER_WEEK);
@@ -487,7 +594,6 @@ export function validateLawnConfig(c: LawnConfig): string[] {
   if (!nn(c.MOWING_EXTRAS.PUSH_MOW_ONLY) || !nn(c.MOWING_EXTRAS.VERY_HILLY) || !nn(c.MOWING_EXTRAS.CLUTTER)) errs.push('Mowing extras cannot be negative.');
   if (c.TRAVEL_ZONES.some(z => !nn(z.perVisit))) errs.push('Travel zone per-visit prices cannot be negative.');
   if (!nn(c.PACKAGE_EXTRAS.VERY_HILLY) || !nn(c.PACKAGE_EXTRAS.CLUTTER)) errs.push('Package extras cannot be negative.');
-  if (c.PACKAGE_TRAVEL_PER_VISIT.some(v => !nn(v))) errs.push('Package travel amounts cannot be negative.');
   // Ratio strictly between 0 and 1.
   if (!(Number(c.BIWEEKLY_RATIO) > 0 && Number(c.BIWEEKLY_RATIO) < 1)) errs.push('Biweekly ratio must be between 0 and 1.');
   // Cut counts + months > 0.
