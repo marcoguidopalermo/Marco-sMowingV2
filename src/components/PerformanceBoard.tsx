@@ -12,6 +12,7 @@ import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, Performanc
 import { logPerfActivity } from '../lib/perfAudit';
 import { monthsPresent, monthOfDate, monthSettlementStatus } from '../lib/performanceMonths';
 import { scanBlockingPartialJobs, monthResolutionSummary, BlockingPartialJob } from '../lib/multiDayResolution';
+import { crewDayRows, monthStats, sortCrewDayRows, CrewDayRow } from '../lib/monthAnalysis';
 import { scanOutstandingCrewDays, groupOutstandingByDivision, divisionNameToCode, OutstandingCrewDay } from '../lib/approvalOversight';
 import CompletionReviewModal from './CompletionReviewModal';
 import AHSplitModal from './AHSplitModal';
@@ -106,6 +107,9 @@ interface PerformanceBoardProps {
   onResolveComplete: (visitId: string, ym: string, targetDate: string, targetCrewId: string) => void;
   onResolveCarry: (visitId: string, ym: string) => void;
   onResolveVoid: (visitIds: string[], ym: string, reason: string) => void;
+  // On-demand loading of finalized-month sheets (per open month, never all at once).
+  monthSheetStatus: Record<string, 'loading' | 'loaded' | 'missing' | 'error'>;
+  ensureMonthLoaded: (ym: string) => void;
 
   jobberConnected: boolean;
   canSyncJobber: boolean;
@@ -161,6 +165,8 @@ export default function PerformanceBoard({
   onResolveComplete,
   onResolveCarry,
   onResolveVoid,
+  monthSheetStatus,
+  ensureMonthLoaded,
   jobberConnected,
   canSyncJobber,
   showToastMsg,
@@ -279,6 +285,26 @@ export default function PerformanceBoard({
     setPerfTab('entry');
     goToOutstanding({ ...u, crewNumber: 0, crewLabel: '', isAdHoc: false } as OutstandingCrewDay);
   };
+  // ── Archived (finalized-month or rolling-archived) day → READ-ONLY board.
+  // The month's sheet loads on demand; every edit/approve/waive/add affordance
+  // is removed by ABSENCE (below). The admin Unlock stays — it's the way OUT of
+  // read-only. Writes are blocked in App too (the doc write strips these dates).
+  const viewedMonthYm = monthOfDate(perfDate);
+  const isArchivedView = pushedMonths.includes(viewedMonthYm) || !!archivedDays[perfDate];
+  const readOnly = isArchivedView;
+  const viewedSheetStatus = pushedMonths.includes(viewedMonthYm) ? monthSheetStatus[viewedMonthYm] : undefined;
+  // Advanced Reports parity: the old all-months listener meant a report range
+  // spanning a pushed month always had that data. With on-demand loading we
+  // pull each pushed month the selected range touches — bounded to the range,
+  // never all months at once, cached per month by the parent.
+  useEffect(() => {
+    if (!reportStartDate || !reportEndDate) return;
+    const startYm = monthOfDate(reportStartDate);
+    const endYm = monthOfDate(reportEndDate);
+    for (const ym of pushedMonths || []) {
+      if (ym >= startYm && ym <= endYm) ensureMonthLoaded(ym);
+    }
+  }, [reportStartDate, reportEndDate, pushedMonths, ensureMonthLoaded]);
   useEffect(() => {
     if (!focusCrewTarget || perfDate !== focusCrewTarget.date) return;
     if (!dailyLogs[focusCrewTarget.crewId]) return;
@@ -1414,6 +1440,9 @@ export default function PerformanceBoard({
                   );
                 })()}
               </div>
+              {/* Sync / Save render ONLY on live days — never on an archived
+                  (read-only) day, so there is no write path to a month sheet. */}
+              {!readOnly && (
               <div className="flex items-center gap-2 flex-wrap">
                 {jobberConnected && canSyncJobber && (
                   <button
@@ -1437,6 +1466,7 @@ export default function PerformanceBoard({
                   return null;
                 })()}
               </div>
+              )}
             </div>
             {jobberConnected && lastSync && (
               <div className="mt-2 text-[11px] text-slate-500 flex items-center gap-2 flex-wrap">
@@ -1452,6 +1482,25 @@ export default function PerformanceBoard({
               </div>
             )}
           </div>
+
+          {/* ARCHIVED · READ-ONLY — a finalized-month (or rolling-archived) day.
+              Loaded on demand from its month sheet; NO edit affordances render. */}
+          {readOnly && (
+            <div className="mb-4 rounded-xl border-2 border-slate-300 bg-slate-100 px-4 py-3 flex items-center gap-2 text-slate-700">
+              <Archive className="w-4 h-4 shrink-0" />
+              <span className="text-sm"><span className="font-black uppercase tracking-widest">Archived · read only</span> — this day is finalized to its month sheet. You’re viewing a saved snapshot; editing is disabled.</span>
+            </div>
+          )}
+          {viewedSheetStatus === 'loading' && Object.keys(dailyLogs).length === 0 && (
+            <div className="mb-4 rounded-xl border border-slate-200 bg-white px-4 py-6 flex items-center justify-center gap-2 text-slate-500">
+              <RefreshCw className="w-4 h-4 animate-spin" /> Loading {viewedMonthYm} month sheet…
+            </div>
+          )}
+          {viewedSheetStatus === 'missing' && (
+            <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] font-bold text-amber-800 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" /> Month sheet for {viewedMonthYm} not found — its data may be unavailable. Nothing to show for this day.
+            </div>
+          )}
 
           {/* OVERSIGHT — cross-date outstanding crew-days (neither approved
               nor waived), grouped by division. Visible to admins AND managers
@@ -1528,8 +1577,11 @@ export default function PerformanceBoard({
           {Object.keys(dailyLogs).length === 0 ? (
             <div className="bg-gray-50 border-2 border-dashed border-gray-200 rounded-xl p-10 flex flex-col items-center justify-center text-gray-500">
               <CalendarIcon className="w-10 h-10 mb-3 opacity-20" />
-              <p>No crews scheduled or logged for this date.</p>
-              <button onClick={() => setDailyLogs(p => ({ ...p, [`adhoc-${Date.now()}`]: { division: 'Large Projects', crewNumber: 1, jobs: [], employeeAH: {}, deductions: {}, isAdHoc: true } }))} className="mt-4 bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg font-medium shadow-sm hover:bg-gray-50">+ Add Unscheduled Crew</button>
+              <p>{readOnly ? 'No crew-days were recorded for this date.' : 'No crews scheduled or logged for this date.'}</p>
+              {/* Add-crew affordance is live-only — an archived day is read-only. */}
+              {!readOnly && (
+                <button onClick={() => setDailyLogs(p => ({ ...p, [`adhoc-${Date.now()}`]: { division: 'Large Projects', crewNumber: 1, jobs: [], employeeAH: {}, deductions: {}, isAdHoc: true } }))} className="mt-4 bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg font-medium shadow-sm hover:bg-gray-50">+ Add Unscheduled Crew</button>
+              )}
             </div>
           ) : (
             <div className="space-y-6">
@@ -1584,6 +1636,12 @@ export default function PerformanceBoard({
                 const isWaived = log.approvalStatus === 'waived';
                 // Both approved and waived are terminal/locked states.
                 const isLocked = isApproved || isWaived;
+                // On an archived (read-only) day EVERY card renders in its
+                // locked/read-only mode — inputs disabled, edit affordances
+                // absent — regardless of approval state. One rendering source,
+                // no second implementation. (Pushed months hold approved/
+                // waived days; empty pending placeholders fall through here.)
+                const editLocked = isLocked || readOnly;
                 // 🔥/🔆 gamification (display-only; approved-math single source).
                 const hasFlame = crewDayHasFlame(log, testUserIds);
                 const crewStreak = crewStreaks[crewKeyOf(log)] || 0;
@@ -1609,7 +1667,7 @@ export default function PerformanceBoard({
                 return (
                   <div key={cId} id={`perf-crew-card-${cId}`} className={`bg-white rounded-xl shadow-sm border overflow-hidden relative ${isApproved ? 'border-emerald-300' : isWaived ? 'border-slate-300' : 'border-gray-200'}`}>
                     {log.isAdHoc && <div className="absolute top-0 left-0 w-1 h-full bg-orange-400"></div>}
-                    {!isLocked && canDeleteEntry(cId) && (
+                    {!readOnly && !isLocked && canDeleteEntry(cId) && (
                       <button
                         type="button"
                         onClick={() => handleDeleteClick(cId)}
@@ -1689,7 +1747,11 @@ export default function PerformanceBoard({
                     )}
 
                     <div className={`px-4 py-2.5 border-b flex flex-wrap items-center justify-between gap-2 ${isApproved ? 'bg-white border-emerald-100' : isWaived ? 'bg-white border-slate-200' : 'bg-amber-50 border-amber-200'}`}>
-                      {isApproved ? (
+                      {readOnly ? (
+                        <span className="text-[10px] font-medium tracking-wide text-slate-500 italic">
+                          {isApproved ? 'Approved · archived (read only)' : isWaived ? 'Waived · archived (read only)' : 'Archived (read only)'}
+                        </span>
+                      ) : isApproved ? (
                         <span className="text-[10px] font-medium tracking-wide text-slate-400 italic">Locked by approval — unapprove to edit BH / AH / deductions.</span>
                       ) : isWaived ? (
                         <span className="text-[10px] font-medium tracking-wide text-slate-500 italic">Waived — no approval required. Un-waive to edit.</span>
@@ -1698,7 +1760,7 @@ export default function PerformanceBoard({
                           <Clock className="w-3.5 h-3.5" /> Pending Review
                         </span>
                       )}
-                      {isManager && (
+                      {!readOnly && isManager && (
                         isApproved ? (
                           <button
                             onClick={() => {
@@ -1969,7 +2031,7 @@ export default function PerformanceBoard({
                                     type="text"
                                     placeholder="Job Desc"
                                     value={job.desc}
-                                    disabled={isLocked || isIncomplete || isGhost}
+                                    disabled={editLocked || isIncomplete || isGhost}
                                     title={isGhost ? `Credit moved to ${job.movedToDate} — kept here as audit ghost on locked day` : isIncomplete ? 'Visit not complete in Jobber — read-only' : isRemoved ? 'No longer in Jobber — remove or keep manually?' : lockTitle}
                                     onChange={e => setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: n[cId].jobs.map((j, i) => i === jIdx ? { ...j, desc: e.target.value } : j) }; return n; })}
                                     onBlur={() => persistCrewDay(`${cId}:${jIdx}`, cId, dailyLogs[cId])}
@@ -1981,7 +2043,7 @@ export default function PerformanceBoard({
                                   // Incomplete non-hourly rows: BH is read-only (credit comes
                                   // from the optional partial-completion flow in the kebab,
                                   // not typing). Incomplete hourly rows: BH input is editable.
-                                  const inputDisabled = isLocked || isGhost || (isIncomplete && !isHourlyIncomplete);
+                                  const inputDisabled = editLocked || isGhost || (isIncomplete && !isHourlyIncomplete);
                                   return (
                                 <>
                                 <input
@@ -1990,7 +2052,7 @@ export default function PerformanceBoard({
                                   placeholder={isHourlyIncomplete ? 'Hrs' : 'BH'}
                                   value={inputValue(bhKey, job.bh)}
                                   disabled={inputDisabled}
-                                  readOnly={isBHLocked && !isLocked}
+                                  readOnly={isBHLocked && !editLocked}
                                   title={
                                     isHourlyIncomplete ? 'Hours worked today on this hourly job (1 hr = 1 BH)'
                                     : isIncomplete ? 'Not counted until partially marked or completed'
@@ -2050,7 +2112,7 @@ export default function PerformanceBoard({
                                 {isBHUnlocked && (
                                   <span title="Manually edited — click ⋯ to revert" className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
                                 )}
-                                {hasConflict && !isLocked && (
+                                {hasConflict && !editLocked && (
                                   <div className="flex items-center gap-1 shrink-0">
                                     <button
                                       type="button"
@@ -2070,7 +2132,7 @@ export default function PerformanceBoard({
                                     </button>
                                   </div>
                                 )}
-                                {canShowMenu && !isLocked && !isGhost && (
+                                {canShowMenu && !editLocked && !isGhost && (
                                   <div className="relative shrink-0">
                                     <button
                                       type="button"
@@ -2178,7 +2240,7 @@ export default function PerformanceBoard({
                                     )}
                                   </div>
                                 )}
-                                {isManager && isJobber && !awaitingHourly && !isLocked && !isGhost && (isIncomplete || !isMultiDay) && (
+                                {isManager && isJobber && !awaitingHourly && !editLocked && !isGhost && (isIncomplete || !isMultiDay) && (
                                   <>
                                     <button
                                       type="button"
@@ -2200,7 +2262,7 @@ export default function PerformanceBoard({
                                     </button>
                                   </>
                                 )}
-                                <button disabled={isLocked || isGhost} title={isGhost ? 'Audit ghost — cannot remove from locked day' : isRemoved ? 'Remove this row' : lockTitle} onClick={() => {
+                                <button disabled={editLocked || isGhost} title={isGhost ? 'Audit ghost — cannot remove from locked day' : isRemoved ? 'Remove this row' : lockTitle} onClick={() => {
                                   if (isGhost) return;
                                   logPerfActivity({
                                     type: 'manual_job_removed',
@@ -2279,7 +2341,7 @@ export default function PerformanceBoard({
                                   <span className="text-emerald-600 font-bold">✓</span> {Number(job.bh)} BH credited
                                 </div>
                               )}
-                              {isMultiDay && !awaitingHourly && job.jobberTagType !== 'hourly' && job.jobberVisitId && mdJob && !isLocked && !isGhost && !(isIncomplete && (Number(job.bh) || 0) === 0) && (() => {
+                              {isMultiDay && !awaitingHourly && job.jobberTagType !== 'hourly' && job.jobberVisitId && mdJob && !editLocked && !isGhost && !(isIncomplete && (Number(job.bh) || 0) === 0) && (() => {
                                 // Status-only block — the manager action lives in the
                                 // ⋯ menu ("Mark partial %" / "Adjust partial %"). This
                                 // surfaces the current credited state so an in-progress
@@ -2314,7 +2376,7 @@ export default function PerformanceBoard({
                           })}
                           <div className="flex gap-2 mt-2">
                             {/* "+ Route Database" button removed — superseded by Jobber sync. */}
-                            <button disabled={isLocked} title={lockTitle} onClick={() => {
+                            <button disabled={editLocked} title={lockTitle} onClick={() => {
                               setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: [...n[cId].jobs, { desc: '', bh: '', source: 'manual' }] }; return n; });
                               logPerfActivity({
                                 type: 'manual_job_added',
@@ -2364,8 +2426,8 @@ export default function PerformanceBoard({
                             const hrsNum = Number(hrs);
                             const showLongDayWarn = Number.isFinite(hrsNum) && hrsNum >= 12;
                             const removeOpen = removeWorkerCtx?.cId === cId && removeWorkerCtx?.empId === empId;
-                            const canRemove = !isLocked && canDeleteEntry(cId);
-                            const canSplit = !isLocked && canDeleteEntry(cId) && hrsNum > 0;
+                            const canRemove = !editLocked && canDeleteEntry(cId);
+                            const canSplit = !editLocked && canDeleteEntry(cId) && hrsNum > 0;
                             return (
                             <div key={empId} className="flex flex-col bg-gray-50 border border-gray-200 rounded p-1.5 pl-3">
                               <div className="flex items-center justify-between">
@@ -2391,7 +2453,7 @@ export default function PerformanceBoard({
                                     step="0.1"
                                     placeholder="Hrs"
                                     value={inputValue(ahKey, hrs as string | number | null)}
-                                    disabled={isLocked}
+                                    disabled={editLocked}
                                     title={lockTitle}
                                     onChange={e => setDraft(ahKey, e.target.value)}
                                     onBlur={() => {
@@ -2488,7 +2550,7 @@ export default function PerformanceBoard({
                                     type="number"
                                     step="0.1"
                                     placeholder="0"
-                                    disabled={isLocked}
+                                    disabled={editLocked}
                                     value={inputValue(dedKey, deductHoursRaw(log.deductions?.[empId]))}
                                     onChange={e => setDraft(dedKey, e.target.value)}
                                     onBlur={() => {
@@ -2504,14 +2566,14 @@ export default function PerformanceBoard({
                                       clearDraft(dedKey);
                                     }}
                                     className="w-12 border border-rose-200 rounded p-1 text-xs text-center bg-rose-50 outline-none text-rose-700 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
-                                    title={isLocked ? lockTitle : "Subtract hours for breakdowns, meetings, etc."}
+                                    title={editLocked ? lockTitle : "Subtract hours for breakdowns, meetings, etc."}
                                   />
                                     );
                                   })()}
                                   <input
                                     type="text"
                                     placeholder="Reason (optional)"
-                                    disabled={isLocked}
+                                    disabled={editLocked}
                                     value={deductReason(log.deductions?.[empId])}
                                     onChange={e => setDailyLogs(p => {
                                       const n = { ...p };
@@ -2521,11 +2583,11 @@ export default function PerformanceBoard({
                                       return n;
                                     })}
                                     className="w-32 border border-rose-200 rounded p-1 text-xs bg-rose-50 outline-none text-rose-700 font-medium placeholder:text-rose-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    title={isLocked ? lockTitle : "Why hours were deducted (breakdown, meeting, etc.)"}
+                                    title={editLocked ? lockTitle : "Why hours were deducted (breakdown, meeting, etc.)"}
                                   />
                                   {(deductHoursRaw(log.deductions?.[empId]) !== '' || deductReason(log.deductions?.[empId])) && (
                                     <button
-                                      disabled={isLocked}
+                                      disabled={editLocked}
                                       onClick={() => {
                                         const prevDeduc = log.deductions?.[empId];
                                         const prevHours = prevDeduc != null ? deductHoursRaw(prevDeduc) : '';
@@ -2547,7 +2609,7 @@ export default function PerformanceBoard({
                                         });
                                       }}
                                       className="text-rose-300 hover:text-rose-600 p-0.5 disabled:opacity-30 disabled:cursor-not-allowed"
-                                      title={isLocked ? lockTitle : "Clear deduction"}
+                                      title={editLocked ? lockTitle : "Clear deduction"}
                                     >
                                       <X className="w-3.5 h-3.5" />
                                     </button>
@@ -2579,7 +2641,7 @@ export default function PerformanceBoard({
                             </>
                           );
                           })()}
-                          <select disabled={isLocked} title={lockTitle} onChange={e => {
+                          <select disabled={editLocked} title={lockTitle} onChange={e => {
                             const v = e.target.value;
                             if (!v) return;
                             setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], employeeAH: { ...n[cId].employeeAH, [v]: '' } }; return n; });
@@ -2600,12 +2662,15 @@ export default function PerformanceBoard({
                   </div>
                 );
               })}
-              <button
-                onClick={() => setDailyLogs(p => ({ ...p, [`adhoc-${Date.now()}`]: { division: 'Large Projects', crewNumber: 1, jobs: [], employeeAH: {}, deductions: {}, isAdHoc: true } }))}
-                className="w-full bg-white border-2 border-dashed border-orange-300 text-orange-700 hover:bg-orange-50 px-4 py-3 rounded-xl font-bold shadow-sm flex items-center justify-center gap-2"
-              >
-                <Plus className="w-4 h-4" /> Add Unscheduled Crew
-              </button>
+              {/* Add-crew affordance is live-only — never on an archived day. */}
+              {!readOnly && (
+                <button
+                  onClick={() => setDailyLogs(p => ({ ...p, [`adhoc-${Date.now()}`]: { division: 'Large Projects', crewNumber: 1, jobs: [], employeeAH: {}, deductions: {}, isAdHoc: true } }))}
+                  className="w-full bg-white border-2 border-dashed border-orange-300 text-orange-700 hover:bg-orange-50 px-4 py-3 rounded-xl font-bold shadow-sm flex items-center justify-center gap-2"
+                >
+                  <Plus className="w-4 h-4" /> Add Unscheduled Crew
+                </button>
+              )}
             </div>
           )}
 
@@ -2809,13 +2874,16 @@ export default function PerformanceBoard({
               sheets so the main doc stays under the 1 MiB cap. Data is
               MOVED, not deleted: pushed months stay fully viewable here
               via the overlay. */}
-          {isAdmin && (() => {
+          {/* Month Sheets — the PUSH flow (candidates) is admin-only; the
+              ANALYSIS layer over already-pushed months is visible to managers
+              too, scoped to their division (same scope as the live board). */}
+          {(isAdmin || isManager) && (() => {
             const thisMonth = monthOfDate(formatTodayInToronto());
             const pushedSet = new Set(pushedMonths || []);
             // Completed months still sitting in the main doc (candidates),
             // i.e. present in the map, older than the current month, and
             // not already on a sheet.
-            const candidates = monthsPresent(performance).filter(m => m < thisMonth && !pushedSet.has(m));
+            const candidates = isAdmin ? monthsPresent(performance).filter(m => m < thisMonth && !pushedSet.has(m)) : [];
             const pushedList = [...pushedSet].sort().reverse();
             if (candidates.length === 0 && pushedList.length === 0) return null;
             const fmtMonth = (ym: string) => { const [y, m] = ym.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }); };
@@ -2824,7 +2892,7 @@ export default function PerformanceBoard({
                 <div className="flex items-center gap-2 mb-3">
                   <Archive className="w-4 h-4 text-slate-500" />
                   <span className="font-bold text-gray-700 text-sm">Month Sheets</span>
-                  <span className="text-[11px] text-slate-400">— completed months are moved to their own sheet (full detail kept, still shown in reports) to keep the data file small.</span>
+                  <span className="text-[11px] text-slate-400">— completed months live on their own sheet (full detail kept, still shown in reports). Expand a month to analyze it.</span>
                 </div>
                 {candidates.length > 0 && (
                   <div className="space-y-2 mb-3">
@@ -2911,9 +2979,30 @@ export default function PerformanceBoard({
                   </div>
                 )}
                 {pushedList.length > 0 && (
-                  <div className="text-[11px] text-slate-500">
-                    <span className="font-bold uppercase tracking-widest text-[10px] text-slate-400">On sheets (locked):</span>{' '}
-                    {pushedList.map(fmtMonth).join(' · ')}
+                  <div className="space-y-2">
+                    <div className="font-bold uppercase tracking-widest text-[10px] text-slate-400">On sheets (locked) — expand to analyze; tap a crew-day to view it read-only</div>
+                    {pushedList.map(ym => {
+                      // The month's days come from the merged overlay, which
+                      // the parent fills ON DEMAND (never all months at once).
+                      const monthDays = Object.fromEntries(
+                        Object.entries(performance || {}).filter(([d]) => monthOfDate(d) === ym),
+                      );
+                      // Same scope as the live board — admin all, manager own.
+                      const inScope = (division: string) =>
+                        isAdmin || defaultDivisionFilter === 'all' || divisionNameToCode(division) === defaultDivisionFilter;
+                      return (
+                        <MonthAnalysisPanel
+                          key={ym}
+                          ym={ym}
+                          monthLabel={fmtMonth(ym)}
+                          daysMap={monthDays}
+                          status={monthSheetStatus[ym]}
+                          onExpand={() => ensureMonthLoaded(ym)}
+                          onOpenDay={(date, crewId, division) => goToCrewDay({ date, crewId, division })}
+                          inScope={inScope}
+                        />
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -3166,6 +3255,197 @@ export function PartialJobsResolver({ ym, items, performance, onOpenDay, onCompl
               <button type="button" onClick={doComplete} disabled={!target} className="min-h-[40px] px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-widest disabled:opacity-40">Complete &amp; credit</button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── MONTH SHEETS · ANALYSIS LAYER ──────────────────────────────────────────
+// Expanding a finalized (pushed) month loads its sheet ON DEMAND and shows
+// month stats (division averages, best/worst day, total BH/AH) plus a
+// SORTABLE / FILTERABLE crew-day list. Every row taps through to that day on
+// the board, which renders READ-ONLY (the month is pushed). Read-only surface:
+// it never writes. Scope is enforced by `inScope` (managers see their division,
+// admin sees all) — the same scope as the live board.
+const effColorClass = (eff: number | null): string => {
+  if (eff == null) return 'text-slate-400';
+  if (eff >= 90) return 'text-purple-600';
+  if (eff >= 80) return 'text-emerald-600';
+  if (eff >= 70) return 'text-yellow-600';
+  return 'text-red-600';
+};
+const fmtDayShort = (date: string): string =>
+  new Date(`${date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+
+export function MonthAnalysisPanel({ ym, monthLabel, daysMap, status, onExpand, onOpenDay, inScope }: {
+  ym: string;
+  monthLabel: string;
+  daysMap: Record<string, Record<string, PerformanceLog>>;
+  status: 'loading' | 'loaded' | 'missing' | 'error' | undefined;
+  onExpand: () => void;
+  onOpenDay: (date: string, crewId: string, division: string) => void;
+  inScope: (division: string) => boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [sortDir, setSortDir] = useState<'worst' | 'best'>('worst');
+  const [divFilter, setDivFilter] = useState<string>('all');
+  const [crewFilter, setCrewFilter] = useState<string>('all');
+
+  // Scope the month's days to what this viewer may see, THEN derive stats +
+  // rows from the same scoped map so totals and the list always agree.
+  const scopedDays = useMemo(() => {
+    const out: Record<string, Record<string, PerformanceLog>> = {};
+    for (const [date, dayMap] of Object.entries(daysMap || {})) {
+      const kept: Record<string, PerformanceLog> = {};
+      for (const [cid, log] of Object.entries(dayMap || {})) {
+        if (inScope(log.division || 'Unassigned')) kept[cid] = log;
+      }
+      if (Object.keys(kept).length) out[date] = kept;
+    }
+    return out;
+  }, [daysMap, inScope]);
+
+  const stats = useMemo(() => monthStats(scopedDays), [scopedDays]);
+  const allRows = useMemo(() => crewDayRows(scopedDays), [scopedDays]);
+  const divisions = useMemo(() => [...new Set(allRows.map(r => r.division))].sort(), [allRows]);
+  const crewLabels = useMemo(
+    () => [...new Set(allRows.filter(r => divFilter === 'all' || r.division === divFilter).map(r => r.crewLabel))].sort(),
+    [allRows, divFilter],
+  );
+  const rows = useMemo(() => {
+    let rs = allRows;
+    if (divFilter !== 'all') rs = rs.filter(r => r.division === divFilter);
+    if (crewFilter !== 'all') rs = rs.filter(r => r.crewLabel === crewFilter);
+    return sortCrewDayRows(rs, sortDir);
+  }, [allRows, divFilter, crewFilter, sortDir]);
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next) onExpand(); // load on demand — cached per month by the parent
+  };
+
+  const loaded = status === 'loaded' || allRows.length > 0;
+
+  return (
+    <div className="border border-slate-200 rounded-lg">
+      <button type="button" onClick={toggle} className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-50 rounded-lg">
+        <div className="flex items-center gap-2 min-w-0">
+          <BarChart className="w-4 h-4 text-slate-500 shrink-0" />
+          <span className="text-sm font-bold text-slate-800 truncate">{monthLabel}</span>
+          <span className="text-[10px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-slate-200 text-slate-500">Locked</span>
+        </div>
+        <span className="shrink-0 text-[11px] font-bold text-slate-500">{open ? 'Hide ▴' : 'Analyze ▾'}</span>
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-100 px-3 py-3 space-y-3">
+          {status === 'loading' && !loaded && (
+            <div className="flex items-center justify-center gap-2 text-slate-500 py-4 text-sm">
+              <RefreshCw className="w-4 h-4 animate-spin" /> Loading {monthLabel} sheet…
+            </div>
+          )}
+          {(status === 'missing' || status === 'error') && !loaded && (
+            <div className="text-[13px] font-bold text-amber-800 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              {status === 'missing'
+                ? `Month sheet for ${monthLabel} not found — its data may be unavailable.`
+                : `Couldn’t load the ${monthLabel} sheet. Try again.`}
+            </div>
+          )}
+
+          {loaded && allRows.length === 0 && (
+            <div className="text-sm text-slate-400 italic py-3">No crew-days on this sheet in your scope.</div>
+          )}
+
+          {loaded && allRows.length > 0 && (
+            <>
+              {/* MONTH STATS */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="bg-slate-50 rounded-lg px-3 py-2">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">Total BH</div>
+                  <div className="text-lg font-black text-emerald-600">{stats.totalBH.toFixed(1)}</div>
+                </div>
+                <div className="bg-slate-50 rounded-lg px-3 py-2">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">Total AH</div>
+                  <div className="text-lg font-black text-green-600">{stats.totalAH.toFixed(1)}</div>
+                </div>
+                <div className="bg-slate-50 rounded-lg px-3 py-2">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">Overall Eff</div>
+                  <div className={`text-lg font-black ${effColorClass(stats.eff)}`}>{stats.eff == null ? '--' : `${stats.eff}%`}</div>
+                </div>
+                <div className="bg-slate-50 rounded-lg px-3 py-2">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">Crew-Days</div>
+                  <div className="text-lg font-black text-slate-700">{stats.crewDayCount} <span className="text-[11px] font-bold text-slate-400">/ {stats.dayCount}d</span></div>
+                </div>
+              </div>
+
+              {/* BEST / WORST DAY + DIVISION AVERAGES */}
+              <div className="flex flex-wrap gap-2 text-[11px]">
+                {stats.bestDay && (
+                  <span className="px-2 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold">
+                    Best day: {fmtDayShort(stats.bestDay.date)} · {stats.bestDay.eff}%
+                  </span>
+                )}
+                {stats.worstDay && (
+                  <span className="px-2 py-1 rounded-full bg-red-50 border border-red-200 text-red-800 font-bold">
+                    Worst day: {fmtDayShort(stats.worstDay.date)} · {stats.worstDay.eff}%
+                  </span>
+                )}
+                {stats.divisions.map(d => (
+                  <span key={d.division} className="px-2 py-1 rounded-full bg-white border border-slate-200 text-slate-600 font-bold">
+                    {d.division}: <span className={effColorClass(d.eff)}>{d.eff == null ? '--' : `${d.eff}%`}</span> <span className="text-slate-400">({d.crewDays})</span>
+                  </span>
+                ))}
+              </div>
+
+              {/* CONTROLS */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden">
+                  <button type="button" onClick={() => setSortDir('worst')} className={`text-[11px] font-black uppercase tracking-widest px-2.5 py-1.5 ${sortDir === 'worst' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>Worst first</button>
+                  <button type="button" onClick={() => setSortDir('best')} className={`text-[11px] font-black uppercase tracking-widest px-2.5 py-1.5 ${sortDir === 'best' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>Best first</button>
+                </div>
+                <select value={divFilter} onChange={e => { setDivFilter(e.target.value); setCrewFilter('all'); }} className="text-[11px] font-bold border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700">
+                  <option value="all">All divisions</option>
+                  {divisions.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <select value={crewFilter} onChange={e => setCrewFilter(e.target.value)} className="text-[11px] font-bold border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700">
+                  <option value="all">All crews</option>
+                  {crewLabels.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <span className="text-[11px] text-slate-400">{rows.length} crew-day{rows.length === 1 ? '' : 's'}</span>
+              </div>
+
+              {/* CREW-DAY LIST — each row taps through to the read-only board */}
+              <div className="max-h-80 overflow-y-auto border border-slate-100 rounded-lg">
+                <table className="w-full text-left text-[12px]">
+                  <thead className="sticky top-0 bg-slate-50">
+                    <tr className="text-[9px] text-slate-400 uppercase tracking-widest">
+                      <th className="px-2 py-1.5">Date</th>
+                      <th className="px-2 py-1.5">Division · Crew</th>
+                      <th className="px-2 py-1.5 text-right">BH</th>
+                      <th className="px-2 py-1.5 text-right">AH</th>
+                      <th className="px-2 py-1.5 text-right">Eff</th>
+                      <th className="px-2 py-1.5"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {rows.map((r: CrewDayRow) => (
+                      <tr key={`${r.date}|${r.crewId}`} className="hover:bg-slate-50 cursor-pointer" onClick={() => onOpenDay(r.date, r.crewId, r.division)} title={`Open ${r.crewLabel} on ${r.date} (read-only)`}>
+                        <td className="px-2 py-1.5 font-medium text-slate-600 whitespace-nowrap">{fmtDayShort(r.date)}</td>
+                        <td className="px-2 py-1.5 text-slate-700 truncate">{r.crewLabel}{r.approvalStatus === 'waived' && <span className="ml-1 text-[9px] font-black uppercase tracking-widest text-slate-400">waived</span>}</td>
+                        <td className="px-2 py-1.5 text-right text-emerald-600 font-medium">{r.bh.toFixed(1)}</td>
+                        <td className="px-2 py-1.5 text-right text-green-600 font-medium">{r.ah.toFixed(1)}</td>
+                        <td className={`px-2 py-1.5 text-right font-black ${effColorClass(r.eff)}`}>{r.eff == null ? '--' : `${r.eff}%`}</td>
+                        <td className="px-2 py-1.5 text-right text-emerald-700 font-bold whitespace-nowrap">Open →</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

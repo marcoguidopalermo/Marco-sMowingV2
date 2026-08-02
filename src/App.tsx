@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import logo from '@/assets/logo/logowhite.png';
 import logoBlack from '@/assets/logo/LOGOBLACK.png';
 import { LoginDemo } from './components/blocks/LoginDemo';
@@ -1101,37 +1101,42 @@ export default function App() {
     );
   }, [user]);
 
-  // Push Month: live performanceMonths subcollection listener. Each doc is
-  // one completed month (id = YYYY-MM) holding that month's FULL data under
-  // `days: { [date]: { [crewId]: PerformanceLog } }`. We flatten every
-  // month's days into one date→crew map and merge it UNDER the doc's
-  // current-month performance, so every reader (PerformanceBoard, MTD,
-  // Advanced Reports, MyCrewToday) sees pushed months exactly as if they
-  // were still in the doc — byte-for-byte identical, just relocated. No
-  // reader changes; bonus/MTD parity is preserved by construction.
+  // Push Month: finalized months live on performanceMonths/{YYYY-MM} sheets
+  // (id = month, data.days = { [date]: { [crewId]: PerformanceLog } }). These
+  // are loaded ON DEMAND — only when a month is opened (a date in it is viewed,
+  // or its analysis is expanded), cached per open month in
+  // subPerformanceMonthsRef and merged UNDER the doc's current-month data so
+  // every reader sees an opened archived month exactly as if it were live. We
+  // never load all sheets at once, and the doc write strips pushed-month dates,
+  // so the main doc never moves.
+  const [monthSheetStatus, setMonthSheetStatus] = useState<Record<string, 'loading' | 'loaded' | 'missing' | 'error'>>({});
+  const ensureMonthLoaded = useCallback(async (ym: string) => {
+    if (!ym || !user) return;
+    setMonthSheetStatus((s) => {
+      if (s[ym] === 'loading' || s[ym] === 'loaded') return s; // already have it / in flight
+      return { ...s, [ym]: 'loading' };
+    });
+    // Guard against a double-fire while the state above is settling.
+    if (monthSheetStatus[ym] === 'loading' || monthSheetStatus[ym] === 'loaded') return;
+    try {
+      const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'performanceMonths', ym));
+      if (!snap.exists()) { setMonthSheetStatus((s) => ({ ...s, [ym]: 'missing' })); return; }
+      const days = ((snap.data() as { days?: Record<string, Record<string, PerformanceLog>> })?.days) || {};
+      const next = { ...subPerformanceMonthsRef.current };
+      for (const [date, dayMap] of Object.entries(days)) next[date] = dayMap;
+      subPerformanceMonthsRef.current = next;
+      setAppData((prev) => ({ ...prev, performance: mergePerformance(docPerformanceRef.current, next) }));
+      setMonthSheetStatus((s) => ({ ...s, [ym]: 'loaded' }));
+    } catch (err) {
+      console.error('performanceMonths on-demand load error:', err);
+      setMonthSheetStatus((s) => ({ ...s, [ym]: 'error' }));
+    }
+  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Load the viewed date's sheet when it belongs to a finalized (pushed) month.
   useEffect(() => {
-    if (!user) return;
-    const monthsCol = collection(db, 'artifacts', appId, 'public', 'data', 'performanceMonths');
-    return onSnapshot(
-      monthsCol,
-      (snap) => {
-        const overlay: Record<string, Record<string, PerformanceLog>> = {};
-        snap.forEach((d) => {
-          const v = d.data() as { days?: Record<string, Record<string, PerformanceLog>> };
-          const days = v?.days || {};
-          for (const [date, dayMap] of Object.entries(days)) {
-            overlay[date] = dayMap;
-          }
-        });
-        subPerformanceMonthsRef.current = overlay;
-        setAppData((prev) => ({
-          ...prev,
-          performance: mergePerformance(docPerformanceRef.current, overlay),
-        }));
-      },
-      (err) => { console.error('performanceMonths subcollection listen error:', err); },
-    );
-  }, [user]);
+    const ym = monthOfDate(perfDate);
+    if ((appData.pushedMonths || []).includes(ym) && !monthSheetStatus[ym]) ensureMonthLoaded(ym);
+  }, [perfDate, appData.pushedMonths, monthSheetStatus, ensureMonthLoaded]);
 
   // Trends: live monthlySummaries subcollection listener. One compact doc
   // per month (id = YYYY-MM). Read-only reporting — never written back into
@@ -1246,6 +1251,20 @@ export default function App() {
     // seed them below.
     const testUserIds = new Set((appData.employees || []).filter(e => e.isTestUser).map(e => e.id));
 
+    // ARCHIVED (read-only) day → render the stored month-sheet snapshot
+    // VERBATIM. Every crew-day that was finalized shows exactly as saved, with
+    // NO schedule reconciliation or ghost-prune (that day's schedule may have
+    // been purged, and the sheet is immutable/authoritative anyway). This is
+    // what makes a paged-to June day show the same crew cards as the live
+    // board. The board renders these read-only; no write path targets them.
+    const isArchived = (appData.pushedMonths || []).includes(monthOfDate(perfDate)) || !!appData.archivedDays?.[perfDate];
+    if (isArchived) {
+      const snap: Record<string, PerformanceLog> = {};
+      for (const [cId, log] of Object.entries(savedLogs)) snap[cId] = { ...log };
+      setDailyLogs(snap);
+      return;
+    }
+
     Object.keys(savedLogs).forEach(cId => {
       if (savedLogs[cId].isAdHoc) initialLogs[cId] = { ...savedLogs[cId] };
     });
@@ -1312,7 +1331,7 @@ export default function App() {
       });
     });
     setDailyLogs(initialLogs);
-  }, [perfDate, appData.schedules, appData.performance]);
+  }, [perfDate, appData.schedules, appData.performance, appData.pushedMonths, appData.archivedDays]);
 
   // Earliest-stage open partsOrder linked to a repair. Sort priority is
   // requested < ordered < arrived; the displayed wrench color reflects
@@ -1651,6 +1670,15 @@ export default function App() {
     setIsPrintModalOpen(true);
   };
 
+
+  // ARCHIVED-DAY WRITE GUARD. A finalized-month day (or a rolling-archived
+  // day) is read-only on the board; no edit affordances render for it. This
+  // is the defensive backstop: if any performance write handler is somehow
+  // invoked for an archived date, refuse it (and tell the user why) so a
+  // stale/racy path can never target a month sheet. The doc write ALSO strips
+  // pushed-month dates before persisting — belt and suspenders.
+  const isArchivedDate = (d: string): boolean =>
+    (appData.pushedMonths || []).includes(monthOfDate(d)) || !!appData.archivedDays?.[d];
 
   const syncToCloud = async (newData: AppData) => {
     // VIEW-ONLY GUARD. While impersonating (any View-As: role, Test User,
@@ -4134,8 +4162,12 @@ export default function App() {
       setRouteFilters={setRouteFilters}
       selectedRouteIds={selectedRouteIds}
       setSelectedRouteIds={setSelectedRouteIds}
-      onSaveDaily={async () => { await syncToCloud({ ...appData, performance: { ...appData.performance, [perfDate]: dailyLogs } }); showToastMsg("Saved!"); }}
+      onSaveDaily={async () => {
+        if (isArchivedDate(perfDate)) { showToastMsg('Archived day — read only. Nothing saved.'); return; }
+        await syncToCloud({ ...appData, performance: { ...appData.performance, [perfDate]: dailyLogs } }); showToastMsg("Saved!");
+      }}
       onPersistCrewDay={async (crewId, log) => {
+        if (isArchivedDate(perfDate)) { showToastMsg('Archived day — read only. Nothing saved.'); return false; }
         // Merge ONE crew-day into saved performance immediately (same merge
         // semantics onSaveDaily / approve / waive use) so unscheduled job /
         // crew additions survive the dailyLogs rebuild without a manual Save.
@@ -4149,6 +4181,7 @@ export default function App() {
       isManager={isManager}
       onApprove={(crewId, log) => {
         if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
+        if (isArchivedDate(perfDate)) { showToastMsg('Archived day — read only.'); return; }
         if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
         const approvedLog: PerformanceLog = {
           ...log,
@@ -4175,6 +4208,7 @@ export default function App() {
       }}
       onUnapprove={(crewId) => {
         if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
+        if (isArchivedDate(perfDate)) { showToastMsg('Archived day — read only.'); return; }
         if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
         const log = dailyLogs[crewId];
         if (!log) return;
@@ -4203,6 +4237,7 @@ export default function App() {
       }}
       onWaive={(crewId, log, reason) => {
         if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
+        if (isArchivedDate(perfDate)) { showToastMsg('Archived day — read only.'); return; }
         if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
         const trimmed = (reason || '').trim();
         if (!trimmed) { showToastMsg('A reason is required to waive.'); return; }
@@ -4237,6 +4272,7 @@ export default function App() {
       }}
       onUnwaive={(crewId) => {
         if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
+        if (isArchivedDate(perfDate)) { showToastMsg('Archived day — read only.'); return; }
         if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
         const log = dailyLogs[crewId];
         if (!log) return;
@@ -4301,6 +4337,8 @@ export default function App() {
       onResolveComplete={onResolveComplete}
       onResolveCarry={onResolveCarry}
       onResolveVoid={onResolveVoid}
+      monthSheetStatus={monthSheetStatus}
+      ensureMonthLoaded={ensureMonthLoaded}
       jobberConnected={jobberConnected}
       canSyncJobber={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
       showToastMsg={showToastMsg}
