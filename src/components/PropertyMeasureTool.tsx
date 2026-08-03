@@ -1,7 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Search, Plus, Minus, Trash2, MapPin, AlertTriangle, Check, Loader2, Pencil } from 'lucide-react';
-import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, M2_TO_SQFT } from '../lib/googleMaps';
+import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, M2_TO_SQFT, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM } from '../lib/googleMaps';
 import { PropertyMeasurement } from '../types';
+
+// Remember the last measured location PER USER — local only (no doc writes), so
+// a repeat session opens near where the estimator was working.
+const lastKey = (email: string) => `sm-measure-last:${(email || '').toLowerCase()}`;
+function readLastView(email: string): { lat: number; lng: number; zoom?: number } | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(lastKey(email)) || 'null');
+    if (v && typeof v.lat === 'number' && typeof v.lng === 'number') return v;
+  } catch { /* ignore */ }
+  return null;
+}
+function writeLastView(email: string, lat: number, lng: number, zoom?: number): void {
+  try { localStorage.setItem(lastKey(email), JSON.stringify({ lat, lng, zoom })); } catch { /* ignore */ }
+}
 
 // SHARED SalesMaster tool: draw polygons on satellite imagery → live sqft.
 // Used by LawnMaster today; ProjectMaster / sod can mount the same component
@@ -171,9 +185,15 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
       const g = { maps };
       gRef.current = g;
       setPlacesOn(hasPlaces);
-      const seedCenter = initial?.polygons?.[0]?.path?.[0] || initial?.exclusions?.[0]?.path?.[0] || { lat: 43.653, lng: -79.383 };
+      // Where to open: a saved outline wins (reopening the measured property);
+      // otherwise the user's last measured view, else the Thunder Bay default.
+      // If the quote has an address, we asynchronously recenter on it below.
+      const outlineSeed = initial?.polygons?.[0]?.path?.[0] || initial?.exclusions?.[0]?.path?.[0];
+      const lastView = readLastView(currentUser.email);
+      const seedCenter = outlineSeed || lastView || DEFAULT_MAP_CENTER;
+      const seedZoom = outlineSeed ? 20 : (lastView?.zoom || DEFAULT_MAP_ZOOM);
       const map = new g.maps.Map(mapDivRef.current, {
-        center: seedCenter, zoom: initial ? 20 : 19,
+        center: seedCenter, zoom: seedZoom,
         mapTypeId: 'hybrid',            // satellite imagery + street labels (easier to locate the lot)
         // Force the RASTER renderer: the default vector (WebGL) map does a
         // GetViewportInfo RPC that has been returning 502/CORS on this project;
@@ -187,6 +207,27 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
       // Manual drawing: every map tap drops a vertex onto the active draft
       // polygon (no DrawingManager). Ignored when not drawing.
       g.maps.event.addListener(map, 'click', (e: any) => { if (draftRef.current && e?.latLng) addVertex(e.latLng); });
+
+      // If the quote carries an address and there's no saved outline, geocode it
+      // and pan to the property — async, so the map opens instantly and jumps
+      // when it resolves. We use PlacesService.findPlaceFromQuery: the Geocoding
+      // API and the new Places Text Search are both blocked on this key, but
+      // classic Places Find Place is allowed (same API the search box uses). Any
+      // failure leaves the Thunder Bay default; drawing is unaffected.
+      const addrToCenter = (!outlineSeed && hasPlaces) ? (initialAddress || initial?.address || '').trim() : '';
+      if (addrToCenter && g.maps.places?.PlacesService) {
+        try {
+          new g.maps.places.PlacesService(map).findPlaceFromQuery(
+            { query: addrToCenter, fields: ['geometry'] },
+            (res: any, status: any) => {
+              const loc = res?.[0]?.geometry?.location;
+              if (!cancelled && status === 'OK' && loc) {
+                map.setCenter(loc); map.setZoom(18); setAddress(addrToCenter);
+              }
+            },
+          );
+        } catch (e) { console.warn('[maps] address centering failed — Thunder Bay default kept:', e); }
+      }
       // Address search (Places Autocomplete) — OPTIONAL. Only wired when the
       // places library actually loaded; otherwise the salesperson pans/zooms.
       if (hasPlaces && searchRef.current) {
@@ -240,6 +281,14 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
       measuredAt: Date.now(),
       measuredBy: currentUser,
     };
+  };
+
+  // Remember where the estimator was working (local only) so the next session
+  // opens near here. Uses the current map view.
+  const rememberLocation = () => {
+    const map = mapRef.current; if (!map) return;
+    const c = map.getCenter?.();
+    if (c) writeLastView(currentUser.email, c.lat(), c.lng(), map.getZoom?.());
   };
 
   return (
@@ -362,7 +411,7 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
               </div>
               {address && <div className="text-[11px] text-slate-400 truncate flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3 shrink-0" /> {address}</div>}
             </div>
-            <button onClick={() => { if (total > 0) { onUse(buildMeasurement()); onClose(); } }} disabled={total <= 0}
+            <button onClick={() => { if (total > 0) { rememberLocation(); onUse(buildMeasurement()); onClose(); } }} disabled={total <= 0}
               className="shrink-0 min-h-[48px] px-5 rounded-xl text-white text-xs font-black uppercase tracking-widest inline-flex items-center gap-1.5 disabled:opacity-40" style={{ backgroundColor: GREEN }}>
               <Check className="w-4 h-4" /> Use this measurement
             </button>

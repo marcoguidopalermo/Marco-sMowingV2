@@ -10,6 +10,11 @@ export const GOOGLE_MAPS_API_KEY: string =
 // m² → ft². google.maps.geometry.spherical.computeArea returns square metres.
 export const M2_TO_SQFT = 10.7639;
 
+// Default map view when there's nothing better to center on: the whole
+// Thunder Bay service area in view. Single source — change here only.
+export const DEFAULT_MAP_CENTER = { lat: 48.3809, lng: -89.2477 };
+export const DEFAULT_MAP_ZOOM = 12;
+
 // ── Auth-failure surfacing ────────────────────────────────────────────────
 // Google calls window.gm_authFailure() on a key / referrer / billing rejection.
 // The previous loader never registered it, so those failures were invisible and
