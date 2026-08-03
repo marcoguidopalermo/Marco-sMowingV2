@@ -60,7 +60,7 @@ export default function LawnMaster({
   const [firstCutDate, setFirstCutDate] = useState(initial?.firstCutDate || defaultFirstCut()); // Monday of next week
   const [overgrownKey, setOvergrownKey] = useState(initial?.overgrownKey || 'normal');
   const [frequency, setFrequency] = useState<'weekly' | 'biweekly' | null>(null);
-  const [selectedPackage, setSelectedPackage] = useState<string | null>(null);
+  const [selectedPackages, setSelectedPackages] = useState<string[]>([]); // one Jobber quote may carry several packages
   const [name, setName] = useState('');
   const [loadedId, setLoadedId] = useState<string | null>(null);
   const [loadedVersion, setLoadedVersion] = useState<string | null>(null);
@@ -91,11 +91,18 @@ export default function LawnMaster({
   }, [priceMode, price, baseInput, pushMow, veryHilly, clutter, travelZone, viewConfig]);
 
   const tierIdx = resolveTierIndex(sqft, viewConfig);
-  // Mid-season plan (mowing only). The first-cut-date model never blocks —
-  // a date past the last cutting week clamps to one cut at max discount.
+  // Selected (priced) packages and their combined total — folded into the quote
+  // total so the ONE deposit reflects the whole quote (mowing + all packages).
+  const selectedPkgList = useMemo(
+    () => (price ? price.packages.filter(p => p.priced && selectedPackages.includes(p.key)) : []),
+    [price, selectedPackages],
+  );
+  const packagesTotal = useMemo(() => selectedPkgList.reduce((s, p) => s + p.total, 0), [selectedPkgList]);
+  // Mid-season plan. The first-cut-date model never blocks; packages fold into
+  // the deposit calc (quoteTotal), so the deposit/% react to package selection.
   const plan = useMemo<SeasonPlan | null>(
-    () => mowing ? computeSeasonPlanFC(mowing, firstCutDate, overgrownKey, viewConfig) : null,
-    [mowing, firstCutDate, overgrownKey, viewConfig],
+    () => mowing ? computeSeasonPlanFC(mowing, firstCutDate, overgrownKey, viewConfig, packagesTotal) : null,
+    [mowing, firstCutDate, overgrownKey, viewConfig, packagesTotal],
   );
   const firstCutWeek = useMemo(() => firstCutSeasonWeek(firstCutDate, viewConfig), [firstCutDate, viewConfig]);
   const weeklyCutsPreview = useMemo(() => cutsRemaining('weekly', firstCutWeek, viewConfig), [firstCutWeek, viewConfig]);
@@ -114,13 +121,12 @@ export default function LawnMaster({
     setPriceMode('sqft'); setSqft(0); setMeasurement(null); setBaseInput(0);
     setVeryHilly(false); setPushMow(false); setClutter(false);
     setTravelZone('in_town'); setFirstCutDate(defaultFirstCut()); setOvergrownKey('normal');
-    setFrequency(null); setSelectedPackage(null);
+    setFrequency(null); setSelectedPackages([]);
     setName(''); setLoadedId(null); setLoadedVersion(null); setDirty(false);
   };
 
   const save = () => {
     if (!mowing) return;
-    const sel = selectedPackage && price ? price.packages.find(p => p.key === selectedPackage) : null;
     const label = name.trim();
     const id = loadedId || `lawn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const q: LawnQuote = {
@@ -137,8 +143,9 @@ export default function LawnMaster({
       frequency,
       weeklyAnnual: mowing.weekly.annual, weeklyMonthly: mowing.weekly.monthly, weeklyPerCut: mowing.weekly.perCut,
       biweeklyAnnual: mowing.biweekly.annual, biweeklyMonthly: mowing.biweekly.monthly, biweeklyPerCut: mowing.biweekly.perCut,
-      selectedPackage: sel && sel.priced ? sel.key : null,
-      packageTotal: sel && sel.priced ? sel.total : null,
+      selectedPackages: selectedPkgList.map(p => p.key),
+      selectedPackage: selectedPkgList[0]?.key || null, // legacy single-field mirror
+      packageTotal: packagesTotal || null,              // Σ of all selected packages
       // First-cut-date model (mowing only). Restores state exactly on reload.
       firstCutDate, firstCutWeek, overgrownKey,
       ...(plan ? {
@@ -168,7 +175,8 @@ export default function LawnMaster({
     // Migrate old quotes (startDate + firstCut) → firstCutDate; prices identically.
     setFirstCutDate(q.firstCutDate || (q.startDate ? migrateFirstCutDate(q.startDate, q.firstCut) : defaultFirstCut()));
     setOvergrownKey(q.overgrownKey || 'normal');
-    setFrequency(q.frequency || null); setSelectedPackage(q.selectedPackage || null);
+    setFrequency(q.frequency || null);
+    setSelectedPackages(q.selectedPackages || (q.selectedPackage ? [q.selectedPackage] : [])); // migrate old single
     setName(q.client || ''); setLoadedId(q.id); setLoadedVersion(q.pricingConfigVersion || 'lawn-v1'); setDirty(false);
     setSub('quote');
   };
@@ -338,8 +346,9 @@ export default function LawnMaster({
             ) : (
               <>
                 {plan && <MowingComparison mowing={mowing} plan={plan} config={viewConfig} frequency={frequency} onFrequency={f => { touch(); setFrequency(cur => cur === f ? null : f); }} />}
-                {plan && <BillingSchedule plan={plan} />}
-                {price && <PackageBlock packages={price.packages} selected={selectedPackage} onSelect={k => { touch(); setSelectedPackage(cur => cur === k ? null : k); }} />}
+                {plan && <BillingSchedule plan={plan} selectedPackages={selectedPkgList} />}
+                {price && <PackageBlock packages={price.packages} selected={selectedPackages}
+                  onToggle={k => { touch(); setSelectedPackages(cur => cur.includes(k) ? cur.filter(x => x !== k) : [...cur, k]); }} />}
               </>
             )}
 
@@ -440,6 +449,8 @@ function MowingComparison({ mowing, plan, config, frequency, onFrequency }: {
 
         {row('Season total', money(w.proratedTotal), money(b.proratedTotal), { size: 'xl' })}
         {row('Full price', money(w.fullPrice), money(b.fullPrice), { note: 'renewal anchor' })}
+        {w.packagesTotal > 0 && row('Packages', money(w.packagesTotal), money(b.packagesTotal), { note: 'full-season rate' })}
+        {(w.packagesTotal > 0 || w.catchUpCharge > 0) && row('Quote total', money(w.quoteTotal), money(b.quoteTotal), { size: 'md', mt: true })}
 
         {/* Discount spans both columns — same figure for either frequency. */}
         <div className="self-center text-[12px] font-bold text-slate-500 mt-2">Discount</div>
@@ -454,7 +465,14 @@ function MowingComparison({ mowing, plan, config, frequency, onFrequency }: {
 
         {row('Monthly', money(w.monthly), money(b.monthly), { mt: true })}
         {row('Instalments', String(w.instalments), String(b.instalments))}
-        {row('Deposit', money(w.deposit), money(b.deposit))}
+        {/* Deposit — one per quote, shown as $ AND % of the whole quote total. */}
+        <div className="self-center text-[12px] font-bold text-slate-500">Deposit</div>
+        {[w, b].map((fp, i) => (
+          <div key={i} className="text-right self-center">
+            <div className="text-sm font-black font-mono" style={{ color: (i === 0 ? selW : selB) ? GREEN : '#334155' }}>{money(fp.deposit)}</div>
+            <div className="text-[10px] font-medium text-slate-400">{fp.depositPct}% of quote</div>
+          </div>
+        ))}
         {row('Internal PPC', money(w.internalPPC), money(b.internalPPC), { internal: true })}
       </div>
 
@@ -471,20 +489,38 @@ function MowingComparison({ mowing, plan, config, frequency, onFrequency }: {
   );
 }
 
-// ── Billing schedule — dated, per frequency. Deposit row hidden at $0. ────────
-function BillingSchedule({ plan }: { plan: SeasonPlan }) {
-  const overgrown = plan.discount.overgrownMultiplier > 1;
-  const billCol = (title: string, fp: typeof plan.weekly) => (
-    <div className="rounded-xl border border-slate-200 p-3">
-      <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Billing · {fp.instalments} cycle{fp.instalments === 1 ? '' : 's'} left · {title}</div>
-      <div className="mt-1.5 space-y-0.5 text-[12px]">
-        {fp.deposit > 0 && <Row label="Initial deposit (on approval)" value={money(fp.deposit)} />}
-        {overgrown && <Row label={`Overgrown catch-up (${plan.discount.overgrownLabel})`} value={money(fp.catchUpCharge)} />}
-        {fp.billingDates.map(bd => <Row key={bd} label={fmtMD(bd)} value={money(fp.monthly)} />)}
-        <div className="flex justify-between border-t border-slate-200 pt-1 mt-1 font-black text-slate-800"><span>Total</span><span className="font-mono">{money(fp.deposit + fp.catchUpCharge + fp.instalments * fp.monthly)}</span></div>
+// ── Billing schedule — dated, per frequency. One deposit per quote, broken
+// into its parts (mowing balance + each package + catch-up) so the office sees
+// what it's made of; every monthly instalment is identical. Deposit hidden at $0.
+const signedMoney = (n: number) => (n < 0 ? `−${money(-n)}` : money(n));
+function BillingSchedule({ plan, selectedPackages }: { plan: SeasonPlan; selectedPackages: PackagePrice[] }) {
+  const billCol = (title: string, fp: typeof plan.weekly) => {
+    const composite = fp.packagesTotal > 0 || fp.catchUpCharge > 0;
+    return (
+      <div className="rounded-xl border border-slate-200 p-3">
+        <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Billing · {fp.instalments} cycle{fp.instalments === 1 ? '' : 's'} left · {title}</div>
+        <div className="mt-1.5 space-y-0.5 text-[12px]">
+          {fp.deposit > 0 && (
+            <>
+              <div className="flex justify-between font-bold text-slate-700">
+                <span>Initial deposit (on approval)</span>
+                <span className="font-mono">{money(fp.deposit)} · {fp.depositPct}%</span>
+              </div>
+              {composite && (
+                <div className="pl-3 space-y-0.5 text-[11px] text-slate-500">
+                  {Math.abs(fp.mowingInDeposit) >= 0.5 && <Row label="mowing balance" value={signedMoney(fp.mowingInDeposit)} />}
+                  {selectedPackages.map(p => <Row key={p.key} label={`${p.label} package`} value={money(p.total)} />)}
+                  {fp.catchUpCharge > 0 && <Row label={`overgrown catch-up (${plan.discount.overgrownLabel})`} value={money(fp.catchUpCharge)} />}
+                </div>
+              )}
+            </>
+          )}
+          {fp.billingDates.map(bd => <Row key={bd} label={fmtMD(bd)} value={money(fp.monthly)} />)}
+          <div className="flex justify-between border-t border-slate-200 pt-1 mt-1 font-black text-slate-800"><span>Total</span><span className="font-mono">{money(fp.quoteTotal)}</span></div>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
       <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">Billing schedule</div>
@@ -505,10 +541,10 @@ function BillingSchedule({ plan }: { plan: SeasonPlan }) {
 // takeable with any package or none, not the rung above Gold.
 const PKG_ACCENT: Record<string, string> = { bronze: '#9c6b3f', silver: '#8c959d', gold: '#c2a15c', dethatch: '#cdbd8f' };
 
-function PackageBlock({ packages, selected, onSelect }: { packages: PackagePrice[]; selected: string | null; onSelect: (k: string) => void }) {
+function PackageBlock({ packages, selected, onToggle }: { packages: PackagePrice[]; selected: string[]; onToggle: (k: string) => void }) {
   const card = (p: PackagePrice) => {
     const accent = PKG_ACCENT[p.key] || '#e2e8f0';
-    const sel = selected === p.key;
+    const sel = selected.includes(p.key);
     const addon = p.key === 'dethatch';
     const borderStyle = { borderLeftColor: accent, borderLeftWidth: 5 } as const;
     if (!p.priced) return (
@@ -522,7 +558,7 @@ function PackageBlock({ packages, selected, onSelect }: { packages: PackagePrice
       </div>
     );
     return (
-      <button key={p.key} onClick={() => onSelect(p.key)}
+      <button key={p.key} onClick={() => onToggle(p.key)}
         className={`text-left rounded-xl border-2 ${addon ? 'border-dashed' : ''} p-3 transition-colors w-full`}
         style={sel ? { backgroundColor: GREEN, borderColor: GOLD, ...borderStyle } : { backgroundColor: 'white', borderColor: '#e2e8f0', ...borderStyle }}>
         <div className="flex items-center justify-between">
@@ -558,7 +594,16 @@ function PackageBlock({ packages, selected, onSelect }: { packages: PackagePrice
           <div className="grid grid-cols-2 gap-2">{card(addon)}</div>
         </div>
       )}
-      <div className="text-[10px] text-slate-400">Packages price independently of mowing frequency. Tap to attach one to this quote.</div>
+      {(() => {
+        const chosen = packages.filter(p => p.priced && selected.includes(p.key));
+        const sum = chosen.reduce((s, p) => s + p.total, 0);
+        return chosen.length > 0
+          ? <div className="flex items-center justify-between text-[12px] font-bold pt-1" style={{ color: GREEN }}>
+              <span>{chosen.length} package{chosen.length === 1 ? '' : 's'} selected</span>
+              <span className="font-mono">{money(sum)}</span>
+            </div>
+          : <div className="text-[10px] text-slate-400">Packages price independently of mowing frequency. Tap to add one or more to this quote.</div>;
+      })()}
     </div>
   );
 }
@@ -614,7 +659,7 @@ function SavedLawnQuotes({ quotes, currentUser, isAdmin, onOpen, onDelete }: {
                   <div className="font-bold text-slate-800 truncate">{named || shape(x)}</div>
                   {named && <div className="text-[12px] text-slate-500">{shape(x)}</div>}
                   <div className="text-[10px] text-slate-400">
-                    {x.priceMode && x.priceMode !== 'sqft' ? `${MODE_LABEL[x.priceMode]} · ` : ''}{x.selectedPackage ? `${x.selectedPackage} · ` : ''}{(x.updatedBy || x.quotedBy)?.name || '—'} · {fmtWhen(x.updatedAt || x.quotedAt)}
+                    {x.priceMode && x.priceMode !== 'sqft' ? `${MODE_LABEL[x.priceMode]} · ` : ''}{(() => { const ks = x.selectedPackages?.length ? x.selectedPackages : (x.selectedPackage ? [x.selectedPackage] : []); return ks.length ? `${ks.join(' + ')} · ` : ''; })()}{(x.updatedBy || x.quotedBy)?.name || '—'} · {fmtWhen(x.updatedAt || x.quotedAt)}
                   </div>
                 </button>
                 <div className="flex items-center gap-1.5 shrink-0">
@@ -645,7 +690,8 @@ function LawnReport({ quotes, config }: { quotes: Record<string, LawnQuote>; con
       zoneCounts[q.travelZone] = (zoneCounts[q.travelZone] || 0) + 1;
       if (q.frequency === 'weekly') weekly++; else if (q.frequency === 'biweekly') biweekly++;
       if (q.veryHilly) hilly++; if (q.pushMow) push++; if (q.clutter) clutter++;
-      if (q.selectedPackage && pkg[q.selectedPackage] !== undefined) pkg[q.selectedPackage]++;
+      const pkgKeys = q.selectedPackages?.length ? q.selectedPackages : (q.selectedPackage ? [q.selectedPackage] : []);
+      for (const k of pkgKeys) if (pkg[k] !== undefined) pkg[k]++;
       annualSum += q.weeklyAnnual || 0;
     }
     return { n, tierCounts, zoneCounts, weekly, biweekly, hilly, push, clutter, pkg, avgAnnual: annualSum / n };

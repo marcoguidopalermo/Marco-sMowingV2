@@ -391,12 +391,16 @@ export interface SeasonDiscount {
 export interface SeasonFreqPlan {
   fullPrice: number;               // full seasonal price (the renewal anchor)
   cuts: number;
-  proratedTotal: number;           // fullPrice × (1 − seasonDiscount) — never a surcharge
-  monthly: number;                 // fullPrice / MONTHS — STANDARD recurring amount
-  instalments: number;             // count, chosen so the deposit fits one payment
-  deposit: number;                 // proratedTotal − instalments × monthly ∈ [0, monthly]
-  catchUpCharge: number;           // one-time, billed separately from the season
-  firstInvoice: number;            // deposit + catchUpCharge
+  proratedTotal: number;           // fullPrice × (1 − seasonDiscount) — mowing only
+  packagesTotal: number;           // Σ selected packages folded into this quote
+  catchUpCharge: number;           // overgrown one-time, folded into the quote
+  quoteTotal: number;              // proratedTotal + packagesTotal + catchUpCharge
+  monthly: number;                 // fullPrice / MONTHS — STANDARD recurring (mowing)
+  instalments: number;             // min(availableMonthEnds, floor(quoteTotal / monthly))
+  deposit: number;                 // quoteTotal − instalments × monthly (absorbs the slack)
+  depositPct: number;              // deposit / quoteTotal × 100, 1 decimal
+  mowingInDeposit: number;         // deposit − packagesTotal − catchUpCharge (may be < 0)
+  firstInvoice: number;            // = deposit (catch-up now lives inside it)
   cutsLeft: number;
   internalPPC: number;             // proratedTotal / cutsLeft — internal only
   bhPerVisit: number;              // full price / full cuts / rate
@@ -450,8 +454,16 @@ export function computeSeasonPlan(
     const catchUpCharge = round2((catchUpPct / 100) * fullPrice);
     const cutsLeft = WEEKS > 0 ? Math.round(cuts * weeksServiced / WEEKS) : 0;
     const bhPerVisit = cuts > 0 ? fullPrice / cuts / config.MOWING_ALLOCATION_RATE : 0;
+    // LEGACY this/next model — mowing only (no packages); catch-up stays a
+    // separate first-invoice line. The quote-aware fields are filled for type
+    // compatibility only (this function is retained for migration-equality
+    // tests; the live app uses computeSeasonPlanFC).
+    const quoteTotal = round2(proratedTotal + catchUpCharge);
     return {
-      fullPrice, cuts, proratedTotal, monthly, instalments, deposit, catchUpCharge,
+      fullPrice, cuts, proratedTotal, packagesTotal: 0, catchUpCharge, quoteTotal,
+      monthly, instalments, deposit,
+      depositPct: quoteTotal > 0 ? Math.round((deposit / quoteTotal) * 1000) / 10 : 0,
+      mowingInDeposit: deposit,
       firstInvoice: round2(deposit + catchUpCharge),
       cutsLeft, internalPPC: cutsLeft > 0 ? round2(proratedTotal / cutsLeft) : 0,
       bhPerVisit, firstVisitBH: bhPerVisit * og.multiplier,
@@ -484,6 +496,7 @@ export function computeSeasonPlan(
 export function computeSeasonPlanFC(
   mowing: MowingPrice, firstCutDate: string, overgrownKey: string,
   config: LawnConfig = LAWN_CONFIG_V1,
+  packagesTotal = 0,
 ): SeasonPlan {
   const WEEKS = config.WEEKS_IN_SEASON;
   const firstCutWeek = firstCutSeasonWeek(firstCutDate, config);
@@ -493,27 +506,34 @@ export function computeSeasonPlanFC(
   const catchUpPct = overgrownReductionPct(og.multiplier, config);
   const avail = availableMonthEnds(firstCutDate);
   const year = Number(String(firstCutDate).slice(0, 4)) || Number(String(config.SEASON_START).slice(0, 4));
+  const pkgs = Math.max(0, round2(packagesTotal));
 
   const freq = (fullPrice: number, cuts: number, cutsLeft: number): SeasonFreqPlan => {
     const proratedTotal = round2(fullPrice * (1 - seasonDiscountPct / 100));
-    // Monthly kept UNROUNDED internally so an exact split (e.g. 3 × 10000/6 =
-    // 5000) yields a $0 deposit and the full instalment count, not a rounding
-    // cent. Display rounds via money(). +0.005 epsilon makes an exact division
-    // count as fitting despite float noise.
-    const monthlyRaw = config.MONTHS > 0 ? fullPrice / config.MONTHS : 0;
-    const maxByPrice = monthlyRaw > 0 ? Math.floor((proratedTotal + 0.005) / monthlyRaw) : 0;
-    const instalments = Math.max(0, Math.min(avail, maxByPrice));
-    const deposit = Math.max(0, round2(proratedTotal - instalments * monthlyRaw));
     const catchUpCharge = round2((catchUpPct / 100) * fullPrice);
-    // cutsLeft is passed per frequency from the DERIVED schedule (weekly cuts
-    // every week; biweekly cuts the spring flush then every 2nd week). BH still
-    // uses the FULL cut count, not cutsLeft — the rate is a full-season figure.
+    // Jobber takes ONE deposit per quote, and a quote may carry mowing + one or
+    // more packages. So the deposit is against the WHOLE quote: packages and the
+    // overgrown catch-up fold into quoteTotal alongside the prorated mowing. The
+    // instalments are still the (unchanged) mowing monthly, and the single
+    // deposit absorbs the slack so every monthly stays identical. Monthly kept
+    // UNROUNDED so an exact split yields a $0 deposit; +0.005 epsilon makes an
+    // exact division count as fitting despite float noise.
+    const quoteTotal = round2(proratedTotal + pkgs + catchUpCharge);
+    const monthlyRaw = config.MONTHS > 0 ? fullPrice / config.MONTHS : 0;
+    const maxByPrice = monthlyRaw > 0 ? Math.floor((quoteTotal + 0.005) / monthlyRaw) : 0;
+    const instalments = Math.max(0, Math.min(avail, maxByPrice));
+    const deposit = Math.max(0, round2(quoteTotal - instalments * monthlyRaw));
+    const depositPct = quoteTotal > 0 ? Math.round((deposit / quoteTotal) * 1000) / 10 : 0;
+    // The mowing part of the deposit — what's left after packages + catch-up. It
+    // can be NEGATIVE when the mowing monthlies over-cover the shortened season
+    // (a package pulls in an extra instalment). The three parts sum to deposit.
+    const mowingInDeposit = round2(deposit - pkgs - catchUpCharge);
+    // BH still uses the FULL cut count, not cutsLeft — the rate is full-season.
     const bhPerVisit = cuts > 0 ? fullPrice / cuts / config.MOWING_ALLOCATION_RATE : 0;
     return {
-      // monthly kept UNROUNDED so deposit + instalments × monthly == prorated
-      // exactly; money() rounds it to whole dollars for display.
-      fullPrice, cuts, proratedTotal, monthly: monthlyRaw, instalments, deposit, catchUpCharge,
-      firstInvoice: round2(deposit + catchUpCharge),
+      fullPrice, cuts, proratedTotal, packagesTotal: pkgs, catchUpCharge, quoteTotal,
+      monthly: monthlyRaw, instalments, deposit, depositPct, mowingInDeposit,
+      firstInvoice: deposit,
       cutsLeft, internalPPC: cutsLeft > 0 ? round2(proratedTotal / cutsLeft) : 0,
       bhPerVisit, firstVisitBH: bhPerVisit * og.multiplier,
       billingDates: billingDates(year, instalments),

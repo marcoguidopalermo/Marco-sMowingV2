@@ -1304,10 +1304,11 @@ export interface LawnQuote {
   // Optional satellite measurement that produced the sqft (mode A). Its outline
   // re-renders when the quote is reopened. Small; saved with the quote.
   measurement?: PropertyMeasurement;
-  // Packages — optional single attachment on the quote.
-  selectedPackage?: string | null;   // package key or null
+  // Packages — a quote may carry several (one Jobber deposit spans them all).
+  selectedPackages?: string[];       // package keys
+  selectedPackage?: string | null;   // LEGACY single-field mirror (migrated on load)
   packageTravelPerVisit?: number;    // legacy; packages now use the mowing zone's per-visit rate
-  packageTotal?: number | null;
+  packageTotal?: number | null;      // Σ of all selected packages
   // ── Mid-season proration + overgrown + BH (mowing only). Optional — older
   // quotes predate this and resolve against their stamped config as before. ──
   firstCutDate?: string;             // the first-cut-date model (replaces startDate + firstCut)

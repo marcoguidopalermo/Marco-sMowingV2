@@ -499,8 +499,10 @@ test('Modes B/C support extras, travel, overgrown and the full billing schedule'
   const p = computeSeasonPlanFC(m, dateForWeek(6), 'triple').weekly;
   // Overgrown catch-up = (3−1) × 5% × fullPrice.
   assert.equal(p.catchUpCharge, round((3 - 1) * 5 / 100 * m.weeklyTotal));
-  // Billing balances: deposit + catch-up + instalments×monthly ≈ prorated + catch-up.
-  assert.equal(round(p.deposit + p.catchUpCharge + p.instalments * p.monthly), round(p.proratedTotal + p.catchUpCharge));
+  // Catch-up now folds INTO the quote total; the deposit absorbs the slack so
+  // deposit + instalments×monthly == quoteTotal == prorated + 0 packages + catch-up.
+  assert.equal(p.quoteTotal, round(p.proratedTotal + 0 + p.catchUpCharge));
+  assert.equal(round(p.deposit + p.instalments * p.monthly), p.quoteTotal);
   assert.equal(p.billingDates.length, p.instalments);
 });
 
@@ -518,13 +520,16 @@ test('overgrown label amount = (multiplier − 1) × 5% × fullSeasonPrice, trac
   // Concretely the spec's $2,160 base → 2×=$108, 3×=$216, 4×=$324, 5×=$432.
   assert.deepEqual([2, 3, 4, 5].map(mm => amt(mm, 2160)), [108, 216, 324, 432]);
 });
-test('deposit ∈ [0, monthly] and $0 exactly for an even split (row hides at $0)', () => {
+test('deposit $0 on an even split; deposit + instalments×monthly == quoteTotal (no monthly cap)', () => {
   const p = computeSeasonPlanFC(priceMowingBase(10000, {}), dateForWeek(11), 'normal').weekly;
   assert.equal(p.deposit, 0); // even 3-way split → no deposit → UI omits the row
   for (let wk = 1; wk <= 20; wk++) {
     for (const base of [1200, 10000, 7333]) {
-      const fp = computeSeasonPlanFC(priceMowingBase(base, {}), dateForWeek(wk), 'triple').weekly;
-      assert.ok(fp.deposit >= 0 && fp.deposit <= fp.monthly + 0.01, `wk ${wk} base ${base} deposit ${fp.deposit}/${fp.monthly}`);
+      for (const og of ['normal', 'triple'] as const) {
+        const fp = computeSeasonPlanFC(priceMowingBase(base, {}), dateForWeek(wk), og).weekly;
+        assert.ok(fp.deposit >= 0, `wk ${wk} base ${base} ${og} deposit ${fp.deposit} < 0`);
+        assert.equal(round(fp.deposit + fp.instalments * fp.monthly), fp.quoteTotal, `wk ${wk} base ${base} ${og} balance`);
+      }
     }
   }
 });
@@ -604,6 +609,84 @@ test('discount is week-based and IDENTICAL for weekly and biweekly at every week
     const wkFactor = round(p.weekly.proratedTotal / p.weekly.fullPrice);
     const bwFactor = round(p.biweekly.proratedTotal / p.biweekly.fullPrice);
     assert.equal(wkFactor, bwFactor, `wk ${wk} proration factor differs by frequency`);
+  }
+});
+
+// ── DEPOSIT AS % OF THE WHOLE QUOTE (packages fold into quoteTotal) ──────────
+console.log('\nLawn — deposit as % of the whole quote:');
+const goldTotal = pricePackages(1, {}, 0).find(p => p.key === 'gold')!.total;      // 499
+const bronzeTotal = pricePackages(1, {}, 0).find(p => p.key === 'bronze')!.total;  // 249
+// The four worked examples the report must reproduce (mowing $1,200 → monthly $200).
+// The office reference "week N" = signup week N with first cut the FOLLOWING week,
+// i.e. firstCutWeek N+1 in the first-cut-date model.
+const EX: Array<{ fcw: number; pkg: number; quote: number; inst: number; dep: number; pct: number }> = [
+  { fcw: 2,  pkg: 0,         quote: 1140, inst: 5, dep: 140, pct: 12.3 }, // "week 1"
+  { fcw: 8,  pkg: 0,         quote: 780,  inst: 3, dep: 180, pct: 23.1 }, // "week 7"
+  { fcw: 12, pkg: 0,         quote: 540,  inst: 2, dep: 140, pct: 25.9 }, // "week 11"
+  { fcw: 14, pkg: goldTotal, quote: 919,  inst: 3, dep: 319, pct: 34.7 }, // "wk 13" + Gold $499
+];
+test('four worked examples: quoteTotal, instalments, deposit, deposit%', () => {
+  const m = priceMowing(1, {}); // $1,200 weekly, monthly $200
+  for (const e of EX) {
+    const p = computeSeasonPlanFC(m, dateForWeek(e.fcw), 'normal', LAWN_CONFIG_V1, e.pkg).weekly;
+    assert.equal(p.monthly, 200, `fcw ${e.fcw} monthly`);
+    assert.equal(p.quoteTotal, e.quote, `fcw ${e.fcw} quoteTotal`);
+    assert.equal(p.instalments, e.inst, `fcw ${e.fcw} instalments`);
+    assert.equal(p.deposit, e.dep, `fcw ${e.fcw} deposit`);
+    assert.equal(p.depositPct, e.pct, `fcw ${e.fcw} deposit%`);
+  }
+});
+test('deposit% == deposit / quoteTotal × 100 (1 dp) in every case', () => {
+  const m = priceMowing(1, {});
+  for (let wk = 1; wk <= 20; wk++) for (const pkg of [0, bronzeTotal, goldTotal, bronzeTotal + goldTotal]) {
+    const p = computeSeasonPlanFC(m, dateForWeek(wk), 'normal', LAWN_CONFIG_V1, pkg).weekly;
+    const expected = p.quoteTotal > 0 ? Math.round((p.deposit / p.quoteTotal) * 1000) / 10 : 0;
+    assert.equal(p.depositPct, expected, `wk ${wk} pkg ${pkg}`);
+  }
+});
+test('every instalment identical (= monthly) and deposit + instalments×monthly == quoteTotal', () => {
+  const m = priceMowing(1, {});
+  for (let wk = 1; wk <= 20; wk++) for (const pkg of [0, goldTotal, bronzeTotal + goldTotal]) for (const og of ['normal', 'triple'] as const) {
+    for (const fp of [computeSeasonPlanFC(m, dateForWeek(wk), og, LAWN_CONFIG_V1, pkg).weekly,
+                      computeSeasonPlanFC(m, dateForWeek(wk), og, LAWN_CONFIG_V1, pkg).biweekly]) {
+      // billing rows are all exactly `monthly` (identical); they sum with the deposit to the quote total
+      assert.equal(round(fp.deposit + fp.billingDates.length * fp.monthly), fp.quoteTotal, `wk ${wk} pkg ${pkg} ${og}`);
+      assert.equal(fp.billingDates.length, fp.instalments);
+      // sub-line decomposition sums to the deposit
+      assert.equal(round(fp.mowingInDeposit + fp.packagesTotal + fp.catchUpCharge), fp.deposit, `deposit parts wk ${wk} pkg ${pkg} ${og}`);
+    }
+  }
+});
+test('mowing + one package, and mowing + two packages, both price correctly', () => {
+  const m = priceMowing(1, {}); // $1,200
+  const one = computeSeasonPlanFC(m, dateForWeek(14), 'normal', LAWN_CONFIG_V1, goldTotal).weekly;
+  assert.equal(one.packagesTotal, 499);
+  assert.equal(one.quoteTotal, round(one.proratedTotal + 499));  // 420 + 499 = 919
+  const two = computeSeasonPlanFC(m, dateForWeek(14), 'normal', LAWN_CONFIG_V1, bronzeTotal + goldTotal).weekly;
+  assert.equal(two.packagesTotal, 748);                          // 249 + 499
+  assert.equal(two.quoteTotal, round(two.proratedTotal + 748));  // 420 + 748 = 1168
+  assert.equal(round(two.deposit + two.instalments * two.monthly), two.quoteTotal);
+});
+test('package-only quote (no mowing) still produces a deposit and %', () => {
+  const p = computeSeasonPlanFC(priceMowingBase(0, {}), dateForWeek(10), 'normal', LAWN_CONFIG_V1, goldTotal).weekly;
+  assert.equal(p.proratedTotal, 0);
+  assert.equal(p.monthly, 0);
+  assert.equal(p.instalments, 0);       // no mowing monthly to spread across
+  assert.equal(p.quoteTotal, 499);
+  assert.equal(p.deposit, 499);         // the whole package is the deposit
+  assert.equal(p.depositPct, 100);
+});
+test('deposit MAY exceed one monthly when packages are present (cap relaxed)', () => {
+  const m = priceMowing(1, {}); // monthly $200
+  const p = computeSeasonPlanFC(m, dateForWeek(14), 'normal', LAWN_CONFIG_V1, goldTotal).weekly;
+  assert.equal(p.deposit, 319);
+  assert.ok(p.deposit > p.monthly, 'deposit should exceed monthly with a package');
+});
+test('packages remain full-season rate — unaffected by discount or first cut date', () => {
+  // Gold total is the same regardless of when the mowing starts / how deep the discount.
+  for (const wk of [1, 8, 14, 20]) {
+    const p = computeSeasonPlanFC(priceMowing(1, {}), dateForWeek(wk), 'quint', LAWN_CONFIG_V1, goldTotal).weekly;
+    assert.equal(p.packagesTotal, 499);
   }
 });
 
