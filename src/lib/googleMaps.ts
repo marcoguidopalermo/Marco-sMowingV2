@@ -66,8 +66,11 @@ export async function loadGoogleMaps(): Promise<GoogleMapsHandle> {
   installBootstrap();
   const maps = (window as any).google.maps;
   await maps.importLibrary('maps');
-  await maps.importLibrary('drawing');
-  await maps.importLibrary('geometry');
+  // NOTE: the 'drawing' library (DrawingManager) is RETIRED by Google and is
+  // not served to newer keys/versions — importing it or using DrawingManager
+  // throws "no longer available". We draw polygons manually instead (map click
+  // → vertices on an editable google.maps.Polygon), which needs no library.
+  await maps.importLibrary('geometry');   // computeArea — separate library, fine
   let hasPlaces = false;
   try {
     await maps.importLibrary('places');

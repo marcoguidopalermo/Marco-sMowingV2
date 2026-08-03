@@ -35,13 +35,17 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
   const [drawing, setDrawing] = useState<Mode | null>(null);
   const [address, setAddress] = useState<string | undefined>(initial?.address || initialAddress);
 
+  const [draftCount, setDraftCount] = useState(0);   // vertices placed in the in-progress shape
+
   const mapDivRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const gRef = useRef<any>(null);
   const mapRef = useRef<any>(null);
-  const dmRef = useRef<any>(null);
   const shapesRef = useRef<ShapeRef[]>([]);
-  const pendingModeRef = useRef<Mode>('add');
+  // In-progress (draft) polygon being placed by map taps. Manual drawing — no
+  // DrawingManager (that library is retired by Google). `path` is the explicit
+  // MVCArray of vertices we push to (getPath() is unreliable on a ring-less poly).
+  const draftRef = useRef<{ poly: any; mode: Mode; path: any } | null>(null);
 
   const styleFor = (mode: Mode) => ({
     strokeColor: mode === 'add' ? ADD_COLOR : SUB_COLOR,
@@ -50,6 +54,13 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
     fillOpacity: mode === 'add' ? 0.22 : 0.38,
     editable: true, draggable: true, clickable: true,
     zIndex: mode === 'add' ? 1 : 2,
+  });
+  const draftStyle = (mode: Mode) => ({
+    strokeColor: mode === 'add' ? ADD_COLOR : SUB_COLOR,
+    strokeWeight: 2.5, strokeOpacity: 0.95,
+    fillColor: mode === 'add' ? ADD_COLOR : SUB_COLOR,
+    fillOpacity: 0.15, editable: false, draggable: false, clickable: false,
+    zIndex: 3,
   });
 
   const recompute = () => {
@@ -71,14 +82,56 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
     recompute();
   };
 
+  // ── Manual polygon drawing (replaces the retired DrawingManager) ──────────
+  // Tap the map to drop corners onto an in-progress google.maps.Polygon; tap
+  // near the first corner (or the Finish button) to close it. On finish the
+  // polygon becomes editable + draggable, exactly the specced UX.
   const startDraw = (mode: Mode) => {
-    const dm = dmRef.current; if (!dm) return;
-    pendingModeRef.current = mode;
-    dm.setOptions({ polygonOptions: styleFor(mode) });
-    dm.setDrawingMode('polygon');
+    const g = gRef.current, map = mapRef.current; if (!g || !map) return;
+    discardDraft();
+    // Build a ring-less polygon, then setPath(MVCArray) to establish ONE ring
+    // we push vertices onto. (A Polygon constructed with an empty `paths` has
+    // ZERO rings → getPath() is undefined and the first push throws.)
+    const path = new g.maps.MVCArray();
+    const poly = new g.maps.Polygon({ ...draftStyle(mode), map });
+    poly.setPath(path);
+    draftRef.current = { poly, mode, path };
+    setDraftCount(0);
     setDrawing(mode);
   };
-  const cancelDraw = () => { dmRef.current?.setDrawingMode(null); setDrawing(null); };
+  const addVertex = (latLng: any) => {
+    const g = gRef.current, draft = draftRef.current; if (!g || !draft) return;
+    const path = draft.path;
+    // Tap near the FIRST corner (≥3 placed) closes the shape.
+    if (path.getLength() >= 3) {
+      const first = path.getAt(0);
+      const map = mapRef.current;
+      const mpp = 156543.03392 * Math.cos((first.lat() * Math.PI) / 180) / Math.pow(2, map.getZoom());
+      const dist = g.maps.geometry.spherical.computeDistanceBetween(first, latLng);
+      if (dist < 16 * mpp) { finishDraft(); return; }
+    }
+    path.push(latLng);
+    setDraftCount(path.getLength());
+  };
+  const undoPoint = () => {
+    const draft = draftRef.current; if (!draft) return;
+    if (draft.path.getLength() > 0) draft.path.removeAt(draft.path.getLength() - 1);
+    setDraftCount(draft.path.getLength());
+  };
+  const discardDraft = () => {
+    if (draftRef.current) { draftRef.current.poly.setMap(null); draftRef.current = null; }
+    setDraftCount(0);
+  };
+  const finishDraft = () => {
+    const draft = draftRef.current; if (!draft) return;
+    if (draft.path.getLength() < 3) return; // need a triangle minimum
+    const { poly, mode } = draft;
+    draftRef.current = null;
+    setDrawing(null);
+    setDraftCount(0);
+    addShape(poly, mode);   // makes it editable + draggable, wires recompute
+  };
+  const cancelDraw = () => { discardDraft(); setDrawing(null); };
 
   const toggleMode = (id: string) => {
     const s = shapesRef.current.find(x => x.id === id); if (!s) return;
@@ -131,14 +184,9 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
         zoomControl: true, clickableIcons: false,
       });
       mapRef.current = map;
-      const dm = new g.maps.drawing.DrawingManager({ drawingMode: null, drawingControl: false, polygonOptions: styleFor('add') });
-      dm.setMap(map);
-      dmRef.current = dm;
-      g.maps.event.addListener(dm, 'polygoncomplete', (poly: any) => {
-        dm.setDrawingMode(null);
-        setDrawing(null);
-        addShape(poly, pendingModeRef.current);
-      });
+      // Manual drawing: every map tap drops a vertex onto the active draft
+      // polygon (no DrawingManager). Ignored when not drawing.
+      g.maps.event.addListener(map, 'click', (e: any) => { if (draftRef.current && e?.latLng) addVertex(e.latLng); });
       // Address search (Places Autocomplete) — OPTIONAL. Only wired when the
       // places library actually loaded; otherwise the salesperson pans/zooms.
       if (hasPlaces && searchRef.current) {
@@ -173,7 +221,7 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
       setStatus('ready');
     }).catch((err) => {
       if (cancelled) return;
-      const code = lastMapsError || (err?.message ? String(err.message).slice(0, 90) : 'load_failed');
+      const code = lastMapsError || (err?.message ? String(err.message) : String(err) || 'load_failed');
       console.error('[PropertyMeasureTool] Google Maps failed to load:', err);
       setErrCode(code);
       setStatus('error');
@@ -233,30 +281,50 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
           {/* Draw controls — overlaid bottom-left of the map, thumb-reachable */}
           {status === 'ready' && (
             <div className="absolute left-2 bottom-2 right-2 flex flex-col items-start gap-2 pointer-events-none">
-              {drawing && (
-                <div className="pointer-events-auto bg-black/75 text-white text-[12px] font-bold rounded-lg px-3 py-1.5 flex items-center gap-2">
-                  <Pencil className="w-3.5 h-3.5" /> Tap corners; tap the first point to finish.
-                  <button onClick={cancelDraw} className="underline ml-1">Cancel</button>
+              {drawing ? (
+                <>
+                  <div className="pointer-events-auto bg-black/80 text-white text-[12px] font-bold rounded-lg px-3 py-1.5 flex items-center gap-2">
+                    <Pencil className="w-3.5 h-3.5" />
+                    {draftCount < 3
+                      ? `Tap the map to place corners (${draftCount}) — 3+ needed`
+                      : `${draftCount} corners · tap the first corner or Finish`}
+                  </div>
+                  <div className="pointer-events-auto flex gap-2 flex-wrap">
+                    <button onClick={finishDraft} disabled={draftCount < 3}
+                      className="min-h-[44px] px-3 rounded-xl text-white text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5 disabled:opacity-40"
+                      style={{ backgroundColor: drawing === 'add' ? ADD_COLOR : SUB_COLOR }}>
+                      <Check className="w-4 h-4" /> Finish
+                    </button>
+                    <button onClick={undoPoint} disabled={draftCount === 0}
+                      className="min-h-[44px] px-3 rounded-xl bg-white/95 text-slate-700 border border-slate-300 text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5 disabled:opacity-40">
+                      Undo point
+                    </button>
+                    <button onClick={cancelDraw}
+                      className="min-h-[44px] px-3 rounded-xl bg-white/95 text-slate-700 border border-slate-300 text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5">
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="pointer-events-auto flex gap-2 flex-wrap">
+                  <button onClick={() => startDraw('add')}
+                    className="min-h-[44px] px-3 rounded-xl text-white text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5"
+                    style={{ backgroundColor: ADD_COLOR }}>
+                    <Plus className="w-4 h-4" /> Add area
+                  </button>
+                  <button onClick={() => startDraw('subtract')}
+                    className="min-h-[44px] px-3 rounded-xl text-white text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5"
+                    style={{ backgroundColor: SUB_COLOR }}>
+                    <Minus className="w-4 h-4" /> Exclude
+                  </button>
+                  {shapes.length > 0 && (
+                    <button onClick={clearAll}
+                      className="min-h-[44px] px-3 rounded-xl bg-white/95 text-slate-700 border border-slate-300 text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5">
+                      <Trash2 className="w-4 h-4" /> Clear
+                    </button>
+                  )}
                 </div>
               )}
-              <div className="pointer-events-auto flex gap-2 flex-wrap">
-                <button onClick={() => startDraw('add')}
-                  className="min-h-[44px] px-3 rounded-xl text-white text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5"
-                  style={{ backgroundColor: drawing === 'add' ? '#0f7a34' : ADD_COLOR }}>
-                  <Plus className="w-4 h-4" /> Add area
-                </button>
-                <button onClick={() => startDraw('subtract')}
-                  className="min-h-[44px] px-3 rounded-xl text-white text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5"
-                  style={{ backgroundColor: drawing === 'subtract' ? '#a30f0f' : SUB_COLOR }}>
-                  <Minus className="w-4 h-4" /> Exclude
-                </button>
-                {shapes.length > 0 && (
-                  <button onClick={clearAll}
-                    className="min-h-[44px] px-3 rounded-xl bg-white/95 text-slate-700 border border-slate-300 text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5">
-                    <Trash2 className="w-4 h-4" /> Clear
-                  </button>
-                )}
-              </div>
             </div>
           )}
         </div>
