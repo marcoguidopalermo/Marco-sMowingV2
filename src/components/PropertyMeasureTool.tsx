@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Search, Plus, Minus, Trash2, MapPin, AlertTriangle, Check, Loader2, Pencil } from 'lucide-react';
-import { loadGoogleMaps, M2_TO_SQFT } from '../lib/googleMaps';
+import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, M2_TO_SQFT } from '../lib/googleMaps';
 import { PropertyMeasurement } from '../types';
 
 // SHARED SalesMaster tool: draw polygons on satellite imagery → live sqft.
@@ -29,6 +29,8 @@ interface Props {
 
 export default function PropertyMeasureTool({ onClose, onUse, currentUser, initial, initialAddress }: Props) {
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [errCode, setErrCode] = useState<string | null>(null);   // real Google error, shown in the fallback
+  const [placesOn, setPlacesOn] = useState(true);                // address search available?
   const [shapes, setShapes] = useState<ShapeView[]>([]);
   const [drawing, setDrawing] = useState<Mode | null>(null);
   const [address, setAddress] = useState<string | undefined>(initial?.address || initialAddress);
@@ -108,13 +110,23 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
   // open is a clean init (no stale shapes to tear down).
   useEffect(() => {
     let cancelled = false;
-    loadGoogleMaps().then(g => {
+    // Surface a Google auth failure (bad key / referrer / billing) even if it
+    // arrives AFTER the libraries loaded — flip to the error panel with a code.
+    onMapsAuthFailure((code) => { if (!cancelled) { setErrCode(code); setStatus('error'); } });
+    loadGoogleMaps().then(({ maps, hasPlaces }) => {
       if (cancelled || !mapDivRef.current) return;
+      const g = { maps };
       gRef.current = g;
+      setPlacesOn(hasPlaces);
       const seedCenter = initial?.polygons?.[0]?.path?.[0] || initial?.exclusions?.[0]?.path?.[0] || { lat: 43.653, lng: -79.383 };
       const map = new g.maps.Map(mapDivRef.current, {
         center: seedCenter, zoom: initial ? 20 : 19,
         mapTypeId: 'hybrid',            // satellite imagery + street labels (easier to locate the lot)
+        // Force the RASTER renderer: the default vector (WebGL) map does a
+        // GetViewportInfo RPC that has been returning 502/CORS on this project;
+        // raster tiles avoid that path. Falls back to the string if the enum
+        // isn't present in this API version.
+        renderingType: (g.maps.RenderingType && g.maps.RenderingType.RASTER) || 'RASTER',
         tilt: 0, gestureHandling: 'greedy', disableDefaultUI: true,
         zoomControl: true, clickableIcons: false,
       });
@@ -127,17 +139,23 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
         setDrawing(null);
         addShape(poly, pendingModeRef.current);
       });
-      // Address search (Places Autocomplete) — pan/zoom to the result.
-      if (searchRef.current) {
-        const ac = new g.maps.places.Autocomplete(searchRef.current, { fields: ['geometry', 'formatted_address'] });
-        ac.bindTo('bounds', map);
-        g.maps.event.addListener(ac, 'place_changed', () => {
-          const place = ac.getPlace();
-          if (!place?.geometry) return;
-          if (place.geometry.viewport) map.fitBounds(place.geometry.viewport);
-          else { map.setCenter(place.geometry.location); map.setZoom(20); }
-          setAddress(place.formatted_address);
-        });
+      // Address search (Places Autocomplete) — OPTIONAL. Only wired when the
+      // places library actually loaded; otherwise the salesperson pans/zooms.
+      if (hasPlaces && searchRef.current) {
+        try {
+          const ac = new g.maps.places.Autocomplete(searchRef.current, { fields: ['geometry', 'formatted_address'] });
+          ac.bindTo('bounds', map);
+          g.maps.event.addListener(ac, 'place_changed', () => {
+            const place = ac.getPlace();
+            if (!place?.geometry) return;
+            if (place.geometry.viewport) map.fitBounds(place.geometry.viewport);
+            else { map.setCenter(place.geometry.location); map.setZoom(20); }
+            setAddress(place.formatted_address);
+          });
+        } catch (err) {
+          console.warn('[maps] Autocomplete init failed — search disabled, map still works:', err);
+          setPlacesOn(false);
+        }
       }
       // Re-render a saved measurement's outline (the record of what was measured).
       if (initial) {
@@ -153,7 +171,13 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
         if (!bounds.isEmpty()) map.fitBounds(bounds);
       }
       setStatus('ready');
-    }).catch(() => { if (!cancelled) setStatus('error'); });
+    }).catch((err) => {
+      if (cancelled) return;
+      const code = lastMapsError || (err?.message ? String(err.message).slice(0, 90) : 'load_failed');
+      console.error('[PropertyMeasureTool] Google Maps failed to load:', err);
+      setErrCode(code);
+      setStatus('error');
+    });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -177,8 +201,10 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
         <div className="px-3 py-2.5 border-b border-slate-200 flex items-center gap-2 shrink-0">
           <div className="relative flex-1">
             <Search className="w-4 h-4 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-            <input ref={searchRef} placeholder="Search an address…" disabled={status !== 'ready'}
-              className="w-full border border-slate-300 rounded-lg pl-8 pr-3 py-2.5 text-sm outline-none focus:border-slate-500 disabled:bg-slate-50" />
+            <input ref={searchRef}
+              placeholder={placesOn ? 'Search an address…' : 'Search unavailable — pan & zoom to the property'}
+              disabled={status !== 'ready' || !placesOn}
+              className="w-full border border-slate-300 rounded-lg pl-8 pr-3 py-2.5 text-sm outline-none focus:border-slate-500 disabled:bg-slate-50 disabled:text-slate-400" />
           </div>
           <button onClick={onClose} aria-label="Close" className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">
             <X className="w-5 h-5" />
@@ -199,6 +225,7 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
               <AlertTriangle className="w-7 h-7 text-amber-500" />
               <div className="text-sm font-black text-slate-700">Map couldn’t load</div>
               <div className="text-[13px] text-slate-500 max-w-xs">Check the connection and try again. You can still type the square footage manually — quoting isn’t blocked.</div>
+              {errCode && <div className="text-[11px] font-mono font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded px-2 py-1 max-w-xs break-words">Map error: {errCode}</div>}
               <button onClick={onClose} className="mt-2 min-h-[44px] px-4 rounded-xl text-white text-xs font-black uppercase tracking-widest" style={{ backgroundColor: GREEN }}>Back to quote</button>
             </div>
           )}

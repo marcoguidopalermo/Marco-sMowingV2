@@ -1,9 +1,8 @@
 // Google Maps JavaScript API loader + client config for SalesMaster's shared
 // property-measuring tool. The key is a Maps JS API key RESTRICTED by HTTP
 // referrer to our domains, so — exactly like firebaseConfig.apiKey — it is safe
-// to ship in the client bundle (that is what the referrer restriction is for).
-// Prefer a build-time env var (VITE_GOOGLE_MAPS_API_KEY) when present; otherwise
-// fall back to the committed restricted key. NEVER console.log the key.
+// to ship in the client bundle. Prefer a build-time env var when present;
+// otherwise fall back to the committed restricted key. NEVER console.log the key.
 export const GOOGLE_MAPS_API_KEY: string =
   (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined) ||
   'AIzaSyCHRBrkEeL-4wyvk9xs9bxZG66cD9sdfgM';
@@ -11,45 +10,70 @@ export const GOOGLE_MAPS_API_KEY: string =
 // m² → ft². google.maps.geometry.spherical.computeArea returns square metres.
 export const M2_TO_SQFT = 10.7639;
 
-// Single-flight loader. Resolves with the global `google` namespace once the JS
-// API (geometry + places + drawing libraries) is ready. Rejects on network/key
-// failure so callers can show a fallback (manual sqft entry still works).
-let loadPromise: Promise<any> | null = null;
+// ── Auth-failure surfacing ────────────────────────────────────────────────
+// Google calls window.gm_authFailure() on a key / referrer / billing rejection.
+// The previous loader never registered it, so those failures were invisible and
+// the tool only showed a generic "map couldn't load". We capture it, log it,
+// and let a subscriber (the tool) show the code in its fallback panel.
+export let lastMapsError: string | null = null;
+let authFailureSub: ((code: string) => void) | null = null;
+export function onMapsAuthFailure(cb: (code: string) => void): void { authFailureSub = cb; }
 
-export function loadGoogleMaps(): Promise<any> {
-  if (typeof window === 'undefined') return Promise.reject(new Error('no-window'));
+// ── Loader ────────────────────────────────────────────────────────────────
+// Uses Google's OFFICIAL inline bootstrap (importLibrary). Libraries are loaded
+// on demand and AWAITED, so `google.maps.drawing` / `geometry` / `places` are
+// guaranteed present before use. This replaces the old script-tag that mixed
+// `loading=async` with a legacy `callback` + `libraries=` — that combination
+// fires the callback BEFORE the libraries finish loading, so the tool threw on
+// `google.maps.drawing.DrawingManager` (undefined) and fell back to the error
+// panel. Single-flight; the bootstrap itself no-ops on a second install.
+let bootstrapped = false;
+function installBootstrap(): void {
+  if (bootstrapped) return;
+  bootstrapped = true;
   const w = window as any;
-  if (w.google?.maps?.geometry && w.google?.maps?.drawing && w.google?.maps?.places) {
-    return Promise.resolve(w.google);
-  }
-  if (loadPromise) return loadPromise;
+  w.gm_authFailure = () => {
+    lastMapsError = 'AUTH_FAILURE (key / referrer / billing rejected by Google)';
+    console.error('[maps] gm_authFailure —', lastMapsError);
+    authFailureSub?.(lastMapsError);
+  };
+  /* eslint-disable */
+  // Google's documented inline bootstrap loader (adapted; key + v pinned).
+  (g => {
+    let h: any, a: any, k: any, p = 'The Google Maps JavaScript API', c = 'google', l = 'importLibrary',
+      q = '__ib__', m = document, b: any = w; b = b[c] || (b[c] = {});
+    const d = b.maps || (b.maps = {}), r = new Set<string>(), e = new URLSearchParams(),
+      u = () => h || (h = new Promise(async (f: any, n: any) => {
+        a = m.createElement('script'); e.set('libraries', [...r] + '');
+        for (k in g) e.set(k.replace(/[A-Z]/g, (t: string) => '_' + t[0].toLowerCase()), g[k]);
+        e.set('callback', c + '.maps.' + q); a.src = `https://maps.${c}apis.com/maps/api/js?` + e;
+        d[q] = f; a.onerror = () => (h = n(Error(p + ' could not load.')));
+        a.nonce = (m.querySelector('script[nonce]') as any)?.nonce || ''; m.head.append(a);
+      }));
+    d[l] ? console.warn(p + ' only loads once. Ignoring:', g)
+      : (d[l] = (f: string, ...n: any[]) => r.add(f) && u().then(() => d[l](f, ...n)));
+  })({ key: GOOGLE_MAPS_API_KEY, v: 'weekly' });
+  /* eslint-enable */
+}
 
-  loadPromise = new Promise((resolve, reject) => {
-    const cbName = '__salesMasterGmapsReady';
-    w[cbName] = () => {
-      if (w.google?.maps) resolve(w.google);
-      else reject(new Error('maps-init-failed'));
-    };
-    const existing = document.getElementById('sm-gmaps-script') as HTMLScriptElement | null;
-    if (existing) return; // a load is already in flight; the callback resolves us
-    const s = document.createElement('script');
-    s.id = 'sm-gmaps-script';
-    s.async = true;
-    s.defer = true;
-    // libraries: geometry (computeArea), places (address search), drawing (polygons)
-    s.src =
-      'https://maps.googleapis.com/maps/api/js' +
-      `?key=${encodeURIComponent(GOOGLE_MAPS_API_KEY)}` +
-      '&libraries=geometry,places,drawing' +
-      '&v=weekly' +
-      '&loading=async' +
-      `&callback=${cbName}`;
-    s.onerror = () => {
-      loadPromise = null;
-      s.remove();
-      reject(new Error('maps-load-failed'));
-    };
-    document.head.appendChild(s);
-  });
-  return loadPromise;
+export interface GoogleMapsHandle { maps: any; hasPlaces: boolean }
+
+// Load core (maps + drawing + geometry) — all required, awaited. Places is
+// OPTIONAL: address search is a nicety, so a places failure never blocks the
+// tool — it degrades to manual pan/zoom. Rejects only if a CORE library fails.
+export async function loadGoogleMaps(): Promise<GoogleMapsHandle> {
+  if (typeof window === 'undefined') throw new Error('no-window');
+  installBootstrap();
+  const maps = (window as any).google.maps;
+  await maps.importLibrary('maps');
+  await maps.importLibrary('drawing');
+  await maps.importLibrary('geometry');
+  let hasPlaces = false;
+  try {
+    await maps.importLibrary('places');
+    hasPlaces = true;
+  } catch (err) {
+    console.warn('[maps] places library unavailable — address search disabled, manual pan/zoom still works:', err);
+  }
+  return { maps, hasPlaces };
 }
