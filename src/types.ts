@@ -1257,6 +1257,25 @@ export interface LawnRateConfigVersion {
   createdAt?: number;
 }
 
+// ── SalesMaster · satellite property measurement. Produced by the shared
+// PropertyMeasureTool (Google Maps). A small payload (a few hundred bytes)
+// saved WITH the quote in its subcollection — never the main appData doc. The
+// outline re-renders when a quote is reopened (the record of what was measured,
+// if a tier is ever disputed). Areas are add-polygons minus exclusion-polygons.
+export interface LatLngLiteral { lat: number; lng: number }
+// A ring is wrapped in { path } because Firestore forbids NESTED arrays (an
+// array element cannot itself be an array). polygons/exclusions are therefore
+// arrays of maps, each holding one ring's vertex list — same data, storable.
+export interface MeasureRing { path: LatLngLiteral[] }
+export interface PropertyMeasurement {
+  polygons: MeasureRing[];            // added areas (front yard, back yard…)
+  exclusions: MeasureRing[];          // subtracted areas (driveway, pool, beds…)
+  totalSqft: number;                  // Σ polygons − Σ exclusions (clamped ≥ 0)
+  address?: string;                   // resolved search address, if any
+  measuredAt: number;
+  measuredBy?: { email: string; name: string };
+}
+
 // ── SalesMaster · Lawn — mowing (weekly/biweekly, by sq ft tier) + lawn-care
 // packages. Priced by lawnPricing.ts (single source of truth). Mirrors
 // SnowQuote: own subcollection lawnQuotes/{id} (GROWS; never the main appData
@@ -1282,6 +1301,9 @@ export interface LawnQuote {
   // no tier / packages.
   priceMode?: 'sqft' | 'seasonal' | 'percut';
   basePriceInput?: number;           // the typed weekly figure for modes B / C
+  // Optional satellite measurement that produced the sqft (mode A). Its outline
+  // re-renders when the quote is reopened. Small; saved with the quote.
+  measurement?: PropertyMeasurement;
   // Packages — optional single attachment on the quote.
   selectedPackage?: string | null;   // package key or null
   packageTravelPerVisit?: number;    // legacy; packages now use the mowing zone's per-visit rate

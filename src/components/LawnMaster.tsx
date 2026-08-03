@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react';
-import { Sprout, RotateCcw, Save, FolderOpen, Trash2, Search, BarChart3, AlertTriangle, SlidersHorizontal } from 'lucide-react';
-import { LawnQuote, LawnRateConfigVersion } from '../types';
+import { Sprout, RotateCcw, Save, FolderOpen, Trash2, Search, BarChart3, AlertTriangle, SlidersHorizontal, Map as MapIcon } from 'lucide-react';
+import { LawnQuote, LawnRateConfigVersion, PropertyMeasurement } from '../types';
 import {
   LawnConfig, LAWN_CONFIG_V1, resolveLawnConfig,
   resolveTierIndex, tierLabel, priceLawn, priceMowingBase, LawnPrice, MowingPrice, PackagePrice,
   computeSeasonPlanFC, SeasonPlan, overgrownReductionPct, firstCutSeasonWeek, cutsRemaining, seasonEndDate, mondayOfNextWeek, migrateFirstCutDate,
 } from '../lib/lawnPricing';
 import LawnRateSheet from './LawnRateSheet';
+import PropertyMeasureTool from './PropertyMeasureTool';
 
 const todayYmd = () => new Date().toISOString().slice(0, 10);
 const defaultFirstCut = () => mondayOfNextWeek(todayYmd());
@@ -49,6 +50,8 @@ export default function LawnMaster({
   // ── Inputs ───────────────────────────────────────────────────────────────
   const [priceMode, setPriceMode] = useState<PriceMode>('sqft');
   const [sqft, setSqft] = useState(initial?.sqft || 0);       // mode A
+  const [measurement, setMeasurement] = useState<PropertyMeasurement | null>(null); // satellite outline (mode A)
+  const [measureOpen, setMeasureOpen] = useState(false);
   const [baseInput, setBaseInput] = useState(0);              // modes B (seasonal) / C (per-cut) weekly figure
   const [veryHilly, setVeryHilly] = useState(false);
   const [pushMow, setPushMow] = useState(false);
@@ -108,7 +111,7 @@ export default function LawnMaster({
 
   const clearAll = () => {
     if (mowing && !window.confirm('Clear the lawn quote and all inputs?')) return;
-    setPriceMode('sqft'); setSqft(0); setBaseInput(0);
+    setPriceMode('sqft'); setSqft(0); setMeasurement(null); setBaseInput(0);
     setVeryHilly(false); setPushMow(false); setClutter(false);
     setTravelZone('in_town'); setFirstCutDate(defaultFirstCut()); setOvergrownKey('normal');
     setFrequency(null); setSelectedPackage(null);
@@ -125,6 +128,9 @@ export default function LawnMaster({
       priceMode,
       basePriceInput: priceMode === 'sqft' ? undefined : (Number(baseInput) || 0),
       sqft: priceMode === 'sqft' ? sqft : 0,
+      // Satellite outline that produced the sqft — saved with the quote (small),
+      // re-rendered on reopen as the record of what was measured.
+      measurement: (priceMode === 'sqft' && measurement) ? measurement : undefined,
       tierIndex: priceMode === 'sqft' ? mowing.tierIndex : -1,
       tierLabel: priceMode === 'sqft' ? mowing.tierLabel : MODE_LABEL[priceMode],
       mowingBase: mowing.weeklyBase, veryHilly, pushMow, clutter, travelZone,
@@ -155,6 +161,7 @@ export default function LawnMaster({
     const mode: PriceMode = q.priceMode || 'sqft';
     setPriceMode(mode);
     setSqft(q.sqft || 0);
+    setMeasurement(q.measurement || null);
     setBaseInput(q.basePriceInput || 0);
     setVeryHilly(!!q.veryHilly); setPushMow(!!q.pushMow); setClutter(!!q.clutter);
     setTravelZone(q.travelZone || 'in_town');
@@ -221,10 +228,24 @@ export default function LawnMaster({
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">Custom</span>
-                    <input type="number" value={sqft || ''} onChange={e => { touch(); setSqft(Number(e.target.value) || 0); }}
+                    <input type="number" value={sqft || ''} onChange={e => { touch(); setSqft(Number(e.target.value) || 0); setMeasurement(null); }}
                       placeholder="sq ft" className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-right font-mono font-bold" />
                     <span className="text-[11px] text-slate-400">sq ft</span>
                   </div>
+                  {/* Satellite measuring tool — draw the lot, drop the sqft here. */}
+                  <button onClick={() => setMeasureOpen(true)}
+                    className="w-full min-h-[44px] rounded-xl border-2 border-dashed inline-flex items-center justify-center gap-2 text-[12px] font-black uppercase tracking-widest"
+                    style={{ borderColor: '#c7d2cc', color: GREEN, backgroundColor: '#f4f8f6' }}>
+                    <MapIcon className="w-4 h-4" /> {measurement ? 'Re-measure on map' : 'Measure on map'}
+                  </button>
+                  {measurement && (
+                    <button onClick={() => setMeasureOpen(true)}
+                      className="w-full text-left rounded-lg px-3 py-1.5 text-[11px] font-bold flex items-center gap-1.5" style={{ backgroundColor: '#eef4f0', color: GREEN }}>
+                      <MapIcon className="w-3.5 h-3.5 shrink-0" />
+                      Measured on map: {Math.round(measurement.totalSqft).toLocaleString('en-US')} sq ft
+                      {measurement.address ? ` · ${measurement.address}` : ''} — tap to view outline
+                    </button>
+                  )}
                 </>
               ) : (
                 <div className="space-y-1.5">
@@ -346,6 +367,19 @@ export default function LawnMaster({
           versions={configs}
           onSave={onSaveConfig || (async () => false)}
           onRevert={onRevertConfig || (async () => false)}
+        />
+      )}
+
+      {/* Shared satellite measuring tool. Mounted only while open → clean init.
+          On "Use", drops the sqft into the Custom field and attaches the
+          outline to the quote; reopening shows the saved outline. */}
+      {measureOpen && (
+        <PropertyMeasureTool
+          currentUser={currentUser}
+          initial={measurement}
+          initialAddress={name.trim() || undefined}
+          onClose={() => setMeasureOpen(false)}
+          onUse={(m) => { touch(); setSqft(Math.round(m.totalSqft)); setMeasurement(m); }}
         />
       )}
     </div>
