@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Wrench, DollarSign, Clock, ChevronDown, ChevronUp } from 'lucide-react';
+import { Wrench, DollarSign, Clock, ChevronDown, ChevronUp, Loader2, AlertTriangle } from 'lucide-react';
 import { Employee, MechanicPayChunk, MechanicTask, TaskActivity, TimeEntry } from '../types';
 import { chunksForMechanic, computeOpenChunkHours } from '../lib/payChunkUtils';
 import { shareForMechanic, collaboratorNames, joinNames, formatCredit, assigneesForTask } from '../lib/workCredit';
+import { MyHoursSection } from './ContractingMaster';
 
 // The pay-period hours cards shape shared with the contractor Home.
 type HoursCardData = { rangeLabel: string; payDate: string; hours: number };
@@ -24,29 +25,56 @@ interface MyMechanicProps {
   payMode?: 'chunk' | 'hourly';
   myActivePunch?: TimeEntry | null;
   myTodayPunches?: TimeEntry[];
-  onClockIn?: () => void;
-  onClockOut?: (note?: string) => void;
+  // Honest-save: resolve true on a confirmed write, false on failure.
+  onClockIn?: () => Promise<boolean>;
+  onClockOut?: (note?: string) => Promise<boolean>;
   hoursCards?: { last: HoursCardData; current: HoursCardData };
   onGoToRepairs?: () => void;
+  // Self-service own-hours edit (mirrors the contractor My Hours).
+  employees?: Employee[];
+  onSaveOwnTime?: (entry: TimeEntry, reason: string) => void;
 }
 
 // ── Home helpers (mirror the contractor Home's clock + hours cards) ──────────
 const fmtHM = (h: number) => `${Math.floor(h)}h ${Math.round((h - Math.floor(h)) * 60)}m`;
 const fmtTime = (iso?: string) => iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '—';
 
-function MechanicClock({ active, today, onIn, onOut }: { active: TimeEntry | null; today: TimeEntry[]; onIn: () => void; onOut: (note?: string) => void }) {
+function MechanicClock({ active, today, onIn, onOut }: { active: TimeEntry | null; today: TimeEntry[]; onIn: () => Promise<boolean>; onOut: (note?: string) => Promise<boolean> }) {
   const [, force] = useState(0);
   const [showPunches, setShowPunches] = useState(false);
   const [noting, setNoting] = useState(false);
   const [note, setNote] = useState('');
+  const [saving, setSaving] = useState<'in' | 'out' | null>(null);
+  const [error, setError] = useState<'in' | 'out' | null>(null);
   useEffect(() => { const id = setInterval(() => force(n => n + 1), 30000); return () => clearInterval(id); }, []);
   const elapsed = active ? Math.max(0, (Date.now() - new Date(active.clockIn).getTime()) / 3600000) : 0;
-  const finish = (n?: string) => { onOut(n); setNoting(false); setNote(''); };
+
+  // Honest-save: await the write; only clear the UI on a confirmed success.
+  // On failure show a retry — never a false success.
+  const doIn = async () => {
+    if (saving) return;
+    setSaving('in'); setError(null);
+    const ok = await onIn();               // active flips via parent on success
+    setSaving(null); if (!ok) setError('in');
+  };
+  const doOut = async (n?: string) => {
+    if (saving) return;
+    setSaving('out'); setError(null);
+    const ok = await onOut(n);
+    setSaving(null);
+    if (ok) { setNoting(false); setNote(''); } else { setError('out'); }
+  };
+
   return (
     <div>
       {active ? (
         <div className="w-full rounded-2xl p-4 text-white bg-slate-800">
-          <div className="flex items-center justify-between gap-3">
+          {/* The big button reflects state: Clock out + live timer while in. */}
+          <button
+            onClick={() => { if (!noting) setNoting(true); }}
+            disabled={saving === 'out'}
+            className="w-full flex items-center justify-between gap-3 text-left disabled:opacity-80"
+          >
             <span className="text-left">
               <span className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-amber-300">
                 <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-300 opacity-75" /><span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-300" /></span>
@@ -54,22 +82,26 @@ function MechanicClock({ active, today, onIn, onOut }: { active: TimeEntry | nul
               </span>
               <span className="block text-[11px] opacity-70">since {fmtTime(active.clockIn)}</span>
             </span>
-            {!noting && <button onClick={() => setNoting(true)} className="px-4 py-3 rounded-xl font-black bg-amber-400 text-slate-900">Clock out</button>}
-          </div>
+            {!noting && <span className="px-4 py-3 rounded-xl font-black bg-amber-400 text-slate-900 inline-flex items-center gap-2">{saving === 'out' ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</> : 'Clock out'}</span>}
+          </button>
           {noting && (
             <div className="mt-3 bg-white rounded-xl p-3 text-slate-800">
               <label className="text-[11px] font-black uppercase tracking-widest text-slate-500">What was worked on? (optional)</label>
               <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="e.g. replaced mower belt · unit 12" className="w-full mt-1 bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm outline-none focus:ring-2 focus:ring-emerald-400 resize-none" autoFocus />
+              {error === 'out' && <div className="mt-2 text-[12px] font-bold text-rose-600 inline-flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> Couldn’t save — try again.</div>}
               <div className="flex gap-2 mt-2">
-                <button onClick={() => finish(note.trim() || undefined)} className="flex-1 py-2 rounded-lg font-black text-white bg-slate-800">Save</button>
-                <button onClick={() => finish(undefined)} className="px-3 py-2 rounded-lg font-semibold border text-slate-600">Save without note</button>
+                <button onClick={() => doOut(note.trim() || undefined)} disabled={saving === 'out'} className="flex-1 py-2 rounded-lg font-black text-white bg-slate-800 disabled:opacity-60 inline-flex items-center justify-center gap-2">{saving === 'out' ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</> : (error === 'out' ? 'Retry clock out' : 'Save')}</button>
+                <button onClick={() => doOut(undefined)} disabled={saving === 'out'} className="px-3 py-2 rounded-lg font-semibold border text-slate-600 disabled:opacity-60">Save without note</button>
               </div>
             </div>
           )}
         </div>
       ) : (
-        <button onClick={onIn} className="w-full py-6 rounded-2xl font-black text-2xl text-white shadow bg-emerald-600 hover:bg-emerald-700">Clock in</button>
+        <button onClick={doIn} disabled={saving === 'in'} className="w-full py-6 rounded-2xl font-black text-2xl text-white shadow bg-emerald-600 hover:bg-emerald-700 disabled:opacity-70 inline-flex items-center justify-center gap-3">
+          {saving === 'in' ? <><Loader2 className="w-6 h-6 animate-spin" /> Saving…</> : 'Clock in'}
+        </button>
       )}
+      {error === 'in' && <div className="mt-1.5 text-center text-[12px] font-bold text-rose-600 inline-flex items-center gap-1.5 justify-center w-full"><AlertTriangle className="w-3.5 h-3.5" /> Couldn’t clock in — tap to retry.</div>}
       {today.length > 0 && (
         <div className="mt-1.5 text-center">
           <button onClick={() => setShowPunches(s => !s)} className="text-[11px] font-semibold text-gray-400 uppercase">{showPunches ? '▾ hide' : '▸'} today's punches ({today.length})</button>
@@ -129,6 +161,8 @@ export default function MyMechanic({
   onClockOut,
   hoursCards,
   onGoToRepairs,
+  employees,
+  onSaveOwnTime,
 }: MyMechanicProps) {
   const me = (currentUserEmail || '').toLowerCase();
   const { open, closed } = useMemo(
@@ -233,6 +267,11 @@ export default function MyMechanic({
           </div>
           {/* Big clock in/out — first, thumb-sized, live status + today's punches */}
           <MechanicClock active={myActivePunch || null} today={myTodayPunches || []} onIn={onClockIn} onOut={onClockOut} />
+          {/* MY HOURS — own punches: readable log + edit/add-missed (reason-stamped,
+              own-only), reusing the shared self-service form. */}
+          {employees && onSaveOwnTime && (
+            <MyHoursSection me={{ id: currentUserEmployee.id, name: currentUserEmployee.name }} employees={employees} payrollTimeEntries={timeEntries} periodCard={hoursCards.current} onSaveOwn={onSaveOwnTime} />
+          )}
           {/* HOURS — own punches through the pay-period lens (hours only) */}
           <div>
             <div className="text-xs font-black uppercase tracking-widest mb-1 text-slate-700">Hours</div>

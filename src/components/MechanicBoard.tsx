@@ -12,7 +12,6 @@ import { assigneesForTask, collaboratorNames, joinNames, shareForMechanic } from
 import FleetGroupedList from './FleetGroupedList';
 import FleetRenewalsStrip, { DocRenewalChip } from './FleetRenewalsStrip';
 import { getUnitAttention } from '../lib/fleetGrouping';
-import { personColor } from '../lib/personColor';
 import { isExpiringSoon, isExpired, isOdoStale, formatTodayInToronto } from '../lib/dateUtils';
 import { fleetItemLabel, needsPlateRenewal, needsCommercialSafety, weightBandLabel } from '../lib/fleetUtils';
 import { isKmMaintenanceUnit, isHourMaintenanceUnit } from '../lib/maintenanceUtils';
@@ -573,10 +572,11 @@ export default function MechanicBoard({
             // sessions (same approach AssigneeBadge uses elsewhere).
             // Consistent per-person avatar color — shared util (same hash
             // + palette as before, so colors are unchanged).
-            const hashColorFor = personColor;
-            const firstInitial = (name: string, email: string): string => {
+            // Full FIRST name (not an initial) — surnames aren't needed here.
+            const firstName = (name: string, email: string): string => {
               const src = (name || '').trim() || (email || '').split('@')[0] || '';
-              return (src.charAt(0) || '?').toUpperCase();
+              const first = src.split(/\s+/).filter(Boolean)[0] || src;
+              return first ? first.charAt(0).toUpperCase() + first.slice(1) : '';
             };
             // Parts-status tag colors — match the Parts Orders tab so the
             // two surfaces agree visually.
@@ -653,12 +653,12 @@ export default function MechanicBoard({
                         <div className="text-[11px] text-slate-500 truncate">
                           {task.category}
                           {unitNumberLabel(task) ? ` · ${unitNumberLabel(task)}` : ''}
-                          {rep ? ` · reported by ${rep}` : ''}
+                          {rep ? ` · reported by ${firstName(rep, '')}` : ''}
                         </div>
-                        {/* Full assignee name(s) on the card — not just initials. */}
+                        {/* Full first name(s) of the assignee(s) on the card — not initials. */}
                         {asg.length > 0 && (
                           <div className="text-[11px] font-semibold text-slate-600 truncate">
-                            Assigned: {asg.map(a => a.userName || a.userEmail).join(', ')}
+                            Assigned: {asg.map(a => firstName(a.userName || '', a.userEmail || '')).join(', ')}
                           </div>
                         )}
                       </div>
@@ -667,15 +667,7 @@ export default function MechanicBoard({
                           <Package className={`w-4 h-4 ${partsState === 'ordered' ? 'text-rose-500' : 'text-amber-500'}`} aria-label={partsTag.label} />
                         ) : unassigned ? (
                           <span className="text-[8px] font-black uppercase tracking-widest bg-slate-100 text-slate-500 border border-slate-300 px-1 py-0.5 rounded">Unassigned</span>
-                        ) : (
-                          <div className="flex -space-x-1.5" title={asg.map(a => a.userName || a.userEmail).join(', ')}>
-                            {asg.slice(0, 3).map(a => (
-                              <span key={a.userEmail} className={`w-5 h-5 rounded-full ${hashColorFor(a.userEmail)} text-white text-[9px] font-black flex items-center justify-center shrink-0 ring-1 ring-white`}>
-                                {firstInitial(a.userName || '', a.userEmail || '')}
-                              </span>
-                            ))}
-                          </div>
-                        )}
+                        ) : null}
                         {!!task.photos?.length && (
                           <span className="inline-flex items-center gap-0.5 text-[11px] font-bold text-slate-400" title={`${task.photos.length} photo${task.photos.length > 1 ? 's' : ''}`}>
                             <Camera className="w-3.5 h-3.5" />{task.photos.length}
@@ -700,8 +692,8 @@ export default function MechanicBoard({
                           <div className="text-[12px] text-slate-600 mt-2 whitespace-pre-wrap">{task.description}</div>
                         )}
                         <div className="text-[11px] text-slate-500">
-                          {asg.length ? `Assigned: ${asg.map(a => a.userName || a.userEmail || '').filter(Boolean).join(', ')}` : 'Unassigned'}
-                          {rep ? ` · Reported by ${rep}` : ''}
+                          {asg.length ? `Assigned: ${asg.map(a => firstName(a.userName || '', a.userEmail || '')).filter(Boolean).join(', ')}` : 'Unassigned'}
+                          {rep ? ` · Reported by ${firstName(rep, '')}` : ''}
                           {task.dateReported ? ` · ${formatReportedDate(task.dateReported)}` : ''}
                         </div>
                         {!!task.photos?.length && (

@@ -2549,6 +2549,17 @@ export default function App() {
     syncToCloud({ ...appData, timeEntries: (appData.timeEntries || []).map(e => e.id === myActivePunch.id ? { ...e, clockOut: new Date().toISOString(), ...(note ? { workNote: note } : {}) } : e) });
     showToastMsg(note ? 'Clocked out · note saved.' : 'Clocked out.');
   };
+  // Honest-save clock for the mechanic Home — AWAIT the write and return success
+  // so the button shows saving/retry and never a false success (no optimistic
+  // toast; the state flip is the confirmation).
+  const mechClockIn = async (): Promise<boolean> => {
+    const ne: TimeEntry = { id: `time-${Date.now()}`, userEmail: displayEmail, userName: displayName, clockIn: new Date().toISOString(), notes: [] };
+    return (await syncToCloud({ ...appData, timeEntries: [ne, ...(appData.timeEntries || [])] })) !== false;
+  };
+  const mechClockOut = async (note?: string): Promise<boolean> => {
+    if (!myActivePunch) return false;
+    return (await syncToCloud({ ...appData, timeEntries: (appData.timeEntries || []).map(e => e.id === myActivePunch.id ? { ...e, clockOut: new Date().toISOString(), ...(note ? { workNote: note } : {}) } : e) })) !== false;
+  };
   // Contractor home HOURS cards — the pay-period lens over THEIR OWN punches
   // (hours only, never rates/pay). Display-only read of the payroll data.
   const contractorHours = (() => {
@@ -3901,7 +3912,7 @@ export default function App() {
       canDeleteInspectionLog={can('canDeleteInspectionLog', effectiveRole)}
       onDeleteRepairLog={requestDeleteRepairLog}
       onDeleteInspectionLog={requestDeleteInspectionLog}
-      defaultRepairFilter={effectiveRole === 'mechanic' ? 'mine' : 'all'}
+      defaultRepairFilter="all"
       onOpenTask={(taskId) => setMyMechanicTaskId(taskId)}
       partsOrders={appData.partsOrders || {}}
       onOpenRequestParts={(preFill) => setRequestPartsModal({
@@ -5064,10 +5075,12 @@ export default function App() {
             payMode={currentUserEmployee?.payMode}
             myActivePunch={myActivePunch}
             myTodayPunches={myTodayPunches}
-            onClockIn={contractorClockIn}
-            onClockOut={contractorClockOut}
+            onClockIn={mechClockIn}
+            onClockOut={mechClockOut}
             hoursCards={contractorHours}
             onGoToRepairs={() => setCurrentView('mechanic')}
+            employees={appData.employees || []}
+            onSaveOwnTime={saveOwnContractorTime}
           />
         </>
       ) : currentView === 'dashboard' ? (

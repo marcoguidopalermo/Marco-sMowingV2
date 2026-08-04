@@ -2459,7 +2459,9 @@ function ContractingTimeTab({ employees, payrollTimeEntries, currentUser, onSave
 // opens the existing fix-a-punch edit flow (reason-required, audited, own-only);
 // "Add missed entry" covers days with no punch. Edits CORRECT the punch (an
 // "edited" marker shows on corrected days — no duplicate rows).
-function MyHoursSection({ me, employees, payrollTimeEntries, periodCard, onSaveOwn }: { me: { id: string; name: string }; employees: Employee[]; payrollTimeEntries: TimeEntry[]; periodCard: { rangeLabel: string; payDate: string; hours: number }; onSaveOwn: (e: TimeEntry, reason: string) => void }) {
+// Shared self-service hours section (contractor + mechanic): own punches only,
+// day log, "Add missed entry", tap-to-edit with the required-reason audit form.
+export function MyHoursSection({ me, employees, payrollTimeEntries, periodCard, onSaveOwn }: { me: { id: string; name: string }; employees: Employee[]; payrollTimeEntries: TimeEntry[]; periodCard: { rangeLabel: string; payDate: string; hours: number }; onSaveOwn: (e: TimeEntry, reason: string) => void }) {
   const [form, setForm] = useState<{ mode: 'add' | 'edit'; entry?: TimeEntry } | null>(null);
   const meEmp = employees.find(e => e.id === me.id);
   const myEmail = (meEmp?.linkedUserEmail || meEmp?.email || '').toLowerCase();

@@ -17,8 +17,10 @@ function assigneeInitial(name: string, email: string): string {
   const src = (name || '').trim() || (email || '').split('@')[0] || '';
   return (src.charAt(0) || '?').toUpperCase();
 }
-function assigneeFullName(name: string, email: string): string {
-  return (name || '').trim() || (email || '').split('@')[0] || 'Unknown';
+function assigneeFirstName(name: string, email: string): string {
+  const src = (name || '').trim() || (email || '').split('@')[0] || '';
+  const first = src.split(/\s+/).filter(Boolean)[0] || src;
+  return first ? first.charAt(0).toUpperCase() + first.slice(1) : 'Unknown';
 }
 
 interface UserOption {
@@ -224,7 +226,7 @@ export default function MyMechanicTaskModal({
             </div>
             {(() => {
               const rep = task.reportedBy?.name || task.activity?.find(a => a.type === 'created')?.userName;
-              return rep ? <div className="text-[11px] text-slate-500 mt-0.5">Reported by <span className="font-bold text-slate-700">{rep}</span></div> : null;
+              return rep ? <div className="text-[11px] text-slate-500 mt-0.5">Reported by <span className="font-bold text-slate-700">{assigneeFirstName(rep, '')}</span></div> : null;
             })()}
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-2 rounded min-w-[44px] min-h-[44px] inline-flex items-center justify-center shrink-0" aria-label="Close">
@@ -265,7 +267,7 @@ export default function MyMechanicTaskModal({
                           {assigneeInitial(a.userName, a.userEmail)}
                         </span>
                         <span className="text-[11px] font-bold text-slate-700 truncate max-w-[90px]">
-                          {assigneeFullName(a.userName, a.userEmail)}{isMe ? ' (You)' : ''}
+                          {assigneeFirstName(a.userName, a.userEmail)}{isMe ? ' (You)' : ''}
                         </span>
                         <button
                           type="button"
