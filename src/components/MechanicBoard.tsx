@@ -366,7 +366,7 @@ export default function MechanicBoard({
   }, [appData.employees, currentUserEmail, currentUserName]);
 
   return (
-    <div className="flex-1 flex flex-col lg:h-full overflow-y-auto lg:overflow-hidden bg-gray-100 p-6 pb-24 lg:pb-6 print:bg-white print:p-0 print:overflow-visible">
+    <div className="flex-1 flex flex-col lg:h-full overflow-y-auto lg:overflow-hidden bg-gray-100 p-4 md:p-6 pb-28 lg:pb-6 print:bg-white print:p-0 print:overflow-visible">
       <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-3 mb-6 print:hidden">
         <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><PenTool className="w-6 h-6 text-green-600" /> MechanicMaster Pro</h2>
         <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm flex-wrap">
@@ -380,7 +380,11 @@ export default function MechanicBoard({
           <button onClick={() => setMechanicView('activity')} className={`flex items-center gap-2 px-3 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'activity' ? 'bg-slate-800 text-white' : 'text-gray-500 hover:text-gray-700'}`}><Activity className="w-4 h-4" /> Activity Log</button>
           <button onClick={() => setMechanicView('performance')} className={`flex items-center gap-2 px-3 py-1.5 text-sm font-bold rounded-md ${mechanicView === 'performance' ? 'bg-slate-800 text-white' : 'text-gray-500 hover:text-gray-700'}`}><TrendingUp className="w-4 h-4" /> Mechanic Performance</button>
         </div>
-        <button onClick={() => onOpenManualTask()} className="w-full lg:w-auto justify-center px-6 py-2 min-h-[44px] bg-green-600 text-white font-black text-xs uppercase tracking-widest rounded-xl shadow-lg shadow-green-600/20 hover:bg-green-700 flex items-center gap-2"><Plus className="w-4 h-4" /> Report New Repair</button>
+        {/* On the Repair Board this lives in the toolbar below, side by side
+            with Request Parts; on other views it stays in the header. */}
+        {mechanicView !== 'kanban' && (
+          <button onClick={() => onOpenManualTask()} className="w-full lg:w-auto justify-center px-6 py-2 min-h-[44px] bg-green-600 text-white font-black text-xs uppercase tracking-widest rounded-xl shadow-lg shadow-green-600/20 hover:bg-green-700 flex items-center gap-2"><Plus className="w-4 h-4" /> Report New Repair</button>
+        )}
       </div>
 
       {mechanicView === 'kanban' ? (
@@ -394,14 +398,25 @@ export default function MechanicBoard({
             left, scope toggle on the right. Both sit outside the scroll
             container so they stay visible while the list scrolls. */}
         <div className="mb-4 flex items-center justify-between gap-3 flex-wrap print:hidden">
-          <button
-            type="button"
-            onClick={() => onOpenRequestParts(null)}
-            className="min-h-[40px] inline-flex items-center gap-2 px-3 py-2 text-xs font-black uppercase tracking-widest bg-amber-600 hover:bg-amber-700 text-white rounded-lg shadow"
-            title="Request parts (not tied to a specific repair)"
-          >
-            <Package className="w-4 h-4" /> Request Parts
-          </button>
+          {/* Report New Repair + Request Parts — one row, side by side (each
+              flex-1 on phone so they never stack; natural width on desktop). */}
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button
+              type="button"
+              onClick={() => onOpenManualTask()}
+              className="flex-1 sm:flex-none min-h-[44px] inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-black uppercase tracking-wide bg-green-600 hover:bg-green-700 text-white rounded-lg shadow"
+            >
+              <Plus className="w-4 h-4 shrink-0" /> Report New Repair
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenRequestParts(null)}
+              className="flex-1 sm:flex-none min-h-[44px] inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-black uppercase tracking-wide bg-amber-600 hover:bg-amber-700 text-white rounded-lg shadow"
+              title="Request parts (not tied to a specific repair)"
+            >
+              <Package className="w-4 h-4 shrink-0" /> Request Parts
+            </button>
+          </div>
           <div role="tablist" className="inline-flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
             <button
               type="button"
@@ -431,7 +446,11 @@ export default function MechanicBoard({
             </button>
           </div>
         </div>
-        <div className="flex flex-col gap-6 flex-1 min-h-0 overflow-y-auto pb-2">
+        {/* The board owns its scroll on desktop (root is height-bounded); on
+            mobile it flows into the single root scroller so the list reaches the
+            bottom of the viewport (clearing the fixed nav via the root's pb) and
+            isn't clipped by a nested scroll region. */}
+        <div className="flex flex-col gap-6 flex-1 min-h-0 lg:overflow-y-auto overflow-visible pb-2">
           {(() => {
             // Only real tasks from appData.mechanicTasks. The previous
             // implementation also injected synthetic auto-OOS and
@@ -559,14 +578,6 @@ export default function MechanicBoard({
               const src = (name || '').trim() || (email || '').split('@')[0] || '';
               return (src.charAt(0) || '?').toUpperCase();
             };
-            const firstNameOnly = (name: string, email: string): string => {
-              const src = (name || '').trim() || (email || '').split('@')[0] || '';
-              if (!src) return '';
-              const parts = src.split(/\s+/).filter(Boolean);
-              const first = parts[0] || src;
-              return first.charAt(0).toUpperCase() + first.slice(1);
-            };
-
             // Parts-status tag colors — match the Parts Orders tab so the
             // two surfaces agree visually.
             const partsTagFor = (status: MechanicTask['partsStatus']) => {
@@ -642,8 +653,14 @@ export default function MechanicBoard({
                         <div className="text-[11px] text-slate-500 truncate">
                           {task.category}
                           {unitNumberLabel(task) ? ` · ${unitNumberLabel(task)}` : ''}
-                          {rep ? ` · ${rep}` : ''}
+                          {rep ? ` · reported by ${rep}` : ''}
                         </div>
+                        {/* Full assignee name(s) on the card — not just initials. */}
+                        {asg.length > 0 && (
+                          <div className="text-[11px] font-semibold text-slate-600 truncate">
+                            Assigned: {asg.map(a => a.userName || a.userEmail).join(', ')}
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
                         {partsPending && partsTag ? (
@@ -683,7 +700,7 @@ export default function MechanicBoard({
                           <div className="text-[12px] text-slate-600 mt-2 whitespace-pre-wrap">{task.description}</div>
                         )}
                         <div className="text-[11px] text-slate-500">
-                          {asg.length ? `Assigned: ${asg.map(a => firstNameOnly(a.userName || '', a.userEmail || '')).join(', ')}` : 'Unassigned'}
+                          {asg.length ? `Assigned: ${asg.map(a => a.userName || a.userEmail || '').filter(Boolean).join(', ')}` : 'Unassigned'}
                           {rep ? ` · Reported by ${rep}` : ''}
                           {task.dateReported ? ` · ${formatReportedDate(task.dateReported)}` : ''}
                         </div>

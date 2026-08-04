@@ -300,13 +300,16 @@ export const ROLE_PERMISSIONS = {
     canAddDeductionsOwnCrew: false,
     canViewAdvancedReports: false,
     canViewAllTimeMaster: false,
-    canViewOwnTimeMaster: true,
+    // Mechanic nav is simplified to Home · Repairs — their own hours live on the
+    // Home (pay-period cards / chunk progress), so the standalone TimeMaster
+    // page, Bulletins, and RoleMaster are removed from the mechanic experience.
+    canViewOwnTimeMaster: false,
     canEditAnyTimeEntry: false,
     canExportTimeCSV: false,
     canClockInOut: true,
     canPostBulletins: false,
     canDeleteBulletins: false,
-    canViewBulletins: true,
+    canViewBulletins: false,
     canUseAIInsight: false,
     canViewManageResources: false,
     canEditPersonnel: false,
@@ -327,7 +330,7 @@ export const ROLE_PERMISSIONS = {
     canViewPerfActivityLog: false,
     canViewTaskMaster: false,
     canCreateTasks: false,
-    canViewRoleMaster: true,
+    canViewRoleMaster: false,
     canManageRoleMaster: false,
     canViewSalesMaster: false,
     canApproveTimeOff: false,

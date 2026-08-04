@@ -17,11 +17,8 @@ function assigneeInitial(name: string, email: string): string {
   const src = (name || '').trim() || (email || '').split('@')[0] || '';
   return (src.charAt(0) || '?').toUpperCase();
 }
-function assigneeFirstName(name: string, email: string): string {
-  const src = (name || '').trim() || (email || '').split('@')[0] || '';
-  if (!src) return 'Unknown';
-  const first = src.split(/\s+/).filter(Boolean)[0] || src;
-  return first.charAt(0).toUpperCase() + first.slice(1);
+function assigneeFullName(name: string, email: string): string {
+  return (name || '').trim() || (email || '').split('@')[0] || 'Unknown';
 }
 
 interface UserOption {
@@ -268,7 +265,7 @@ export default function MyMechanicTaskModal({
                           {assigneeInitial(a.userName, a.userEmail)}
                         </span>
                         <span className="text-[11px] font-bold text-slate-700 truncate max-w-[90px]">
-                          {assigneeFirstName(a.userName, a.userEmail)}{isMe ? ' (You)' : ''}
+                          {assigneeFullName(a.userName, a.userEmail)}{isMe ? ' (You)' : ''}
                         </span>
                         <button
                           type="button"

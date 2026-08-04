@@ -559,11 +559,28 @@ export default function ManageResourcesModal({
                       </div>
                     </div>
                   </div>
-                  {sysRole === 'mechanic' && (
+                  {sysRole === 'mechanic' && (() => {
+                    const payMode: 'chunk' | 'hourly' = emp.payMode || 'chunk'; // absent = chunk (unchanged)
+                    const setPayMode = (m: 'chunk' | 'hourly') => { const ne = [...localEmployees]; ne[idx] = { ...ne[idx], payMode: m }; setLocalEmployees(ne); };
+                    return (
                     <div className="flex flex-col gap-2 bg-amber-50/40 p-3 rounded-lg border border-amber-100">
                       <div className="text-[10px] font-black uppercase tracking-widest text-amber-800 flex items-center gap-1.5">
-                        <Clock className="w-3.5 h-3.5" /> Mechanic Pay Chunks
+                        <Clock className="w-3.5 h-3.5" /> Mechanic Pay
                       </div>
+                      {/* PAY MODE — chunk pay (current) vs standard hourly. Absent = chunk,
+                          so existing mechanics keep chunk pay with no silent change. */}
+                      <div className="flex gap-2">
+                        {(['chunk', 'hourly'] as const).map(m => (
+                          <button key={m} type="button" disabled={!isAdmin} onClick={() => setPayMode(m)}
+                            className={`px-3 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-widest border transition-colors ${payMode === m ? 'bg-amber-600 text-white border-amber-600' : 'bg-white text-slate-600 border-amber-200 hover:bg-amber-50'} disabled:opacity-60`}>
+                            {m === 'chunk' ? 'Chunk pay' : 'Standard hourly'}
+                          </button>
+                        ))}
+                      </div>
+                      {payMode === 'hourly' && (
+                        <div className="text-[11px] text-slate-600">Paid from clocked hours like any employee — pay chunks don’t apply. Their MyMechanic home shows the clock + pay-period hours.</div>
+                      )}
+                      {payMode === 'chunk' && (<>
                       <div className="flex flex-wrap gap-3 items-end">
                         <div className="w-44">
                           <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 block mb-1">Hours per $1,000</label>
@@ -660,8 +677,10 @@ export default function ManageResourcesModal({
                           </div>
                         );
                       })()}
+                      </>)}
                     </div>
-                  )}
+                    );
+                  })()}
                   {sysRole === 'contractor' && (() => {
                     const rc = contractingRatesOrDefault(contractingRates);
                     const role = (emp.contractingBillingRole || 'general_labour') as ContractingBillingRole;

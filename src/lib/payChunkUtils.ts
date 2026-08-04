@@ -2,6 +2,17 @@ import { Employee, MechanicPayChunk, TimeEntry } from '../types';
 
 const MS_PER_HOUR = 3600 * 1000;
 
+// PAY MODE helpers. A mechanic is a CHUNK-pay mechanic unless explicitly set to
+// 'hourly' — absent payMode means chunk, so existing mechanics are unchanged.
+// An hourly mechanic reads pay/hours from clocked time; the chunk machinery and
+// its UI don't apply to them.
+export function isChunkMechanic(emp?: Pick<Employee, 'systemRole' | 'payMode'> | null): boolean {
+  return !!emp && emp.systemRole === 'mechanic' && emp.payMode !== 'hourly';
+}
+export function isHourlyMechanic(emp?: Pick<Employee, 'systemRole' | 'payMode'> | null): boolean {
+  return !!emp && emp.systemRole === 'mechanic' && emp.payMode === 'hourly';
+}
+
 // Sum mechanic-clocked hours between [from, to]. Clips entries that
 // straddle the range. Unclosed shifts (no clockOut) are treated as
 // ongoing to "now" — same convention the existing TimeMaster

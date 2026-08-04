@@ -1,8 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Wrench, DollarSign, Clock, ChevronDown, ChevronUp } from 'lucide-react';
 import { Employee, MechanicPayChunk, MechanicTask, TaskActivity, TimeEntry } from '../types';
 import { chunksForMechanic, computeOpenChunkHours } from '../lib/payChunkUtils';
-import { shareForMechanic, collaboratorNames, joinNames, formatCredit } from '../lib/workCredit';
+import { shareForMechanic, collaboratorNames, joinNames, formatCredit, assigneesForTask } from '../lib/workCredit';
+
+// The pay-period hours cards shape shared with the contractor Home.
+type HoursCardData = { rangeLabel: string; payDate: string; hours: number };
 
 interface MyMechanicProps {
   currentUserEmail: string;
@@ -16,6 +19,85 @@ interface MyMechanicProps {
   activityLog: TaskActivity[];
   timeEntries: TimeEntry[];
   onOpenTask: (taskId: string) => void;
+  // HOURLY-mode home (mirrors the contractor Home). Absent/`'chunk'` → the
+  // existing chunk screen (unchanged). Wired only when payMode === 'hourly'.
+  payMode?: 'chunk' | 'hourly';
+  myActivePunch?: TimeEntry | null;
+  myTodayPunches?: TimeEntry[];
+  onClockIn?: () => void;
+  onClockOut?: (note?: string) => void;
+  hoursCards?: { last: HoursCardData; current: HoursCardData };
+  onGoToRepairs?: () => void;
+}
+
+// ── Home helpers (mirror the contractor Home's clock + hours cards) ──────────
+const fmtHM = (h: number) => `${Math.floor(h)}h ${Math.round((h - Math.floor(h)) * 60)}m`;
+const fmtTime = (iso?: string) => iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '—';
+
+function MechanicClock({ active, today, onIn, onOut }: { active: TimeEntry | null; today: TimeEntry[]; onIn: () => void; onOut: (note?: string) => void }) {
+  const [, force] = useState(0);
+  const [showPunches, setShowPunches] = useState(false);
+  const [noting, setNoting] = useState(false);
+  const [note, setNote] = useState('');
+  useEffect(() => { const id = setInterval(() => force(n => n + 1), 30000); return () => clearInterval(id); }, []);
+  const elapsed = active ? Math.max(0, (Date.now() - new Date(active.clockIn).getTime()) / 3600000) : 0;
+  const finish = (n?: string) => { onOut(n); setNoting(false); setNote(''); };
+  return (
+    <div>
+      {active ? (
+        <div className="w-full rounded-2xl p-4 text-white bg-slate-800">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-left">
+              <span className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-amber-300">
+                <span className="relative flex h-2.5 w-2.5"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-300 opacity-75" /><span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-300" /></span>
+                Clocked in · {fmtHM(elapsed)}
+              </span>
+              <span className="block text-[11px] opacity-70">since {fmtTime(active.clockIn)}</span>
+            </span>
+            {!noting && <button onClick={() => setNoting(true)} className="px-4 py-3 rounded-xl font-black bg-amber-400 text-slate-900">Clock out</button>}
+          </div>
+          {noting && (
+            <div className="mt-3 bg-white rounded-xl p-3 text-slate-800">
+              <label className="text-[11px] font-black uppercase tracking-widest text-slate-500">What was worked on? (optional)</label>
+              <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="e.g. replaced mower belt · unit 12" className="w-full mt-1 bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm outline-none focus:ring-2 focus:ring-emerald-400 resize-none" autoFocus />
+              <div className="flex gap-2 mt-2">
+                <button onClick={() => finish(note.trim() || undefined)} className="flex-1 py-2 rounded-lg font-black text-white bg-slate-800">Save</button>
+                <button onClick={() => finish(undefined)} className="px-3 py-2 rounded-lg font-semibold border text-slate-600">Save without note</button>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <button onClick={onIn} className="w-full py-6 rounded-2xl font-black text-2xl text-white shadow bg-emerald-600 hover:bg-emerald-700">Clock in</button>
+      )}
+      {today.length > 0 && (
+        <div className="mt-1.5 text-center">
+          <button onClick={() => setShowPunches(s => !s)} className="text-[11px] font-semibold text-gray-400 uppercase">{showPunches ? '▾ hide' : '▸'} today's punches ({today.length})</button>
+          {showPunches && (
+            <div className="space-y-1 mt-1 text-left">
+              {today.map(e => (
+                <div key={e.id} className="bg-white rounded border p-2 text-sm">
+                  <div>{fmtTime(e.clockIn)} → {e.clockOut ? fmtTime(e.clockOut) : <span className="text-emerald-600 font-semibold">active</span>}</div>
+                  {e.workNote && <div className="text-xs text-gray-500 italic mt-0.5">“{e.workNote}”</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PayHoursCard({ label, data, verb, inProgress }: { label: string; data: HoursCardData; verb: string; inProgress?: boolean }) {
+  const hm = `${Math.floor(data.hours)}h ${Math.round((data.hours - Math.floor(data.hours)) * 60)}m`;
+  return (
+    <div className={`bg-white rounded-xl border p-3 ${inProgress ? 'border-emerald-200' : 'border-slate-200'}`}>
+      <div className="text-[9px] font-black uppercase tracking-widest" style={{ color: inProgress ? '#1E8449' : '#334155' }}>{label} · {data.rangeLabel}</div>
+      <div className="text-2xl font-black" style={{ color: inProgress ? '#1E8449' : '#334155' }}>{hm}</div>
+      <div className="text-[10px] text-gray-400">{inProgress ? 'in progress · ' : ''}{verb} {data.payDate}</div>
+    </div>
+  );
 }
 
 const MS_PER_HOUR = 3600 * 1000;
@@ -40,6 +122,13 @@ export default function MyMechanic({
   activityLog,
   timeEntries,
   onOpenTask,
+  payMode,
+  myActivePunch,
+  myTodayPunches,
+  onClockIn,
+  onClockOut,
+  hoursCards,
+  onGoToRepairs,
 }: MyMechanicProps) {
   const me = (currentUserEmail || '').toLowerCase();
   const { open, closed } = useMemo(
@@ -123,6 +212,47 @@ export default function MyMechanic({
           <p className="text-sm text-slate-500 mt-2">
             Your sign-in email isn't linked to an Employee record. Ask an admin to link your email in Manage Resources → Personnel.
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── HOURLY PAY MODE — the simplified contractor-style Home (clock + own
+  // pay-period hours + a repairs summary). No chunk machinery/UI. Chunk-pay
+  // mechanics fall through to the unchanged chunk screen below. ──────────────
+  if (payMode === 'hourly' && hoursCards && onClockIn && onClockOut) {
+    const myOpen = mechanicTasks.filter(t => t.status !== 'done' && assigneesForTask(t).some(a => (a.userEmail || '').toLowerCase() === me));
+    const priorityN = myOpen.filter(t => t.priority).length;
+    const majorN = myOpen.filter(t => t.severity === 'major').length;
+    return (
+      <div className="flex-1 overflow-y-auto bg-gray-100 p-4 md:p-6 pb-24 md:pb-6">
+        <div className="max-w-md mx-auto space-y-5">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><Wrench className="w-6 h-6 text-slate-700" /> Home</h2>
+            <span className="text-xs text-slate-500 font-medium truncate">{currentUserEmployee.name}</span>
+          </div>
+          {/* Big clock in/out — first, thumb-sized, live status + today's punches */}
+          <MechanicClock active={myActivePunch || null} today={myTodayPunches || []} onIn={onClockIn} onOut={onClockOut} />
+          {/* HOURS — own punches through the pay-period lens (hours only) */}
+          <div>
+            <div className="text-xs font-black uppercase tracking-widest mb-1 text-slate-700">Hours</div>
+            <div className="grid grid-cols-2 gap-3">
+              <PayHoursCard label="Last paycheque" data={hoursCards.last} verb="paid" />
+              <PayHoursCard label="This paycheque" data={hoursCards.current} verb="pays" inProgress />
+            </div>
+          </div>
+          {/* MY REPAIRS — cheap summary, tap through to the board */}
+          {onGoToRepairs && (
+            <button onClick={onGoToRepairs} className="w-full bg-white rounded-xl border p-3 flex items-center justify-between text-left hover:bg-slate-50" style={{ minHeight: 44 }}>
+              <span>
+                <span className="text-xs font-black uppercase tracking-widest block text-slate-700">My repairs</span>
+                <span className="text-[11px] font-semibold text-slate-500">
+                  {myOpen.length === 0 ? 'none assigned' : [`${myOpen.length} open`, priorityN ? `${priorityN} priority` : null, majorN ? `${majorN} major` : null].filter(Boolean).join(' · ')}
+                </span>
+              </span>
+              <span className="text-xs text-gray-400">Repairs →</span>
+            </button>
+          )}
         </div>
       </div>
     );

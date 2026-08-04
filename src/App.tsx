@@ -13,7 +13,7 @@ import {
   Target, Award, CalendarDays, FileSignature, Map, CheckSquare, Info, Sparkles, Loader2,
   MessageSquareText, Leaf, Download, LogOut, ShieldCheck, UserPlus, Megaphone, Lock,
   Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown, Hammer, Calculator,
-  ChevronUp, Layers, Eye, MoreHorizontal, Sliders
+  ChevronUp, Layers, Eye, MoreHorizontal, Sliders, Home
 } from 'lucide-react';
 
 import {
@@ -27,7 +27,7 @@ import {
   ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
-import { processPayChunksOnTimeUpdate } from './lib/payChunkUtils';
+import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
 import { assigneesForTask } from './lib/workCredit';
 import { can, canForCrew, resolveRole, canAccessView, firstAccessibleView, defaultLandingView, AppView, setPermissionOverrides, ROLE_PERMISSIONS } from './lib/permissions';
 import { getResourceAvailability, describeUnavailability, ResourceType } from './lib/availability';
@@ -761,9 +761,15 @@ export default function App() {
     if (!user || loading) return;
     if (isViewingAs) return; // view-only: no background writes while impersonating
     const chunks = appData.mechanicPayChunks || {};
+    // Hourly mechanics are excluded from the chunk state machine — if one was
+    // switched from chunk→hourly with an open chunk, it simply stops accruing.
+    const hourlyEmails = new Set(
+      (appData.employees || []).filter(isHourlyMechanic)
+        .map(e => (e.linkedUserEmail || e.email || '').toLowerCase()).filter(Boolean),
+    );
     const openEmails = new Set<string>();
     for (const c of Object.values(chunks)) {
-      if (c.status === 'open' && c.mechanicEmail) openEmails.add(c.mechanicEmail.toLowerCase());
+      if (c.status === 'open' && c.mechanicEmail && !hourlyEmails.has(c.mechanicEmail.toLowerCase())) openEmails.add(c.mechanicEmail.toLowerCase());
     }
     if (openEmails.size === 0) return;
     let merged = chunks;
@@ -4639,7 +4645,7 @@ export default function App() {
               <button onClick={() => setCurrentView('mycrew')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'mycrew' ? 'bg-white shadow-sm text-lime-600' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><TrendingUp className="w-4 h-4" /> My Crew Today</button>
             )}
             {canAccessView('mymechanic', effectiveRole) && (
-              <button onClick={() => setCurrentView('mymechanic')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'mymechanic' ? 'bg-white shadow-sm text-amber-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><ClipboardList className="w-4 h-4" /> MyMechanic</button>
+              <button onClick={() => setCurrentView('mymechanic')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'mymechanic' ? 'bg-white shadow-sm text-amber-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><Home className="w-4 h-4" /> Home</button>
             )}
             {canAccessView('timemaster', effectiveRole) && (() => {
               // Combined badge: approver-side pending count + requester-
@@ -5032,20 +5038,21 @@ export default function App() {
 
       {currentView === 'mechanic' ? renderMechanicBoard() : currentView === 'performance' ? renderPerformanceBoard() : currentView === 'mymechanic' ? (
         <>
-          {/* Mobile-only clock-in bar — the desktop sidebar widget
-              is hidden below md, leaving phone users with no path
-              to Clock In/Out. Mount the same TimeMasterWidget here
-              so mechanics can clock in from their landing screen
-              even when MyMechanic's "no linked employee" wall is
-              showing (the widget itself doesn't gate on linkage). */}
-          <div className="md:hidden shrink-0 px-4 pt-4 bg-gray-100">
-            <TimeMasterWidget
-              appData={appData}
-              userEmail={displayEmail}
-              userName={displayName}
-              syncToCloud={syncToCloud}
-            />
-          </div>
+          {/* Mobile-only clock-in bar — the desktop sidebar widget is hidden
+              below md, leaving phone users with no path to Clock In/Out. Mount
+              the TimeMasterWidget here for CHUNK-pay mechanics (and the
+              no-linked-employee wall). HOURLY mechanics don't need it — their
+              Home has its own big clock button. */}
+          {currentUserEmployee?.payMode !== 'hourly' && (
+            <div className="md:hidden shrink-0 px-4 pt-4 bg-gray-100">
+              <TimeMasterWidget
+                appData={appData}
+                userEmail={displayEmail}
+                userName={displayName}
+                syncToCloud={syncToCloud}
+              />
+            </div>
+          )}
           <MyMechanic
             currentUserEmail={displayEmail}
             currentUserEmployee={currentUserEmployee}
@@ -5054,6 +5061,13 @@ export default function App() {
             activityLog={appData.activityLog || []}
             timeEntries={appData.timeEntries || []}
             onOpenTask={(taskId) => setMyMechanicTaskId(taskId)}
+            payMode={currentUserEmployee?.payMode}
+            myActivePunch={myActivePunch}
+            myTodayPunches={myTodayPunches}
+            onClockIn={contractorClockIn}
+            onClockOut={contractorClockOut}
+            hoursCards={contractorHours}
+            onGoToRepairs={() => setCurrentView('mechanic')}
           />
         </>
       ) : currentView === 'dashboard' ? (
@@ -5383,7 +5397,7 @@ export default function App() {
             // MyMechanic — pay-chunk home screen for mechanics. Sits
             // as the leftmost mechanic-only nav item (canAccessView
             // returns true only for role === 'mechanic').
-            { key: 'mymechanic', label: 'MyMechanic', Icon: ClipboardList, badge: 0,
+            { key: 'mymechanic', label: 'Home', Icon: Home, badge: 0,
               isActive: currentView === 'mymechanic',
               onClick: () => setCurrentView('mymechanic'),
               visible: canAccessView('mymechanic', effectiveRole) },
@@ -5400,7 +5414,7 @@ export default function App() {
               isActive: false,
               onClick: openRepairModal,
               visible: effectiveRole === 'worker' },
-            { key: 'mechanic', label: 'Mechanic', Icon: Wrench, badge: 0,
+            { key: 'mechanic', label: 'Repairs', Icon: Wrench, badge: 0,
               isActive: currentView === 'mechanic',
               onClick: () => setCurrentView('mechanic'),
               visible: canAccessView('mechanic', effectiveRole) },
@@ -5459,7 +5473,7 @@ export default function App() {
             manager: ['mycrew', 'performance', 'timemaster', 'taskmaster'],
             foreman: ['mycrew', 'timemaster', 'bulletins', 'schedule'],
             worker: ['mycrew', 'timemaster', 'bulletins', 'schedule'],
-            mechanic: ['mymechanic', 'mechanic', 'timemaster', 'bulletins'],
+            mechanic: ['mymechanic', 'mechanic'],
             contractor: ['contracting'],
             property_manager: ['contracting'],
           };

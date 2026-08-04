@@ -205,7 +205,8 @@ export default function MechanicPerformance({
           within [start, end]. Per-mechanic totals (earned $, lifetime
           hours) round out the readout. */}
       {employees && mechanicPayChunks && mechanicTasks && timeEntries && (() => {
-        const mechanics = employees.filter(e => e.systemRole === 'mechanic' && typeof e.hoursPer1000 === 'number' && (e.hoursPer1000 || 0) > 0);
+        // Chunk-pay mechanics only — hourly mechanics have no chunks/payouts.
+        const mechanics = employees.filter(e => e.systemRole === 'mechanic' && e.payMode !== 'hourly' && typeof e.hoursPer1000 === 'number' && (e.hoursPer1000 || 0) > 0);
         if (mechanics.length === 0) return null;
         // Source of truth for completions is the top-level activityLog
         // (the completion handler removes the task from mechanicTasks

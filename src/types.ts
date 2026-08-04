@@ -22,9 +22,15 @@ export interface Employee {
   jobberUserId?: string;
   managedDivision?: ManagedDivision;
   primaryCrew?: PrimaryCrew;
+  // Mechanic PAY MODE. 'chunk' = the $1,000-per-N-hours chunk machinery
+  // (current behavior). 'hourly' = paid/read from clocked time like any
+  // employee; the chunk machinery + its UI don't apply. ABSENT = 'chunk' so
+  // existing mechanics keep chunk pay unchanged (no silent pay change). Only
+  // meaningful for systemRole === 'mechanic'.
+  payMode?: 'chunk' | 'hourly';
   // Mechanic pay-chunk rate. When set, every (hoursPer1000) clocked
   // hours yields $1,000 of accountability — drives the pay-chunk
-  // state machine. Only meaningful for systemRole === 'mechanic'.
+  // state machine. Only meaningful for a chunk-pay mechanic.
   hoursPer1000?: number;
   // ContractingMaster (Palermo's) billing role → T&M rate. Only meaningful
   // for systemRole === 'contractor'. Never touches Marco's pay math.
