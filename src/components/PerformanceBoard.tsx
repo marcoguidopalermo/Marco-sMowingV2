@@ -135,6 +135,31 @@ interface PerformanceBoardProps {
   onIgnoreJobberBhConflict: (c: JobberBhConflict) => void;
 }
 
+// Compact, append-only scope history for a multi-day ledger — one line per
+// change: "Scope: 10 → 20 BH on Jul 22 · 5 BH credited at the time". Renders
+// nothing when the ledger never changed scope. Shared by the daily board row
+// and the month-end resolution drill-through so the numbers are explainable in
+// both places without digging through the audit log.
+export function ScopeHistoryLines({ ledger, className = '' }: { ledger: MultiDayJob | undefined; className?: string }) {
+  const hist = ledger?.scopeHistory || [];
+  if (hist.length === 0) return null;
+  return (
+    <div className={`text-[10px] text-slate-500 leading-snug ${className}`}>
+      {hist.map((h, i) => (
+        <div key={`${h.changedAt}-${i}`} className="flex items-start gap-1">
+          <Clock className="w-3 h-3 text-slate-400 shrink-0 mt-0.5" />
+          <span>
+            Scope: <span className="font-mono font-semibold">{h.previousTotalBH} → {h.newTotalBH}</span> BH
+            {' on '}{new Date(h.changedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            {' · '}<span className="font-mono">{h.creditedAtChange}</span> BH credited at the time
+            {h.source === 'manual' && <span className="ml-1 italic text-slate-400">(manual)</span>}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function PerformanceBoard({
   performance,
   pushedMonths,
@@ -2425,6 +2450,7 @@ export default function PerformanceBoard({
                                 const hasCreditedHistory = !!historyForThis && !awaitingReview;
                                 const fullyCredited = hasCreditedHistory && (historyForThis!.percentComplete >= 100);
                                 return (
+                                <>
                                 <div className="flex items-center gap-2 pl-1 text-[11px]">
                                   {fullyCredited ? (
                                     <span className="text-slate-600">
@@ -2449,6 +2475,8 @@ export default function PerformanceBoard({
                                     </span>
                                   )}
                                 </div>
+                                <ScopeHistoryLines ledger={mdJob} className="pl-1 mt-0.5" />
+                                </>
                                 );
                               })()}
                               </div>
@@ -3046,7 +3074,7 @@ export default function PerformanceBoard({
                               )}
                               {partials.length > 0 && (
                                 <PartialJobsResolver
-                                  ym={ym} items={partials} performance={performance}
+                                  ym={ym} items={partials} performance={performance} multiDayJobs={multiDayJobs}
                                   onOpenDay={(date, crewId, division) => goToCrewDay({ date, crewId, division })}
                                   onComplete={onResolveComplete} onCarry={onResolveCarry} onVoid={onResolveVoid}
                                 />
@@ -3233,10 +3261,11 @@ export default function PerformanceBoard({
 const VOID_REASONS = ['Job cancelled', 'Scope changed', 'Data error — never worked', 'Other'];
 const r1 = (n: number) => Math.round((Number(n) || 0) * 10) / 10;
 
-export function PartialJobsResolver({ ym, items, performance, onOpenDay, onComplete, onCarry, onVoid }: {
+export function PartialJobsResolver({ ym, items, performance, multiDayJobs, onOpenDay, onComplete, onCarry, onVoid }: {
   ym: string;
   items: BlockingPartialJob[];
   performance: Record<string, Record<string, PerformanceLog>>;
+  multiDayJobs: Record<string, MultiDayJob>;
   onOpenDay: (date: string, crewId: string, division: string) => void;
   onComplete: (visitId: string, ym: string, targetDate: string, targetCrewId: string) => void;
   onCarry: (visitId: string, ym: string) => void;
@@ -3282,6 +3311,10 @@ export function PartialJobsResolver({ ym, items, performance, onOpenDay, onCompl
             <div className="min-w-0 flex-1">
               <div className="text-[12px] font-bold text-slate-800 truncate">{it.title}</div>
               <div className="text-[11px] text-slate-500">Prior {it.creditedPct}% credited{it.priorDate ? ` on ${it.priorDate}` : ''} · <span className="font-mono font-bold text-rose-600">{it.remainingBH} BH</span> remaining of {it.totalBH} BH</div>
+              {totalBelowCredited(multiDayJobs[it.jobberVisitId]) && (
+                <div className="text-[10px] font-bold text-rose-700 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Scope cut below credited — remaining floored at 0, credited kept</div>
+              )}
+              <ScopeHistoryLines ledger={multiDayJobs[it.jobberVisitId]} className="mt-0.5" />
             </div>
           </div>
           <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">

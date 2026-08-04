@@ -201,6 +201,19 @@ interface MultiDayJob {
   totalBelowCredited?: boolean;
   bhTotalChangedAt?: number;
   bhTotalChangedFrom?: number;
+  // Append-only log of every scope (totalBH) change. Never overwritten, so a
+  // ledger that looks odd months later is explainable without archaeology.
+  // creditedAtChange snapshots how much was already credited the moment the
+  // scope moved — the guarantee that credited BH is never recomputed.
+  scopeHistory?: ScopeChangeEntry[];
+}
+
+interface ScopeChangeEntry {
+  previousTotalBH: number;
+  newTotalBH: number;
+  changedAt: number;
+  source: "jobber" | "manual";
+  creditedAtChange: number;
 }
 
 interface PerformanceLog {
@@ -1905,11 +1918,25 @@ async function runPerformanceSync(args: {
               if (Math.abs(newTotal - prevTotal) > 1e-6) {
                 const creditedSoFar = mdJobForIncomplete.completionHistory
                   .reduce((s, h) => s + (Number(h.creditedBH) || 0), 0);
+                const changedAt = Date.now();
                 mdJobForIncomplete.totalBH = newTotal;
-                mdJobForIncomplete.bhTotalChangedAt = Date.now();
+                mdJobForIncomplete.bhTotalChangedAt = changedAt;
                 mdJobForIncomplete.bhTotalChangedFrom = prevTotal;
                 mdJobForIncomplete.totalBelowCredited =
                   newTotal + 1e-6 < creditedSoFar;
+                // Append-only scope history — never overwrite prior entries.
+                // creditedAtChange snapshots the credited BH at THIS moment,
+                // so each entry is explainable independent of later changes.
+                mdJobForIncomplete.scopeHistory = [
+                  ...(mdJobForIncomplete.scopeHistory || []),
+                  {
+                    previousTotalBH: prevTotal,
+                    newTotalBH: newTotal,
+                    changedAt,
+                    source: "jobber",
+                    creditedAtChange: Math.round(creditedSoFar * 10) / 10,
+                  },
+                ];
                 summary.bhChangesApplied.push({
                   jobberVisitId: visit.id,
                   jobTitle: desc,

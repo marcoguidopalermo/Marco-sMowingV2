@@ -746,6 +746,16 @@ export interface JobberBhConflict {
   detectedAt: number;
 }
 
+// One entry in a multi-day ledger's append-only scope (totalBH) history.
+export interface ScopeChangeEntry {
+  previousTotalBH: number;
+  newTotalBH: number;
+  changedAt: number;
+  source: 'jobber' | 'manual';
+  // BH already credited at the instant the scope changed — never recomputed.
+  creditedAtChange: number;
+}
+
 export interface MultiDayJob {
   // Primary identifier — the map appData.multiDayJobs is keyed by this.
   // Each Jobber visit gets its own ledger; multi-visit recurring jobs no
@@ -781,6 +791,11 @@ export interface MultiDayJob {
   totalBelowCredited?: boolean;
   bhTotalChangedAt?: number;
   bhTotalChangedFrom?: number;
+  // Append-only log of every scope (totalBH) change — never overwritten, so a
+  // ledger that looks odd months later is explainable without digging through
+  // the audit log. `creditedAtChange` snapshots BH already credited the moment
+  // the scope moved (the never-recompute guarantee, made visible per change).
+  scopeHistory?: ScopeChangeEntry[];
   // ── Month-end resolution of a blocking partial job. Set by the drill-through
   // resolution actions. NEVER recomputes completionHistory / already-credited
   // BH — 'voided' closes only the uncredited remainder; 'completed'/'carried'
