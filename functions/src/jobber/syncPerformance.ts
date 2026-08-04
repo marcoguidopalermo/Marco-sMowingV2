@@ -193,6 +193,14 @@ interface MultiDayJob {
   dismissedCarryForward?: boolean;
   dismissedCarryForwardAt?: number;
   dismissedCarryForwardBy?: { email: string; name: string };
+  // Jobber BH total changed after this ledger was created. Credited history is
+  // NEVER recomputed; only totalBH moves, so remaining = max(0, total −
+  // credited). `totalBelowCredited` flags the case where the NEW total is less
+  // than what's already been credited (would be negative remaining) — surfaced
+  // in the UI rather than silently clamped.
+  totalBelowCredited?: boolean;
+  bhTotalChangedAt?: number;
+  bhTotalChangedFrom?: number;
 }
 
 interface PerformanceLog {
@@ -516,8 +524,46 @@ interface SyncResultSummary {
   entriesUpdated: number;
   entriesSkippedApproved: number;
   crewsAffected: number;
+  // Every BH value the sync APPLIED this run (old → new) — so a changed number
+  // is explainable later. Also flushed to performanceActivityLog.
+  bhChangesApplied: Array<{
+    jobberVisitId: string;
+    jobTitle: string;
+    targetDate: string;
+    crewId: string;
+    crewLabel: string;
+    oldBH: number;
+    newBH: number;
+    kind: "visit" | "multiday_total";
+  }>;
+  // Jobber BH changed on an APPROVED/WAIVED day — NOT applied (approval + pay
+  // preserved). Surfaced for deliberate admin apply/ignore.
+  approvedDayConflicts: Array<{
+    jobberVisitId: string;
+    jobTitle: string;
+    targetDate: string;
+    crewId: string;
+    crewLabel: string;
+    oldBH: number;
+    newBH: number;
+    lockState: "approved" | "waived";
+  }>;
   errors: string[];
   warnings: string[];
+}
+
+// Persisted (appData.jobberBhConflicts[date] = these) so admins can review +
+// deliberately apply/ignore Jobber BH changes that landed on approved days.
+export interface JobberBhConflict {
+  jobberVisitId: string;
+  jobTitle: string;
+  targetDate: string;
+  crewId: string;
+  crewLabel: string;
+  oldBH: number;
+  newBH: number;
+  lockState: "approved" | "waived";
+  detectedAt: number;
 }
 
 // Accepts both [3BH] (explicit suffix, original convention) and [3]
@@ -886,6 +932,8 @@ async function runPerformanceSync(args: {
     entriesUpdated: 0,
     entriesSkippedApproved: 0,
     crewsAffected: 0,
+    bhChangesApplied: [],
+    approvedDayConflicts: [],
     errors: [],
     warnings: [],
   };
@@ -1743,6 +1791,41 @@ async function runPerformanceSync(args: {
               }
             }
           }
+          // CONFLICT SURFACE — a locked (approved/waived) day is never
+          // overwritten (approval + pay preserved), but if Jobber's BH for a
+          // matched visit DIFFERS from what's stored, we record it so admins
+          // can deliberately apply or ignore it. Compared against the crew's
+          // SHARE (multi-crew visits store the share, not the visit total).
+          const lockState =
+            existing.approvalStatus === "waived" ? "waived" : "approved";
+          for (const mv of matched) {
+            const v = mv.visit;
+            const parsedConflict =
+              parseBh(v.title) ?? parseBh(v.job?.title ?? null);
+            if (!parsedConflict) continue;
+            const existingRow = (existing.jobs || []).find(
+              (r) => r.source === "jobber" && r.jobberVisitId === v.id,
+            );
+            if (!existingRow) continue;
+            const oldBH = Number(existingRow.bh) || 0;
+            const newBH = shareForCrew(v.id, crew.id, parsedConflict.bh);
+            if (Math.abs(newBH - oldBH) > 1e-6) {
+              summary.approvedDayConflicts.push({
+                jobberVisitId: v.id,
+                jobTitle: existingRow.desc || v.title || v.id,
+                targetDate,
+                crewId: crew.id,
+                crewLabel: label,
+                oldBH,
+                newBH,
+                lockState,
+              });
+              summary.warnings.push(
+                `jobber_bh_conflict_${lockState} visit=${v.id} ` +
+                `old=${oldBH} new=${newBH}`,
+              );
+            }
+          }
         }
         continue;
       }
@@ -1811,6 +1894,39 @@ async function runPerformanceSync(args: {
             } else {
               mdJobForIncomplete.title = desc;
               if (jobNum) mdJobForIncomplete.jobberJobNumber = jobNum;
+              // BUG FIX (multi-day): a Jobber BH change on an OPEN partial job
+              // now updates the ledger total (previously ignored on this path,
+              // so remaining BH stayed computed against a stale total).
+              // Credited history is NEVER recomputed — remaining is max(0, new
+              // total − credited). If the new total is BELOW what's already
+              // credited, flag it (surface, don't produce negative remaining).
+              const prevTotal = Number(mdJobForIncomplete.totalBH) || 0;
+              const newTotal = parsed.bh;
+              if (Math.abs(newTotal - prevTotal) > 1e-6) {
+                const creditedSoFar = mdJobForIncomplete.completionHistory
+                  .reduce((s, h) => s + (Number(h.creditedBH) || 0), 0);
+                mdJobForIncomplete.totalBH = newTotal;
+                mdJobForIncomplete.bhTotalChangedAt = Date.now();
+                mdJobForIncomplete.bhTotalChangedFrom = prevTotal;
+                mdJobForIncomplete.totalBelowCredited =
+                  newTotal + 1e-6 < creditedSoFar;
+                summary.bhChangesApplied.push({
+                  jobberVisitId: visit.id,
+                  jobTitle: desc,
+                  targetDate,
+                  crewId: crew.id,
+                  crewLabel: `${crew.division} #${crew.crewNumber}`,
+                  oldBH: prevTotal,
+                  newBH: newTotal,
+                  kind: "multiday_total",
+                });
+                summary.warnings.push(
+                  `multiday_totalbh_updated visit=${visit.id} ` +
+                  `from=${prevTotal} to=${newTotal}` +
+                  (mdJobForIncomplete.totalBelowCredited ?
+                    ` BELOW_CREDITED credited=${creditedSoFar}` : ""),
+                );
+              }
             }
             const currentCrewKeyIncomplete = stableCrewKey(crew);
             const histEntry = mdJobForIncomplete.completionHistory.find(
@@ -2229,11 +2345,26 @@ async function runPerformanceSync(args: {
             row.hasJobberConflict = true;
             row.jobberSuggestedValue = creditedBH;
           } else {
+            const oldBH = Number(row.bh) || 0;
             row.bh = creditedBH;
             row.desc = desc;
             row.hasJobberConflict = false;
             delete row.jobberSuggestedValue;
             if (transitionedFromHourly) delete row.manuallyEditedAt;
+            // Audit an APPLIED BH change (unapproved/unlocked visit) so a
+            // changed number is explainable later.
+            if (Math.abs(oldBH - creditedBH) > 1e-6) {
+              summary.bhChangesApplied.push({
+                jobberVisitId: visit.id,
+                jobTitle: desc,
+                targetDate,
+                crewId: crew.id,
+                crewLabel: `${crew.division} #${crew.crewNumber}`,
+                oldBH,
+                newBH: creditedBH,
+                kind: "visit",
+              });
+            }
           }
         }
       }
@@ -2497,6 +2628,19 @@ async function runPerformanceSync(args: {
       }
       writeUpdates[`performance.${d}`] = dayMap;
     }
+    // Approved-day BH conflicts for THIS date — persisted for admin review
+    // (apply/ignore in the UI). Self-healing: replace the date's list each run
+    // and clear it when the run finds none, so a resolved conflict disappears.
+    if (!isDateLocked(targetDate)) {
+      if (summary.approvedDayConflicts.length > 0) {
+        const now = Date.now();
+        writeUpdates[`jobberBhConflicts.${targetDate}`] =
+          summary.approvedDayConflicts.map((c) => ({...c, detectedAt: now}));
+      } else {
+        writeUpdates[`jobberBhConflicts.${targetDate}`] =
+          admin.firestore.FieldValue.delete();
+      }
+    }
     await appDataRef.update(writeUpdates);
 
     // Phase 1: persist ONLY the ledgers created or mutated this run to the
@@ -2548,6 +2692,42 @@ async function runPerformanceSync(args: {
           });
         } catch (err) {
           logger.warn("auto-credit audit write failed", {
+            error: err instanceof Error ? err.message : String(err),
+            event: e,
+          });
+        }
+      }));
+    }
+
+    // Audit every BH value the sync APPLIED (old → new), so a changed number is
+    // explainable later. Fire-and-forget — an audit failure never blocks sync.
+    if (summary.bhChangesApplied.length > 0) {
+      const auditCol = db.collection(
+        `artifacts/${APP_ID}/private/data/performanceActivityLog`,
+      );
+      await Promise.all(summary.bhChangesApplied.map(async (e) => {
+        try {
+          await auditCol.add({
+            type: "jobber_bh_edited",
+            timestamp: Date.now(),
+            userId: "system:jobber-sync",
+            userName: "Jobber sync",
+            userRole: "admin",
+            targetDate: e.targetDate,
+            crewId: e.crewId,
+            crewLabel: e.crewLabel,
+            sourceJobberVisitId: e.jobberVisitId,
+            jobTitle: e.jobTitle,
+            valueBefore: e.oldBH,
+            valueAfter: e.newBH,
+            valueLabel: "BH",
+            reasonNote:
+              `Jobber BH changed ${e.oldBH} → ${e.newBH} ` +
+              `(${e.kind === "multiday_total" ? "multi-day total" : "visit"})` +
+              " — applied by sync",
+          });
+        } catch (err) {
+          logger.warn("jobber-bh-change audit write failed", {
             error: err instanceof Error ? err.message : String(err),
             event: e,
           });

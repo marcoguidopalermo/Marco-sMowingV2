@@ -8,10 +8,10 @@ import {
 import { httpsCallable } from 'firebase/functions';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { functions, db, appId } from '../lib/firebase';
-import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole } from '../types';
+import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole, JobberBhConflict } from '../types';
 import { logPerfActivity } from '../lib/perfAudit';
 import { monthsPresent, monthOfDate, monthSettlementStatus } from '../lib/performanceMonths';
-import { scanBlockingPartialJobs, monthResolutionSummary, BlockingPartialJob } from '../lib/multiDayResolution';
+import { scanBlockingPartialJobs, monthResolutionSummary, BlockingPartialJob, totalBelowCredited, creditedBHOf } from '../lib/multiDayResolution';
 import { crewDayRows, monthStats, sortCrewDayRows, CrewDayRow } from '../lib/monthAnalysis';
 import { scanOutstandingCrewDays, groupOutstandingByDivision, divisionNameToCode, OutstandingCrewDay } from '../lib/approvalOversight';
 import CompletionReviewModal from './CompletionReviewModal';
@@ -127,6 +127,12 @@ interface PerformanceBoardProps {
   currentUserName: string;
   currentUserRole: UserRole;
   isAdmin: boolean;
+  // Jobber BH changes that landed on approved/waived days (keyed by date). The
+  // sync records them here rather than silently overwriting a locked day; an
+  // admin applies (overwrite the approved row) or ignores (keep current value).
+  jobberBhConflicts: Record<string, JobberBhConflict[]>;
+  onApplyJobberBhConflict: (c: JobberBhConflict) => void;
+  onIgnoreJobberBhConflict: (c: JobberBhConflict) => void;
 }
 
 export default function PerformanceBoard({
@@ -182,6 +188,9 @@ export default function PerformanceBoard({
   currentUserName,
   currentUserRole,
   isAdmin,
+  jobberBhConflicts,
+  onApplyJobberBhConflict,
+  onIgnoreJobberBhConflict,
 }: PerformanceBoardProps) {
   const crewLabelFor = (cId: string): string => {
     const log = dailyLogs[cId];
@@ -1555,6 +1564,69 @@ export default function PerformanceBoard({
             );
           })()}
 
+          {/* Jobber BH changed on an APPROVED/WAIVED day. The sync never
+              overwrites a locked day — it records the change here so an admin
+              can deliberately apply (overwrite the approved row, audited) or
+              ignore (keep the approved value). Admin-only; self-heals per date
+              on each sync once the stored value matches Jobber again. */}
+          {isAdmin && (() => {
+            // Not division-tagged and pay-affecting — always surfaced to the
+            // admin regardless of the active division filter.
+            const conflicts = Object.values(jobberBhConflicts || {}).flat();
+            if (conflicts.length === 0) return null;
+            const dayCount = new Set(conflicts.map(c => c.targetDate)).size;
+            return (
+              <div className="mb-4 bg-orange-50 border-2 border-orange-400 rounded-xl px-4 py-3">
+                <div className="flex items-center gap-2 text-sm text-orange-900 mb-2">
+                  <AlertTriangle className="w-4 h-4 text-orange-600 shrink-0" />
+                  <span className="font-bold">{conflicts.length} Jobber BH change{conflicts.length === 1 ? '' : 's'} on approved day{dayCount === 1 ? '' : 's'}</span>
+                  <span className="text-orange-700">— Jobber updated the hours after this crew-day was locked. Nothing changed automatically. Review each:</span>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {conflicts.map(c => (
+                    <div
+                      key={`${c.targetDate}|${c.crewId}|${c.jobberVisitId}`}
+                      className="flex items-center justify-between flex-wrap gap-2 bg-white border border-orange-200 rounded-lg px-3 py-2"
+                    >
+                      <div className="text-[12px] text-orange-900 min-w-0">
+                        <span className="font-bold">{c.crewLabel}</span>
+                        <span className="text-orange-500"> · </span>
+                        <span>{new Date(`${c.targetDate}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+                        {c.lockState === 'waived' && <span className="ml-1 text-[10px] font-bold uppercase text-orange-500">waived</span>}
+                        <span className="text-orange-500"> · </span>
+                        <span className="text-orange-700 truncate">{c.jobTitle}</span>
+                        <span className="ml-2 inline-flex items-center gap-1 font-mono font-bold">
+                          <span className="line-through text-slate-400">{c.oldBH}</span>
+                          <span className="text-orange-500">→</span>
+                          <span className="text-orange-700">{c.newBH}</span>
+                          <span className="text-[10px] font-sans font-normal text-orange-500">BH</span>
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => { if (window.confirm(`Overwrite ${c.crewLabel}'s approved BH for "${c.jobTitle}" from ${c.oldBH} to ${c.newBH}?\n\nThis changes an already-approved day and its pay/bonus math. The change is logged.`)) onApplyJobberBhConflict(c); }}
+                          title="Overwrite the approved day's BH with Jobber's new value (logged)."
+                          className="text-[11px] font-bold bg-orange-600 text-white px-3 py-1 rounded-full hover:bg-orange-700 cursor-pointer"
+                        >
+                          Apply {c.newBH}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onIgnoreJobberBhConflict(c)}
+                          title="Keep the approved value; dismiss this change."
+                          className="text-[11px] font-bold bg-white border border-orange-300 text-orange-700 px-3 py-1 rounded-full hover:bg-orange-100 cursor-pointer"
+                        >
+                          Keep {c.oldBH}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
           {pendingCarryForward.length > 0 && (
             <div className="mb-4 bg-amber-50 border border-amber-300 rounded-xl px-4 py-3 flex items-center justify-between flex-wrap gap-3">
               <div className="flex items-center gap-2 text-sm text-amber-900">
@@ -2366,6 +2438,14 @@ export default function PerformanceBoard({
                                   ) : (
                                     <span className="text-amber-700 font-bold">
                                       {isIncomplete ? 'Visit in progress' : 'Manager review needed'} · total {job.totalBH ?? mdJob.totalBH} BH
+                                    </span>
+                                  )}
+                                  {totalBelowCredited(mdJob) && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-300 px-1.5 py-0.5 rounded"
+                                      title={`Jobber's new total (${mdJob.totalBH} BH) is below the ${creditedBHOf(mdJob)} BH already credited. Credited BH is kept as-is; remaining is 0. Review in Jobber.`}
+                                    >
+                                      <AlertTriangle className="w-3 h-3" /> total below credited
                                     </span>
                                   )}
                                 </div>

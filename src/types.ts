@@ -732,6 +732,20 @@ export interface CompletionEntry {
   reasonNote?: string;
 }
 
+// A Jobber BH change detected on an APPROVED/WAIVED crew-day. The sync records
+// (never applies) these; an admin reviews and deliberately applies or ignores.
+export interface JobberBhConflict {
+  jobberVisitId: string;
+  jobTitle: string;
+  targetDate: string;
+  crewId: string;
+  crewLabel: string;
+  oldBH: number;              // what's stored on the approved day now
+  newBH: number;             // what Jobber now reports (crew share)
+  lockState: 'approved' | 'waived';
+  detectedAt: number;
+}
+
 export interface MultiDayJob {
   // Primary identifier — the map appData.multiDayJobs is keyed by this.
   // Each Jobber visit gets its own ledger; multi-visit recurring jobs no
@@ -760,6 +774,13 @@ export interface MultiDayJob {
   dismissedCarryForward?: boolean;
   dismissedCarryForwardAt?: number;
   dismissedCarryForwardBy?: { email: string; name: string };
+  // Jobber's BH total changed after this ledger was created. The sync updates
+  // `totalBH`; credited history is NEVER recomputed (remaining = max(0, total −
+  // credited)). `totalBelowCredited` is set when the NEW total is below what's
+  // already credited — surfaced in the UI rather than clamped to a wrong 0.
+  totalBelowCredited?: boolean;
+  bhTotalChangedAt?: number;
+  bhTotalChangedFrom?: number;
   // ── Month-end resolution of a blocking partial job. Set by the drill-through
   // resolution actions. NEVER recomputes completionHistory / already-credited
   // BH — 'voided' closes only the uncredited remainder; 'completed'/'carried'
@@ -1669,6 +1690,10 @@ export interface AppData {
   rolePermissions?: RolePermissionsOverride;
   settings?: AppSettings;
   multiDayJobs?: Record<string, MultiDayJob>;
+  // Jobber BH changes that landed on APPROVED/WAIVED days — the sync never
+  // overwrites a locked day, so it records them here (keyed by targetDate) for
+  // admins to deliberately apply or ignore. Self-healing per date on each sync.
+  jobberBhConflicts?: Record<string, JobberBhConflict[]>;
   // Parts request workflow. Each PartsOrder is keyed by its own id;
   // an optional repairId links the order back to a mechanicTask.
   // Generic (top-of-board) requests have no repairId.

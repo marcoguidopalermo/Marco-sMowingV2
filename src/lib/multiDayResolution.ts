@@ -28,9 +28,19 @@ export function creditedBHOf(ledger: MultiDayJob | undefined): number {
   return round1(rawCredited(ledger));
 }
 // Uncredited remainder of a visit ledger (never negative), rounded once.
+// remaining = max(0, totalBH − credited). Credited is NEVER recomputed, so when
+// Jobber lowers the total below what's already credited this clamps to 0 — use
+// totalBelowCredited() to detect and surface that case rather than hiding it.
 export function remainingBHOf(ledger: MultiDayJob | undefined): number {
   const total = Number(ledger?.totalBH) || 0;
   return round1(Math.max(0, total - rawCredited(ledger)));
+}
+// True when the (possibly Jobber-lowered) total is below the BH already credited
+// — remaining would be negative, so it's clamped to 0 and this flags it.
+export function totalBelowCredited(ledger: MultiDayJob | undefined): boolean {
+  if (!ledger) return false;
+  if (ledger.totalBelowCredited) return true; // stamped by the sync
+  return (Number(ledger.totalBH) || 0) + 1e-6 < rawCredited(ledger);
 }
 export function creditedPctOf(ledger: MultiDayJob | undefined): number {
   const total = Number(ledger?.totalBH) || 0;

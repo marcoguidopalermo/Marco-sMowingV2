@@ -22,7 +22,7 @@ import {
   TaskActivity, TaskActivityType, BulletinAudienceRole, TaskNote, UnitNote, AppSettings, UserRole, RolePermissionsOverride, JobberUser, PrimaryCrew, PRIMARY_CREWS,
   EquipmentSubtypeDefinition, DEFAULT_EQUIPMENT_SUBTYPES, PartialTimeOff,
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
-  TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, MonthlySummary,
+  TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, JobberBhConflict, MonthlySummary,
   RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, RoleTaskInstance,
   ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry
 } from './types';
@@ -2657,6 +2657,47 @@ export default function App() {
     syncToCloud({ ...appData, timeEntries });
     showToastMsg(exists ? 'Your entry was updated.' : 'Entry added.');
   };
+  // ── Jobber BH conflicts on APPROVED/WAIVED days ──────────────────────────
+  // The sync never overwrites a locked day; it records the change in
+  // appData.jobberBhConflicts for an admin to deliberately apply or ignore.
+  const removeJobberBhConflict = (
+    map: Record<string, JobberBhConflict[]> | undefined,
+    c: JobberBhConflict,
+  ): Record<string, JobberBhConflict[]> => {
+    const next = { ...(map || {}) };
+    const list = (next[c.targetDate] || []).filter(
+      (x) => !(x.crewId === c.crewId && x.jobberVisitId === c.jobberVisitId),
+    );
+    if (list.length) next[c.targetDate] = list; else delete next[c.targetDate];
+    return next;
+  };
+  // Deliberately overwrite the approved day's row with Jobber's new BH. Keeps the
+  // approval (an admin explicitly reviewed + accepted), audits it as jobber_bh_edited.
+  const applyJobberBhConflict = (c: JobberBhConflict) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    const day = appData.performance?.[c.targetDate];
+    const log = day?.[c.crewId];
+    if (!log) { showToastMsg('Crew-day not found.'); return; }
+    let hit = false; let oldBH = 0;
+    const jobs = (log.jobs || []).map((r) => {
+      if (r.source === 'jobber' && r.jobberVisitId === c.jobberVisitId) {
+        hit = true; oldBH = Number(r.bh) || 0;
+        return { ...r, bh: c.newBH, hasJobberConflict: false, jobberSuggestedValue: undefined };
+      }
+      return r;
+    });
+    if (!hit) { showToastMsg('That visit is no longer on the day.'); syncToCloud({ ...appData, jobberBhConflicts: removeJobberBhConflict(appData.jobberBhConflicts, c) }); return; }
+    const newPerf = { ...appData.performance, [c.targetDate]: { ...day, [c.crewId]: { ...log, jobs } } };
+    syncToCloud({ ...appData, performance: newPerf, jobberBhConflicts: removeJobberBhConflict(appData.jobberBhConflicts, c) });
+    logPerfActivity({ type: 'jobber_bh_edited', targetDate: c.targetDate, crewId: c.crewId, crewLabel: c.crewLabel, userId: user?.uid || displayEmail, userName: displayName, userRole: effectiveRole, sourceJobberVisitId: c.jobberVisitId, jobTitle: c.jobTitle, valueLabel: 'BH', valueBefore: oldBH, valueAfter: c.newBH, reasonNote: `Applied Jobber BH ${oldBH} → ${c.newBH} on ${c.lockState} day (admin review)` });
+    showToastMsg(`Applied Jobber BH to ${c.crewLabel}.`);
+  };
+  // Dismiss without changing the approved day (admin judged the current value right).
+  const ignoreJobberBhConflict = (c: JobberBhConflict) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    syncToCloud({ ...appData, jobberBhConflicts: removeJobberBhConflict(appData.jobberBhConflicts, c) });
+    showToastMsg('Kept the approved value.');
+  };
   const deleteContractingTimeEntry = (id: string) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     const e = (appData.timeEntries || []).find(x => x.id === id);
@@ -4156,6 +4197,9 @@ export default function App() {
   const renderPerformanceBoard = () => (
     <PerformanceBoard
       performance={appData.performance}
+      jobberBhConflicts={appData.jobberBhConflicts || {}}
+      onApplyJobberBhConflict={applyJobberBhConflict}
+      onIgnoreJobberBhConflict={ignoreJobberBhConflict}
       pushedMonths={appData.pushedMonths || []}
       archivedDays={appData.archivedDays || {}}
       onPushMonth={pushMonth}
