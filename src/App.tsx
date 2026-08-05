@@ -2170,6 +2170,39 @@ export default function App() {
     showToastMsg(`Voided ${voidedBH} BH across ${count} item${count === 1 ? '' : 's'} — credited BH unchanged.`);
   };
 
+  // Load the FULL month's performance for summary generation. The pushed
+  // sheet (performanceMonths/{ym}) is the authoritative COMPLETE record once
+  // a month is archived: the rolling daily-archive drains appData.performance
+  // incrementally, so by push/backfill time only a residual tail of days is
+  // left in the doc. Building a MonthlySummary from that residual (the old
+  // bug) computed division efficiency over a partial, unrepresentative day
+  // set — e.g. July Large Projects read 164.5% off only the last 5 days
+  // instead of 100.9% over the whole month. We read the sheet and union any
+  // live residual days (unlocked/edited days win) so the summary always
+  // spans the entire month.
+  const loadFullMonthPerformance = async (
+    ym: string,
+  ): Promise<Record<string, Record<string, PerformanceLog>>> => {
+    const merged: Record<string, Record<string, PerformanceLog>> = {};
+    try {
+      const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'performanceMonths', ym));
+      if (snap.exists()) {
+        const days = ((snap.data() as any)?.days || {}) as Record<string, Record<string, PerformanceLog>>;
+        for (const [date, dayLogs] of Object.entries(days)) {
+          if (monthOfDate(date) !== ym) continue;
+          merged[date] = { ...(dayLogs || {}) };
+        }
+      }
+    } catch (err) {
+      console.error(`[summary] sheet read failed for ${ym}; using in-doc performance only:`, err);
+    }
+    for (const [date, dayLogs] of Object.entries(appData.performance || {})) {
+      if (monthOfDate(date) !== ym) continue;
+      merged[date] = { ...(merged[date] || {}), ...(dayLogs || {}) };
+    }
+    return merged;
+  };
+
   const pushMonth = async (ym: string, opts?: { auto?: boolean }): Promise<boolean> => {
     if (isViewingAs) { if (!opts?.auto) showToastMsg('View Only — exit "View As" to make changes.'); return false; }
     if (!isAdmin) { if (!opts?.auto) showToastMsg(PERMISSION_DENIED); return false; }
@@ -2246,8 +2279,11 @@ export default function App() {
     // writes only the monthlySummaries doc. Idempotent (overwrites cleanly).
     // Non-fatal: a summary hiccup must never fail the finalize.
     try {
+      // Build over the FULL month sheet (not the drained doc) — see
+      // loadFullMonthPerformance. The sheet was just written above.
+      const fullPerf = await loadFullMonthPerformance(ym);
       const summary = buildMonthlySummary(
-        ym, appData.performance || {}, appData.schedules || {}, appData.employees || [], appData.settings,
+        ym, fullPerf, appData.schedules || {}, appData.employees || [], appData.settings,
         { generatedBy: displayEmail, finalized: true, now: Date.now() },
       );
       await setDoc(
@@ -2280,8 +2316,12 @@ export default function App() {
     (async () => {
       for (const ym of missing) {
         try {
+          // Build over the FULL month sheet, not the drained doc (a pushed
+          // month has little/no data left in appData.performance).
+          // eslint-disable-next-line no-await-in-loop
+          const fullPerf = await loadFullMonthPerformance(ym);
           const summary = buildMonthlySummary(
-            ym, appData.performance || {}, appData.schedules || {}, appData.employees || [], appData.settings,
+            ym, fullPerf, appData.schedules || {}, appData.employees || [], appData.settings,
             { generatedBy: `backfill:${displayEmail}`, finalized: true, now: Date.now() },
           );
           const clean = (obj: any) => JSON.parse(JSON.stringify(obj, (_k, v) => v === undefined ? null : v));
