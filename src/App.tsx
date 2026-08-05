@@ -5305,6 +5305,7 @@ export default function App() {
           responsibilities={appData.roleMasterResponsibilities || {}}
           categoryColors={appData.settings?.roleMasterCategoryColors || {}}
           onOpenRoleInstance={(id) => setRoleInstanceModalId(id)}
+          canViewAllTasks={isAdmin}
         />
       ) : currentView === 'rolemaster' ? (
         <RoleMaster
@@ -6392,6 +6393,7 @@ export default function App() {
             dueDate: data.dueDate || undefined,
             priority: data.priority,
             status: 'not_started',
+            color: data.color || undefined,
             notes: [],
             // Author has implicitly "acknowledged" their own creation.
             acknowledgedBy: { [me]: now },
@@ -6416,6 +6418,10 @@ export default function App() {
           // `dueDate: undefined` patch means "clear it" — drop the field.
           if (patch.dueDate === undefined && Object.prototype.hasOwnProperty.call(patch, 'dueDate')) {
             delete (merged as any).dueDate;
+          }
+          // Same for clearing a task's colour back to none.
+          if (patch.color === undefined && Object.prototype.hasOwnProperty.call(patch, 'color')) {
+            delete (merged as any).color;
           }
           syncToCloud({ ...appData, tasks: { ...(appData.tasks || {}), [taskId]: merged } });
         }}

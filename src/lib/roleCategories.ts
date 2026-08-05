@@ -32,6 +32,13 @@ export function categoryColor(category: string, map?: Record<string, string>): C
   return CATEGORY_PALETTE[hashIdx(category || '')];
 }
 
+// The explicit palette entry for a stored key, or null when the key is
+// absent/unknown. Unlike categoryColor(), this never hash-falls-back — used
+// where "no colour" must stay meaningfully empty (e.g. optional task colour).
+export function paletteEntry(key: string | null | undefined): CatColor | null {
+  return key && BY_KEY[key] ? BY_KEY[key] : null;
+}
+
 // The next palette color not already assigned to another category — the
 // default for a brand-new category. Falls back to round-robin if all used.
 export function nextUnusedColorKey(map: Record<string, string>): string {
