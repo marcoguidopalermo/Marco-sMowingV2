@@ -2197,6 +2197,36 @@ async function runPerformanceSync(args: {
             (h) => h.targetDate === targetDate &&
               resolveEntryCrewKey(h) === currentCrewKeyAuto,
           );
+          // ── MULTI-CREW COMPLETION = REMAINDER SPLIT (not total split) ──
+          // A completion must credit only the job's UNCREDITED REMAINDER,
+          // apportioned across the crews finishing today by their share
+          // ratio — never each crew's share of the FULL total. Crediting
+          // the total double-counts BH already banked on earlier days
+          // (e.g. a job worked solo to 85%, then finished on a two-crew
+          // day: the old code credited each final-day crew its share of
+          // 100% on top of the 85%, so the ledger summed to ~185%). Basis:
+          //   creditedBeforeToday = Σ credited on days OTHER than today
+          //   jobRemaining        = max(0, totalBH − creditedBeforeToday)
+          //   remainderSlice      = jobRemaining × (myCrewShare / totalBH)
+          // Excluding ALL of today's entries keeps this order-independent
+          // when several crews finish in the same sync: each gets its slice
+          // of the same snapshot remainder, and since the day's shares sum
+          // to totalBH the slices sum to jobRemaining — the ledger can
+          // never exceed totalBH. Single-crew days: share ratio = 1, so
+          // remainderSlice = jobRemaining (today's behavior, unchanged).
+          const creditedBeforeToday = round1(
+            mdJob.completionHistory
+              .filter((h) => h.targetDate !== targetDate)
+              .reduce((sum, h) => sum + (Number(h.creditedBH) || 0), 0),
+          );
+          const jobRemaining = Math.max(
+            0, round1(mdJob.totalBH - creditedBeforeToday),
+          );
+          const shareRatio = mdJob.totalBH > 0 ?
+            myCrewShare / mdJob.totalBH : 1;
+          const remainderSlice = Math.min(
+            jobRemaining, round1(jobRemaining * shareRatio),
+          );
           // Bug 1 fix: a stale partial entry (e.g., manager opened
           // "Mark Partial %" and saved 0%) used to short-circuit the
           // auto-credit-on-completion path, leaving the row at 0 BH
@@ -2224,9 +2254,12 @@ async function runPerformanceSync(args: {
             const isManualSplit =
               !!mdJob.manualOverride || split?.splitMethod === "manual";
             const frozen = histEntry.creditedBH;
-            const expected = Math.round(
-              (histEntry.percentComplete / 100) * myCrewShare * 10,
-            ) / 10;
+            // Re-derive on the REMAINDER basis, not (pct × share-of-total).
+            // The old (pct/100 × myCrewShare) restamped a 100% entry to the
+            // crew's FULL share, re-introducing the double-count on every
+            // sync. remainderSlice already nets out BH credited on other
+            // days, so a corrected ledger stays stable across re-syncs.
+            const expected = remainderSlice;
             if (isMultiCrew && !isManualSplit && expected !== frozen) {
               summary.warnings.push(
                 `multiday_credit_rederived visit=${visit.id} ` +
@@ -2261,10 +2294,12 @@ async function runPerformanceSync(args: {
               0;
             if (priorPct < 100) {
               const remainingPct = 100 - priorPct;
-              // Credit basis is THIS crew's share, not visit total.
-              const remainingBH = Math.round(
-                (remainingPct / 100) * myCrewShare * 10,
-              ) / 10;
+              // Credit basis is the whole-job REMAINDER apportioned by this
+              // crew's share ratio — NOT (per-crew pct × share-of-total),
+              // which double-counted BH already banked by this or another
+              // crew on earlier days. remainderSlice nets out
+              // creditedBeforeToday and can never push the ledger over total.
+              const remainingBH = remainderSlice;
               const overwroteStale = !!histEntry;
               const stalePct = histEntry ? histEntry.percentComplete : 0;
               const noteSuffix = overwroteStale ?
@@ -2319,6 +2354,26 @@ async function runPerformanceSync(args: {
               creditedBH = 0;
               awaitingReview = false;
               summary.visitsAutoCredited++;
+            }
+          }
+          // GUARD: the completionHistory must never sum above totalBH.
+          // With the remainder-split fix this can't happen via auto-credit,
+          // but a stale/manual/legacy ledger can still be over-credited —
+          // surface it loudly (it inflates division efficiency + bonus)
+          // rather than letting it pass silently. Detection only; no
+          // mutation, so a real over-credit stays visible until corrected.
+          {
+            const ledgerCredited = round1(
+              mdJob.completionHistory
+                .reduce((sum, h) => sum + (Number(h.creditedBH) || 0), 0),
+            );
+            if (ledgerCredited > round1(mdJob.totalBH) + 0.05) {
+              summary.warnings.push(
+                `multiday_credit_exceeds_total visit=${visit.id} ` +
+                `job=${jobId} credited=${ledgerCredited} ` +
+                `total=${round1(mdJob.totalBH)} ` +
+                `excess=${round1(ledgerCredited - mdJob.totalBH)}`,
+              );
             }
           }
         } else {
