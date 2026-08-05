@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X, Flame } from 'lucide-react';
 import { Employee } from '../types';
-import TaskColorPicker from './TaskColorPicker';
 
 export interface CreateTaskSubmit {
   title: string;
@@ -9,7 +8,6 @@ export interface CreateTaskSubmit {
   assignedTo: { employeeId: string; email: string; name: string };
   dueDate: number | null;
   priority: 'high' | 'normal';
-  color?: string;
 }
 
 interface CreateTaskModalProps {
@@ -36,7 +34,6 @@ export default function CreateTaskModal({ isOpen, employees, onClose, onSubmit }
       setAssigneeId('');
       setDueDate('');
       setPriority('normal');
-      setColor('');
       setError('');
     }
   }, [isOpen]);
@@ -70,7 +67,6 @@ export default function CreateTaskModal({ isOpen, employees, onClose, onSubmit }
       assignedTo: { employeeId: emp.id, email, name: emp.name || email },
       dueDate: dueMs,
       priority,
-      color: color || undefined,
     });
   };
 
@@ -152,11 +148,6 @@ export default function CreateTaskModal({ isOpen, employees, onClose, onSubmit }
                 </button>
               </div>
             </div>
-          </div>
-
-          <div>
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-1">Colour <span className="text-slate-400 font-bold normal-case tracking-normal">· optional</span></label>
-            <TaskColorPicker value={color} onChange={setColor} />
           </div>
 
           {error && <div className="text-[12px] font-medium text-rose-600">{error}</div>}

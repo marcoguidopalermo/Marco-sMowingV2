@@ -1,9 +1,8 @@
 import { useMemo, useState } from 'react';
 import { CheckSquare, Plus, ChevronDown, ChevronUp, MessageSquare, Flame, Check, ClipboardList } from 'lucide-react';
 import { TaskMasterTask, Employee, RoleTaskInstance, RoleMasterDuty, RoleMasterResponsibility } from '../types';
-import { personColor } from '../lib/personColor';
+import { personColorClass } from '../lib/personColor';
 import { dutyChip } from '../lib/roleResponsibilities';
-import { paletteEntry } from '../lib/roleCategories';
 import Stamp from './Stamp';
 
 interface TaskMasterProps {
@@ -65,6 +64,7 @@ function stackRoleInstances(list: RoleTaskInstance[]): RoleGroup[] {
 
 export default function TaskMaster({
   tasks,
+  employees = [],
   canCreate,
   currentUserEmail,
   onOpenCreate,
@@ -91,6 +91,23 @@ export default function TaskMaster({
   // Non-admins never get the split; force the personal scope so the board
   // is identical to before regardless of any stale state.
   const activeScope: 'mine' | 'all' = canViewAllTasks ? scope : 'mine';
+
+  // Assignee IDENTITY colour: map each linked email to the colour set on the
+  // employee record. `assigneeColor` resolves an assignee to a bg-*-500 class
+  // — the person's assigned colour, or the deterministic hash fallback for
+  // anyone without one. Drives the row's left-edge bar, avatar and name chip.
+  const empColorByEmail = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const e of employees) {
+      const email = (e.linkedUserEmail || e.email || '').toLowerCase();
+      if (email && e.color) m.set(email, e.color);
+    }
+    return m;
+  }, [employees]);
+  const assigneeColor = (email: string | undefined) => {
+    const e = (email || '').toLowerCase();
+    return personColorClass(empColorByEmail.get(e), email);
+  };
 
   // Distinct assignees across the full set — drives the person filter.
   const assigneeOptions = useMemo(() => {
@@ -195,12 +212,13 @@ export default function TaskMaster({
       : (dueSoon || due.tone === 'amber') ? 'bg-amber-50 text-amber-700 border-amber-200'
         : 'bg-slate-50 text-slate-600 border-slate-200';
     const firstName = (inst.assignedTo?.name || '').split(/\s+/)[0] || '?';
-    const color = personColor(inst.assignedTo?.email);
+    const color = assigneeColor(inst.assignedTo?.email);
     return (
       <div key={`role-${inst.dutyId}`} role="button" tabIndex={0}
         onClick={() => onOpenRoleInstance?.(inst.id)}
         onKeyDown={(e) => { if (e.key === 'Enter') onOpenRoleInstance?.(inst.id); }}
-        className="relative w-full text-left p-3 rounded-lg border shadow-sm hover:shadow cursor-pointer bg-white border-indigo-200">
+        className="relative w-full text-left p-3 pl-4 rounded-lg border shadow-sm hover:shadow cursor-pointer bg-white border-indigo-200 overflow-hidden">
+        <span className={`absolute inset-y-0 left-0 w-1.5 ${color}`} aria-hidden="true" />
         <div className="flex items-start gap-3">
           <div className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-white ${color}`}><ClipboardList className="w-4 h-4" /></div>
           <div className="min-w-0 flex-1">
@@ -235,12 +253,11 @@ export default function TaskMaster({
     const noteCount = (t.notes || []).length;
     const myAck = (t.acknowledgedBy || {})[me];
     const isUnack = (t.assignedTo?.email || '').toLowerCase() === me && (!myAck || myAck < t.createdAt);
-    // Consistent per-person color (same email → same color), for the
-    // assignee avatar + name chip so the board is scannable by assignee.
-    const assignColor = personColor(t.assignedTo?.email);
+    // The ASSIGNEE'S identity colour — their assigned palette colour (or the
+    // hash fallback). Drives the left-edge bar + avatar + name chip so
+    // ownership reads at a glance, especially on the admin All Tasks view.
+    const assignColor = assigneeColor(t.assignedTo?.email);
     const done = t.status === 'done';
-    // Optional organizing colour — a left-edge bar, never a whole-row fill.
-    const colorEntry = paletteEntry(t.color);
     return (
       <div
         key={t.id}
@@ -248,9 +265,9 @@ export default function TaskMaster({
         tabIndex={0}
         onClick={() => onOpenTask(t.id)}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenTask(t.id); } }}
-        className={`relative w-full text-left p-3 ${colorEntry ? 'pl-4' : ''} rounded-lg border shadow-sm hover:shadow transition-all cursor-pointer overflow-hidden ${isUnack ? 'bg-fuchsia-50/60 border-fuchsia-200' : 'bg-white border-slate-200'}`}
+        className={`relative w-full text-left p-3 pl-4 rounded-lg border shadow-sm hover:shadow transition-all cursor-pointer overflow-hidden ${isUnack ? 'bg-fuchsia-50/60 border-fuchsia-200' : 'bg-white border-slate-200'}`}
       >
-        {colorEntry && <span className={`absolute inset-y-0 left-0 w-1.5 ${colorEntry.dot}`} aria-hidden="true" />}
+        <span className={`absolute inset-y-0 left-0 w-1.5 ${assignColor}`} aria-hidden="true" />
         {/* COMPLETED stamp — centered overlay on done tasks. pointer-events-
             none keeps the card clickable; the body dims beneath it. */}
         {done && (

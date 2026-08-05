@@ -39,6 +39,22 @@ export function paletteEntry(key: string | null | undefined): CatColor | null {
   return key && BY_KEY[key] ? BY_KEY[key] : null;
 }
 
+// The least-used palette colour across the given assignments — the colour
+// to hand a brand-new PERSON so identity colours stay evenly distributed
+// (new people cycle rather than piling onto the same colour). Ties break in
+// palette order. Unknown/empty keys are ignored.
+export function nextPersonColorKey(usedKeys: (string | null | undefined)[]): string {
+  const counts = new Map(CATEGORY_PALETTE.map(c => [c.key, 0]));
+  for (const k of usedKeys) if (k && counts.has(k)) counts.set(k, (counts.get(k) || 0) + 1);
+  let best = CATEGORY_PALETTE[0].key;
+  let bestN = Infinity;
+  for (const c of CATEGORY_PALETTE) {
+    const n = counts.get(c.key) ?? 0;
+    if (n < bestN) { bestN = n; best = c.key; }
+  }
+  return best;
+}
+
 // The next palette color not already assigned to another category — the
 // default for a brand-new category. Falls back to round-robin if all used.
 export function nextUnusedColorKey(map: Record<string, string>): string {

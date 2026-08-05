@@ -22,6 +22,13 @@ export interface Employee {
   jobberUserId?: string;
   managedDivision?: ManagedDivision;
   primaryCrew?: PrimaryCrew;
+  // Personal IDENTITY colour — a CATEGORY_PALETTE key (e.g. 'indigo').
+  // Auto-assigned (cycling) when the employee is created, editable by an
+  // admin in Personnel. Renders wherever this person appears (task rows,
+  // avatars) so ownership reads at a glance. Absent/legacy → the app falls
+  // back to the deterministic email hash (personColorClass), so a person
+  // without an assigned colour still looks consistent.
+  color?: string;
   // Mechanic PAY MODE. 'chunk' = the $1,000-per-N-hours chunk machinery
   // (current behavior). 'hourly' = paid/read from clocked time like any
   // employee; the chunk machinery + its UI don't apply. ABSENT = 'chunk' so
@@ -1432,10 +1439,6 @@ export interface TaskMasterTask {
   // as open (see TaskMaster grouping) so old data degrades gracefully.
   status: 'not_started' | 'done';
   completedAt?: number;
-  // Optional personal organizing colour — a CATEGORY_PALETTE key
-  // (e.g. 'indigo'). Purely visual (a left-edge bar on the row); carries
-  // no logic. Absent = no colour, the row looks normal.
-  color?: string;
   notes?: TaskMasterNote[];
   // Per-user "last seen" timestamps for the assignment badge. Keyed
   // by lowercase email. If acknowledgedBy[user] < createdAt, the

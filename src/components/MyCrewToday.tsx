@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import { Calendar as CalendarIcon, Target, Clock, TrendingUp, Link2, Users, Truck, Hammer, Wrench, AlertCircle, AlertTriangle, CheckCircle, FileText } from 'lucide-react';
 import { AppSettings, Crew, Employee, FleetItem, EquipmentSubtypeDefinition, PerformanceLog, PartialTimeOff, Inspection } from '../types';
 import { formatTimeRange, addDaysToronto } from '../lib/dateUtils';
+import { personColorClass } from '../lib/personColor';
 import { sortFleetGrouped, fleetItemLabel, isFleetOutOfService } from '../lib/fleetUtils';
 import { accumulateEmployeeEff, efficiencyPct, EmpEffStat } from '../lib/efficiency';
 import { isHourMaintenanceUnit } from '../lib/maintenanceUtils';
@@ -188,6 +189,11 @@ export default function MyCrewToday({
   };
 
   const empName = (id: string) => employees.find(e => e.id === id)?.name || 'Unknown';
+  // Identity colour for a roster member's dot (assigned colour → hash fallback).
+  const empDot = (id: string) => {
+    const e = employees.find(x => x.id === id);
+    return personColorClass(e?.color, e?.linkedUserEmail || e?.email || id);
+  };
 
   if (!currentUserEmployee) {
     return (
@@ -577,7 +583,7 @@ export default function MyCrewToday({
                         const pto = (partialTimeOff[today] || []).find(p => p.empId === eId);
                         return (
                           <li key={eId} className="text-sm text-slate-600 flex items-center gap-2 flex-wrap">
-                            <span className={`w-1.5 h-1.5 rounded-full ${eId === currentUserEmployee.id ? 'bg-lime-500' : 'bg-slate-300'}`} />
+                            <span className={`w-2 h-2 rounded-full shadow-sm ${eId === currentUserEmployee.id ? 'bg-lime-500 ring-1 ring-lime-300' : empDot(eId)}`} />
                             {empName(eId)}{eId === currentUserEmployee.id && <span className="text-[10px] text-lime-700 font-bold">(you)</span>}
                             {pto && (
                               <span className="text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-300 px-1.5 py-0.5 rounded">

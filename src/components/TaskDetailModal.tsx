@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X, Trash2, MessageSquare, Send, Flame } from 'lucide-react';
 import { TaskMasterTask, Employee } from '../types';
-import { paletteEntry } from '../lib/roleCategories';
-import TaskColorPicker from './TaskColorPicker';
 
 interface TaskDetailModalProps {
   task: TaskMasterTask | null;
@@ -244,20 +242,6 @@ export default function TaskDetailModal({
                 <div className="text-sm text-slate-700">{task.dueDate ? formatDateTime(task.dueDate) : <span className="italic text-slate-400">No due date.</span>}</div>
               )}
             </div>
-          </div>
-
-          <div>
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-1">Colour</label>
-            {canEditAnyField ? (
-              <TaskColorPicker value={task.color || ''} onChange={(key) => onUpdate(task.id, { color: key || undefined })} />
-            ) : (
-              (() => {
-                const entry = paletteEntry(task.color);
-                return entry
-                  ? <div className="inline-flex items-center gap-2 text-sm text-slate-700"><span className={`w-4 h-4 rounded-full ${entry.dot}`} /> {entry.label}</div>
-                  : <div className="text-sm italic text-slate-400">No colour.</div>;
-              })()
-            )}
           </div>
 
           {canEditAnyField && dirty && (

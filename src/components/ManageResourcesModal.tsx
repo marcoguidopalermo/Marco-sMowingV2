@@ -18,6 +18,8 @@ import { addDaysToronto, formatTodayInToronto } from '../lib/dateUtils';
 import { resolveWeightBand, weightBandLabel, hasLegacyWeightClassOnly, needsPlateRenewal, needsCommercialSafety } from '../lib/fleetUtils';
 import { ROLE_PERMISSIONS, Permission, can } from '../lib/permissions';
 import { formatDate, needsAudit } from '../lib/dateUtils';
+import { nextPersonColorKey } from '../lib/roleCategories';
+import PersonColorPicker from './PersonColorPicker';
 
 // Inline-edit shape for pre-scheduled partial time-off (date carried on the row
 // rather than as a map key). Persisted form lives in AppData.partialTimeOff.
@@ -510,6 +512,16 @@ export default function ManageResourcesModal({
                         </select>
                       </div>
                       <div className="w-56">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 block mb-1">Identity Colour</label>
+                        <div className="bg-white border border-gray-300 rounded-lg p-2 min-h-[42px] flex items-center">
+                          <PersonColorPicker
+                            value={emp.color || ''}
+                            disabled={!isAdmin}
+                            onChange={key => { const ne = [...localEmployees]; ne[idx] = { ...ne[idx], color: key }; setLocalEmployees(ne); }}
+                          />
+                        </div>
+                      </div>
+                      <div className="w-56">
                         <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 block mb-1">Jobber User</label>
                         {(() => {
                           const jobberId = emp.jobberUserId || '';
@@ -859,7 +871,7 @@ export default function ManageResourcesModal({
                   })()}
                 </div>
               );})}
-              <button onClick={() => setLocalEmployees([...localEmployees, { id: `e-${Date.now()}`, name: 'New Employee', status: 'Active', hasLicense: false, hasClassA: false, hasHeavyMachinery: false, awayDates: [] }])} className="w-full py-4 border-2 border-dashed border-green-300 text-green-600 rounded-xl font-bold hover:bg-green-50 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add Employee</button>
+              <button onClick={() => setLocalEmployees([...localEmployees, { id: `e-${Date.now()}`, name: 'New Employee', status: 'Active', hasLicense: false, hasClassA: false, hasHeavyMachinery: false, awayDates: [], color: nextPersonColorKey(localEmployees.map(e => e.color)) }])} className="w-full py-4 border-2 border-dashed border-green-300 text-green-600 rounded-xl font-bold hover:bg-green-50 transition-colors flex items-center justify-center gap-2"><Plus className="w-5 h-5" /> Add Employee</button>
             </div>
           )}
 

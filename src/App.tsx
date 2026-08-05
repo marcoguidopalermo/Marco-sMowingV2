@@ -114,7 +114,7 @@ import {
   scanBlockingPartialJobs, remainingBHOf, rowBlocksApproval, voidLedger, carryLedger, completeLedger, BlockingPartialJob,
 } from './lib/multiDayResolution';
 import { buildMonthlySummary } from './lib/monthlySummary';
-import { nextUnusedColorKey } from './lib/roleCategories';
+import { nextUnusedColorKey, nextPersonColorKey } from './lib/roleCategories';
 import { callGeminiWithRetry } from './lib/gemini';
 
 import {
@@ -815,6 +815,8 @@ export default function App() {
       linkedUserEmail: TEST_USER_EMAIL,
       systemRole: 'mechanic',
       timeMasterEnabled: true,
+      // Identity colour — auto-assigned (cycling) like any new employee.
+      color: nextPersonColorKey(appData.employees.map(e => e.color)),
     };
     syncToCloud({ ...appData, employees: [...appData.employees, seed] });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -881,7 +883,22 @@ export default function App() {
         const newAppData = {
           schedules: mergeSchedules(docSchedulesRef.current, subScheduleMonthsRef.current),
           archivedScheduleMonths: data.archivedScheduleMonths || [],
-          employees: data.employees || INITIAL_EMPLOYEES,
+          // Lazy backfill: every employee carries an IDENTITY colour. Anyone
+          // created before the colour existed (or any legacy record missing
+          // it) is assigned one here, cycling by least-used so the directory
+          // stays evenly distributed. Records that already have a colour are
+          // untouched. In-memory only — the next employees save persists it.
+          employees: (() => {
+            const list = (data.employees || INITIAL_EMPLOYEES) as Employee[];
+            if (list.every(e => e.color)) return list;
+            const assigned = list.map(e => e.color).filter(Boolean) as string[];
+            return list.map(e => {
+              if (e.color) return e;
+              const color = nextPersonColorKey(assigned);
+              assigned.push(color);
+              return { ...e, color };
+            });
+          })(),
           // Lazy backfill: equipment that opted into hour tracking
           // before currentEngineHours existed has its hours in the
           // legacy `odometer` field. Copy that across into
@@ -952,7 +969,20 @@ export default function App() {
           multiDayJobs: { ...docMultiDayJobsRef.current, ...subMultiDayJobsRef.current },
           partsOrders: data.partsOrders || {},
           mechanicPayChunks: data.mechanicPayChunks || {},
-          tasks: data.tasks || {},
+          // Task colour was removed — colour now belongs to the ASSIGNEE
+          // (Employee.color), not the task. Strip any orphan per-task `color`
+          // on load so the retired field never reaches readers; the next
+          // tasks save persists the cleaned map to Firestore.
+          tasks: (() => {
+            const src = (data.tasks || {}) as Record<string, TaskMasterTask>;
+            if (!Object.values(src).some((t: any) => t && 'color' in t)) return src;
+            const out: Record<string, TaskMasterTask> = {};
+            for (const [id, t] of Object.entries(src)) {
+              const { color: _drop, ...rest } = t as any;
+              out[id] = rest;
+            }
+            return out;
+          })(),
           timeOffRequests: data.timeOffRequests || {},
           visitBHSplits: data.visitBHSplits || {},
           bulletinReads: data.bulletinReads || {},
@@ -6393,7 +6423,6 @@ export default function App() {
             dueDate: data.dueDate || undefined,
             priority: data.priority,
             status: 'not_started',
-            color: data.color || undefined,
             notes: [],
             // Author has implicitly "acknowledged" their own creation.
             acknowledgedBy: { [me]: now },
@@ -6418,10 +6447,6 @@ export default function App() {
           // `dueDate: undefined` patch means "clear it" — drop the field.
           if (patch.dueDate === undefined && Object.prototype.hasOwnProperty.call(patch, 'dueDate')) {
             delete (merged as any).dueDate;
-          }
-          // Same for clearing a task's colour back to none.
-          if (patch.color === undefined && Object.prototype.hasOwnProperty.call(patch, 'color')) {
-            delete (merged as any).color;
           }
           syncToCloud({ ...appData, tasks: { ...(appData.tasks || {}), [taskId]: merged } });
         }}
