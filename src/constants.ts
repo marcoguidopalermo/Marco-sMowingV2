@@ -68,6 +68,32 @@ export const DEFAULT_CREW_SIZE_ALLOWANCE: CrewSizeAllowanceRow[] = [
   { minSize: 4, pct: 15 },
   { minSize: 5, pct: 20 },
 ];
+
+// TRAINEE EFFICIENCY CREDIT. A crew carrying a new hire eats the
+// trainee's drag on its efficiency (and the division's). While a
+// flagged trainee is on a crew within their training window, that
+// crew-day earns a flat additive credit — SAME layer and magnitude
+// as the 3-man crew-size credit above, applied via the identical
+// additive path (adjustedEfficiency = rawEff + Σ credit pct). It is
+// a single flat +10% per crew-day regardless of how many trainees
+// are aboard, so a crew can't farm credit by stacking new hires.
+// Stacks additively with the crew-size credit (a 3-man crew WITH a
+// trainee = +10% + 10% = +20%); consistent with the crew-size
+// credit, there is no numeric upper cap on the combined credit —
+// adjustedEfficiency floors at 0 and lets a genuinely high day read
+// high. The stack is bounded in practice: the size credit tops out
+// at 20% (5-man) and the trainee credit adds at most one flat 10%,
+// so the credit sum can never exceed 30%.
+export const TRAINEE_CREDIT_PCT = 10;
+// A trainee flag opens a 7-day window from the chosen start date.
+// Re-toggling (extending) opens another 7-day window; each extension
+// is logged so a trainee needing several extensions is visible signal.
+export const TRAINING_WINDOW_DAYS = 7;
+// Stale-start-date guard: if the employee's hire date is more than
+// this many days before the window start, marking them a "trainee"
+// is suspicious (someone employed 8 months is not a new hire) and
+// the toggle warns before applying rather than silently crediting.
+export const TRAINEE_STALE_HIRE_DAYS = 90;
 export const EOD_WARNING_HOUR = 22;
 export const PERMISSION_DENIED = 'Permission denied.';
 

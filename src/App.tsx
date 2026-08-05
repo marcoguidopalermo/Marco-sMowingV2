@@ -122,7 +122,7 @@ import {
   TEST_USER_ID, TEST_USER_EMAIL, TEST_USER_NAME,
   DIVISIONS, CREW_NUMBERS, WEIGHT_CLASSES, ROUTE_FREQUENCIES, DAYS_OF_WEEK,
   DVIR_DEFECTS, CIRCLE_CHECK_DEFECTS, DEFAULT_EOD_REMINDER, PERMISSION_DENIED,
-  ODOMETER_JUMP_WARN_KM, ENGINE_HOURS_JUMP_WARN
+  ODOMETER_JUMP_WARN_KM, ENGINE_HOURS_JUMP_WARN, TRAINEE_CREDIT_PCT
 } from './constants';
 
 
@@ -5767,6 +5767,42 @@ export default function App() {
             linkedUserEmail: e.linkedUserEmail ? normalizeEmail(e.linkedUserEmail) : e.linkedUserEmail,
             email: e.email ? normalizeEmail(e.email) : e.email,
           }));
+          // TRAINEE CREDIT ledger: the Personnel form pushes trainingHistory
+          // rows with PENDING sentinels (at===0, by='') because it doesn't
+          // know the acting admin. Stamp identity + timestamp here (App level)
+          // and queue one activity-log entry per action so every start/extend/
+          // clear is attributable in the performance activity log. Nothing
+          // here touches raw BH/AH — only the credit window + its audit trail.
+          const traineeActivityToLog: Parameters<typeof logPerfActivity>[0][] = [];
+          const traineeStampMs = Date.now();
+          const traineeTypeMap = {
+            start: 'trainee_credit_started',
+            extend: 'trainee_credit_extended',
+            clear: 'trainee_credit_cleared',
+          } as const;
+          for (const e of normalizedEmployees) {
+            if (!e.trainingHistory || !e.trainingHistory.some(h => h.at === 0)) continue;
+            e.trainingHistory = e.trainingHistory.map(h => {
+              if (h.at !== 0) return h;
+              traineeActivityToLog.push({
+                type: traineeTypeMap[h.action],
+                targetDate: h.startDate,
+                crewId: 'trainee-credit',
+                crewLabel: 'Trainee credit',
+                userId: user?.uid || displayEmail,
+                userName: displayName,
+                userRole: effectiveRole,
+                workerId: e.id,
+                workerName: e.name,
+                valueLabel: 'trainee window',
+                valueAfter: h.action === 'clear' ? 'cleared' : `${h.startDate} → ${h.endDate}`,
+                reasonNote: h.action === 'clear'
+                  ? `Trainee credit cleared for ${e.name}`
+                  : `Trainee credit ${h.action === 'extend' ? 'extended' : 'started'} for ${e.name} (${h.startDate} → ${h.endDate}, +${TRAINEE_CREDIT_PCT}%)${h.staleFlagged ? ' — STALE HIRE-DATE FLAGGED' : ''}`,
+              });
+              return { ...h, at: traineeStampMs, by: displayEmail, byName: displayName };
+            });
+          }
           // Authorized-emails save = a 3-way merge, NOT a wholesale
           // overwrite. localAdmins was captured when the modal opened and
           // may be stale (another admin could have added someone since).
@@ -5909,6 +5945,9 @@ export default function App() {
             schedules: nextSchedules,
           });
           if (success) {
+            // Fire the trainee-credit audit entries only after the write
+            // lands, so the log never shows a toggle that failed to persist.
+            for (const entry of traineeActivityToLog) logPerfActivity(entry);
             setIsManageModalOpen(false);
             showToastMsg("System Resources updated successfully!");
           }

@@ -95,6 +95,11 @@ export default function DivisionStandings({
           })}
         </ul>
       )}
+      {mtd.traineeCreditedDays > 0 && (
+        <p className="text-[10px] font-semibold text-amber-700 mt-2 leading-snug">
+          Includes {mtd.traineeCreditedDays} trainee-day{mtd.traineeCreditedDays === 1 ? '' : 's'} credited this month (+10% each).
+        </p>
+      )}
       <p className="text-[10px] text-slate-400 italic mt-2 leading-snug">
         Month-to-date crew-size-adjusted efficiency — the bonus number. Settles at end of day; today's hours land tomorrow.
       </p>

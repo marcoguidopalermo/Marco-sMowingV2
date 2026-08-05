@@ -1,11 +1,29 @@
 import {
   Crew,
+  Employee,
   PerformanceLog,
   CrewSizeAllowanceRow,
   AppSettings,
 } from '../types';
-import { DEFAULT_CREW_SIZE_ALLOWANCE, CONCURRENCY_TOLERANCE_MIN } from '../constants';
+import {
+  DEFAULT_CREW_SIZE_ALLOWANCE,
+  CONCURRENCY_TOLERANCE_MIN,
+  TRAINEE_CREDIT_PCT,
+} from '../constants';
 import { flattenEmployeeIntervals } from './efficiency';
+
+// True when this employee is a flagged trainee whose window covers
+// `date` (YYYY-MM-DD), inclusive on both ends. The window IS the
+// audit record — the credit is computed live from it (never stamped),
+// so extending / clearing a window takes effect on the next read.
+export function isTrainingActiveOn(
+  emp: Pick<Employee, 'training'> | undefined | null,
+  date: string,
+): boolean {
+  const t = emp?.training;
+  if (!t || !t.startDate || !t.endDate || !date) return false;
+  return date >= t.startDate && date <= t.endDate;
+}
 
 // Promote any segment shorter than the tolerance window into its
 // neighbours by raising its headcount to the higher of the
@@ -176,6 +194,8 @@ function computeTimeWindowedAllowance(
 //      behavior; legacy data, manual-entry days, no timesheets).
 export interface CrewAllowanceResult {
   size: number;
+  // Crew-SIZE credit pct only (stamped/frozen when a snapshot exists).
+  // Kept as-is for back-compat and for the "N-man" itemization.
   pct: number;
   source: 'stamped' | 'live';
   // True when the result reflects per-segment time-weighting from
@@ -183,14 +203,39 @@ export interface CrewAllowanceResult {
   // UI that wants to disclose how the pct was derived.
   concurrencyAware?: boolean;
   segments?: { size: number; pct: number; durationMs: number }[];
+  // Trainee credit for this crew-day (flat TRAINEE_CREDIT_PCT when at
+  // least one flagged trainee is aboard within their window, else 0).
+  // Computed live from employee windows — never stamped.
+  traineePct: number;
+  // Names of the trainee(s) that triggered the credit (for tooltips).
+  traineeNames: string[];
+  // Combined additive credit = pct + traineePct. THIS is what the
+  // efficiency/bonus math adds to raw eff (via adjustedEfficiency).
+  totalPct: number;
+  // Itemized, non-zero credit components for display, in the order
+  // size-then-trainee: e.g. [{label:'3-man',pct:10},{label:'trainee',pct:10}].
+  credits: { label: string; pct: number }[];
 }
 
-export function getCrewAllowance(
+// Optional crew-day context needed to resolve the trainee credit:
+// the Toronto date of the crew-day plus the employee directory (to
+// read each member's training window). Omit both and getCrewAllowance
+// behaves exactly as before (crew-size credit only, traineePct 0) —
+// so legacy callers that don't pass it never regress.
+export interface CrewAllowanceContext {
+  date?: string;
+  employees?: Employee[] | null;
+}
+
+// Resolve JUST the crew-size credit (stamp-frozen when present). Split
+// out so the trainee credit can be layered on top at every return
+// path without duplicating the resolution ladder.
+function getCrewSizeAllowance(
   crew: Pick<Crew, 'employees'> | undefined | null,
   log: Pick<PerformanceLog, 'removedEmployees' | 'crewSizeAllowance' | 'employeeTimesheets'> | undefined | null,
   settings: Pick<AppSettings, 'crewSizeAllowance'> | undefined | null,
   testUserIds?: Set<string> | null,
-): CrewAllowanceResult {
+): Omit<CrewAllowanceResult, 'traineePct' | 'traineeNames' | 'totalPct' | 'credits'> {
   // Live-recompute the size (cheap) so we can detect a stamp that
   // was written before test-user exclusion landed. When the stamp
   // disagrees with a smaller live size — i.e., a test user was
@@ -256,6 +301,63 @@ export function getCrewAllowance(
   return { size: liveSize, pct, source: 'live' };
 }
 
+// Full crew-day credit: the (stamp-frozen) crew-size credit PLUS the
+// live trainee credit, itemized. The trainee credit is a flat
+// TRAINEE_CREDIT_PCT when at least one flagged trainee is aboard this
+// crew-day within their window — computed from `ctx.employees` +
+// `ctx.date`, never stamped, so it applies uniformly across every
+// surface that resolves a crew-day (board, leaderboard, MTD, bonus)
+// by construction (they all call this one function). Membership is
+// the union of the scheduled roster and anyone who actually clocked
+// or earned AH on the crew that day (minus removed / test users), so
+// a trainee dispatched in as an unscheduled worker still credits the
+// crew that carried them.
+export function getCrewAllowance(
+  crew: Pick<Crew, 'employees'> | undefined | null,
+  log: Pick<PerformanceLog, 'removedEmployees' | 'crewSizeAllowance' | 'employeeTimesheets' | 'employeeAH'> | undefined | null,
+  settings: Pick<AppSettings, 'crewSizeAllowance'> | undefined | null,
+  testUserIds?: Set<string> | null,
+  ctx?: CrewAllowanceContext,
+): CrewAllowanceResult {
+  const base = getCrewSizeAllowance(crew, log || null, settings || null, testUserIds);
+
+  let traineePct = 0;
+  const traineeNames: string[] = [];
+  if (ctx?.date && ctx.employees && ctx.employees.length > 0) {
+    const removed = new Set(log?.removedEmployees || []);
+    // Who counts as "on the crew" today: scheduled roster ∪ anyone
+    // with clocked intervals or earned AH on this log.
+    const present = new Set<string>();
+    for (const id of crew?.employees || []) present.add(id);
+    for (const id of Object.keys(log?.employeeAH || {})) present.add(id);
+    for (const id of Object.keys(log?.employeeTimesheets || {})) present.add(id);
+    const empById = new Map(ctx.employees.map(e => [e.id, e]));
+    for (const id of present) {
+      if (removed.has(id)) continue;
+      if (testUserIds && testUserIds.has(id)) continue;
+      const emp = empById.get(id);
+      if (emp && isTrainingActiveOn(emp, ctx.date)) {
+        traineeNames.push(emp.name || id);
+      }
+    }
+    // Flat single credit regardless of how many trainees are aboard —
+    // a crew can't multiply credit by stacking new hires.
+    if (traineeNames.length > 0) traineePct = TRAINEE_CREDIT_PCT;
+  }
+
+  const credits: { label: string; pct: number }[] = [];
+  if (base.pct > 0) credits.push({ label: `${base.size}-man`, pct: base.pct });
+  if (traineePct > 0) credits.push({ label: 'trainee', pct: traineePct });
+
+  return {
+    ...base,
+    traineePct,
+    traineeNames,
+    totalPct: base.pct + traineePct,
+    credits,
+  };
+}
+
 // Additive: 70% raw + 10% allowance = 80% adjusted. Floors at 0;
 // no upper cap (matches the spec — efficiency can already exceed
 // 100% on highly productive days). Returns null when rawEff is null
@@ -274,4 +376,18 @@ export function adjustedEfficiency(
 export function allowanceTag(size: number, pct: number): string | null {
   if (!pct || pct === 0) return null;
   return `incl. ${pct}% ${size}-man adj`;
+}
+
+// Itemized credit breakdown with the raw AND adjusted numbers both
+// visible, e.g. "71% raw · +10% 3-man · +10% trainee · 91% adjusted".
+// Every credit is spelled out so nothing is applied silently. Returns
+// null when there are no credits (caller shows the plain number).
+export function creditBreakdown(
+  rawEff: number | null,
+  credits: { label: string; pct: number }[],
+  adjustedEff: number | null,
+): string | null {
+  if (rawEff === null || !credits || credits.length === 0) return null;
+  const parts = credits.map(c => `+${c.pct}% ${c.label}`);
+  return `${rawEff}% raw · ${parts.join(' · ')} · ${adjustedEff}% adjusted`;
 }

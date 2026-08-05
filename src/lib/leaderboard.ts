@@ -22,7 +22,15 @@ export interface CrewLeaderboardEntry {
   // still read rawEfficiency / allowancePct for the breakdown UI.
   efficiency: number | null;
   rawEfficiency: number | null;
+  // Crew-SIZE credit pct (the "N-man" component) — kept for the
+  // existing size-only breakdown line.
   allowancePct: number;
+  // Trainee credit pct (0 or TRAINEE_CREDIT_PCT) applied this day.
+  traineePct: number;
+  // Combined additive credit actually added to raw eff (size + trainee).
+  totalPct: number;
+  // Itemized credit components (size then trainee), non-zero only.
+  credits: { label: string; pct: number }[];
   scheduledSize: number;
   jobCount: number;
   memberNames: string[];
@@ -74,8 +82,11 @@ export function buildCrewLeaderboard(
     const totals = log
       ? crewSummary(log, testUserIds)
       : { bh: 0, ah: 0, efficiency: null, jobCount: 0 };
-    const allowance = getCrewAllowance(crew, log || null, settings || null, testUserIds);
-    const adjusted = adjustedEfficiency(totals.efficiency, allowance.pct);
+    const allowance = getCrewAllowance(
+      crew, log || null, settings || null, testUserIds,
+      { date, employees },
+    );
+    const adjusted = adjustedEfficiency(totals.efficiency, allowance.totalPct);
     const memberNames = (crew.employees || [])
       .filter(id => !testUserIds.has(id))
       .map(id => empById.get(id)?.name || '')
@@ -88,6 +99,9 @@ export function buildCrewLeaderboard(
       efficiency: adjusted,
       rawEfficiency: totals.efficiency,
       allowancePct: allowance.pct,
+      traineePct: allowance.traineePct,
+      totalPct: allowance.totalPct,
+      credits: allowance.credits,
       scheduledSize: allowance.size,
       jobCount: totals.jobCount,
       memberNames,

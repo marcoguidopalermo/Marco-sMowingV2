@@ -49,6 +49,9 @@ export interface MtdResult {
   // across this array equals `companyBH` (to floating-point — round
   // at display only).
   perEmployee: MtdEmployeeStat[];
+  // Count of approved crew-days this month that earned the trainee
+  // credit (company-wide). Surfaced so the credit is never silent.
+  traineeCreditedDays: number;
 }
 
 // Toronto YYYY-MM-DD anchor → month start + bare month name.
@@ -145,6 +148,7 @@ export function buildMtd(
   let companyBH = 0;
   let companyAH = 0;
   let companyAdjustedNumerator = 0;
+  let traineeCreditedDays = 0;
 
   // No completed day yet this month → all totals stay at 0 and
   // perEmployee stays empty. The widgets render "no completed
@@ -164,7 +168,9 @@ export function buildMtd(
         const crewObj = daySchedule.find(c => c.id === crewId);
         const allowance = getCrewAllowance(
           crewObj, log, settings || null, testUserIds,
+          { date, employees },
         );
+        if (allowance.traineePct > 0) traineeCreditedDays++;
 
         companyBH += cBH;
         companyAH += cAH;
@@ -172,7 +178,8 @@ export function buildMtd(
         // Summing the numerators and dividing by ΣcAH yields the AH-weighted
         // average of crew adjusted efficiencies — the mathematically correct
         // company-level adjusted number when each crew has its own snapshot.
-        companyAdjustedNumerator += cBH + (cAH * allowance.pct) / 100;
+        // `totalPct` = crew-size credit + trainee credit (additive stack).
+        companyAdjustedNumerator += cBH + (cAH * allowance.totalPct) / 100;
 
         // Per-employee BH share — proportional to each member's eAH.
         // Drop-in helpers (employeeAH keys outside crew.employees) get a
@@ -191,7 +198,7 @@ export function buildMtd(
             const dBH = stat.bh - prior.bh;
             const dAH = stat.ah - prior.ah;
             if (dAH > 0 || dBH > 0) {
-              empAdjNumerator[empId] = (empAdjNumerator[empId] || 0) + dBH + (dAH * allowance.pct) / 100;
+              empAdjNumerator[empId] = (empAdjNumerator[empId] || 0) + dBH + (dAH * allowance.totalPct) / 100;
             }
           }
           continue;
@@ -279,6 +286,7 @@ export function buildMtd(
     companyAH: Number(companyAH.toFixed(1)),
     companyAdjustedEfficiency,
     perEmployee,
+    traineeCreditedDays,
   };
 }
 
@@ -386,6 +394,9 @@ export interface DivisionMtdResult {
   perCrew: DivisionCrewStat[];
   // Per-employee BH/AH shares within this division (bonus basis).
   perEmployee: DivisionEmployeeStat[];
+  // Count of approved crew-days in this division that earned the
+  // trainee credit this month. Surfaced as a division rollup note.
+  traineeCreditedDays: number;
 }
 
 export function buildDivisionMtd(
@@ -406,6 +417,7 @@ export function buildDivisionMtd(
   let divisionBH = 0;
   let divisionAH = 0;
   let divisionAdjustedNumerator = 0;
+  let traineeCreditedDays = 0;
   // Per-crew accumulators (unrounded). Keyed by stable crew key.
   const crewAcc: Record<string, {
     crewLabel: string;
@@ -430,15 +442,19 @@ export function buildDivisionMtd(
 
         const { cBH, cAH } = crewTotals(log, testUserIds);
         // Identical allowance resolution to company: stamped
-        // effectivePct honoured, tolerance-gated, live fallback.
+        // effectivePct honoured, tolerance-gated, live fallback, plus
+        // the live trainee credit (same one function everything uses).
         const allowance = getCrewAllowance(
           crewObj, log, settings || null, testUserIds,
+          { date, employees },
         );
+        if (allowance.traineePct > 0) traineeCreditedDays++;
 
         divisionBH += cBH;
         divisionAH += cAH;
-        // Identical virtual-BH numerator to company (mtd.ts buildMtd).
-        divisionAdjustedNumerator += cBH + (cAH * allowance.pct) / 100;
+        // Identical virtual-BH numerator to company (mtd.ts buildMtd),
+        // using the combined size+trainee credit.
+        divisionAdjustedNumerator += cBH + (cAH * allowance.totalPct) / 100;
 
         const crewNumber = crewObj?.crewNumber ?? log.crewNumber ?? 0;
         const key = stableCrewKey(division, crewNumber);
@@ -453,7 +469,7 @@ export function buildDivisionMtd(
         }
         crewAcc[key].bh += cBH;
         crewAcc[key].ah += cAH;
-        crewAcc[key].adjNumerator += cBH + (cAH * allowance.pct) / 100;
+        crewAcc[key].adjNumerator += cBH + (cAH * allowance.totalPct) / 100;
 
         // Per-employee attribution WITHIN this division — identical logic
         // to buildMtd so a worker's division BH share matches the bonus
@@ -533,6 +549,7 @@ export function buildDivisionMtd(
     divisionAdjustedEfficiency,
     perCrew,
     perEmployee,
+    traineeCreditedDays,
   };
 }
 

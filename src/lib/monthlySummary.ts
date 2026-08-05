@@ -94,6 +94,7 @@ export function buildMonthlySummary(
       // Per-employee BH within the division — the bonus payout basis.
       // Straight from buildDivisionMtd.perEmployee (no re-derivation).
       perEmployee: d.perEmployee.map(e => ({ empId: e.empId, name: e.name, bh: e.bh })),
+      traineeCreditedDays: d.traineeCreditedDays,
     };
   });
 
@@ -109,6 +110,7 @@ export function buildMonthlySummary(
       adjustedEff: company.companyAdjustedEfficiency,
       jobs: countBonusJobs(today, performance, schedules),
       employees: company.perEmployee.length,
+      traineeCreditedDays: company.traineeCreditedDays,
     },
     divisions,
     perEmployee: company.perEmployee.map(e => ({

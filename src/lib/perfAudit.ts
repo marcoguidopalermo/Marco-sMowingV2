@@ -68,6 +68,9 @@ export const ACTIVITY_TYPE_LABELS: Record<PerfActivityEntry['type'], string> = {
   performance_day_archived: 'Day archived to sheet',
   performance_day_unlocked: 'Archived day unlocked',
   schedule_month_archived: 'Schedule month archived',
+  trainee_credit_started: 'Trainee credit started',
+  trainee_credit_extended: 'Trainee credit extended',
+  trainee_credit_cleared: 'Trainee credit cleared',
 };
 
 export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amber' | 'rose' | 'slate'> = {
@@ -113,4 +116,10 @@ export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amb
   partial_resolved_complete: 'green',
   partial_resolved_carry: 'slate',
   partial_resolved_void: 'rose',
+  // Trainee credit is an efficiency-INFLATING admin action (it raises
+  // adjusted eff), so start/extend are amber (worth auditing); clearing
+  // it removes credit, so it's slate.
+  trainee_credit_started: 'amber',
+  trainee_credit_extended: 'amber',
+  trainee_credit_cleared: 'slate',
 };

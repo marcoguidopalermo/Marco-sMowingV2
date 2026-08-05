@@ -28,6 +28,8 @@ const ESSENTIAL_TYPES: ReadonlySet<PerfActivityEntry['type']> = new Set([
   'worker_removed',
   // BH / AH split overrides
   'ah_split', 'ah_manually_edited', 'multiday_split_added', 'multiday_percent_overridden',
+  // Trainee credit start/extend inflate adjusted eff → audit by default.
+  'trainee_credit_started', 'trainee_credit_extended',
 ]);
 
 // Division is not stored on the entry; it's the prefix of crewLabel

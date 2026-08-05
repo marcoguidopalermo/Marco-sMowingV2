@@ -48,6 +48,35 @@ export interface Employee {
   // employee in the directory carries this flag; it cannot be
   // deleted via the Personnel admin form.
   isTestUser?: boolean;
+  // Employment start / hire date (YYYY-MM-DD). Optional — the basis
+  // for the trainee-toggle's stale-start-date guard (see TRAINEE_
+  // STALE_HIRE_DAYS). Absent → the guard can't verify tenure and
+  // warns softly instead of blocking.
+  hireDate?: string;
+  // ADMIN-ONLY trainee efficiency credit window. When present and a
+  // crew-day's date falls within [startDate, endDate] inclusive, any
+  // crew this employee works that day earns the flat trainee credit
+  // (TRAINEE_CREDIT_PCT) at the SAME additive layer as the crew-size
+  // credit — never by editing raw BH/AH. null / absent = not a
+  // trainee. Only an admin can set this (a manager crediting their
+  // own division's number is a conflict of interest).
+  training?: {
+    startDate: string;   // YYYY-MM-DD, inclusive
+    endDate: string;     // YYYY-MM-DD, inclusive (start + 6 = 7 days)
+  } | null;
+  // Append-only ledger of every trainee-window action for audit and
+  // for surfacing the "needs N extensions" signal. Never mutated in
+  // place — each start/extend/clear pushes a new row.
+  trainingHistory?: {
+    action: 'start' | 'extend' | 'clear';
+    startDate: string;
+    endDate: string;
+    by: string;               // admin email
+    byName: string;           // admin display name
+    at: number;               // ms epoch
+    hireDateAtToggle?: string | null;  // snapshot for the audit
+    staleFlagged?: boolean;   // true when the stale-start-date guard fired
+  }[];
 }
 
 // One slice of $1,000 of mechanic pay, defined by clocked-hours
@@ -689,7 +718,10 @@ export type PerfActivityType =
   | 'schedule_month_archived'
   | 'partial_resolved_complete'
   | 'partial_resolved_carry'
-  | 'partial_resolved_void';
+  | 'partial_resolved_void'
+  | 'trainee_credit_started'
+  | 'trainee_credit_extended'
+  | 'trainee_credit_cleared';
 
 export interface PerfActivityEntry {
   id: string;
@@ -1616,6 +1648,10 @@ export interface MonthlyDivisionSummary {
   perCrew: MonthlyCrewSummary[];
   // Per-employee BH shares within this division (drives per-person payout).
   perEmployee: MonthlyDivisionEmployee[];
+  // Count of approved crew-days this month that earned the trainee
+  // credit in this division. Surfaced as a rollup note so the credit
+  // is never applied silently. Optional for back-compat.
+  traineeCreditedDays?: number;
 }
 export interface MonthlyEmployeeSummary {
   empId: string;
@@ -1637,6 +1673,9 @@ export interface MonthlySummary {
     adjustedEff: number | null;
     jobs: number;
     employees: number;
+    // Company-wide count of approved crew-days that earned the
+    // trainee credit this month. Optional for back-compat.
+    traineeCreditedDays?: number;
   };
   divisions: MonthlyDivisionSummary[];
   perEmployee: MonthlyEmployeeSummary[];

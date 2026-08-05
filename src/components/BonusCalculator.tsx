@@ -120,7 +120,15 @@ export default function BonusCalculator({ summaries, liveSummary, currentYm }: B
                   return (
                     <tr key={d.division} className="border-b border-slate-50">
                       <td className="py-1.5 pr-3 text-left font-bold text-slate-700">{d.division}</td>
-                      <td className="py-1.5 px-3 text-right font-mono text-emerald-700 font-bold">{d.adjustedEff != null ? `${d.adjustedEff}%` : '—'}</td>
+                      <td className="py-1.5 px-3 text-right font-mono text-emerald-700 font-bold">
+                        {d.adjustedEff != null ? `${d.adjustedEff}%` : '—'}
+                        {(() => {
+                          const td = summary.divisions.find(sd => sd.division === d.division)?.traineeCreditedDays || 0;
+                          return td > 0
+                            ? <div className="text-[10px] text-amber-600 font-bold" title="Crew-days credited for carrying a trainee (+10% each)">incl. {td} trainee-day{td === 1 ? '' : 's'}</div>
+                            : null;
+                        })()}
+                      </td>
                       <td className="py-1.5 px-3 text-right font-mono text-slate-600">
                         {d.rate > 0 ? rateLabel(d.rate) : '—'}
                         {nt && <div className="text-[10px] text-amber-600 font-bold">{nt.gap}% from {rateLabel(nt.rate)}</div>}

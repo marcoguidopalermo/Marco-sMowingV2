@@ -6,14 +6,15 @@ import { functions, db, appId } from '../lib/firebase';
 import {
   Settings, X, Users, Truck, Package, Hammer, Map as MapIcon, ShieldCheck,
   Plus, Trash2, Calendar as CalendarIcon, CreditCard as IdCard,
-  AlertTriangle, CheckSquare, UserCircle, Clock, Sliders, Link2, Mail, FileText
+  AlertTriangle, CheckSquare, UserCircle, Clock, Sliders, Link2, Mail, FileText, GraduationCap
 } from 'lucide-react';
 import FleetRenewalsStrip, { DocRenewalChip } from './FleetRenewalsStrip';
 import { Employee, FleetItem, InventoryItem, Job, AppSettings, RolePermissionsOverride, UserRole, JobberUser, PRIMARY_CREWS, EquipmentSubtypeDefinition, PartialTimeOff, ContractingRateCard, ContractingBillingRole } from '../types';
 import { ratesOrDefault as contractingRatesOrDefault, ROLE_LABEL as CONTRACTING_ROLE_LABEL, money as contractingMoney } from '../lib/contracting';
 import { makeSubtypeId, fleetItemLabel } from '../lib/fleetUtils';
 import FleetGroupedList from './FleetGroupedList';
-import { DIVISIONS, CREW_NUMBERS, ROUTE_FREQUENCIES, DAYS_OF_WEEK, DEFAULT_EOD_REMINDER, DEFAULT_CREW_SIZE_ALLOWANCE } from '../constants';
+import { DIVISIONS, CREW_NUMBERS, ROUTE_FREQUENCIES, DAYS_OF_WEEK, DEFAULT_EOD_REMINDER, DEFAULT_CREW_SIZE_ALLOWANCE, TRAINING_WINDOW_DAYS, TRAINEE_STALE_HIRE_DAYS, TRAINEE_CREDIT_PCT } from '../constants';
+import { addDaysToronto, formatTodayInToronto } from '../lib/dateUtils';
 import { resolveWeightBand, weightBandLabel, hasLegacyWeightClassOnly, needsPlateRenewal, needsCommercialSafety } from '../lib/fleetUtils';
 import { ROLE_PERMISSIONS, Permission, can } from '../lib/permissions';
 import { formatDate, needsAudit } from '../lib/dateUtils';
@@ -231,6 +232,9 @@ export default function ManageResourcesModal({
   // collide. Empty entries default to "0 hrs already worked" /
   // today's date inside the form's handler.
   const [chunkSetupDrafts, setChunkSetupDrafts] = useState<Record<string, { hours: string; startDate: string }>>({});
+  // Per-employee draft for the trainee-credit start date (default today).
+  // Keyed by employee id. Only used by the "Mark as trainee" control.
+  const [traineeStartDrafts, setTraineeStartDrafts] = useState<Record<string, string>>({});
   // Locked-with-edit state for each maintenance item's Next Due
   // input. Keyed by item id. Falsy/missing => locked (read-only
   // display). Clicking Edit on a row flips it to true, exposing
@@ -559,6 +563,129 @@ export default function ManageResourcesModal({
                       </div>
                     </div>
                   </div>
+                  {!isTestUser && (() => {
+                    const today = formatTodayInToronto();
+                    const training = emp.training;
+                    const hasWindow = !!(training && training.startDate && training.endDate);
+                    const active = hasWindow && training!.startDate <= today && training!.endDate >= today;
+                    const scheduled = hasWindow && training!.startDate > today;
+                    const expired = hasWindow && training!.endDate < today;
+                    const startDraft = traineeStartDrafts[emp.id] || today;
+                    const extendCount = (emp.trainingHistory || []).filter(h => h.action === 'extend').length;
+
+                    const applyTraining = (action: 'start' | 'extend' | 'clear') => {
+                      if (!isAdmin) return;
+                      const hire = emp.hireDate || '';
+                      let win: { startDate: string; endDate: string };
+                      if (action === 'clear') {
+                        win = { startDate: training?.startDate || today, endDate: training?.endDate || today };
+                      } else if (action === 'extend') {
+                        // Another 7 days OF CREDIT from today, keeping the
+                        // original start date so tenure signal is preserved.
+                        win = { startDate: training?.startDate || startDraft, endDate: addDaysToronto(today, TRAINING_WINDOW_DAYS - 1) };
+                      } else {
+                        win = { startDate: startDraft, endDate: addDaysToronto(startDraft, TRAINING_WINDOW_DAYS - 1) };
+                      }
+                      // Stale-start-date guard — a "trainee" employed long ago
+                      // should raise a flag, not silently apply.
+                      let staleFlagged = false;
+                      if (action !== 'clear') {
+                        if (!hire) {
+                          if (!window.confirm(`No hire date on file for ${emp.name || 'this employee'}. Can't verify they're a new hire — apply the trainee credit anyway? Their crew earns +${TRAINEE_CREDIT_PCT}% while it's active.`)) return;
+                          staleFlagged = true;
+                        } else {
+                          const ageDays = Math.round((new Date(`${win.startDate}T12:00:00`).getTime() - new Date(`${hire}T12:00:00`).getTime()) / 86400000);
+                          if (ageDays > TRAINEE_STALE_HIRE_DAYS) {
+                            if (!window.confirm(`${emp.name || 'This employee'} was hired ${hire} — about ${ageDays} days before this window. That's not a recent new hire. Apply the trainee credit anyway?`)) return;
+                            staleFlagged = true;
+                          }
+                        }
+                      }
+                      const ne = [...localEmployees];
+                      const cur = { ...ne[idx] };
+                      cur.training = action === 'clear' ? null : { startDate: win.startDate, endDate: win.endDate };
+                      const hist = (cur.trainingHistory || []).slice();
+                      // at:0 / by:'' are PENDING sentinels — App.tsx onSave
+                      // stamps the acting admin + timestamp and writes the
+                      // activity-log entry for each pending row.
+                      hist.push({ action, startDate: win.startDate, endDate: win.endDate, by: '', byName: '', at: 0, hireDateAtToggle: hire || null, staleFlagged });
+                      cur.trainingHistory = hist;
+                      ne[idx] = cur;
+                      setLocalEmployees(ne);
+                    };
+
+                    return (
+                    <div className={`flex flex-col gap-2 p-3 rounded-lg border ${active ? 'bg-sky-50 border-sky-200' : 'bg-slate-50/60 border-slate-200'}`}>
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-sky-800 flex items-center gap-1.5">
+                          <GraduationCap className="w-3.5 h-3.5" /> Trainee Credit
+                          {!isAdmin && <span className="text-slate-400 normal-case tracking-normal font-medium">(admin only)</span>}
+                        </span>
+                        {active && (
+                          <span className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded border bg-sky-100 text-sky-700 border-sky-300">Active · +{TRAINEE_CREDIT_PCT}%</span>
+                        )}
+                      </div>
+
+                      {/* Hire date — the basis for the stale-start-date guard. */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">Hire date</label>
+                        <input
+                          type="date"
+                          disabled={!isAdmin}
+                          value={emp.hireDate || ''}
+                          onChange={e => { const ne = [...localEmployees]; ne[idx] = { ...ne[idx], hireDate: e.target.value || undefined }; setLocalEmployees(ne); }}
+                          className="border border-slate-300 rounded-lg p-1.5 text-sm font-mono text-slate-700 outline-none focus:ring-2 focus:ring-sky-400 disabled:bg-slate-100"
+                        />
+                        {!emp.hireDate && <span className="text-[10px] text-amber-600 font-semibold">No hire date on file — guard can't verify tenure.</span>}
+                      </div>
+
+                      {active || scheduled ? (
+                        <div className="flex flex-col gap-1.5">
+                          <div className="text-[11px] font-semibold text-sky-800">
+                            {active ? 'Trainee credit active' : 'Scheduled'} · window {training!.startDate} → {training!.endDate}
+                            {scheduled && ' (starts in the future)'}
+                          </div>
+                          {extendCount > 0 && (
+                            <div className={`text-[11px] font-semibold ${extendCount >= 2 ? 'text-rose-600' : 'text-amber-600'}`}>
+                              Extended {extendCount}× {extendCount >= 2 ? '— still learning after 3+ weeks? Worth a look.' : ''}
+                            </div>
+                          )}
+                          {isAdmin && (
+                            <div className="flex gap-2 flex-wrap">
+                              <button type="button" onClick={() => applyTraining('extend')} className="px-3 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-widest border bg-white text-sky-700 border-sky-300 hover:bg-sky-50">Extend +{TRAINING_WINDOW_DAYS} days</button>
+                              <button type="button" onClick={() => applyTraining('clear')} className="px-3 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-widest border bg-white text-slate-500 border-slate-300 hover:bg-slate-100">Clear</button>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-1.5">
+                          {expired && (
+                            <div className="text-[11px] text-slate-500 italic">Last window ended {training!.endDate}. Mark again to re-open a {TRAINING_WINDOW_DAYS}-day credit.</div>
+                          )}
+                          {isAdmin ? (
+                            <div className="flex items-end gap-2 flex-wrap">
+                              <div>
+                                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-1">Start date</label>
+                                <input
+                                  type="date"
+                                  value={startDraft}
+                                  onChange={e => setTraineeStartDrafts(p => ({ ...p, [emp.id]: e.target.value || today }))}
+                                  className="border border-slate-300 rounded-lg p-1.5 text-sm font-mono text-slate-700 outline-none focus:ring-2 focus:ring-sky-400"
+                                />
+                              </div>
+                              <button type="button" onClick={() => applyTraining('start')} className="px-3 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-widest border bg-sky-600 text-white border-sky-600 hover:bg-sky-700">Mark as trainee ({TRAINING_WINDOW_DAYS}-day credit)</button>
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-slate-500 italic">Not a trainee. Only an admin can start the credit.</div>
+                          )}
+                          <div className="text-[10px] text-slate-500">
+                            Credits this employee's crew +{TRAINEE_CREDIT_PCT}% efficiency while active — same layer as the crew-size credit, stacks with it. Raw BH/AH are untouched.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    );
+                  })()}
                   {sysRole === 'mechanic' && (() => {
                     const payMode: 'chunk' | 'hourly' = emp.payMode || 'chunk'; // absent = chunk (unchanged)
                     const setPayMode = (m: 'chunk' | 'hourly') => { const ne = [...localEmployees]; ne[idx] = { ...ne[idx], payMode: m }; setLocalEmployees(ne); };

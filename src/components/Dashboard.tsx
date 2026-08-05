@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { LayoutDashboard, TrendingUp, Crown, Users } from 'lucide-react';
 import { AppSettings, Crew, Employee, PerformanceLog } from '../types';
 import { addDaysToronto } from '../lib/dateUtils';
+import { creditBreakdown } from '../lib/crewAllowance';
 import {
   buildCrewLeaderboard,
   rankLeaderboard,
@@ -130,9 +131,9 @@ function LeaderboardRow({
         <div className="font-mono font-black text-emerald-700">
           {entry.efficiency != null ? `${entry.efficiency}%` : <span className="text-slate-300">—</span>}
         </div>
-        {entry.allowancePct > 0 && entry.efficiency != null && (
+        {entry.credits.length > 0 && entry.efficiency != null && (
           <div className="text-[9px] font-medium text-slate-500 mt-0.5 whitespace-nowrap">
-            incl. {entry.allowancePct}% {entry.scheduledSize}-man adj
+            {creditBreakdown(entry.rawEfficiency, entry.credits, entry.efficiency)}
           </div>
         )}
       </div>

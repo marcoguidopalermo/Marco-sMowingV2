@@ -6,6 +6,7 @@ import {
   topCrew,
   LEADERBOARD_MIN_BH,
 } from '../lib/leaderboard';
+import { creditBreakdown } from '../lib/crewAllowance';
 
 interface TopCrewSpotlightProps {
   // Toronto YYYY-MM-DD the spotlight should display. Parent controls
@@ -90,9 +91,9 @@ export default function TopCrewSpotlight({
                 {winner.efficiency != null ? `${winner.efficiency}%` : '—'}
               </div>
               <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mt-0.5">Efficiency</div>
-              {winner.allowancePct > 0 && winner.rawEfficiency != null && (
+              {winner.credits.length > 0 && winner.rawEfficiency != null && (
                 <div className="text-[10px] font-medium text-slate-500 mt-0.5">
-                  Raw {winner.rawEfficiency}% · includes {winner.allowancePct}% {winner.scheduledSize}-man adjustment
+                  {creditBreakdown(winner.rawEfficiency, winner.credits, winner.efficiency)}
                 </div>
               )}
             </div>

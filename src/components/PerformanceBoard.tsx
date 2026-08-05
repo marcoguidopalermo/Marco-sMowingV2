@@ -21,7 +21,7 @@ import PerformanceActivityLog from './PerformanceActivityLog';
 import TrendsPage from './TrendsPage';
 import Stamp from './Stamp';
 import { can } from '../lib/permissions';
-import { getCrewAllowance, adjustedEfficiency, allowanceTag } from '../lib/crewAllowance';
+import { getCrewAllowance, adjustedEfficiency, allowanceTag, creditBreakdown } from '../lib/crewAllowance';
 import { accumulateEmployeeEff } from '../lib/efficiency';
 import { isBonusEligible } from '../lib/mtd';
 import { computeMonthlyStreaks, crewDayHasFlame, crewKeyOf } from '../lib/crewGamification';
@@ -1272,6 +1272,7 @@ export default function PerformanceBoard({
           const crewObj = appData.schedules?.[date]?.find((c: any) => c.id === crewId);
           const allowanceForDay = getCrewAllowance(
             crewObj, log, appData.settings, testUserIds,
+            { date, employees },
           );
           // Adjusted (virtual-BH) numerator for THIS crew-day, using
           // the SAME stamped/tolerance-gated allowance pct the crew
@@ -1284,7 +1285,7 @@ export default function PerformanceBoard({
           // per-employee adjBH deltas (Σ eBH = cBH, Σ eAH = cAH), so
           // the division/crew adjusted numbers agree with the employee
           // table by construction.
-          const adjNumeratorForDay = cBH + (cAH * allowanceForDay.pct) / 100;
+          const adjNumeratorForDay = cBH + (cAH * allowanceForDay.totalPct) / 100;
           totals.adjBH += adjNumeratorForDay;
           if (divStats[div]) divStats[div].adjBH += adjNumeratorForDay;
           crewStats[cName].adjBH += adjNumeratorForDay;
@@ -1308,7 +1309,7 @@ export default function PerformanceBoard({
               // of crew adjusted efficiencies — which is what the
               // crew-level display and bonus basis use.
               empStats[empId].adjBH = (empStats[empId].adjBH || 0)
-                + dBH + (dAH * allowanceForDay.pct) / 100;
+                + dBH + (dAH * allowanceForDay.totalPct) / 100;
             }
           });
         });
@@ -1715,11 +1716,18 @@ export default function PerformanceBoard({
                 // SCHEDULED roster minus removedEmployees, never from
                 // employeeAH (drop-ins don't inflate the size).
                 const crewObj = (appData.schedules?.[perfDate] || []).find(c => c.id === cId);
-                const allowance = getCrewAllowance(crewObj, log, appData.settings, testUserIds);
+                const allowance = getCrewAllowance(
+                  crewObj, log, appData.settings, testUserIds,
+                  { date: perfDate, employees },
+                );
                 const rawEffOrNull = sumAH > 0 ? eff : null;
-                const adjEffNum = adjustedEfficiency(rawEffOrNull, allowance.pct);
+                const adjEffNum = adjustedEfficiency(rawEffOrNull, allowance.totalPct);
                 const effForColor = adjEffNum ?? 0;
-                const effTag = allowanceTag(allowance.size, allowance.pct);
+                // Itemized breakdown (raw + each credit + adjusted). Falls
+                // back to the legacy size-only tag if, somehow, only the
+                // size credit is present without the itemized list.
+                const effBreakdown = creditBreakdown(rawEffOrNull, allowance.credits, adjEffNum)
+                  || allowanceTag(allowance.size, allowance.pct);
 
                 let effColor = 'text-gray-500 bg-gray-100 border-gray-200';
                 if (sumAH > 0) {
@@ -1813,8 +1821,8 @@ export default function PerformanceBoard({
                             <div className={`px-4 py-2 rounded-lg border shadow-sm font-bold flex flex-col items-center ${effColor}`}>
                               <span className="text-xs uppercase tracking-wide opacity-80 mb-0.5">Efficiency</span>
                               <span className="text-2xl leading-none">{sumAH > 0 && adjEffNum !== null ? `${adjEffNum}%` : '--'}</span>
-                              {sumAH > 0 && effTag && (
-                                <span className="text-[9px] font-medium tracking-wide opacity-80 mt-0.5">Raw {eff}% · {effTag}</span>
+                              {sumAH > 0 && effBreakdown && (
+                                <span className="text-[9px] font-medium tracking-wide opacity-80 mt-0.5">{effBreakdown}</span>
                               )}
                             </div>
                           </div>
@@ -1835,8 +1843,8 @@ export default function PerformanceBoard({
                           <div className={`px-4 py-2 rounded-lg border shadow-sm font-bold flex flex-col items-center ${effColor}`}>
                             <span className="text-xs uppercase tracking-wide opacity-80 mb-0.5">Efficiency</span>
                             <span className="text-2xl leading-none">{sumAH > 0 && adjEffNum !== null ? `${adjEffNum}%` : '--'}</span>
-                            {sumAH > 0 && effTag && (
-                              <span className="text-[9px] font-medium tracking-wide opacity-80 mt-0.5">Raw {eff}% · {effTag}</span>
+                            {sumAH > 0 && effBreakdown && (
+                              <span className="text-[9px] font-medium tracking-wide opacity-80 mt-0.5">{effBreakdown}</span>
                             )}
                           </div>
                         </div>
