@@ -398,7 +398,7 @@ export interface SeasonFreqPlan {
   monthly: number;                 // fullPrice / MONTHS — STANDARD recurring (mowing)
   instalments: number;             // min(availableMonthEnds, floor(quoteTotal / monthly))
   deposit: number;                 // quoteTotal − instalments × monthly (absorbs the slack)
-  depositPct: number;              // deposit / quoteTotal × 100, 1 decimal
+  depositPct: number;              // deposit / quoteTotal × 100, 2 decimals
   mowingInDeposit: number;         // deposit − packagesTotal − catchUpCharge (may be < 0)
   firstInvoice: number;            // = deposit (catch-up now lives inside it)
   cutsLeft: number;
@@ -462,7 +462,7 @@ export function computeSeasonPlan(
     return {
       fullPrice, cuts, proratedTotal, packagesTotal: 0, catchUpCharge, quoteTotal,
       monthly, instalments, deposit,
-      depositPct: quoteTotal > 0 ? Math.round((deposit / quoteTotal) * 1000) / 10 : 0,
+      depositPct: quoteTotal > 0 ? round2((deposit / quoteTotal) * 100) : 0,
       mowingInDeposit: deposit,
       firstInvoice: round2(deposit + catchUpCharge),
       cutsLeft, internalPPC: cutsLeft > 0 ? round2(proratedTotal / cutsLeft) : 0,
@@ -523,7 +523,7 @@ export function computeSeasonPlanFC(
     const maxByPrice = monthlyRaw > 0 ? Math.floor((quoteTotal + 0.005) / monthlyRaw) : 0;
     const instalments = Math.max(0, Math.min(avail, maxByPrice));
     const deposit = Math.max(0, round2(quoteTotal - instalments * monthlyRaw));
-    const depositPct = quoteTotal > 0 ? Math.round((deposit / quoteTotal) * 1000) / 10 : 0;
+    const depositPct = quoteTotal > 0 ? round2((deposit / quoteTotal) * 100) : 0;
     // The mowing part of the deposit — what's left after packages + catch-up. It
     // can be NEGATIVE when the mowing monthlies over-cover the shortened season
     // (a package pulls in an extra instalment). The three parts sum to deposit.

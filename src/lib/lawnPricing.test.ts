@@ -620,10 +620,10 @@ const bronzeTotal = pricePackages(1, {}, 0).find(p => p.key === 'bronze')!.total
 // The office reference "week N" = signup week N with first cut the FOLLOWING week,
 // i.e. firstCutWeek N+1 in the first-cut-date model.
 const EX: Array<{ fcw: number; pkg: number; quote: number; inst: number; dep: number; pct: number }> = [
-  { fcw: 2,  pkg: 0,         quote: 1140, inst: 5, dep: 140, pct: 12.3 }, // "week 1"
-  { fcw: 8,  pkg: 0,         quote: 780,  inst: 3, dep: 180, pct: 23.1 }, // "week 7"
-  { fcw: 12, pkg: 0,         quote: 540,  inst: 2, dep: 140, pct: 25.9 }, // "week 11"
-  { fcw: 14, pkg: goldTotal, quote: 919,  inst: 3, dep: 319, pct: 34.7 }, // "wk 13" + Gold $499
+  { fcw: 2,  pkg: 0,         quote: 1140, inst: 5, dep: 140, pct: 12.28 }, // "week 1"
+  { fcw: 8,  pkg: 0,         quote: 780,  inst: 3, dep: 180, pct: 23.08 }, // "week 7"
+  { fcw: 12, pkg: 0,         quote: 540,  inst: 2, dep: 140, pct: 25.93 }, // "week 11"
+  { fcw: 14, pkg: goldTotal, quote: 919,  inst: 3, dep: 319, pct: 34.71 }, // "wk 13" + Gold $499
 ];
 test('four worked examples: quoteTotal, instalments, deposit, deposit%', () => {
   const m = priceMowing(1, {}); // $1,200 weekly, monthly $200
@@ -636,11 +636,11 @@ test('four worked examples: quoteTotal, instalments, deposit, deposit%', () => {
     assert.equal(p.depositPct, e.pct, `fcw ${e.fcw} deposit%`);
   }
 });
-test('deposit% == deposit / quoteTotal × 100 (1 dp) in every case', () => {
+test('deposit% == deposit / quoteTotal × 100 (2 dp) in every case', () => {
   const m = priceMowing(1, {});
   for (let wk = 1; wk <= 20; wk++) for (const pkg of [0, bronzeTotal, goldTotal, bronzeTotal + goldTotal]) {
     const p = computeSeasonPlanFC(m, dateForWeek(wk), 'normal', LAWN_CONFIG_V1, pkg).weekly;
-    const expected = p.quoteTotal > 0 ? Math.round((p.deposit / p.quoteTotal) * 1000) / 10 : 0;
+    const expected = p.quoteTotal > 0 ? Math.round((p.deposit / p.quoteTotal) * 10000) / 100 : 0;
     assert.equal(p.depositPct, expected, `wk ${wk} pkg ${pkg}`);
   }
 });

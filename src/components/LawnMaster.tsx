@@ -470,7 +470,7 @@ function MowingComparison({ mowing, plan, config, frequency, onFrequency }: {
         {[w, b].map((fp, i) => (
           <div key={i} className="text-right self-center">
             <div className="text-sm font-black font-mono" style={{ color: (i === 0 ? selW : selB) ? GREEN : '#334155' }}>{money(fp.deposit)}</div>
-            <div className="text-[10px] font-medium text-slate-400">{fp.depositPct}% of quote</div>
+            <div className="text-[10px] font-medium text-slate-400">{fp.depositPct.toFixed(2)}% of quote</div>
           </div>
         ))}
         {row('Internal PPC', money(w.internalPPC), money(b.internalPPC), { internal: true })}
@@ -504,7 +504,7 @@ function BillingSchedule({ plan, selectedPackages }: { plan: SeasonPlan; selecte
             <>
               <div className="flex justify-between font-bold text-slate-700">
                 <span>Initial deposit (on approval)</span>
-                <span className="font-mono">{money(fp.deposit)} · {fp.depositPct}%</span>
+                <span className="font-mono">{money(fp.deposit)} · {fp.depositPct.toFixed(2)}%</span>
               </div>
               {composite && (
                 <div className="pl-3 space-y-0.5 text-[11px] text-slate-500">
