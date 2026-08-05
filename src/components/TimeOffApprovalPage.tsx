@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
-import { Plane, Check, X, ChevronDown, ChevronUp, Calendar as CalendarIcon, MessageSquare } from 'lucide-react';
+import { Plane, Check, X, ChevronDown, ChevronUp, Calendar as CalendarIcon, MessageSquare, CalendarRange } from 'lucide-react';
 import { TimeOffRequest, Employee } from '../types';
+import BookedOffCalendar from './BookedOffCalendar';
 
 interface TimeOffApprovalPageProps {
   requests: Record<string, TimeOffRequest>;
@@ -47,6 +48,18 @@ export default function TimeOffApprovalPage({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [denyTargetId, setDenyTargetId] = useState<string | null>(null);
   const [denyReason, setDenyReason] = useState('');
+  // Coverage panel: the pending request currently overlaid on the month
+  // grid so the reviewer sees its impact against already-approved days.
+  const [coverageOpen, setCoverageOpen] = useState(false);
+  const [previewId, setPreviewId] = useState<string | null>(null);
+
+  const previewReq = previewId ? (requests || {})[previewId] : null;
+  const previewMonth = previewReq?.startDate
+    ? new Date(`${previewReq.startDate}T12:00:00`)
+    : previewReq?.partialDate
+      ? new Date(`${previewReq.partialDate}T12:00:00`)
+      : undefined;
+  const showCoverage = (id: string) => { setPreviewId(id); setCoverageOpen(true); };
 
   const empName = (id: string) => employees.find(e => e.id === id)?.name || id;
   const overlapNote = (r: TimeOffRequest): string | null => {
@@ -85,7 +98,38 @@ export default function TimeOffApprovalPage({
           <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
             <Plane className="w-6 h-6 text-sky-700" /> Time Off Requests
           </h2>
+          <button
+            type="button"
+            onClick={() => { setCoverageOpen(o => !o); if (!coverageOpen && !previewId) setPreviewId(null); }}
+            aria-pressed={coverageOpen}
+            className={`inline-flex items-center gap-2 text-xs font-black uppercase tracking-widest px-3 py-2 rounded-lg border shadow-sm ${coverageOpen ? 'bg-rose-600 text-white border-rose-700' : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'}`}
+          >
+            <CalendarRange className="w-4 h-4" /> {coverageOpen ? 'Hide coverage' : 'Month coverage'}
+          </button>
         </div>
+
+        {/* Booked-off coverage — the same monthly grid the schedule board
+            shows, so the reviewer reads that month's coverage in the same
+            breath. The request under review overlays as a distinct pending
+            tag against the already-approved days. */}
+        {coverageOpen && (
+          <section className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            {previewReq && (
+              <div className="px-4 py-2 border-b border-slate-100 bg-amber-50 text-[12px] text-amber-800 flex items-center gap-2 flex-wrap">
+                <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border bg-amber-100 border-amber-300 text-amber-700">Previewing</span>
+                <span className="font-bold">{empName(previewReq.employeeId)}</span>
+                <span className="text-amber-700">{describeRange(previewReq)}</span>
+                <button onClick={() => setPreviewId(null)} className="ml-auto text-[10px] font-black uppercase tracking-widest text-amber-700 hover:underline">Clear</button>
+              </div>
+            )}
+            <BookedOffCalendar
+              key={previewId || 'none'}
+              employees={employees}
+              pendingRequest={previewReq}
+              initialMonth={previewMonth}
+            />
+          </section>
+        )}
 
         <section className="bg-white rounded-xl shadow-sm border border-slate-200">
           <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
@@ -121,6 +165,14 @@ export default function TimeOffApprovalPage({
                       <div className="text-[10px] text-slate-400 mt-1">submitted {formatDateTime(r.createdAt)}</div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => showCoverage(r.id)}
+                        title="See this month's booked-off coverage with this request overlaid"
+                        className={`min-h-[36px] inline-flex items-center gap-1 text-[11px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg border ${previewId === r.id && coverageOpen ? 'bg-rose-600 text-white border-rose-700' : 'text-rose-600 hover:bg-rose-50 border-rose-200'}`}
+                      >
+                        <CalendarRange className="w-3.5 h-3.5" /> Coverage
+                      </button>
                       <button
                         type="button"
                         onClick={() => setDenyTargetId(r.id)}

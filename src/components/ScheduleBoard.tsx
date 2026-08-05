@@ -5,7 +5,7 @@ import {
   Filter, CloudSun, Cloud, Printer, Plus, Trash2, Users, Truck,
   ChevronDown, ChevronUp, X, Package, Hammer, Flame, CheckCircle, AlertTriangle, AlertCircle,
   TrendingUp, CreditCard as IdCard, Copy, ClipboardPaste, ShieldCheck,
-  Moon, Lock, Link2, ArrowLeft
+  Moon, Lock, Link2, ArrowLeft, Plane
 } from 'lucide-react';
 import { AppData, Crew, Employee, FleetItem, OverrideRecord, UserRole, JobberUser, MechanicTask } from '../types';
 import DispatchConfirmModal from './DispatchConfirmModal';
@@ -22,6 +22,7 @@ import type { ActiveInspectionState } from './InspectionModal';
 import CrewCardWarning from './CrewCardWarning';
 import OverrideModal from './OverrideModal';
 import EndDayModal from './EndDayModal';
+import BookedOffCalendar from './BookedOffCalendar';
 
 const getCrewColors = (div: string, num: number) => {
   const palettes: Record<string, string[]> = {
@@ -140,6 +141,17 @@ export default function ScheduleBoard({
   const [copyCrewCtx, setCopyCrewCtx] = useState<{ sourceDate: string; crewId: string; targetDate: string } | null>(null);
   const [endDayCtx, setEndDayCtx] = useState<{ dateString: string; crewId: string } | null>(null);
   const [dispatchCtx, setDispatchCtx] = useState<{ dateString: string; crew: Crew; pendingOverrides: OverrideRecord[]; overrideKey: string } | null>(null);
+  // "Booked off" mode swaps the whole board body for the monthly approved
+  // time-off view. Off by default; toggling returns to the normal board.
+  const [bookedOffView, setBookedOffView] = useState(false);
+  // A division manager opens the booked-off view on their own division;
+  // admins / all-division managers open on "All". Mirrors the crewFilter
+  // division mapping used across the board.
+  const bookedOffDefaultDivision =
+    currentUserEmployee?.managedDivision === 'lawn' ? 'Lawn Division'
+      : currentUserEmployee?.managedDivision === 'small' ? 'Small Projects'
+        : currentUserEmployee?.managedDivision === 'large' ? 'Large Projects'
+          : 'All';
 
   const finalizeDispatch = (newMechanicTask: MechanicTask | null) => {
     if (!dispatchCtx) return;
@@ -1094,47 +1106,77 @@ export default function ScheduleBoard({
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-gray-100 print:bg-white print:overflow-visible relative">
       <div className="bg-white border-b border-gray-200 p-4 flex flex-wrap items-center justify-between shadow-sm print:shadow-none print:border-b-2 print:border-gray-800 print:mb-4 gap-4">
         <div className="flex items-center gap-4">
-          {scheduleMode === 'weekly' && (
-            <button
-              type="button"
-              onClick={() => setScheduleMode('daily')}
-              aria-label="Back to daily view"
-              title="Back to daily view"
-              className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-600 hover:bg-gray-100 rounded-lg print:hidden"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-          )}
-          <div className="flex items-center bg-gray-100 rounded-lg p-1 print:hidden">
-            <button onClick={() => setScheduleMode('weekly')} className={`px-3 py-1.5 text-sm font-bold rounded ${scheduleMode === 'weekly' ? 'bg-white shadow-sm text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><CalendarDays className="w-4 h-4 inline mr-1" /> 7-Day</button>
-            <button onClick={() => setScheduleMode('daily')} className={`px-3 py-1.5 text-sm font-bold rounded ${scheduleMode === 'daily' ? 'bg-white shadow-sm text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><CalendarIcon className="w-4 h-4 inline mr-1" /> Daily</button>
-          </div>
+          {bookedOffView ? (
+            <div className="text-gray-800 text-lg font-black tracking-wide inline-flex items-center gap-2">
+              <Plane className="w-5 h-5 text-rose-600" /> Booked off
+              <span className="text-[11px] font-bold text-slate-400 normal-case tracking-normal">approved time off</span>
+            </div>
+          ) : (
+            <>
+              {scheduleMode === 'weekly' && (
+                <button
+                  type="button"
+                  onClick={() => setScheduleMode('daily')}
+                  aria-label="Back to daily view"
+                  title="Back to daily view"
+                  className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-600 hover:bg-gray-100 rounded-lg print:hidden"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+              )}
+              <div className="flex items-center bg-gray-100 rounded-lg p-1 print:hidden">
+                <button onClick={() => setScheduleMode('weekly')} className={`px-3 py-1.5 text-sm font-bold rounded ${scheduleMode === 'weekly' ? 'bg-white shadow-sm text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><CalendarDays className="w-4 h-4 inline mr-1" /> 7-Day</button>
+                <button onClick={() => setScheduleMode('daily')} className={`px-3 py-1.5 text-sm font-bold rounded ${scheduleMode === 'daily' ? 'bg-white shadow-sm text-green-700' : 'text-gray-500 hover:text-gray-700'}`}><CalendarIcon className="w-4 h-4 inline mr-1" /> Daily</button>
+              </div>
 
-          <div className="flex items-center bg-gray-100 rounded-lg p-1 print:hidden">
-            <button onClick={() => scheduleMode === 'weekly' ? handlePrevWeek() : setSelectedDailyDate(addDaysToronto(selectedDailyDate, -1))} className="p-1.5 hover:bg-white rounded shadow-sm text-gray-600"><ChevronLeft className="w-4 h-4" /></button>
-            <button onClick={() => scheduleMode === 'weekly' ? handleToday() : setSelectedDailyDate(formatTodayInToronto())} className="px-3 py-1.5 text-xs font-bold uppercase hover:bg-white rounded shadow-sm text-gray-700 mx-1">Today</button>
-            <button onClick={() => scheduleMode === 'weekly' ? handleNextWeek() : setSelectedDailyDate(addDaysToronto(selectedDailyDate, 1))} className="p-1.5 hover:bg-white rounded shadow-sm text-gray-600"><ChevronRight className="w-4 h-4" /></button>
-          </div>
+              <div className="flex items-center bg-gray-100 rounded-lg p-1 print:hidden">
+                <button onClick={() => scheduleMode === 'weekly' ? handlePrevWeek() : setSelectedDailyDate(addDaysToronto(selectedDailyDate, -1))} className="p-1.5 hover:bg-white rounded shadow-sm text-gray-600"><ChevronLeft className="w-4 h-4" /></button>
+                <button onClick={() => scheduleMode === 'weekly' ? handleToday() : setSelectedDailyDate(formatTodayInToronto())} className="px-3 py-1.5 text-xs font-bold uppercase hover:bg-white rounded shadow-sm text-gray-700 mx-1">Today</button>
+                <button onClick={() => scheduleMode === 'weekly' ? handleNextWeek() : setSelectedDailyDate(addDaysToronto(selectedDailyDate, 1))} className="p-1.5 hover:bg-white rounded shadow-sm text-gray-600"><ChevronRight className="w-4 h-4" /></button>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="flex items-center gap-4 flex-wrap">
-          <div className="text-gray-800 text-lg font-black tracking-wide print:text-xl mr-2">
-            {scheduleMode === 'weekly' ? `Week of ${startOfWeek.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}` : new Date(`${selectedDailyDate}T12:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
-          </div>
+          {!bookedOffView && (
+            <>
+              <div className="text-gray-800 text-lg font-black tracking-wide print:text-xl mr-2">
+                {scheduleMode === 'weekly' ? `Week of ${startOfWeek.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}` : new Date(`${selectedDailyDate}T12:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+              </div>
 
-          <div className="flex items-center gap-2 bg-white border border-gray-300 rounded-lg px-2 py-1.5 shadow-sm print:hidden">
-            <Filter className="w-4 h-4 text-gray-500" />
-            <select className="text-sm font-bold text-gray-700 bg-transparent outline-none cursor-pointer" value={crewFilter} onChange={(e) => setCrewFilter(e.target.value)}>
-              <option value="All">All Divisions</option>
-              {DIVISIONS.map(type => <option key={type} value={type}>{type}</option>)}
-            </select>
-          </div>
+              <div className="flex items-center gap-2 bg-white border border-gray-300 rounded-lg px-2 py-1.5 shadow-sm print:hidden">
+                <Filter className="w-4 h-4 text-gray-500" />
+                <select className="text-sm font-bold text-gray-700 bg-transparent outline-none cursor-pointer" value={crewFilter} onChange={(e) => setCrewFilter(e.target.value)}>
+                  <option value="All">All Divisions</option>
+                  {DIVISIONS.map(type => <option key={type} value={type}>{type}</option>)}
+                </select>
+              </div>
+            </>
+          )}
 
-          <button onClick={() => setIsWeatherModalOpen(true)} className="flex items-center gap-2 bg-green-50 text-green-700 border border-green-200 px-3 py-2 rounded-lg text-sm font-bold hover:bg-green-100 transition-colors print:hidden shadow-sm"><CloudSun className="w-4 h-4" /> Weather</button>
-          <button onClick={handlePrint} className="flex items-center gap-2 bg-slate-800 text-white px-3 py-2 rounded-lg text-sm font-bold hover:bg-slate-700 transition-colors print:hidden shadow-sm"><Printer className="w-4 h-4" /> Print</button>
+          <button
+            onClick={() => setBookedOffView(v => !v)}
+            aria-pressed={bookedOffView}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors print:hidden shadow-sm border ${bookedOffView ? 'bg-rose-600 text-white border-rose-700 hover:bg-rose-700' : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'}`}
+          ><Plane className="w-4 h-4" /> Booked off</button>
+          {!bookedOffView && (
+            <>
+              <button onClick={() => setIsWeatherModalOpen(true)} className="flex items-center gap-2 bg-green-50 text-green-700 border border-green-200 px-3 py-2 rounded-lg text-sm font-bold hover:bg-green-100 transition-colors print:hidden shadow-sm"><CloudSun className="w-4 h-4" /> Weather</button>
+              <button onClick={handlePrint} className="flex items-center gap-2 bg-slate-800 text-white px-3 py-2 rounded-lg text-sm font-bold hover:bg-slate-700 transition-colors print:hidden shadow-sm"><Printer className="w-4 h-4" /> Print</button>
+            </>
+          )}
         </div>
       </div>
 
+      {bookedOffView ? (
+        <div className="flex-1 overflow-y-auto">
+          <BookedOffCalendar
+            employees={appData.employees || []}
+            defaultDivision={bookedOffDefaultDivision}
+          />
+        </div>
+      ) : (
       <div className={`flex-1 overflow-x-auto print:overflow-visible ${scheduleMode === 'weekly' ? 'overflow-y-hidden' : 'overflow-y-auto p-6'}`}>
         {scheduleMode === 'weekly' ? (
           <div className="flex h-full min-w-max p-4 gap-4 print:p-0 print:flex-wrap print:w-full print:min-w-0 print:gap-2">
@@ -1220,6 +1262,7 @@ export default function ScheduleBoard({
           </div>
         )}
       </div>
+      )}
 
       <OverrideModal
         isOpen={!!overrideModalCtx}
