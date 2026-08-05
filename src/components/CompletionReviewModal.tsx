@@ -48,7 +48,7 @@ const formatTime = (ms: number): string => {
   catch { return ''; }
 };
 
-const round1 = (n: number): number => Math.round(n * 10) / 10;
+const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 export default function CompletionReviewModal({
   isOpen, onClose, job, currentDate, currentCrewId,
@@ -117,7 +117,7 @@ export default function CompletionReviewModal({
   }, [sortedHistory, currentDate]);
   const cumulativePriorPct = useMemo(() => {
     if (job.totalBH <= 0) return 0;
-    return Math.min(100, round1((cumulativePriorBH / job.totalBH) * 100));
+    return Math.min(100, round2((cumulativePriorBH / job.totalBH) * 100));
   }, [cumulativePriorBH, job.totalBH]);
   const priorPct = hasSplits ? perCrewPriorPct : cumulativePriorPct;
 
@@ -137,7 +137,7 @@ export default function CompletionReviewModal({
   const nextPctValid = newPct !== '' && Number.isFinite(nextPctNumber) && nextPctNumber >= priorPct && nextPctNumber <= 100;
   const delta = nextPctValid ? Math.max(0, nextPctNumber - priorPct) : 0;
   // Credit math uses this crew's share (basisBH), not the visit total.
-  const previewBH = round1((delta / 100) * basisBH);
+  const previewBH = round2((delta / 100) * basisBH);
 
   // Crews available on the split date (for the picker default).
   const crewsForSplitDate: Crew[] = splitDate ? (appData.schedules[splitDate] || []) : [];
@@ -210,13 +210,13 @@ export default function CompletionReviewModal({
         if (m.isNew) {
           const cumPct = job.totalBH > 0 ? (cumBH / job.totalBH) * 100 : 0;
           if (m.percentComplete + 0.05 < cumPct) {
-            showToastMsg(`${m.targetDate}'s % (${m.percentComplete}) must be ≥ cumulative prior (${round1(cumPct)}%).`);
+            showToastMsg(`${m.targetDate}'s % (${m.percentComplete}) must be ≥ cumulative prior (${round2(cumPct)}%).`);
             return;
           }
           const delta = Math.max(0, m.percentComplete - cumPct);
-          cumBH = round1(cumBH + (delta / 100) * job.totalBH);
+          cumBH = round2(cumBH + (delta / 100) * job.totalBH);
         } else {
-          cumBH = round1(cumBH + m.creditedBH);
+          cumBH = round2(cumBH + m.creditedBH);
         }
       }
     }
@@ -350,12 +350,12 @@ export default function CompletionReviewModal({
               return;
             }
             const d = Math.max(0, entry.percentComplete - prevPct);
-            entry.creditedBH = round1((d / 100) * share);
+            entry.creditedBH = round2((d / 100) * share);
             prevPct = entry.percentComplete;
           }
         }
         for (const list of perCrew.values()) {
-          for (const e of list) cumBHTotal = round1(cumBHTotal + (Number(e.creditedBH) || 0));
+          for (const e of list) cumBHTotal = round2(cumBHTotal + (Number(e.creditedBH) || 0));
         }
       } else {
         // NO SPLITS — visit-wide cumulative timeline. Legacy entries
@@ -370,18 +370,18 @@ export default function CompletionReviewModal({
           if (newEntrySet.has(entry)) {
             const cumPct = job.totalBH > 0 ? (cumBH / job.totalBH) * 100 : 0;
             if (entry.percentComplete + 0.05 < cumPct) {
-              showToastMsg(`Validation failed: ${entry.targetDate}'s % (${entry.percentComplete}) is below cumulative prior (${round1(cumPct)}%).`);
+              showToastMsg(`Validation failed: ${entry.targetDate}'s % (${entry.percentComplete}) is below cumulative prior (${round2(cumPct)}%).`);
               setBusy(false);
               return;
             }
             const delta = Math.max(0, entry.percentComplete - cumPct);
-            let bh = round1((delta / 100) * job.totalBH);
-            const remaining = round1(job.totalBH - cumBH);
+            let bh = round2((delta / 100) * job.totalBH);
+            const remaining = round2(job.totalBH - cumBH);
             if (bh > remaining) bh = remaining;
             entry.creditedBH = bh;
-            cumBH = round1(cumBH + bh);
+            cumBH = round2(cumBH + bh);
           } else {
-            cumBH = round1(cumBH + (Number(entry.creditedBH) || 0));
+            cumBH = round2(cumBH + (Number(entry.creditedBH) || 0));
           }
         }
         cumBHTotal = cumBH;
@@ -591,7 +591,7 @@ export default function CompletionReviewModal({
     }
   };
 
-  const todayDelta = round1((Math.max(0, nextPctNumber - priorPct) / 100) * basisBH);
+  const todayDelta = round2((Math.max(0, nextPctNumber - priorPct) / 100) * basisBH);
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center md:p-4">

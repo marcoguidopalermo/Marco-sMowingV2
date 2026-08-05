@@ -1519,7 +1519,7 @@ async function runPerformanceSync(args: {
         (empId) => !absentTodaySet.has(empId) && !testUserIds.has(empId),
       ).length;
     };
-    const round1 = (n: number): number => Math.round(n * 10) / 10;
+    const round2 = (n: number): number => Math.round(n * 100) / 100;
     const buildHeadcountSplit = (
       crewIds: string[],
       totalBH: number,
@@ -1528,25 +1528,25 @@ async function runPerformanceSync(args: {
       const totalHead = heads.reduce((a, b) => a + b, 0);
       let result: Array<{ crewId: string; bh: number }>;
       if (totalHead === 0) {
-        const per = round1(totalBH / crewIds.length);
+        const per = round2(totalBH / crewIds.length);
         result = crewIds.map((c) => ({crewId: c, bh: per}));
       } else {
         result = crewIds.map((c, i) => ({
           crewId: c,
-          bh: round1(totalBH * (heads[i] / totalHead)),
+          bh: round2(totalBH * (heads[i] / totalHead)),
         }));
       }
       // Fix any rounding drift so the sum lands exactly on totalBH.
       const sum = result.reduce((a, s) => a + s.bh, 0);
-      const drift = round1(totalBH - sum);
-      if (Math.abs(drift) >= 0.05) {
+      const drift = round2(totalBH - sum);
+      if (Math.abs(drift) >= 0.005) {
         let maxIdx = 0;
         for (let i = 1; i < result.length; i++) {
           if (result[i].bh > result[maxIdx].bh) maxIdx = i;
         }
         result[maxIdx] = {
           ...result[maxIdx],
-          bh: round1(result[maxIdx].bh + drift),
+          bh: round2(result[maxIdx].bh + drift),
         };
       }
       return result;
@@ -1585,13 +1585,13 @@ async function runPerformanceSync(args: {
             for (let i = 0; i < updated.length; i++) {
               updated[i] = {
                 ...updated[i],
-                bh: round1(
+                bh: round2(
                   updated[i].bh + removedTotal * (updated[i].bh / baseTotal),
                 ),
               };
             }
           } else {
-            const per = round1(removedTotal / updated.length);
+            const per = round2(removedTotal / updated.length);
             for (let i = 0; i < updated.length; i++) {
               updated[i] = {...updated[i], bh: per};
             }
@@ -1603,8 +1603,8 @@ async function runPerformanceSync(args: {
         }
         // Repair any drift introduced by redistribution.
         const sum = updated.reduce((a, s) => a + s.bh, 0);
-        const drift = round1(visitTotalBH - sum);
-        if (Math.abs(drift) >= 0.05 && updated.length > 0) {
+        const drift = round2(visitTotalBH - sum);
+        if (Math.abs(drift) >= 0.005 && updated.length > 0) {
           // Bias to the largest non-zero share; if all 0, bias to the first.
           let maxIdx = 0;
           for (let i = 1; i < updated.length; i++) {
@@ -1612,7 +1612,7 @@ async function runPerformanceSync(args: {
           }
           updated[maxIdx] = {
             ...updated[maxIdx],
-            bh: round1(updated[maxIdx].bh + drift),
+            bh: round2(updated[maxIdx].bh + drift),
           };
         }
         visitBHSplits[visitId] = {
@@ -2214,18 +2214,18 @@ async function runPerformanceSync(args: {
           // to totalBH the slices sum to jobRemaining — the ledger can
           // never exceed totalBH. Single-crew days: share ratio = 1, so
           // remainderSlice = jobRemaining (today's behavior, unchanged).
-          const creditedBeforeToday = round1(
+          const creditedBeforeToday = round2(
             mdJob.completionHistory
               .filter((h) => h.targetDate !== targetDate)
               .reduce((sum, h) => sum + (Number(h.creditedBH) || 0), 0),
           );
           const jobRemaining = Math.max(
-            0, round1(mdJob.totalBH - creditedBeforeToday),
+            0, round2(mdJob.totalBH - creditedBeforeToday),
           );
           const shareRatio = mdJob.totalBH > 0 ?
             myCrewShare / mdJob.totalBH : 1;
           const remainderSlice = Math.min(
-            jobRemaining, round1(jobRemaining * shareRatio),
+            jobRemaining, round2(jobRemaining * shareRatio),
           );
           // Bug 1 fix: a stale partial entry (e.g., manager opened
           // "Mark Partial %" and saved 0%) used to short-circuit the
@@ -2363,16 +2363,16 @@ async function runPerformanceSync(args: {
           // rather than letting it pass silently. Detection only; no
           // mutation, so a real over-credit stays visible until corrected.
           {
-            const ledgerCredited = round1(
+            const ledgerCredited = round2(
               mdJob.completionHistory
                 .reduce((sum, h) => sum + (Number(h.creditedBH) || 0), 0),
             );
-            if (ledgerCredited > round1(mdJob.totalBH) + 0.05) {
+            if (ledgerCredited > round2(mdJob.totalBH) + 0.05) {
               summary.warnings.push(
                 `multiday_credit_exceeds_total visit=${visit.id} ` +
                 `job=${jobId} credited=${ledgerCredited} ` +
-                `total=${round1(mdJob.totalBH)} ` +
-                `excess=${round1(ledgerCredited - mdJob.totalBH)}`,
+                `total=${round2(mdJob.totalBH)} ` +
+                `excess=${round2(ledgerCredited - mdJob.totalBH)}`,
               );
             }
           }
