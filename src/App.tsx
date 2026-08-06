@@ -25,7 +25,7 @@ import {
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, JobberBhConflict, MonthlySummary,
   RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, RoleTaskInstance,
   ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry,
-  CapacityForecast
+  CapacityForecast, BonusPayoutRecord
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
@@ -159,6 +159,10 @@ export default function App() {
   // into the 1 MiB main doc. The two are merged at render time.
   const [capacityForecasts, setCapacityForecasts] =
     useState<Record<'projects' | 'lawn', CapacityForecast | null>>({ projects: null, lawn: null });
+  // Bonus PAYOUT markers (paid / excluded), one doc per month in their own
+  // subcollection. Held outside appData — this is a payout record with an
+  // audit trail, and it must not ride along on every appData write.
+  const [bonusPayouts, setBonusPayouts] = useState<Record<string, BonusPayoutRecord>>({});
 
   // Real signed-in identity. These are pinned to the Firebase auth
   // user and never change at the View As layer. The
@@ -1111,6 +1115,24 @@ export default function App() {
     const u1 = sub('projects');
     const u2 = sub('lawn');
     return () => { u1(); u2(); };
+  }, [user]);
+
+  // Bonus payout markers — live, one document per month.
+  useEffect(() => {
+    if (!user) return;
+    const col = collection(db, 'artifacts', appId, 'public', 'data', 'bonusPayouts');
+    return onSnapshot(
+      col,
+      snap => {
+        const map: Record<string, BonusPayoutRecord> = {};
+        snap.forEach(docSnap => {
+          const v = docSnap.data() as BonusPayoutRecord;
+          if (v && v.ym) map[v.ym] = v;
+        });
+        setBonusPayouts(map);
+      },
+      err => { console.error('bonusPayouts listen error:', err); },
+    );
   }, [user]);
 
   // Phase 1: live multiDayJobs subcollection listener. Rebuilds the
@@ -2499,6 +2521,40 @@ export default function App() {
       );
     } catch (err: any) {
       showToastMsg(`Capacity refresh failed: ${err?.message || String(err)}`);
+    }
+  };
+
+  // Bonus PAYOUT marker write. Admin only. Writes ONLY the per-month payout
+  // document — it never touches performance, monthly summaries or anything
+  // the bonus calculation reads, so what an employee EARNED is unaffected by
+  // any decision recorded here.
+  const markBonusPayout = async (args: {
+    ym: string; empId: string; empName: string;
+    to: 'paid' | 'excluded' | 'unmarked';
+    amount: number;
+    reason?: import('./types').BonusExcludeReason;
+    reasonNote?: string;
+  }) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    const { applyMark } = await import('./lib/bonusPayouts');
+    const next = applyMark({
+      rec: bonusPayouts[args.ym],
+      ym: args.ym,
+      empId: args.empId,
+      empName: args.empName,
+      to: args.to,
+      amount: args.amount,
+      reason: args.reason,
+      reasonNote: args.reasonNote,
+      by: displayEmail,
+      byName: displayName,
+      at: Date.now(),
+    });
+    try {
+      const clean = JSON.parse(JSON.stringify(next, (_k, v) => (v === undefined ? null : v)));
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bonusPayouts', args.ym), clean);
+    } catch (err: any) {
+      showToastMsg(`Could not save payout mark: ${err?.message || String(err)}`);
     }
   };
 
@@ -4596,6 +4652,8 @@ export default function App() {
       currentUserName={displayName}
       currentUserRole={effectiveRole}
       isAdmin={isAdmin}
+      bonusPayouts={bonusPayouts}
+      onMarkBonusPayout={markBonusPayout}
     />
   );
 

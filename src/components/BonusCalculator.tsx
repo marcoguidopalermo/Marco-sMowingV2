@@ -1,12 +1,25 @@
-import { useMemo, useState } from 'react';
-import { DollarSign, FlaskConical, RotateCcw, TrendingUp } from 'lucide-react';
-import { MonthlySummary, BonusTier } from '../types';
+import { useMemo, useState, Fragment } from 'react';
+import { DollarSign, FlaskConical, RotateCcw, TrendingUp, Check, Ban, History, X } from 'lucide-react';
+import { MonthlySummary, BonusTier, BonusPayoutRecord, BonusExcludeReason, BonusMarkState } from '../types';
 import { STANDARD_BONUS_TIERS, computeBonus, rateForPct, nextTier } from '../lib/bonusTiers';
+import {
+  summarisePayout, stateOf, markOf, nextState, reasonLabel, EXCLUDE_REASONS,
+} from '../lib/bonusPayouts';
 
 interface BonusCalculatorProps {
   summaries: Record<string, MonthlySummary>;  // finalized months
   liveSummary: MonthlySummary;                 // current month (MTD projection)
   currentYm: string;
+  isAdmin: boolean;
+  // PAYOUT MARKERS — a layer over the calculation, never part of it.
+  payouts: Record<string, BonusPayoutRecord>;
+  onMark: (args: {
+    ym: string; empId: string; empName: string;
+    to: BonusMarkState | 'unmarked';
+    amount: number;
+    reason?: BonusExcludeReason;
+    reasonNote?: string;
+  }) => void | Promise<void>;
 }
 
 const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -16,7 +29,9 @@ const monthName = (ym: string) => {
   return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 };
 
-export default function BonusCalculator({ summaries, liveSummary, currentYm }: BonusCalculatorProps) {
+export default function BonusCalculator({
+  summaries, liveSummary, currentYm, isAdmin, payouts, onMark,
+}: BonusCalculatorProps) {
   const months = useMemo(
     () => [...new Set([...Object.keys(summaries), currentYm])].sort().reverse(),
     [summaries, currentYm],
@@ -36,6 +51,36 @@ export default function BonusCalculator({ summaries, liveSummary, currentYm }: B
     () => (summary ? computeBonus(summary, activeTiers) : null),
     [summary, activeTiers],
   );
+
+  // ── PAYOUT MARKERS. Applied on top of `result`; `result` is never altered,
+  // so every earned figure on screen is the calculation's own output.
+  const payoutRec = payouts[selected];
+  const payout = useMemo(() => summarisePayout(result, payoutRec), [result, payoutRec]);
+  // Which row is mid-exclude (picking a reason).
+  const [excluding, setExcluding] = useState<{ empId: string; name: string; amount: number } | null>(null);
+  const [reason, setReason] = useState<BonusExcludeReason>('left_before_month_end');
+  const [note, setNote] = useState('');
+  const [showAudit, setShowAudit] = useState(false);
+
+  const toggle = (empId: string, name: string, amount: number, tapped: BonusMarkState) => {
+    const to = nextState(stateOf(payoutRec, empId), tapped);
+    if (to === 'excluded') {
+      setExcluding({ empId, name, amount });
+      setReason('left_before_month_end');
+      setNote('');
+      return;
+    }
+    onMark({ ym: selected, empId, empName: name, to, amount });
+  };
+  const confirmExclude = () => {
+    if (!excluding) return;
+    onMark({
+      ym: selected, empId: excluding.empId, empName: excluding.name,
+      to: 'excluded', amount: excluding.amount,
+      reason, reasonNote: reason === 'other' ? note.trim() : undefined,
+    });
+    setExcluding(null);
+  };
 
   const editTier = (idx: number, field: 'minPct' | 'rate', value: string) => {
     const base = (sandbox ?? officialTiers).map(t => ({ ...t }));
@@ -79,6 +124,59 @@ export default function BonusCalculator({ summaries, liveSummary, currentYm }: B
         </div>
       )}
 
+      {/* PROGRESS — what's done, what's withheld, what's left to pay. */}
+      {summary && result && (
+        <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center gap-x-4 gap-y-1">
+          <span className="text-sm font-black text-slate-800">
+            {payout.progress.paid} of {payout.progress.payable} marked paid
+          </span>
+          {payout.progress.excluded > 0 && (
+            <span className="text-sm font-black text-rose-700">
+              {payout.progress.excluded} excluded
+            </span>
+          )}
+          <span className="text-sm font-black text-emerald-700">
+            {money(payout.company.toPay)} to pay
+          </span>
+          {payout.progress.payable > 0 && payout.progress.paid === payout.progress.payable && (
+            <span className="text-[10px] font-black uppercase tracking-widest bg-emerald-100 text-emerald-800 border border-emerald-300 px-1.5 py-0.5 rounded">
+              all paid
+            </span>
+          )}
+          {(payoutRec?.audit?.length || 0) > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAudit(v => !v)}
+              className="ml-auto text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-800 inline-flex items-center gap-1"
+            >
+              <History className="w-3 h-3" /> {payoutRec!.audit.length} change{payoutRec!.audit.length === 1 ? '' : 's'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {showAudit && payoutRec && payoutRec.audit.length > 0 && (
+        <div className="px-4 py-3 bg-white border-b border-slate-200 max-h-56 overflow-y-auto">
+          <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+            Payout trail — {monthName(selected)}
+          </div>
+          <div className="space-y-1">
+            {[...payoutRec.audit].reverse().map((a, i) => (
+              <div key={i} className="text-[11px] text-slate-600 flex flex-wrap gap-x-2">
+                <span className="font-mono text-slate-400">
+                  {new Date(a.at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                </span>
+                <span className="font-bold text-slate-800">{a.empName}</span>
+                <span className="text-slate-500">{a.from} → <b className={a.to === 'excluded' ? 'text-rose-700' : a.to === 'paid' ? 'text-emerald-700' : 'text-slate-600'}>{a.to}</b></span>
+                <span className="font-mono text-slate-500">{money(a.amount)}</span>
+                {a.reason && <span className="text-rose-600">{reasonLabel(a.reason, a.reasonNote)}</span>}
+                <span className="text-slate-400">by {a.byName}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {!summary || !result ? (
         <div className="p-6 text-center text-slate-400 text-sm">No data for {monthName(selected)}.</div>
       ) : (
@@ -111,7 +209,9 @@ export default function BonusCalculator({ summaries, liveSummary, currentYm }: B
                   <th className="py-1.5 px-3 text-right">Adj %</th>
                   <th className="py-1.5 px-3 text-right">Tier</th>
                   <th className="py-1.5 px-3 text-right">BH</th>
-                  <th className="py-1.5 pl-3 text-right">Pool</th>
+                  <th className="py-1.5 px-3 text-right">Pool (calculated)</th>
+                  <th className="py-1.5 px-3 text-right">Excluded</th>
+                  <th className="py-1.5 pl-3 text-right">To pay</th>
                 </tr>
               </thead>
               <tbody>
@@ -134,13 +234,24 @@ export default function BonusCalculator({ summaries, liveSummary, currentYm }: B
                         {nt && <div className="text-[10px] text-amber-600 font-bold">{nt.gap}% from {rateLabel(nt.rate)}</div>}
                       </td>
                       <td className="py-1.5 px-3 text-right font-mono text-slate-600">{d.bh.toFixed(1)}</td>
-                      <td className="py-1.5 pl-3 text-right font-mono font-black text-emerald-700">{money(d.pool)}</td>
+                      <td className="py-1.5 px-3 text-right font-mono text-slate-600">{money(d.pool)}</td>
+                      <td className="py-1.5 px-3 text-right font-mono text-rose-600">
+                        {(payout.byDivision[d.division]?.excluded || 0) > 0
+                          ? `−${money(payout.byDivision[d.division].excluded)}` : '—'}
+                      </td>
+                      <td className="py-1.5 pl-3 text-right font-mono font-black text-emerald-700">
+                        {money(payout.byDivision[d.division]?.toPay ?? d.pool)}
+                      </td>
                     </tr>
                   );
                 })}
                 <tr className="border-t-2 border-slate-200">
                   <td className="py-1.5 pr-3 text-left font-black text-slate-800" colSpan={4}>Company total</td>
-                  <td className="py-1.5 pl-3 text-right font-mono font-black text-emerald-800">{money(result.companyTotal)}</td>
+                  <td className="py-1.5 px-3 text-right font-mono font-black text-slate-700">{money(payout.company.calculated)}</td>
+                  <td className="py-1.5 px-3 text-right font-mono font-black text-rose-700">
+                    {payout.company.excluded > 0 ? `−${money(payout.company.excluded)}` : '—'}
+                  </td>
+                  <td className="py-1.5 pl-3 text-right font-mono font-black text-emerald-800">{money(payout.company.toPay)}</td>
                 </tr>
               </tbody>
             </table>
@@ -154,25 +265,132 @@ export default function BonusCalculator({ summaries, liveSummary, currentYm }: B
                 <tr className="border-b border-slate-100 text-[10px] font-black uppercase tracking-widest text-slate-400">
                   <th className="py-1.5 pr-3 text-left">Name</th>
                   <th className="py-1.5 px-3 text-left">BH by division → payout</th>
-                  <th className="py-1.5 pl-3 text-right">Total</th>
+                  <th className="py-1.5 px-3 text-right">Total</th>
+                  {isAdmin && <th className="py-1.5 pl-3 text-right">Payout</th>}
                 </tr>
               </thead>
               <tbody>
-                {result.perPerson.map(p => (
-                  <tr key={p.empId} className="border-b border-slate-50">
-                    <td className="py-1.5 pr-3 text-left font-medium text-slate-700 whitespace-nowrap">{p.name}</td>
-                    <td className="py-1.5 px-3 text-left">
-                      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] font-mono text-slate-500">
-                        {p.byDivision.map(bd => (
-                          <span key={bd.division}>
-                            {bd.division.split(' ')[0]} {bd.bh.toFixed(1)}×{rateLabel(bd.rate)} = <b className={bd.payout > 0 ? 'text-emerald-700' : 'text-slate-400'}>{money(bd.payout)}</b>
+                {result.perPerson.map(p => {
+                  const st = stateOf(payoutRec, p.empId);
+                  const m = markOf(payoutRec, p.empId);
+                  const isPaid = st === 'paid';
+                  const isExcluded = st === 'excluded';
+                  const rowCls = isExcluded
+                    ? 'bg-rose-50/70 border-rose-200'
+                    : isPaid ? 'bg-emerald-50/70 border-emerald-200' : 'border-slate-50';
+                  return (
+                    <Fragment key={p.empId}>
+                      <tr className={`border-b ${rowCls}`}>
+                        <td className={`py-1.5 pr-3 text-left font-medium whitespace-nowrap ${isExcluded ? 'text-rose-900' : isPaid ? 'text-emerald-900 line-through' : 'text-slate-700'}`}>
+                          {p.name}
+                          {isExcluded && (
+                            <span className="ml-1.5 text-[9px] font-black uppercase tracking-widest bg-rose-600 text-white px-1.5 py-0.5 rounded align-middle">
+                              not entitled
+                            </span>
+                          )}
+                          {isPaid && (
+                            <span className="ml-1.5 text-[9px] font-black uppercase tracking-widest bg-emerald-600 text-white px-1.5 py-0.5 rounded align-middle">
+                              paid
+                            </span>
+                          )}
+                        </td>
+                        <td className={`py-1.5 px-3 text-left ${isPaid ? 'line-through opacity-70' : ''}`}>
+                          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] font-mono text-slate-500">
+                            {p.byDivision.map(bd => (
+                              <span key={bd.division}>
+                                {bd.division.split(' ')[0]} {bd.bh.toFixed(1)}×{rateLabel(bd.rate)} = <b className={bd.payout > 0 ? 'text-emerald-700' : 'text-slate-400'}>{money(bd.payout)}</b>
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        {/* THE CALCULATED AMOUNT STAYS VISIBLE on an excluded
+                            row — struck through, never removed. The record has
+                            to read "earned X, excluded, not paid". */}
+                        <td className="py-1.5 px-3 text-right font-mono font-black whitespace-nowrap">
+                          <span className={isExcluded ? 'line-through text-rose-400' : isPaid ? 'line-through text-emerald-700' : 'text-emerald-700'}>
+                            {money(p.total)}
                           </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="py-1.5 pl-3 text-right font-mono font-black text-emerald-700">{money(p.total)}</td>
-                  </tr>
-                ))}
+                          {isExcluded && (
+                            <div className="text-[9px] font-black uppercase tracking-widest text-rose-700">not paid</div>
+                          )}
+                        </td>
+                        {isAdmin && (
+                          <td className="py-1.5 pl-3 text-right whitespace-nowrap">
+                            <div className="inline-flex gap-1">
+                              <button
+                                type="button"
+                                onClick={() => toggle(p.empId, p.name, p.total, 'paid')}
+                                aria-pressed={isPaid}
+                                title={isPaid ? 'Clear paid' : 'Mark paid'}
+                                className={`px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest border inline-flex items-center gap-1 ${isPaid ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-white text-emerald-700 border-emerald-300 hover:bg-emerald-50'}`}
+                              ><Check className="w-3 h-3" /> Paid</button>
+                              <button
+                                type="button"
+                                onClick={() => toggle(p.empId, p.name, p.total, 'excluded')}
+                                aria-pressed={isExcluded}
+                                title={isExcluded ? 'Clear exclusion' : 'Exclude from payout'}
+                                className={`px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest border inline-flex items-center gap-1 ${isExcluded ? 'bg-rose-600 text-white border-rose-700' : 'bg-white text-rose-700 border-rose-300 hover:bg-rose-50'}`}
+                              ><Ban className="w-3 h-3" /> Exclude</button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                      {/* Reason line on an excluded row */}
+                      {isExcluded && m && (
+                        <tr className="bg-rose-50/40">
+                          <td colSpan={isAdmin ? 4 : 3} className="px-3 pb-1.5 text-[11px] text-rose-800">
+                            <b>{reasonLabel(m.reason, m.reasonNote)}</b>
+                            <span className="text-rose-500">
+                              {' '}· earned {money(p.total)}, excluded, not paid · marked by {m.byName}{' '}
+                              {new Date(m.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            </span>
+                          </td>
+                        </tr>
+                      )}
+                      {/* Reason picker — shown inline while excluding */}
+                      {excluding?.empId === p.empId && (
+                        <tr className="bg-rose-50">
+                          <td colSpan={isAdmin ? 4 : 3} className="p-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-rose-700">
+                                Exclude {p.name} — {money(p.total)} not paid. Reason:
+                              </span>
+                              {EXCLUDE_REASONS.map(r => (
+                                <button
+                                  key={r.key}
+                                  type="button"
+                                  onClick={() => setReason(r.key)}
+                                  className={`px-2 py-1 rounded text-[11px] font-bold border ${reason === r.key ? 'bg-rose-600 text-white border-rose-700' : 'bg-white text-rose-700 border-rose-300'}`}
+                                >{r.label}</button>
+                              ))}
+                              {reason === 'other' && (
+                                <input
+                                  autoFocus
+                                  value={note}
+                                  onChange={e => setNote(e.target.value)}
+                                  placeholder="short reason"
+                                  className="text-[12px] border border-rose-300 rounded px-2 py-1 min-w-[10rem]"
+                                />
+                              )}
+                              <button
+                                type="button"
+                                onClick={confirmExclude}
+                                disabled={reason === 'other' && note.trim() === ''}
+                                className="px-3 py-1 rounded text-[10px] font-black uppercase tracking-widest bg-rose-700 text-white disabled:opacity-40"
+                              >Confirm exclude</button>
+                              <button
+                                type="button"
+                                onClick={() => setExcluding(null)}
+                                className="p-1 text-rose-500 hover:text-rose-800"
+                                aria-label="Cancel"
+                              ><X className="w-4 h-4" /></button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -181,6 +399,9 @@ export default function BonusCalculator({ summaries, liveSummary, currentYm }: B
             <TrendingUp className="w-3 h-3 inline mr-1" />
             Payout = Σ (your BH in a division × that division's tier rate). Efficiency &amp; BH are read-only — the same
             numbers crews see (buildDivisionMtd). Per-person payouts sum to each division pool exactly.
+            {' '}Paid / excluded marks are a PAYOUT RECORD laid over this calculation: an exclusion withholds that
+            person's share and reduces the total to pay, and <b>does not redistribute</b> — nobody else's figure moves.
+            What each person earned is unchanged by any mark.
             {!isProjection && summary.tierTable && ' Finalized month — computed from its stamped tier table.'}
           </div>
         </div>

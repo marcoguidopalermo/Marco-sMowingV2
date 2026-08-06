@@ -997,6 +997,55 @@ export interface AppSettings {
   capacity?: CapacitySettings;
 }
 
+// ══ BONUS PAYOUT MARKERS ══════════════════════════════════════════════════
+// A PAYOUT-TRACKING layer that sits ON TOP of the bonus calculation. It never
+// changes what was earned: efficiency, division pools and per-person shares
+// are computed by lib/bonusTiers from the monthly summaries and are untouched
+// by anything here. These records only say what happened to a share
+// afterwards — paid out, or withheld.
+export type BonusMarkState = 'paid' | 'excluded';
+
+// Why a share isn't being paid. Fixed options because this gets picked dozens
+// of times a month and free text would rot into inconsistency; 'other' keeps
+// the escape hatch with a note.
+export type BonusExcludeReason = 'left_before_month_end' | 'not_yet_eligible' | 'other';
+
+export interface BonusPayoutMark {
+  empId: string;
+  empName: string;
+  state: BonusMarkState;
+  reason?: BonusExcludeReason;
+  reasonNote?: string;
+  // The calculated share AT THE MOMENT OF MARKING. Never used in any total —
+  // the displayed figures always come from the live calculation — but a
+  // payout record has to be able to say what the number was when someone
+  // acted on it.
+  amountAtMark: number;
+  by: string;
+  byName: string;
+  at: number;
+}
+
+export interface BonusPayoutAudit {
+  at: number;
+  by: string;
+  byName: string;
+  empId: string;
+  empName: string;
+  from: BonusMarkState | 'unmarked';
+  to: BonusMarkState | 'unmarked';
+  reason?: BonusExcludeReason;
+  reasonNote?: string;
+  amount: number;
+}
+
+// One document per month, in its own subcollection — off the main appData doc.
+export interface BonusPayoutRecord {
+  ym: string;
+  marks: Record<string, BonusPayoutMark>;   // empId → mark (absent = unmarked)
+  audit: BonusPayoutAudit[];                // append-only
+}
+
 // ══ CAPACITY CALENDAR ═════════════════════════════════════════════════════
 // Forward view of SCHEDULED, UNCOMPLETED work. Read-only: these types feed
 // a display + admin settings values only. They never touch performance, pay,

@@ -1,6 +1,6 @@
 import { useMemo, useState, Fragment } from 'react';
 import { TrendingUp, ChevronDown, ChevronRight } from 'lucide-react';
-import { AppData, MonthlySummary } from '../types';
+import { AppData, MonthlySummary, BonusPayoutRecord, BonusExcludeReason } from '../types';
 import { buildMonthlySummary } from '../lib/monthlySummary';
 import BonusCalculator from './BonusCalculator';
 
@@ -8,6 +8,14 @@ interface TrendsPageProps {
   appData: AppData;
   today: string;   // YYYY-MM-DD (Toronto)
   isAdmin: boolean;
+  bonusPayouts: Record<string, BonusPayoutRecord>;
+  onMarkBonusPayout: (args: {
+    ym: string; empId: string; empName: string;
+    to: 'paid' | 'excluded' | 'unmarked';
+    amount: number;
+    reason?: BonusExcludeReason;
+    reasonNote?: string;
+  }) => void | Promise<void>;
 }
 
 const fmtPct = (v: number | null | undefined) => (v == null ? '—' : `${v.toFixed(1)}%`);
@@ -18,7 +26,7 @@ const monthColLabel = (ym: string) => {
   return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
 };
 
-export default function TrendsPage({ appData, today, isAdmin }: TrendsPageProps) {
+export default function TrendsPage({ appData, today, isAdmin, bonusPayouts, onMarkBonusPayout }: TrendsPageProps) {
   const currentYm = today.slice(0, 7);
   const [expandedDiv, setExpandedDiv] = useState<Record<string, boolean>>({});
 
@@ -116,7 +124,14 @@ export default function TrendsPage({ appData, today, isAdmin }: TrendsPageProps)
       {/* BONUS CALCULATOR — admin only. Reads efficiency/BH straight from the
           summaries; only tier lookup + arithmetic happen here. */}
       {isAdmin && (
-        <BonusCalculator summaries={finalized} liveSummary={liveSummary} currentYm={currentYm} />
+        <BonusCalculator
+          summaries={finalized}
+          liveSummary={liveSummary}
+          currentYm={currentYm}
+          isAdmin={isAdmin}
+          payouts={bonusPayouts}
+          onMark={onMarkBonusPayout}
+        />
       )}
 
       {/* COMPANY */}

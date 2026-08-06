@@ -8,7 +8,7 @@ import {
 import { httpsCallable } from 'firebase/functions';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { functions, db, appId } from '../lib/firebase';
-import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole, JobberBhConflict } from '../types';
+import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole, JobberBhConflict, BonusPayoutRecord, BonusExcludeReason } from '../types';
 import { logPerfActivity } from '../lib/perfAudit';
 import { monthsPresent, monthOfDate, monthSettlementStatus } from '../lib/performanceMonths';
 import { scanBlockingPartialJobs, monthResolutionSummary, BlockingPartialJob, totalBelowCredited, creditedBHOf } from '../lib/multiDayResolution';
@@ -133,6 +133,16 @@ interface PerformanceBoardProps {
   jobberBhConflicts: Record<string, JobberBhConflict[]>;
   onApplyJobberBhConflict: (c: JobberBhConflict) => void;
   onIgnoreJobberBhConflict: (c: JobberBhConflict) => void;
+  // Bonus PAYOUT markers (paid / excluded) — passed straight through to the
+  // trends tab's calculator. Read-only here.
+  bonusPayouts: Record<string, BonusPayoutRecord>;
+  onMarkBonusPayout: (args: {
+    ym: string; empId: string; empName: string;
+    to: 'paid' | 'excluded' | 'unmarked';
+    amount: number;
+    reason?: BonusExcludeReason;
+    reasonNote?: string;
+  }) => void | Promise<void>;
 }
 
 // Compact, append-only scope history for a multi-day ledger — one line per
@@ -213,6 +223,8 @@ export default function PerformanceBoard({
   currentUserName,
   currentUserRole,
   isAdmin,
+  bonusPayouts,
+  onMarkBonusPayout,
   jobberBhConflicts,
   onApplyJobberBhConflict,
   onIgnoreJobberBhConflict,
@@ -1382,7 +1394,13 @@ export default function PerformanceBoard({
       {perfTab === 'activity' ? (
         <PerformanceActivityLog setPerfTab={setPerfTab} setPerfDate={setPerfDate} showToastMsg={showToastMsg} />
       ) : perfTab === 'trends' ? (
-        <TrendsPage appData={appData} today={formatTodayInToronto()} isAdmin={isAdmin} />
+        <TrendsPage
+          appData={appData}
+          today={formatTodayInToronto()}
+          isAdmin={isAdmin}
+          bonusPayouts={bonusPayouts}
+          onMarkBonusPayout={onMarkBonusPayout}
+        />
       ) : perfTab === 'entry' ? (
         <div className="max-w-4xl mx-auto w-full pb-20 relative">
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6 sticky top-0 z-10">
