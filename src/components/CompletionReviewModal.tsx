@@ -93,6 +93,40 @@ export default function CompletionReviewModal({
     if (c) return stableCrewKey(c);
     return `crewid:${e.crewId}`;
   };
+  // Human label "Division #N" for a (date, crewId) — resolves from the day's
+  // schedule, then the performance log, then falls back to the raw id.
+  const crewLabelFor = (date: string, crewId: string): string => {
+    const c = appData.schedules[date]?.find(cr => cr.id === crewId);
+    if (c) return `${c.division} #${c.crewNumber}`;
+    const log = appData.performance?.[date]?.[crewId];
+    if (log) return `${log.division} #${log.crewNumber}`;
+    return crewId;
+  };
+  // Label for the crew the user tapped — used in the consequence line so a
+  // percentage reads as the crediting action it is.
+  const currentCrewLabel = useMemo(
+    () => crewLabelFor(currentDate, currentCrewId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [appData.schedules, appData.performance, currentDate, currentCrewId],
+  );
+  // ORPHAN REPORT (read-only): existing completionHistory entries that credit
+  // BH but have NO crew-day row carrying this visit on their date — i.e.
+  // ledger credit no crew-day reflects. Reported, never auto-fixed. (A row on
+  // ANY crew that day counts as attached, matching "does a row for this visit
+  // exist on that date at all?")
+  const orphanedEntries = useMemo(() => {
+    const out: { date: string; crew: string; bh: number }[] = [];
+    for (const h of job.completionHistory || []) {
+      const bh = Number(h.creditedBH) || 0;
+      if (bh <= 0) continue;
+      const dayMap = appData.performance?.[h.targetDate] || {};
+      const hasRow = Object.values(dayMap).some(log =>
+        (log.jobs || []).some(r => r.jobberVisitId === job.jobberVisitId));
+      if (!hasRow) out.push({ date: h.targetDate, crew: crewLabelFor(h.targetDate, h.crewId), bh });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job.completionHistory, job.jobberVisitId, appData.performance, appData.schedules]);
   const existingForToday = useMemo(
     () => sortedHistory.find(h => h.targetDate === currentDate && entryCrewKey(h) === currentCrewKey),
     // entryCrewKey closes over appData.schedules which is reflected via currentCrewKey's deps.
@@ -290,6 +324,31 @@ export default function CompletionReviewModal({
         newEntries.push(todayEntry);
       }
 
+      // GUARD — a completion must attach to a real crew-day. Refuse to write
+      // any NEW entry whose (date, crew) has no PerformanceLog: otherwise the
+      // ledger would carry credit that no crew-day reflects (the orphaned-
+      // credit bug). This mirrors the row-write loop's overlay exactly (base
+      // performance + dailyLogs for the current editor day), so the check
+      // matches precisely what that loop would — and previously silently
+      // skipped. Credited BH / the sync paths are untouched; we just fail
+      // loudly here instead of writing an unattached entry.
+      const perfForCheck: Record<string, Record<string, PerformanceLog>> = { ...(appData.performance || {}) };
+      if (dailyLogs && Object.keys(dailyLogs).length > 0) perfForCheck[currentDate] = { ...dailyLogs };
+      for (const e of newEntries) {
+        const crewLog = perfForCheck[e.targetDate]?.[e.crewId];
+        const label = crewLabelFor(e.targetDate, e.crewId);
+        if (!crewLog) {
+          showToastMsg(`No crew-day exists for ${label} on ${formatDateLabel(e.targetDate)} — add that crew to the day (record its BH/AH) before crediting completion.`);
+          setBusy(false);
+          return;
+        }
+        if (crewLog.approvalStatus === 'approved') {
+          showToastMsg(`${label} on ${formatDateLabel(e.targetDate)} is approved — unapprove it first.`);
+          setBusy(false);
+          return;
+        }
+      }
+
       // Merge: drop any existing entry on (date + stable crew identity)
       // that we're replacing. Stable identity matches across days, so a
       // re-save with the same crewKey on the same date supersedes the
@@ -414,9 +473,11 @@ export default function CompletionReviewModal({
         const day = { ...(nextPerformance[entry.targetDate] || {}) };
         const crewLog = day[entry.crewId];
         if (!crewLog) {
-          // No PerformanceLog yet for this crew/date — skip silently.
-          // Sync will materialize it next run; the completionHistory still
-          // captures the manager's intent.
+          // No PerformanceLog for this crew/date. NEW entries can't reach here
+          // — the guard above rejects the save before we get this far. So this
+          // only skips a pre-existing (legacy) orphaned entry being carried
+          // through the merge unchanged; it's surfaced by the orphan report,
+          // never auto-fixed.
           continue;
         }
         if (crewLog.approvalStatus === 'approved') continue;
@@ -643,6 +704,23 @@ export default function CompletionReviewModal({
         )}
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+          {orphanedEntries.length > 0 && (
+            <div className="text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-md p-3">
+              <div className="flex items-center gap-1.5 font-black uppercase tracking-widest text-[11px] text-rose-700 mb-1">
+                <AlertTriangle className="w-3.5 h-3.5" /> Orphaned credit — no crew-day carries this
+              </div>
+              <div className="mb-1.5">
+                {orphanedEntries.length} completion {orphanedEntries.length === 1 ? 'entry credits' : 'entries credit'} BH that no crew-day on {orphanedEntries.length === 1 ? 'its date' : 'their dates'} reflects. Credited BH is preserved — add the crew-day (or re-sync) to attach it. Not auto-fixed.
+              </div>
+              <ul className="space-y-0.5">
+                {orphanedEntries.map((o, i) => (
+                  <li key={i} className="font-mono text-[11px] text-rose-700">
+                    {formatDateLabel(o.date)} · {o.crew} · <span className="font-bold">{o.bh} BH</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {!hasSplits && cumulativePriorPct >= 100 && (
             <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-2">
               Already 100% complete from prior entries — no further % can be credited. Use the Override button only if you need to revisit.
@@ -664,17 +742,20 @@ export default function CompletionReviewModal({
                 className="w-24 border border-slate-300 rounded-lg p-2 text-lg font-mono font-bold text-emerald-700 outline-none focus:ring-2 focus:ring-emerald-400"
               />
               <span className="text-sm text-slate-500">%</span>
-              {nextPctValid && (
-                <span className="text-xs text-slate-600">
-                  → credits <span className="font-bold text-emerald-700">{todayDelta} BH</span> to this crew today
-                </span>
-              )}
               {newPct !== '' && !nextPctValid && (
                 <span className="text-xs text-rose-600 font-bold">
                   Must be between {priorPct} and 100.
                 </span>
               )}
             </div>
+            {/* Consequence line — marking a % IS the crediting action, so state
+                it plainly before saving (which crew, which date, how much). */}
+            {nextPctValid && (
+              <div className="mt-2 text-sm font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+                This will credit <span className="font-black">{todayDelta} BH</span> to {currentCrewLabel} on {formatDateLabel(currentDate)}.
+                {splits.length > 0 && <span className="text-emerald-700 font-medium"> Plus {splits.length} retroactive {splits.length === 1 ? 'entry' : 'entries'} below.</span>}
+              </div>
+            )}
           </div>
 
           <div className="border-t border-slate-200 pt-4">
