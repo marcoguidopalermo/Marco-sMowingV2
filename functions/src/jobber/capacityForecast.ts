@@ -54,9 +54,14 @@ const HORIZON_DAYS = 120;
 // started last week, isn't complete, and still runs into this week is
 // remaining committed work. Past-ending visits are dropped below.
 const LOOKBACK_DAYS = 21;
-// Page cap — 40 pages × 50 = 2,000 visits. Beyond that the snapshot is
-// marked truncated rather than silently short.
-const MAX_PAGES = 40;
+// Page size is 25, matching the performance sync's proven query cost.
+// Jobber prices a query by its whole nested shape against a 10,000-point
+// ceiling, and `first: 50` with job+client+assignedUsers nested under it
+// exceeds that ceiling outright — it comes back "Throttled" even with the
+// budget completely full, and no amount of waiting fixes it. 80 pages × 25
+// = 2,000 visits; beyond that the snapshot is marked truncated rather than
+// silently short.
+const MAX_PAGES = 80;
 // Firestore caps a document at 1 MiB. Each entry is small (~250 B), but the
 // cap is enforced explicitly so a runaway pull can never fail the write.
 const MAX_ENTRIES = 2500;
@@ -70,7 +75,7 @@ const FORWARD_VISITS_QUERY = `query ForwardVisits(
   $cursor: String
 ) {
   visits(
-    first: 50,
+    first: 25,
     after: $cursor,
     filter: { startAt: { after: $after, before: $before } }
   ) {
@@ -98,7 +103,7 @@ const FORWARD_VISITS_QUERY_MINIMAL = `query ForwardVisitsMinimal(
   $cursor: String
 ) {
   visits(
-    first: 50,
+    first: 25,
     after: $cursor,
     filter: { startAt: { after: $after, before: $before } }
   ) {
@@ -114,6 +119,23 @@ const FORWARD_VISITS_QUERY_MINIMAL = `query ForwardVisitsMinimal(
     pageInfo { endCursor hasNextPage }
   }
 }`;
+
+// The minimal-query fallback exists for ONE reason: the API no longer
+// accepts a field the rich query asks for (`endAt` / `client`). Anything
+// else — throttling, HTTP failures, network trouble — must propagate, so a
+// transient blip can't silently and permanently downgrade the forecast to
+// start-date-only bucketing. GraphQL validation errors name the offending
+// field; that's what this matches.
+const SCHEMA_ERROR = new RegExp([
+  "Cannot query field",
+  "doesn't exist on type",
+  "does not exist on type",
+  "Unknown argument",
+  "Field '[^']+' doesn't exist",
+  "undefinedField",
+  "argumentLiteralsIncompatible",
+  "Validation failed",
+].join("|"), "i");
 
 interface JobberAuthDoc {
   accessToken: string;
@@ -314,9 +336,11 @@ async function fetchForwardVisits(
       data = (await client.fetch(query, vars)) as typeof data;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      // Only the RICH query is allowed to fall back; if the minimal shape
-      // fails too, the error is real and propagates.
+      // Only the RICH query is allowed to fall back, and only for a schema
+      // error. Throttles and transport failures propagate — the next
+      // scheduled pass retries with the full shape.
       if (degraded || query === FORWARD_VISITS_QUERY_MINIMAL) throw e;
+      if (!SCHEMA_ERROR.test(msg)) throw e;
       degraded = true;
       query = FORWARD_VISITS_QUERY_MINIMAL;
       cursor = null;
