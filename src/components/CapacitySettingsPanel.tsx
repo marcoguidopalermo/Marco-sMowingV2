@@ -56,13 +56,15 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
         </label>
         <p className="text-xs text-slate-500">
           <strong>BH one person delivers in a week.</strong> Capacity is DERIVED from this
-          × the people actually scheduled that week, less approved time off — so it follows
-          a crew that changes shape instead of assuming full strength every week. Set a
-          DIVISION default; a crew value overrides it. <strong>Standard size</strong> is the
-          crew at full strength: it projects weeks the schedule hasn&apos;t reached yet and
-          is the faint reference that shows when a week is thin because nobody&apos;s
-          scheduled rather than because nothing&apos;s sold. Leave the rate blank and that
-          crew shows raw BH with <strong>no bar and no percentage</strong>.
+          × the people actually scheduled that week, less approved time off. <strong>The
+          schedule always wins</strong>: where a week has crew assignments, those people are
+          the basis and no figure here overrides them. Set a DIVISION default; a crew value
+          overrides it. <strong>Standard size</strong> is a FALLBACK — it projects weeks the
+          schedule hasn&apos;t reached yet, and is the faint full-strength reference that
+          shows when a week is thin because nobody&apos;s scheduled rather than because
+          nothing&apos;s sold. Blank standard size falls back again, to the median crew size
+          over the last 4 weeks of past scheduled days. Leave the rate blank and that crew
+          shows raw BH with <strong>no bar and no percentage</strong>.
           Nothing here touches performance, efficiency or pay.
         </p>
       </div>
@@ -105,8 +107,10 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
             </div>
             {rule.weeklyBH ? (
               <p className="text-[10px] font-bold text-amber-700">
-                A flat {rule.weeklyBH} BH/week is pinned for this division — it OVERRIDES the
-                derivation and ignores who is scheduled.{' '}
+                A legacy flat figure ({rule.weeklyBH} BH/week) is still stored for this
+                division. It is <strong>no longer used</strong> — the schedule is always the
+                basis where it has assignments, and standard size × BH-per-person covers the
+                rest, so a second manual number could only disagree with the first.{' '}
                 {isAdmin && (
                   <button type="button" onClick={() => setDivision(division, { weeklyBH: null })}
                     className="underline font-black">Clear it</button>

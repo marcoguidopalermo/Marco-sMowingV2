@@ -274,12 +274,21 @@ function CapacityNote({ row, cells, onOpenSettings }: {
     );
   }
   // Crew row: state the basis of the FIRST visible week in full, plus the
-  // average as the baseline to read the individual weeks against.
+  // average as the baseline to read the individual weeks against, plus where
+  // the standard size came from — a configured decision and an inference
+  // from past days should never look the same.
   const first = withCap[0];
+  const d = row.capacityDetail;
+  const stdNote = d && d.standardSize !== null ? (
+    d.standardSizeSource === 'set'
+      ? `standard size: ${d.standardSize} (set)`
+      : `standard size: ${d.standardSize} (inferred, median of ${d.standardSizeDays} past scheduled day${d.standardSizeDays === 1 ? '' : 's'} in the last 4 weeks)`
+  ) : null;
   return (
     <span className="text-[10px] font-bold text-slate-500">
       <span className="text-slate-600">{first.capacityLabel}</span>
       {' · '}avg {avg} BH/wk
+      {stdNote && <span className="text-slate-400"> · {stdNote}</span>}
       {cells.some(c => c.capacityBasis === 'projected') && (
         <span className="text-slate-400"> · later weeks projected</span>
       )}

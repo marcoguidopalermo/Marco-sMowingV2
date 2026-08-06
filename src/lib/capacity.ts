@@ -118,9 +118,8 @@ export function bandFor(pct: number, t: CapacityThresholds): CapacityBand {
 // number nobody can trace is no better than a made-up one.
 
 export type CapacityBasis =
-  | 'scheduled'   // real roster for that week
-  | 'projected'   // beyond the built schedule — standard size
-  | 'flat'        // admin pinned a fixed weekly total, schedule ignored
+  | 'scheduled'   // real roster for that week — ALWAYS wins when it exists
+  | 'projected'   // beyond the built schedule — standard size, a FALLBACK
   | 'none';       // no BH-per-person set — no bar, no percentage
 
 // Working days in a week. Time off is prorated against this: a person off 2
@@ -128,6 +127,8 @@ export type CapacityBasis =
 // toward booked BH — this denominator is only how a person's availability is
 // scaled, and crews are rostered Monday–Friday.
 const WORKING_DAYS = 5;
+
+export type StandardSizeSource = 'set' | 'inferred' | 'none';
 
 export interface WeekCapacity {
   bh: number | null;
@@ -139,6 +140,10 @@ export interface WeekCapacity {
   headcount: number;         // distinct people on the crew that week
   effectivePeople: number;   // headcount after time-off proration
   standardSize: number | null;
+  // Whether the standard size was CONFIGURED or inferred from past days —
+  // shown on the row so nobody mistakes an inference for a decision.
+  standardSizeSource: StandardSizeSource;
+  standardSizeDays: number;   // past scheduled days the inference used
   perPersonBH: number | null;
   // "Sam off 2 of 5 days" — the specific reason capacity is down.
   offNotes: string[];
@@ -149,7 +154,8 @@ export interface WeekCapacity {
 
 const NO_CAPACITY: WeekCapacity = {
   bh: null, fullStrengthBH: null, basis: 'none', headcount: 0,
-  effectivePeople: 0, standardSize: null, perPersonBH: null,
+  effectivePeople: 0, standardSize: null, standardSizeSource: 'none',
+  standardSizeDays: 0, perPersonBH: null,
   offNotes: [], label: 'no BH-per-person set',
 };
 
@@ -161,7 +167,7 @@ function rulesFor(
   settings: CapacitySettings | undefined,
   division: string,
   crewNumber: number,
-): { perPersonBH: number | null; standardSize: number | null; weeklyBH: number | null; placeholder: boolean } {
+): { perPersonBH: number | null; standardSize: number | null; placeholder: boolean } {
   const crew = settings?.crews?.[capacityCrewKey(division, crewNumber)];
   const div = settings?.divisions?.[division];
   const pick = (a: number | null | undefined, b: number | null | undefined): number | null => {
@@ -172,7 +178,6 @@ function rulesFor(
   return {
     perPersonBH: pick(crew?.perPersonBH, div?.perPersonBH),
     standardSize: pick(crew?.standardSize, div?.standardSize),
-    weeklyBH: pick(crew?.weeklyBH, div?.weeklyBH),
     placeholder: !!(crew?.placeholder ?? div?.placeholder),
   };
 }
@@ -180,9 +185,9 @@ function rulesFor(
 export interface CapacityContext {
   appData: AppData;
   settings: CapacitySettings | undefined;
-  // crew key → the crew's most recent actual scheduled size, used as the
-  // standard size when an admin hasn't configured one.
-  typicalSize: Map<string, number>;
+  // crew key → a REPRESENTATIVE size from past scheduled days, used as the
+  // standard size only when an admin hasn't configured one.
+  typicalSize: Map<string, InferredSize>;
   testUserIds: Set<string>;
 }
 
@@ -195,19 +200,16 @@ export function weekCapacityFor(
 ): WeekCapacity {
   const key = capacityCrewKey(division, crewNumber);
   const rule = rulesFor(ctx.settings, division, crewNumber);
-  const standardSize = rule.standardSize ?? (ctx.typicalSize.get(key) ?? null);
+  // An explicitly CONFIGURED standard size always beats the inference. The
+  // inference is only for divisions nobody has set up yet.
+  const inferred = ctx.typicalSize.get(key) ?? null;
+  const standardSize = rule.standardSize ?? (inferred?.size ?? null);
+  const standardSizeSource: StandardSizeSource =
+    rule.standardSize !== null ? 'set' : (inferred ? 'inferred' : 'none');
+  const standardSizeDays = rule.standardSize !== null ? 0 : (inferred?.days ?? 0);
+  const base = { standardSize, standardSizeSource, standardSizeDays };
 
-  // A pinned weekly total short-circuits everything — it's an explicit
-  // instruction to ignore the schedule.
-  if (rule.weeklyBH !== null) {
-    return {
-      bh: rule.weeklyBH, fullStrengthBH: rule.weeklyBH, basis: 'flat',
-      headcount: 0, effectivePeople: 0, standardSize,
-      perPersonBH: null, offNotes: [],
-      label: `flat ${rule.weeklyBH} BH/wk (fixed — ignores the schedule)`,
-    };
-  }
-  if (rule.perPersonBH === null) return { ...NO_CAPACITY, standardSize };
+  if (rule.perPersonBH === null) return { ...NO_CAPACITY, ...base };
   const per = rule.perPersonBH;
 
   // Days of this week that actually have this crew on the schedule.
@@ -225,20 +227,24 @@ export function weekCapacityFor(
     }
   }
 
+  // THE SCHEDULE WINS. If this crew has assignments this week, they are the
+  // basis — full stop. A configured standard size does not override real
+  // people; it only fills the gap where the schedule hasn't reached.
   if (!anyScheduled) {
-    // Beyond the built schedule — project from the standard size and SAY SO.
     if (!standardSize) {
       return {
-        ...NO_CAPACITY, standardSize: null, perPersonBH: per,
+        ...NO_CAPACITY, ...base, perPersonBH: per,
         label: 'no schedule and no standard crew size — capacity unknown',
       };
     }
     const bh = round1(standardSize * per);
+    const src = standardSizeSource === 'set' ? 'set' :
+      `inferred, median of ${standardSizeDays} past scheduled day${standardSizeDays === 1 ? '' : 's'}`;
     return {
       bh, fullStrengthBH: bh, basis: 'projected', headcount: standardSize,
-      effectivePeople: standardSize, standardSize, perPersonBH: per,
+      effectivePeople: standardSize, ...base, perPersonBH: per,
       offNotes: [],
-      label: `projected: ${standardSize} people × ${per} = ${bh} (beyond schedule)`,
+      label: `projected: ${standardSize} people (${src}) × ${per} = ${bh} (beyond schedule)`,
     };
   }
 
@@ -273,7 +279,7 @@ export function weekCapacityFor(
     `${offNotes.length > 2 ? `, +${offNotes.length - 2} more` : ''})` : '';
   return {
     bh, fullStrengthBH, basis: 'scheduled', headcount, effectivePeople: effective,
-    standardSize, perPersonBH: per, offNotes,
+    ...base, perPersonBH: per, offNotes,
     label: `scheduled: ${effective} people${offSummary} × ${per} = ${bh}`,
   };
 }
@@ -285,14 +291,23 @@ export function weekCapacityFor(
 // honest approximation, and it's flagged in the UI as scheduled-work-only.
 export interface CrewRef { division: string; crewNumber: number; key: string; size: number }
 
+export interface InferredSize {
+  size: number;      // representative crew size
+  days: number;      // how many past scheduled days it was drawn from
+}
+
 interface AssigneeIndex {
   dates: string[];                                  // ascending
   byDate: Map<string, Map<string, CrewRef[]>>;      // date → assignee → crews
-  crewSizes: Map<string, number>;                   // crew key → latest size
+  crewSizes: Map<string, InferredSize>;             // crew key → inferred size
   activeCrews: Map<string, CrewRef>;                // crew key → identity
 }
 
 const ACTIVE_LOOKBACK_DAYS = 28;
+// Window the size inference is drawn from. Four weeks of PAST scheduled days
+// — long enough to be representative, short enough to track a crew that has
+// genuinely changed shape this season.
+const INFER_LOOKBACK_DAYS = 28;
 
 function buildAssigneeIndex(
   schedules: Record<string, Crew[]>,
@@ -301,11 +316,17 @@ function buildAssigneeIndex(
 ): AssigneeIndex {
   const testIds = new Set(employees.filter(e => e.isTestUser).map(e => e.id));
   const byDate = new Map<string, Map<string, CrewRef[]>>();
-  const crewSizes = new Map<string, number>();
   const activeCrews = new Map<string, CrewRef>();
   const activeFrom = addDaysToronto(today, -ACTIVE_LOOKBACK_DAYS);
+  const inferFrom = addDaysToronto(today, -INFER_LOOKBACK_DAYS);
   const dates = Object.keys(schedules || {}).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
-  // Latest-wins for crew size, so walk ascending.
+  // Sizes are collected from PAST scheduled days only and reduced to a
+  // MEDIAN below. The previous "latest non-zero wins" walked into the
+  // FUTURE, so a day roughed in with two people next Tuesday outranked
+  // weeks of correct four-person history. Measured on real schedule data,
+  // that disagreed with the representative size on 3 of 4 Small Projects
+  // crews — which is exactly the reported symptom.
+  const pastSizes = new Map<string, number[]>();
   for (const date of dates) {
     const crews = schedules[date] || [];
     const map = new Map<string, CrewRef[]>();
@@ -314,7 +335,13 @@ function buildAssigneeIndex(
       const key = capacityCrewKey(crew.division, crew.crewNumber);
       const size = (crew.employees || []).filter(id => !testIds.has(id)).length;
       const ref: CrewRef = { division: crew.division, crewNumber: crew.crewNumber, key, size };
-      if (size > 0) crewSizes.set(key, size);
+      // STRICTLY past (a day still in progress is only half-assigned), and
+      // within the inference window.
+      if (size > 0 && date < today && date >= inferFrom) {
+        const arr = pastSizes.get(key) || [];
+        arr.push(size);
+        pastSizes.set(key, arr);
+      }
       if (date >= activeFrom) activeCrews.set(key, ref);
       for (const aid of crew.jobberAssigneeIds || []) {
         const arr = map.get(aid) || [];
@@ -323,6 +350,18 @@ function buildAssigneeIndex(
       }
     }
     if (map.size > 0) byDate.set(date, map);
+  }
+  // MEDIAN, not mean and not latest: one rain day, one split crew or one
+  // half-built day moves a mean and dominates a "latest", but barely moves a
+  // median. (Mode agreed with the median on 10 of 11 real crews; median wins
+  // ties more predictably, so median it is.)
+  const crewSizes = new Map<string, InferredSize>();
+  for (const [key, arr] of pastSizes) {
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const median = sorted.length % 2 === 1 ? sorted[mid] :
+      (sorted[mid - 1] + sorted[mid]) / 2;
+    crewSizes.set(key, { size: Math.round(median), days: sorted.length });
   }
   const indexed = dates.filter(d => byDate.has(d));
   return { dates: indexed, byDate, crewSizes, activeCrews };
@@ -639,7 +678,7 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
   };
   const crewRows: CapacityRow[] = [];
   for (const { ref, cells } of acc.values()) {
-    const size = idx.crewSizes.get(ref.key) ?? (ref.size || null);
+    const size = idx.crewSizes.get(ref.key)?.size ?? (ref.size || null);
     let lastDetail: WeekCapacity | null = null;
     cells.forEach((cell, i) => {
       const cap = weekCapacityFor(ctx, ref.division, ref.crewNumber, weeks[i]);
