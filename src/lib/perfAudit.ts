@@ -47,6 +47,8 @@ export const ACTIVITY_TYPE_LABELS: Record<PerfActivityEntry['type'], string> = {
   multiday_percent_marked: 'Multi-day % marked',
   multiday_split_added: 'Multi-day split added',
   multiday_percent_overridden: 'Multi-day forced to 100%',
+  multiday_entry_edited: 'Multi-day entry edited',
+  multiday_entry_deleted: 'Multi-day entry deleted',
   job_type_converted: 'Job type converted',
   entry_deleted: 'Entry deleted',
   entry_cleared: 'Entry cleared',
@@ -91,6 +93,7 @@ export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amb
   multiday_percent_marked: 'amber',
   multiday_split_added: 'amber',
   multiday_percent_overridden: 'amber',
+  multiday_entry_edited: 'amber',
   job_type_converted: 'amber',
 
   manual_job_removed: 'rose',
@@ -99,6 +102,7 @@ export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amb
   entry_deleted: 'rose',
   entry_cleared: 'rose',
   approval_revoked: 'rose',
+  multiday_entry_deleted: 'rose',
 
   multiday_auto_credited_on_completion: 'green',
   multiday_carried_forward: 'amber',

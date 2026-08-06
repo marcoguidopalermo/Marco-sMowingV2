@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
-import { X, AlertTriangle, Plus, Clock, CheckCircle, Settings, Calendar as CalendarIcon } from 'lucide-react';
+import { X, AlertTriangle, Plus, Clock, CheckCircle, Settings, Calendar as CalendarIcon, Pencil, Trash2, Check } from 'lucide-react';
 import { AppData, MultiDayJob, CompletionEntry, PerformanceJobRow, Crew, UserRole, PerformanceLog } from '../types';
 import { logPerfActivity } from '../lib/perfAudit';
 import { stableCrewKey } from '../lib/crewUtils';
+import { can } from '../lib/permissions';
 
 interface CompletionReviewModalProps {
   isOpen: boolean;
@@ -164,6 +165,10 @@ export default function CompletionReviewModal({
   const [splitReason, setSplitReason] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Timeline in-place edit. `editingKey` identifies the row being edited
+  // (targetDate|crewKey|markedAt); `editDraft` holds its working values.
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{ date: string; crewId: string; pct: string; bh: string }>({ date: '', crewId: '', pct: '', bh: '' });
 
   if (!isOpen) return null;
 
@@ -654,6 +659,159 @@ export default function CompletionReviewModal({
 
   const todayDelta = round2((Math.max(0, nextPctNumber - priorPct) / 100) * basisBH);
 
+  // ── Timeline ledger — stats, keys, per-entry edit/delete ──────────────
+  const canApprove = can('canApprovePerformance', currentUserRole);
+  const entryKeyOf = (e: CompletionEntry) => `${e.targetDate}|${entryCrewKey(e)}|${e.markedAt}`;
+  const creditedSum = round2((job.completionHistory || []).reduce((s, h) => s + (Number(h.creditedBH) || 0), 0));
+  const remainingBH = round2(Math.max(0, (Number(job.totalBH) || 0) - creditedSum));
+  // Per-entry BH basis for the %↔BH link. Derive from the entry's own ratio
+  // (keeps split entries self-consistent); fall back to the visit total.
+  const basisForEntry = (e: { percentComplete?: number; creditedBH?: number }): number => {
+    const pct = Number(e.percentComplete) || 0;
+    const bh = Number(e.creditedBH) || 0;
+    if (pct > 0 && bh > 0) return round2(bh / (pct / 100));
+    return Number(job.totalBH) || 0;
+  };
+  const isOrphanEntry = (e: CompletionEntry): boolean => {
+    if (!(Number(e.creditedBH) > 0)) return false;
+    const dayMap = appData.performance?.[e.targetDate] || {};
+    return !Object.values(dayMap).some(log => (log.jobs || []).some(r => r.jobberVisitId === job.jobberVisitId));
+  };
+
+  const beginEdit = (e: CompletionEntry) => {
+    setEditingKey(entryKeyOf(e));
+    setEditDraft({ date: e.targetDate, crewId: e.crewId, pct: String(e.percentComplete ?? ''), bh: String(e.creditedBH ?? '') });
+  };
+
+  // Core in-place mutation of one ledger entry. `change === 'delete'` removes
+  // it; otherwise it retargets/recredits. Other entries' creditedBH is never
+  // recomputed (credited-never-recomputed preserved). Mirrors the 4e5926d
+  // guard (target crew-day must exist), the sum guard (credited ≤ total,
+  // warn), and prompts to unapprove any approved crew-day it touches.
+  const commitEntry = async (
+    original: CompletionEntry,
+    change: { date: string; crewId: string; pct: number; bh: number } | 'delete',
+  ) => {
+    if (busy) return;
+    const isDelete = change === 'delete';
+    const origKey = entryKeyOf(original);
+    const origDate = original.targetDate;
+    const origCrewId = original.crewId;
+
+    const nextPerf: Record<string, Record<string, PerformanceLog>> = { ...(appData.performance || {}) };
+    if (dailyLogs && Object.keys(dailyLogs).length > 0) nextPerf[currentDate] = { ...dailyLogs };
+
+    const tgtDate = isDelete ? origDate : change.date;
+    const tgtCrewId = isDelete ? origCrewId : change.crewId;
+    const tgtCrewObj = appData.schedules[tgtDate]?.find(c => c.id === tgtCrewId);
+    const tgtCrewKey = tgtCrewObj ? stableCrewKey(tgtCrewObj) : `crewid:${tgtCrewId}`;
+
+    if (!isDelete) {
+      // 4e5926d guard — the target crew-day must exist.
+      if (!nextPerf[tgtDate]?.[tgtCrewId]) {
+        showToastMsg(`No crew-day exists for ${crewLabelFor(tgtDate, tgtCrewId)} on ${formatDateLabel(tgtDate)} — add that crew to the day (record its BH/AH) first.`);
+        return;
+      }
+      // No collision with a different entry on the same (date, crew).
+      if ((job.completionHistory || []).some(h => entryKeyOf(h) !== origKey && h.targetDate === tgtDate && entryCrewKey(h) === tgtCrewKey)) {
+        showToastMsg(`An entry already exists for ${crewLabelFor(tgtDate, tgtCrewId)} on ${formatDateLabel(tgtDate)}. Edit that one instead.`);
+        return;
+      }
+      // Sum guard — credited can never exceed the job total (warn, no clamp).
+      const sumOthers = round2((job.completionHistory || []).filter(h => entryKeyOf(h) !== origKey).reduce((s, h) => s + (Number(h.creditedBH) || 0), 0));
+      if (round2(sumOthers + change.bh) > round2(Number(job.totalBH) || 0) + 0.005) {
+        showToastMsg(`That would credit ${round2(sumOthers + change.bh)} BH — over the ${job.totalBH} BH job total. Lower it first.`);
+        return;
+      }
+    }
+
+    // Approval prompt — any approved crew-day this edit touches (old + new).
+    const affected: Array<{ date: string; crewId: string }> = [];
+    const seen = new Set<string>();
+    const consider = (date: string, crewId: string) => {
+      if (nextPerf[date]?.[crewId]?.approvalStatus === 'approved') {
+        const k = `${date}|${crewId}`;
+        if (!seen.has(k)) { seen.add(k); affected.push({ date, crewId }); }
+      }
+    };
+    consider(origDate, origCrewId);
+    if (!isDelete) consider(tgtDate, tgtCrewId);
+    if (affected.length > 0) {
+      if (!canApprove) {
+        showToastMsg(`${affected.map(a => crewLabelFor(a.date, a.crewId)).join(', ')} ${affected.length === 1 ? 'is' : 'are'} approved — an approver must unapprove first.`);
+        return;
+      }
+      const names = affected.map(a => `${crewLabelFor(a.date, a.crewId)} (${formatDateLabel(a.date)})`).join(', ');
+      if (!confirm(`This day is approved — unapprove ${names} to edit? The crew-day reopens for review (audited).`)) return;
+    }
+
+    setBusy(true);
+    try {
+      for (const a of affected) {
+        const log = nextPerf[a.date]?.[a.crewId];
+        if (log) nextPerf[a.date] = { ...(nextPerf[a.date] || {}), [a.crewId]: { ...log, approvalStatus: 'pending', approvedAt: undefined, approvedBy: undefined, approvedByName: undefined } };
+      }
+      const removeVisitRow = (date: string, crewId: string) => {
+        const log = nextPerf[date]?.[crewId];
+        if (!log) return;
+        nextPerf[date] = { ...(nextPerf[date] || {}), [crewId]: { ...log, jobs: (log.jobs || []).filter(r => !(r.source === 'jobber' && r.jobberVisitId === job.jobberVisitId)) } };
+      };
+
+      let nextHistory: CompletionEntry[];
+      if (isDelete) {
+        removeVisitRow(origDate, origCrewId);
+        nextHistory = (job.completionHistory || []).filter(h => entryKeyOf(h) !== origKey);
+      } else {
+        const rowTotalBH = (() => {
+          if (tgtCrewId === currentCrewId) return basisBH;
+          const vs = appData.visitBHSplits?.[job.jobberVisitId];
+          if (vs) { const slot = vs.splits.find(s => s.crewId === tgtCrewId); if (slot) return slot.bh; }
+          return job.totalBH;
+        })();
+        if (tgtDate !== origDate || tgtCrewId !== origCrewId) removeVisitRow(origDate, origCrewId);
+        const tgtLog = nextPerf[tgtDate][tgtCrewId];
+        let found = false;
+        const jobs = (tgtLog.jobs || []).map(r => {
+          if (r.source === 'jobber' && r.jobberVisitId === job.jobberVisitId) {
+            found = true;
+            const u: PerformanceJobRow = { ...r, bh: change.bh, totalBH: rowTotalBH };
+            delete u.awaitingCompletionReview;
+            return u;
+          }
+          return r;
+        });
+        if (!found) jobs.push({ desc: job.title, bh: change.bh, source: 'jobber', jobberVisitId: job.jobberVisitId, jobberJobId: job.jobberJobId, jobberJobNumber: String(job.jobberJobNumber), totalBH: rowTotalBH });
+        nextPerf[tgtDate] = { ...(nextPerf[tgtDate] || {}), [tgtCrewId]: { ...tgtLog, jobs } };
+        const updatedEntry: CompletionEntry = {
+          ...original, targetDate: tgtDate, crewId: tgtCrewId, crewKey: tgtCrewKey,
+          percentComplete: change.pct, creditedBH: change.bh,
+          editedBy: currentUserId, editedByName: currentUserName, editedAt: Date.now(),
+        };
+        nextHistory = (job.completionHistory || []).map(h => entryKeyOf(h) === origKey ? updatedEntry : h);
+      }
+
+      const newSum = round2(nextHistory.reduce((s, h) => s + (Number(h.creditedBH) || 0), 0));
+      const newStatus: 'in_progress' | 'complete' = (Number(job.totalBH) || 0) > 0 && newSum >= round2(Number(job.totalBH) || 0) - 0.005 ? 'complete' : 'in_progress';
+      const nextJob: MultiDayJob = { ...job, completionHistory: nextHistory, status: newStatus };
+
+      const ok = await syncToCloud({ ...appData, performance: nextPerf, multiDayJobs: { ...(appData.multiDayJobs || {}), [job.jobberVisitId]: nextJob } });
+      if (ok) {
+        for (const a of affected) {
+          await logPerfActivity({ type: 'approval_revoked', targetDate: a.date, crewId: a.crewId, crewLabel: crewLabelFor(a.date, a.crewId), userId: currentUserId, userName: currentUserName, userRole: currentUserRole, sourceJobberVisitId: job.jobberVisitId, jobTitle: job.title, reasonNote: 'Unapproved to edit a multi-day completion entry' });
+        }
+        if (isDelete) {
+          await logPerfActivity({ type: 'multiday_entry_deleted', targetDate: origDate, crewId: origCrewId, crewLabel: crewLabelFor(origDate, origCrewId), userId: currentUserId, userName: currentUserName, userRole: currentUserRole, jobberJobId: job.jobberJobId, sourceJobberVisitId: job.jobberVisitId, jobTitle: job.title, valueBefore: `${formatDateLabel(origDate)} · ${crewLabelFor(origDate, origCrewId)} · ${original.percentComplete}% · ${original.creditedBH} BH`, valueAfter: 'deleted', valueLabel: 'entry' });
+        } else {
+          await logPerfActivity({ type: 'multiday_entry_edited', targetDate: tgtDate, crewId: tgtCrewId, crewLabel: crewLabelFor(tgtDate, tgtCrewId), userId: currentUserId, userName: currentUserName, userRole: currentUserRole, jobberJobId: job.jobberJobId, sourceJobberVisitId: job.jobberVisitId, jobTitle: job.title, valueBefore: `${formatDateLabel(origDate)} · ${crewLabelFor(origDate, origCrewId)} · ${original.percentComplete}% · ${original.creditedBH} BH`, valueAfter: `${formatDateLabel(tgtDate)} · ${crewLabelFor(tgtDate, tgtCrewId)} · ${change.pct}% · ${change.bh} BH`, valueLabel: 'entry' });
+        }
+        setEditingKey(null);
+        showToastMsg(isDelete ? 'Entry deleted — remaining recomputed.' : 'Entry updated — remaining recomputed.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center md:p-4">
       <div className="bg-white md:rounded-xl shadow-2xl w-full md:max-w-2xl h-full md:h-auto md:max-h-[90vh] overflow-hidden flex flex-col">
@@ -721,6 +879,40 @@ export default function CompletionReviewModal({
               </ul>
             </div>
           )}
+          {/* LEDGER STATS — total / credited / remaining, and any scope change. */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Total BH</div>
+                <div className="text-lg font-black font-mono text-slate-800">{job.totalBH}</div>
+              </div>
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Credited</div>
+                <div className="text-lg font-black font-mono text-emerald-700">{creditedSum}</div>
+              </div>
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Remaining</div>
+                <div className={`text-lg font-black font-mono ${remainingBH <= 0 ? 'text-slate-400' : 'text-amber-700'}`}>{remainingBH}</div>
+              </div>
+            </div>
+            {creditedSum > round2((Number(job.totalBH) || 0)) + 0.005 && (
+              <div className="mt-2 text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1">
+                ⚠ Credited ({creditedSum} BH) exceeds the {job.totalBH} BH total. Lower an entry to bring it back in range.
+              </div>
+            )}
+            {(job.scopeHistory || []).length > 0 && (
+              <div className="mt-2 border-t border-slate-200 pt-2">
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Total changed</div>
+                <ul className="space-y-0.5">
+                  {(job.scopeHistory || []).map((s, i) => (
+                    <li key={i} className="text-[11px] text-slate-600 font-mono">
+                      {s.previousTotalBH} → {s.newTotalBH} BH{s.changedAt ? ` · ${formatTime(s.changedAt)}` : ''}{typeof s.creditedAtChange === 'number' ? ` · ${s.creditedAtChange} credited then` : ''} · {s.source}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
           {!hasSplits && cumulativePriorPct >= 100 && (
             <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-2">
               Already 100% complete from prior entries — no further % can be credited. Use the Override button only if you need to revisit.
@@ -728,7 +920,7 @@ export default function CompletionReviewModal({
           )}
           <div>
             <label className="text-xs font-black uppercase tracking-widest text-slate-600 block mb-2">
-              What % is this job complete at end of {formatDateLabel(currentDate)}?
+              Add today's entry — what % is this job complete at end of {formatDateLabel(currentDate)}?
             </label>
             <div className="flex items-center gap-2 flex-wrap">
               <input
@@ -842,26 +1034,94 @@ export default function CompletionReviewModal({
 
           {sortedHistory.length > 0 && (
             <div className="border-t border-slate-200 pt-4">
-              <div className="text-xs font-black uppercase tracking-widest text-slate-600 mb-2">Completion history</div>
-              <ul className="space-y-1">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-black uppercase tracking-widest text-slate-600">Completion timeline</div>
+                <div className="text-[11px] font-bold text-slate-500">{remainingBH} BH remaining of {job.totalBH}</div>
+              </div>
+              <ul className="space-y-1.5">
                 {sortedHistory.map((h, i) => {
-                  const crew = appData.schedules[h.targetDate]?.find(c => c.id === h.crewId);
-                  const crewLabel = crew ? `${crew.division} #${crew.crewNumber}` : h.crewId;
+                  const key = entryKeyOf(h);
+                  const editing = editingKey === key;
+                  const crewLabel = crewLabelFor(h.targetDate, h.crewId);
+                  const dayLog = appData.performance?.[h.targetDate]?.[h.crewId];
+                  const status = dayLog?.approvalStatus || 'pending';
+                  const orphan = isOrphanEntry(h);
+                  const statusChip = orphan
+                    ? <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 border border-rose-300" title="No crew-day carries this credit — retarget it to a real crew-day, or delete it.">orphaned</span>
+                    : status === 'approved'
+                      ? <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 border border-slate-300">approved</span>
+                      : status === 'waived'
+                        ? <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 border border-orange-300">waived</span>
+                        : <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-300">pending</span>;
+                  const editCrews = appData.schedules[editDraft.date] || [];
+                  const basis = basisForEntry(h);
                   return (
-                    <li key={i} className="text-xs flex items-center justify-between border-b border-slate-100 py-1">
-                      <span className="flex items-center gap-1.5">
-                        {h.isRetroactive && <Clock className="w-3 h-3 text-amber-500" />}
-                        <span className="font-bold text-slate-700">{formatDateLabel(h.targetDate)}</span>
-                        <span className="text-slate-600">— {h.percentComplete}% ({h.creditedBH} BH)</span>
-                        <span className="text-slate-400">· {crewLabel}</span>
-                      </span>
-                      <span className="text-[10px] text-slate-400 truncate ml-2">
-                        marked {formatTime(h.markedAt)} by {h.markedByName}
-                      </span>
+                    <li key={key} className={`rounded-lg border p-2.5 ${orphan ? 'border-rose-200 bg-rose-50/40' : 'border-slate-200 bg-white'}`}>
+                      {!editing ? (
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Day {i + 1}</span>
+                            {h.isRetroactive && <Clock className="w-3 h-3 text-amber-500" />}
+                            <span className="font-bold text-slate-700">{formatDateLabel(h.targetDate)}</span>
+                            <span className="text-slate-400">· {crewLabel}</span>
+                            <span className="text-slate-600 font-mono">· {h.percentComplete}% · {h.creditedBH} BH</span>
+                            {statusChip}
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button onClick={() => beginEdit(h)} disabled={busy} className="p-1.5 rounded text-slate-500 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50" title="Edit this entry"><Pencil className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => { if (confirm(`Delete this entry — remove ${h.creditedBH} BH credited on ${formatDateLabel(h.targetDate)} (${crewLabel})? Remaining will recompute.`)) commitEntry(h, 'delete'); }} disabled={busy} className="p-1.5 rounded text-rose-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50" title="Delete this entry"><Trash2 className="w-3.5 h-3.5" /></button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap gap-2 items-end">
+                            <div>
+                              <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 block mb-0.5">Date</label>
+                              <input type="date" value={editDraft.date} max={currentDate} onChange={e => setEditDraft(d => ({ ...d, date: e.target.value, crewId: '' }))} className="border border-slate-300 rounded p-1.5 text-sm" />
+                            </div>
+                            <div className="flex-1 min-w-[140px]">
+                              <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 block mb-0.5">Crew</label>
+                              <select value={editDraft.crewId} onChange={e => setEditDraft(d => ({ ...d, crewId: e.target.value }))} className="w-full border border-slate-300 rounded p-1.5 text-sm font-bold">
+                                <option value="">{editCrews.length === 0 ? '(no crews on date)' : 'pick…'}</option>
+                                {editCrews.map(c => <option key={c.id} value={c.id}>{c.division} #{c.crewNumber}</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 block mb-0.5">%</label>
+                              <input type="number" min={0} max={100} step={1} value={editDraft.pct} onChange={e => { const v = e.target.value; setEditDraft(d => ({ ...d, pct: v, bh: v === '' ? '' : String(round2((Number(v) / 100) * basis)) })); }} className="w-16 border border-slate-300 rounded p-1.5 text-sm font-mono font-bold text-emerald-700" />
+                            </div>
+                            <div>
+                              <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 block mb-0.5">BH</label>
+                              <input type="number" min={0} step={0.01} value={editDraft.bh} onChange={e => { const v = e.target.value; setEditDraft(d => ({ ...d, bh: v, pct: v === '' || basis <= 0 ? '' : String(Math.round((Number(v) / basis) * 100)) })); }} className="w-20 border border-slate-300 rounded p-1.5 text-sm font-mono font-bold text-emerald-700" />
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-end gap-2">
+                            <button onClick={() => setEditingKey(null)} disabled={busy} className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-700 px-2 py-1">Cancel</button>
+                            <button
+                              onClick={() => {
+                                const pct = Number(editDraft.pct); const bh = round2(Number(editDraft.bh));
+                                if (!editDraft.date || !editDraft.crewId) { showToastMsg('Pick a date and crew.'); return; }
+                                if (!Number.isFinite(bh) || bh <= 0) { showToastMsg('BH must be greater than 0 (or delete the entry).'); return; }
+                                if (!Number.isFinite(pct) || pct < 0 || pct > 100) { showToastMsg('% must be 0–100.'); return; }
+                                commitEntry(h, { date: editDraft.date, crewId: editDraft.crewId, pct, bh });
+                              }}
+                              disabled={busy}
+                              className="text-[10px] font-black uppercase tracking-widest bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded shadow flex items-center gap-1 disabled:opacity-50"
+                            ><Check className="w-3.5 h-3.5" /> Save</button>
+                          </div>
+                        </div>
+                      )}
+                      <div className="mt-1 text-[10px] text-slate-400 flex items-center gap-2 flex-wrap">
+                        <span>marked {formatTime(h.markedAt)} by {h.markedByName}</span>
+                        {h.editedAt && <span className="text-amber-600 font-semibold">· edited by {h.editedByName}, {formatTime(h.editedAt)}</span>}
+                      </div>
                     </li>
                   );
                 })}
               </ul>
+              <div className="mt-2 text-xs font-bold text-slate-600 text-right">
+                {remainingBH <= 0 ? 'Fully credited.' : `${remainingBH <= (Number(job.totalBH) || 0) && job.totalBH ? Math.round((remainingBH / (Number(job.totalBH) || 1)) * 100) : 0}% remaining · ${remainingBH} BH`}
+              </div>
             </div>
           )}
         </div>

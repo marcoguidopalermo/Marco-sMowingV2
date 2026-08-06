@@ -705,6 +705,8 @@ export type PerfActivityType =
   | 'multiday_percent_marked'
   | 'multiday_split_added'
   | 'multiday_percent_overridden'
+  | 'multiday_entry_edited'
+  | 'multiday_entry_deleted'
   | 'job_type_converted'
   | 'entry_deleted'
   | 'entry_cleared'
@@ -769,6 +771,12 @@ export interface CompletionEntry {
   markedByName: string;
   isRetroactive: boolean;
   reasonNote?: string;
+  // Timeline edit audit — stamped when an entry is edited in place (date /
+  // crew / % / BH) via the multi-day timeline. Original marked* fields are
+  // preserved; these record the most recent correction.
+  editedBy?: string;
+  editedByName?: string;
+  editedAt?: number;
 }
 
 // A Jobber BH change detected on an APPROVED/WAIVED crew-day. The sync records
