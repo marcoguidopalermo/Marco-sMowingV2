@@ -2741,26 +2741,80 @@ export default function App() {
     if (list.length) next[c.targetDate] = list; else delete next[c.targetDate];
     return next;
   };
-  // Deliberately overwrite the approved day's row with Jobber's new BH. Keeps the
-  // approval (an admin explicitly reviewed + accepted), audits it as jobber_bh_edited.
+  // Deliberately accept Jobber's new BH on a locked day. Keeps the approval (an
+  // admin explicitly reviewed + accepted), audits it as jobber_bh_edited.
+  //
+  // Two cases, kept distinct so a PARTIAL multi-day job is never over-credited
+  // (the Suzanne bug): the ROW carries only what that day actually earned; the
+  // LEDGER carries the visit total.
+  //   • Multi-day ledger present → reconcile the LEDGER: totalBH moves to the
+  //     new visit total with an append-only scopeHistory entry. Credited BH is
+  //     NEVER recomputed (remaining = max(0, newTotal − credited)); the row's
+  //     bh is left untouched (a scope change doesn't re-credit the day).
+  //   • No ledger (a plain single-day visit) → the row IS the whole visit, so
+  //     it takes the new value, as before.
   const applyJobberBhConflict = (c: JobberBhConflict) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
     const day = appData.performance?.[c.targetDate];
     const log = day?.[c.crewId];
     if (!log) { showToastMsg('Crew-day not found.'); return; }
-    let hit = false; let oldBH = 0;
+    const ledger = appData.multiDayJobs?.[c.jobberVisitId];
+    const hasLedger = !!ledger;
+    let hit = false; let rowOldBH = 0;
     const jobs = (log.jobs || []).map((r) => {
       if (r.source === 'jobber' && r.jobberVisitId === c.jobberVisitId) {
-        hit = true; oldBH = Number(r.bh) || 0;
-        return { ...r, bh: c.newBH, hasJobberConflict: false, jobberSuggestedValue: undefined };
+        hit = true; rowOldBH = Number(r.bh) || 0;
+        // Multi-day: never touch the credited row on a scope change. Non-ledger
+        // single-day: the row is the whole visit → take the new value.
+        return hasLedger
+          ? { ...r, hasJobberConflict: false, jobberSuggestedValue: undefined }
+          : { ...r, bh: c.newBH, hasJobberConflict: false, jobberSuggestedValue: undefined };
       }
       return r;
     });
     if (!hit) { showToastMsg('That visit is no longer on the day.'); syncToCloud({ ...appData, jobberBhConflicts: removeJobberBhConflict(appData.jobberBhConflicts, c) }); return; }
+
+    // Reconcile the ledger total (append-only scope history). Requires the full
+    // visit total, which the sync now stamps on the conflict (newTotalBH). A
+    // legacy conflict without it leaves the ledger untouched — the next sync
+    // re-emits the conflict carrying newTotalBH.
+    let nextMultiDayJobs = appData.multiDayJobs;
+    let ledgerFrom = 0; let ledgerTo = 0; let ledgerUpdated = false;
+    if (hasLedger && typeof c.newTotalBH === 'number') {
+      const prevTotal = Number(ledger!.totalBH) || 0;
+      const newTotal = c.newTotalBH;
+      if (Math.abs(newTotal - prevTotal) > 1e-6) {
+        const creditedSoFar = (ledger!.completionHistory || []).reduce((s, h) => s + (Number(h.creditedBH) || 0), 0);
+        const changedAt = Date.now();
+        const updatedLedger: MultiDayJob = {
+          ...ledger!,
+          totalBH: newTotal,
+          bhTotalChangedAt: changedAt,
+          bhTotalChangedFrom: prevTotal,
+          totalBelowCredited: newTotal + 1e-6 < creditedSoFar,
+          scopeHistory: [
+            ...(ledger!.scopeHistory || []),
+            { previousTotalBH: prevTotal, newTotalBH: newTotal, changedAt, source: 'jobber', creditedAtChange: Math.round(creditedSoFar * 10) / 10 },
+          ],
+        };
+        nextMultiDayJobs = { ...(appData.multiDayJobs || {}), [c.jobberVisitId]: updatedLedger };
+        ledgerFrom = prevTotal; ledgerTo = newTotal; ledgerUpdated = true;
+      }
+    }
+
     const newPerf = { ...appData.performance, [c.targetDate]: { ...day, [c.crewId]: { ...log, jobs } } };
-    syncToCloud({ ...appData, performance: newPerf, jobberBhConflicts: removeJobberBhConflict(appData.jobberBhConflicts, c) });
-    logPerfActivity({ type: 'jobber_bh_edited', targetDate: c.targetDate, crewId: c.crewId, crewLabel: c.crewLabel, userId: user?.uid || displayEmail, userName: displayName, userRole: effectiveRole, sourceJobberVisitId: c.jobberVisitId, jobTitle: c.jobTitle, valueLabel: 'BH', valueBefore: oldBH, valueAfter: c.newBH, reasonNote: `Applied Jobber BH ${oldBH} → ${c.newBH} on ${c.lockState} day (admin review)` });
-    showToastMsg(`Applied Jobber BH to ${c.crewLabel}.`);
+    syncToCloud({ ...appData, performance: newPerf, multiDayJobs: nextMultiDayJobs, jobberBhConflicts: removeJobberBhConflict(appData.jobberBhConflicts, c) });
+    logPerfActivity({
+      type: 'jobber_bh_edited', targetDate: c.targetDate, crewId: c.crewId, crewLabel: c.crewLabel,
+      userId: user?.uid || displayEmail, userName: displayName, userRole: effectiveRole,
+      sourceJobberVisitId: c.jobberVisitId, jobTitle: c.jobTitle, valueLabel: 'BH',
+      valueBefore: ledgerUpdated ? ledgerFrom : rowOldBH,
+      valueAfter: ledgerUpdated ? ledgerTo : c.newBH,
+      reasonNote: ledgerUpdated
+        ? `Applied Jobber BH — ledger total ${ledgerFrom} → ${ledgerTo} on ${c.lockState} day (admin review); credited BH untouched, day's earned BH preserved`
+        : `Applied Jobber BH ${rowOldBH} → ${c.newBH} on ${c.lockState} day (admin review)`,
+    });
+    showToastMsg(ledgerUpdated ? `Applied — ledger total now ${ledgerTo} BH.` : `Applied Jobber BH to ${c.crewLabel}.`);
   };
   // Dismiss without changing the approved day (admin judged the current value right).
   const ignoreJobberBhConflict = (c: JobberBhConflict) => {

@@ -559,6 +559,10 @@ interface SyncResultSummary {
     crewLabel: string;
     oldBH: number;
     newBH: number;
+    // The full parsed VISIT total (not the crew share) — lets the client
+    // reconcile the multi-day ledger's totalBH when the admin applies. Absent
+    // on legacy stored conflicts; the next sync re-emits with it.
+    newTotalBH: number;
     lockState: "approved" | "waived";
   }>;
   errors: string[];
@@ -575,6 +579,10 @@ export interface JobberBhConflict {
   crewLabel: string;
   oldBH: number;
   newBH: number;
+  // Full parsed VISIT total (not the crew share) — drives the ledger totalBH
+  // reconciliation on apply. Optional for backward-compat with conflicts
+  // written before this field existed.
+  newTotalBH?: number;
   lockState: "approved" | "waived";
   detectedAt: number;
 }
@@ -1831,6 +1839,9 @@ async function runPerformanceSync(args: {
                 crewLabel: label,
                 oldBH,
                 newBH,
+                // Full visit total (parsedConflict.bh) so the client can
+                // update the ledger totalBH, not just the crew-day row.
+                newTotalBH: parsedConflict.bh,
                 lockState,
               });
               summary.warnings.push(
@@ -2190,7 +2201,50 @@ async function runPerformanceSync(args: {
             // so a Jobber-side rename doesn't leave a stale display label.
             mdJob.title = desc;
             if (jobNum) mdJob.jobberJobNumber = jobNum;
-            mdJob.totalBH = bh;
+            // A Jobber BH change on a COMPLETED-path ledger updates totalBH —
+            // but never silently: record the same scope-history audit the
+            // incomplete path writes. Credited history is NEVER recomputed;
+            // remaining = max(0, newTotal − credited). Flag totalBelowCredited
+            // when the new total drops under what's already banked.
+            const prevTotal = Number(mdJob.totalBH) || 0;
+            const newTotal = bh;
+            if (Math.abs(newTotal - prevTotal) > 1e-6) {
+              const creditedSoFar = mdJob.completionHistory
+                .reduce((s, h) => s + (Number(h.creditedBH) || 0), 0);
+              const changedAt = Date.now();
+              mdJob.totalBH = newTotal;
+              mdJob.bhTotalChangedAt = changedAt;
+              mdJob.bhTotalChangedFrom = prevTotal;
+              mdJob.totalBelowCredited = newTotal + 1e-6 < creditedSoFar;
+              mdJob.scopeHistory = [
+                ...(mdJob.scopeHistory || []),
+                {
+                  previousTotalBH: prevTotal,
+                  newTotalBH: newTotal,
+                  changedAt,
+                  source: "jobber",
+                  creditedAtChange: Math.round(creditedSoFar * 10) / 10,
+                },
+              ];
+              summary.bhChangesApplied.push({
+                jobberVisitId: visit.id,
+                jobTitle: desc,
+                targetDate,
+                crewId: crew.id,
+                crewLabel: `${crew.division} #${crew.crewNumber}`,
+                oldBH: prevTotal,
+                newBH: newTotal,
+                kind: "multiday_total",
+              });
+              summary.warnings.push(
+                `multiday_totalbh_updated visit=${visit.id} ` +
+                `from=${prevTotal} to=${newTotal}` +
+                (mdJob.totalBelowCredited ?
+                  ` BELOW_CREDITED credited=${creditedSoFar}` : ""),
+              );
+            } else {
+              mdJob.totalBH = newTotal;
+            }
           }
           const currentCrewKeyAuto = stableCrewKey(crew);
           const histEntry = mdJob.completionHistory.find(

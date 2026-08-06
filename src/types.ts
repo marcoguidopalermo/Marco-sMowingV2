@@ -781,6 +781,10 @@ export interface JobberBhConflict {
   crewLabel: string;
   oldBH: number;              // what's stored on the approved day now
   newBH: number;             // what Jobber now reports (crew share)
+  // Full parsed VISIT total (not the crew share). Drives the multi-day
+  // ledger's totalBH reconciliation when an admin applies. Optional — absent
+  // on conflicts written before this field existed; the next sync re-emits it.
+  newTotalBH?: number;
   lockState: 'approved' | 'waived';
   detectedAt: number;
 }
