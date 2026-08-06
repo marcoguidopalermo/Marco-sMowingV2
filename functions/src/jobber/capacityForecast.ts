@@ -84,13 +84,14 @@ const MAX_PULL_MS = 400_000;
 // How far FORWARD we pull, per scope.
 // PROJECTS: wide, because "booked out to" is computed over the whole horizon
 // and project work is genuinely booked months ahead.
-// LAWN: short. Lawn is recurring, every week is full, and nobody sells
-// against a lawn week four months out — so paying for 120 days of the
-// densest visit stream in the business buys nothing. This is the single
-// biggest reduction in pages fetched.
+// LAWN: three weeks. Lawn is a recurring route on a biweekly cycle and the
+// question it answers is "is the route full?", not "when can we start?" —
+// which needs the current cycle and the next, not months. 21 days covers the
+// 2-week view with a week of slack, and it is what keeps the lawn snapshot
+// small enough that truncation stops being a concern on that scope.
 const SCOPE_HORIZON_DAYS: Record<ForecastScope, number> = {
   projects: 84,
-  lawn: 42,
+  lawn: 21,
 };
 // How far BACK we look. Only to catch IN-FLIGHT multi-day work: a visit that
 // started last week, isn't complete, and still runs into this week is
@@ -287,6 +288,9 @@ export interface CapacityForecastDoc {
   coveredThrough: string;
   // The pull yielded to protect the performance sync's API budget.
   stoppedForBudget: boolean;
+  // Serialized size of this snapshot. Recorded rather than estimated so
+  // "does it clear the 800 KB budget" is a fact on the document, not a guess.
+  sizeBytes?: number;
   // Set when the rich query fell back to the minimal one — multi-day spans
   // and client names are unavailable in that mode, and the UI says so.
   degraded: boolean;
@@ -714,11 +718,17 @@ export async function runCapacityForecast(
     warnings,
   };
 
-  logger.info("Capacity forecast writing", {scope, entries: entries.length});
+  const sizeBytes = JSON.stringify(snapshot).length;
+  snapshot.sizeBytes = sizeBytes;
+  logger.info("Capacity forecast writing", {
+    scope, entries: entries.length, sizeBytes,
+  });
   await db.doc(forecastDoc(scope)).set(snapshot);
   logger.info("Capacity forecast written", {
     scope,
     coveredThrough,
+    sizeBytes,
+    sizeKB: Math.round(sizeBytes / 1024),
     kept: stats.kept,
     fetched: stats.fetched,
     otherScope: stats.otherScope,
@@ -779,14 +789,14 @@ export const jobberSyncCapacityScheduled = onSchedule(
   },
 );
 
-// LAWN: three times a day, not twice an hour. It is the densest visit stream
-// in the business and the slowest-moving picture — a recurring route booked
-// weeks out doesn't change between lunch and mid-afternoon. Early morning
-// (after overnight scheduling), midday, and end of day.
+// LAWN: hourly on the :22. At a 21-day horizon this pull is a fraction of
+// what it was, so the old "three times a day" rationing is no longer needed
+// — and route changes during the day are exactly what the ops question
+// cares about. Still clear of the performance sync's slots.
 export const jobberSyncCapacityLawnScheduled = onSchedule(
   {
     region: REGION,
-    schedule: "22 6,12,18 * * *",
+    schedule: "22 6-20 * * *",
     timeZone: TIMEZONE,
     secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET],
     timeoutSeconds: 540,

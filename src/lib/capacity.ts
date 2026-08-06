@@ -8,10 +8,11 @@
 // This file reads performance data (the multi-day ledger's credited BH) and
 // writes NOTHING. No efficiency, pay, bonus or approval math is touched.
 import type {
-  Crew, Employee, MultiDayJob, CapacityForecast, CapacityForecastVisit,
+  AppData, Crew, Employee, MultiDayJob, CapacityForecast, CapacityForecastVisit,
   CapacityRule, CapacitySettings, CapacityThresholds,
 } from '../types';
 import { remainingBHOf, creditedBHOf } from './multiDayResolution';
+import { getResourceAvailability } from './availability';
 import { addDaysToronto } from './dateUtils';
 import { DEFAULT_CAPACITY_THRESHOLDS, DEFAULT_CAPACITY_SETTINGS } from '../constants';
 
@@ -104,58 +105,177 @@ export function bandFor(pct: number, t: CapacityThresholds): CapacityBand {
   return 'over';
 }
 
-export interface ResolvedCapacity {
+// ── SCHEDULE-DERIVED CAPACITY ───────────────────────────────────────────────
+// A flat "150 BH/week" assumes a crew exists at full strength every week. It
+// doesn't: composition changes, crews get added mid-season, people book off.
+// So capacity is DERIVED, per crew per week:
+//
+//     capacity = (people scheduled that week, less approved time off)
+//                × BH-per-person-per-week
+//
+// with a projection from the crew's standard size for weeks the schedule
+// hasn't reached yet. Every row states which of those it used — a derived
+// number nobody can trace is no better than a made-up one.
+
+export type CapacityBasis =
+  | 'scheduled'   // real roster for that week
+  | 'projected'   // beyond the built schedule — standard size
+  | 'flat'        // admin pinned a fixed weekly total, schedule ignored
+  | 'none';       // no BH-per-person set — no bar, no percentage
+
+// Working days in a week. Time off is prorated against this: a person off 2
+// of 5 removes 40% of their weekly contribution. Weekend work still COUNTS
+// toward booked BH — this denominator is only how a person's availability is
+// scaled, and crews are rostered Monday–Friday.
+const WORKING_DAYS = 5;
+
+export interface WeekCapacity {
   bh: number | null;
-  source: 'crew' | 'division' | null;
-  // The capacity came from a BH/person rate × this crew size.
+  // What this crew could deliver at its standard size — the reference that
+  // separates "thin because nobody's scheduled" from "thin because nothing's
+  // sold". Null when no per-person rate is set.
+  fullStrengthBH: number | null;
+  basis: CapacityBasis;
+  headcount: number;         // distinct people on the crew that week
+  effectivePeople: number;   // headcount after time-off proration
+  standardSize: number | null;
   perPersonBH: number | null;
-  crewSize: number | null;
-  placeholder: boolean;
+  // "Sam off 2 of 5 days" — the specific reason capacity is down.
+  offNotes: string[];
+  // The full human-readable basis, e.g.
+  // "scheduled: 3.6 people (1 booked off) × 35 = 126".
+  label: string;
 }
 
-const ruleValue = (rule: CapacityRule | undefined, crewSize: number | null): number | null => {
-  if (!rule) return null;
-  const abs = rule.weeklyBH;
-  if (typeof abs === 'number' && Number.isFinite(abs) && abs > 0) return abs;
-  const per = rule.perPersonBH;
-  if (typeof per === 'number' && Number.isFinite(per) && per > 0 && crewSize && crewSize > 0) {
-    return Math.round(per * crewSize * 10) / 10;
-  }
-  return null;
+const NO_CAPACITY: WeekCapacity = {
+  bh: null, fullStrengthBH: null, basis: 'none', headcount: 0,
+  effectivePeople: 0, standardSize: null, perPersonBH: null,
+  offNotes: [], label: 'no BH-per-person set',
 };
 
-// A crew value overrides its division default when it resolves to a number.
-// Nothing is inferred: if neither resolves, capacity is null and the UI shows
-// raw BH with no bar and no percentage.
-export function resolveCapacity(
+const round1 = (n: number): number => Math.round(n * 10) / 10;
+
+// Crew value overrides division default, field by field — a crew can override
+// the per-person rate without also having to restate its standard size.
+function rulesFor(
   settings: CapacitySettings | undefined,
   division: string,
   crewNumber: number,
-  crewSize: number | null,
-): ResolvedCapacity {
-  const crewRule = settings?.crews?.[capacityCrewKey(division, crewNumber)];
-  const divRule = settings?.divisions?.[division];
-  const crewBH = ruleValue(crewRule, crewSize);
-  if (crewBH !== null) {
+): { perPersonBH: number | null; standardSize: number | null; weeklyBH: number | null; placeholder: boolean } {
+  const crew = settings?.crews?.[capacityCrewKey(division, crewNumber)];
+  const div = settings?.divisions?.[division];
+  const pick = (a: number | null | undefined, b: number | null | undefined): number | null => {
+    if (typeof a === 'number' && Number.isFinite(a) && a > 0) return a;
+    if (typeof b === 'number' && Number.isFinite(b) && b > 0) return b;
+    return null;
+  };
+  return {
+    perPersonBH: pick(crew?.perPersonBH, div?.perPersonBH),
+    standardSize: pick(crew?.standardSize, div?.standardSize),
+    weeklyBH: pick(crew?.weeklyBH, div?.weeklyBH),
+    placeholder: !!(crew?.placeholder ?? div?.placeholder),
+  };
+}
+
+export interface CapacityContext {
+  appData: AppData;
+  settings: CapacitySettings | undefined;
+  // crew key → the crew's most recent actual scheduled size, used as the
+  // standard size when an admin hasn't configured one.
+  typicalSize: Map<string, number>;
+  testUserIds: Set<string>;
+}
+
+// Capacity for ONE crew in ONE week.
+export function weekCapacityFor(
+  ctx: CapacityContext,
+  division: string,
+  crewNumber: number,
+  week: CapacityWeek,
+): WeekCapacity {
+  const key = capacityCrewKey(division, crewNumber);
+  const rule = rulesFor(ctx.settings, division, crewNumber);
+  const standardSize = rule.standardSize ?? (ctx.typicalSize.get(key) ?? null);
+
+  // A pinned weekly total short-circuits everything — it's an explicit
+  // instruction to ignore the schedule.
+  if (rule.weeklyBH !== null) {
     return {
-      bh: crewBH,
-      source: 'crew',
-      perPersonBH: crewRule?.weeklyBH ? null : (crewRule?.perPersonBH ?? null),
-      crewSize,
-      placeholder: !!crewRule?.placeholder,
+      bh: rule.weeklyBH, fullStrengthBH: rule.weeklyBH, basis: 'flat',
+      headcount: 0, effectivePeople: 0, standardSize,
+      perPersonBH: null, offNotes: [],
+      label: `flat ${rule.weeklyBH} BH/wk (fixed — ignores the schedule)`,
     };
   }
-  const divBH = ruleValue(divRule, crewSize);
-  if (divBH !== null) {
+  if (rule.perPersonBH === null) return { ...NO_CAPACITY, standardSize };
+  const per = rule.perPersonBH;
+
+  // Days of this week that actually have this crew on the schedule.
+  const days: string[] = [];
+  for (let i = 0; i < 7; i++) days.push(addDaysToronto(week.start, i));
+  const people = new Set<string>();
+  let anyScheduled = false;
+  for (const date of days) {
+    for (const crew of ctx.appData.schedules?.[date] || []) {
+      if (crew.division !== division || crew.crewNumber !== crewNumber) continue;
+      anyScheduled = true;
+      for (const empId of crew.employees || []) {
+        if (!ctx.testUserIds.has(empId)) people.add(empId);
+      }
+    }
+  }
+
+  if (!anyScheduled) {
+    // Beyond the built schedule — project from the standard size and SAY SO.
+    if (!standardSize) {
+      return {
+        ...NO_CAPACITY, standardSize: null, perPersonBH: per,
+        label: 'no schedule and no standard crew size — capacity unknown',
+      };
+    }
+    const bh = round1(standardSize * per);
     return {
-      bh: divBH,
-      source: 'division',
-      perPersonBH: divRule?.weeklyBH ? null : (divRule?.perPersonBH ?? null),
-      crewSize,
-      placeholder: !!divRule?.placeholder,
+      bh, fullStrengthBH: bh, basis: 'projected', headcount: standardSize,
+      effectivePeople: standardSize, standardSize, perPersonBH: per,
+      offNotes: [],
+      label: `projected: ${standardSize} people × ${per} = ${bh} (beyond schedule)`,
     };
   }
-  return { bh: null, source: null, perPersonBH: null, crewSize, placeholder: false };
+
+  // Real roster. Each person contributes the fraction of the working week
+  // they're actually available — approved time off, day-of absences and
+  // indefinite Away all count, read through the app's single availability
+  // source so this means exactly what it means everywhere else.
+  const workingDays = days.slice(0, WORKING_DAYS);
+  let effective = 0;
+  const offNotes: string[] = [];
+  for (const empId of people) {
+    let availableDays = 0;
+    for (const date of workingDays) {
+      const st = getResourceAvailability(empId, 'employee', date, ctx.appData);
+      if (st.status !== 'absent' && st.status !== 'booked_off') availableDays++;
+    }
+    const fraction = availableDays / WORKING_DAYS;
+    effective += fraction;
+    if (fraction < 1) {
+      const name = ctx.appData.employees?.find(e => e.id === empId)?.name || 'Someone';
+      const daysOff = WORKING_DAYS - availableDays;
+      offNotes.push(`${name} off ${daysOff} of ${WORKING_DAYS}`);
+    }
+  }
+  const headcount = people.size;
+  effective = round1(effective);
+  const bh = round1(effective * per);
+  const fullSize = standardSize ?? headcount;
+  const fullStrengthBH = round1(fullSize * per);
+  const offSummary = offNotes.length > 0 ?
+    ` (${offNotes.length} booked off: ${offNotes.slice(0, 2).join(', ')}` +
+    `${offNotes.length > 2 ? `, +${offNotes.length - 2} more` : ''})` : '';
+  return {
+    bh, fullStrengthBH, basis: 'scheduled', headcount, effectivePeople: effective,
+    standardSize, perPersonBH: per, offNotes,
+    label: `scheduled: ${effective} people${offSummary} × ${per} = ${bh}`,
+  };
 }
 
 // ── Crew attribution index ─────────────────────────────────────────────────
@@ -270,6 +390,15 @@ export interface CapacityJobSlice {
 
 export interface CapacityCell {
   weekStart: string;
+  // How this week's capacity was arrived at — shown on the row so the
+  // percentage is always traceable to people × rate.
+  capacityBasis: CapacityBasis;
+  capacityLabel: string;
+  // Standard-size reference. Where it differs from `capacity`, the week is
+  // thin because of WHO IS SCHEDULED, not because nothing is sold.
+  fullStrength: number | null;
+  headcount: number;
+  effectivePeople: number;
   // TRUE when this week lies past what the pull actually fetched. Such a
   // week has no number — not a zero. It is rendered as "not pulled" and is
   // excluded from "booked out to", because a week nobody looked at must
@@ -291,8 +420,10 @@ export interface CapacityRow {
   crewNumber: number | null;
   label: string;
   crewSize: number | null;
+  // Average capacity across the horizon — the baseline an individual week
+  // should be read against.
   capacity: number | null;
-  capacityDetail: ResolvedCapacity | null;
+  capacityDetail: WeekCapacity | null;
   // Division rows only: some of the division's crews have no capacity set,
   // so the division bar covers less than the whole division.
   capacityPartial: boolean;
@@ -313,13 +444,16 @@ export interface CapacityModel {
   generatedAt: number | null;
 }
 
-const round1 = (n: number): number => Math.round(n * 10) / 10;
 
 // How many weeks the model spans. Wide enough that "booked out to" reflects
 // the true end of the pipeline, not the edge of the visible grid.
 export const HORIZON_WEEKS = 18;
 
 export interface CapacityModelInput {
+  // Needed for time-off lookups, which go through the app's single
+  // availability source so "booked off" means the same thing here as on the
+  // schedule board.
+  appData: AppData;
   // One snapshot per SCOPE (projects, lawn). They are merged here rather
   // than server-side so a stale lawn pull still renders alongside a fresh
   // projects one — and so a visit that lands in the "wrong" scope document
@@ -378,6 +512,8 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
     uncovered: coverThrough === null ? true :
       (coverThrough ? w.start > coverThrough : false),
     bh: 0, capacity: null, pct: null, band: null,
+    fullStrength: null, capacityBasis: 'none' as CapacityBasis, capacityLabel: '',
+    headcount: 0, effectivePeople: 0,
     jobs: [], hourlyCount: 0, untaggedCount: 0,
   }));
   const rowFor = (ref: CrewRef) => {
@@ -493,19 +629,37 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
     return { week: null, to: null };
   };
 
+  // Capacity is now derived PER WEEK, not once per crew — that is the whole
+  // point of v1.2: the same crew can be 4 people one week and 3 the next.
+  const ctx: CapacityContext = {
+    appData: input.appData,
+    settings,
+    typicalSize: idx.crewSizes,
+    testUserIds: new Set((employees || []).filter(e => e.isTestUser).map(e => e.id)),
+  };
   const crewRows: CapacityRow[] = [];
   for (const { ref, cells } of acc.values()) {
     const size = idx.crewSizes.get(ref.key) ?? (ref.size || null);
-    const cap = resolveCapacity(settings, ref.division, ref.crewNumber, size);
-    for (const cell of cells) {
+    let lastDetail: WeekCapacity | null = null;
+    cells.forEach((cell, i) => {
+      const cap = weekCapacityFor(ctx, ref.division, ref.crewNumber, weeks[i]);
+      lastDetail = cap;
       cell.capacity = cap.bh;
+      cell.fullStrength = cap.fullStrengthBH;
+      cell.capacityBasis = cap.basis;
+      cell.capacityLabel = cap.label;
+      cell.headcount = cap.headcount;
+      cell.effectivePeople = cap.effectivePeople;
       // An uncovered week gets NO percentage and NO band. Leaving it at 0%
       // would paint it "underbooked — sell into it".
       cell.pct = cell.uncovered || !cap.bh || cap.bh <= 0 ? null :
         Math.round((cell.bh / cap.bh) * 100);
       cell.band = cell.pct === null ? null : bandFor(cell.pct, thresholds);
       cell.jobs.sort((a, b) => b.bh - a.bh);
-    }
+    });
+    const withCap = cells.filter(c => c.capacity !== null);
+    const avgCapacity = withCap.length > 0 ?
+      round1(withCap.reduce((sum, c) => sum + (c.capacity || 0), 0) / withCap.length) : null;
     const bo = bookedOut(cells);
     crewRows.push({
       key: ref.key,
@@ -514,8 +668,8 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
       crewNumber: ref.crewNumber,
       label: `Crew #${ref.crewNumber}`,
       crewSize: size,
-      capacity: cap.bh,
-      capacityDetail: cap,
+      capacity: avgCapacity,
+      capacityDetail: lastDetail,
       capacityPartial: false,
       cells,
       bookedOutWeek: bo.week,
@@ -529,12 +683,17 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
       .filter(r => r.division === division)
       .sort((a, b) => (a.crewNumber || 0) - (b.crewNumber || 0));
     const withCap = crews.filter(c => c.capacity !== null);
-    const capacity = withCap.length > 0
-      ? round1(withCap.reduce((s, c) => s + (c.capacity || 0), 0))
-      : null;
     const cells: CapacityCell[] = weeks.map((w, i) => {
       const bh = round1(crews.reduce((s, c) => s + c.cells[i].bh, 0));
       const uncovered = crews.length > 0 && crews.every(c => c.cells[i].uncovered);
+      // The division's capacity for a week is the sum of its crews' capacity
+      // FOR THAT WEEK — so a week where two crews are short reads short,
+      // instead of being measured against a season-long average.
+      const weekCaps = crews.map(c => c.cells[i].capacity).filter((v): v is number => v !== null);
+      const capacity = weekCaps.length > 0 ? round1(weekCaps.reduce((a, b) => a + b, 0)) : null;
+      const fullCaps = crews.map(c => c.cells[i].fullStrength).filter((v): v is number => v !== null);
+      const fullStrength = fullCaps.length > 0 ? round1(fullCaps.reduce((a, b) => a + b, 0)) : null;
+      const anyProjected = crews.some(c => c.cells[i].capacityBasis === 'projected');
       const pct = !uncovered && capacity && capacity > 0 ?
         Math.round((bh / capacity) * 100) : null;
       return {
@@ -542,13 +701,24 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
         uncovered,
         bh,
         capacity,
+        fullStrength,
+        capacityBasis: (capacity === null ? 'none' : anyProjected ? 'projected' : 'scheduled') as CapacityBasis,
+        capacityLabel: capacity === null ? 'no capacity set' :
+          `${weekCaps.length} crew${weekCaps.length === 1 ? '' : 's'} → ${capacity} BH` +
+          (anyProjected ? ' (some projected beyond the schedule)' : ''),
+        headcount: crews.reduce((s2, c) => s2 + c.cells[i].headcount, 0),
+        effectivePeople: round1(crews.reduce((s2, c) => s2 + c.cells[i].effectivePeople, 0)),
         pct,
         band: pct === null ? null : bandFor(pct, thresholds),
         jobs: crews.flatMap(c => c.cells[i].jobs).sort((a, b) => b.bh - a.bh),
-        hourlyCount: crews.reduce((s, c) => s + c.cells[i].hourlyCount, 0),
-        untaggedCount: crews.reduce((s, c) => s + c.cells[i].untaggedCount, 0),
+        hourlyCount: crews.reduce((s2, c) => s2 + c.cells[i].hourlyCount, 0),
+        untaggedCount: crews.reduce((s2, c) => s2 + c.cells[i].untaggedCount, 0),
       };
     });
+    const avgCapacity = (() => {
+      const vals = cells.map(c => c.capacity).filter((v): v is number => v !== null);
+      return vals.length > 0 ? round1(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+    })();
     const bo = bookedOut(cells);
     return {
       key: division,
@@ -557,7 +727,7 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
       crewNumber: null,
       label: division,
       crewSize: crews.reduce((s, c) => s + (c.crewSize || 0), 0) || null,
-      capacity,
+      capacity: avgCapacity,
       capacityDetail: null,
       capacityPartial: withCap.length > 0 && withCap.length < crews.length,
       cells,

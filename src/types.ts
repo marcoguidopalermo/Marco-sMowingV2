@@ -1008,8 +1008,20 @@ export interface AppSettings {
 //                 crew's scheduled size (how the Lawn standard is stated).
 // weeklyBH wins when both are set. null/absent on both = NO capacity set.
 export interface CapacityRule {
-  weeklyBH?: number | null;
+  // PRIMARY setting: BH one person delivers in a week. Capacity is derived
+  // from this × the people actually scheduled (less approved time off), so
+  // it tracks a crew that changes shape week to week — which a flat weekly
+  // total cannot.
   perPersonBH?: number | null;
+  // Full-strength crew size. Used to PROJECT weeks the schedule hasn't
+  // reached, and as the faint reference that distinguishes "thin because
+  // nobody's scheduled" from "thin because nothing's sold". Absent → the
+  // crew's most recent actual scheduled size stands in.
+  standardSize?: number | null;
+  // LEGACY / escape hatch: a fixed weekly total that pins capacity and
+  // ignores the schedule entirely. Kept because some crews may genuinely
+  // want a hand-set number, but it opts out of every derivation above.
+  weeklyBH?: number | null;
   // Seeded by the app as a starting point, not confirmed by an admin. The UI
   // flags these loudly so nobody mistakes a placeholder for a real target.
   placeholder?: boolean;
@@ -1088,6 +1100,8 @@ export interface CapacityForecast {
   coveredThrough?: string;
   // The pull stopped early to leave Jobber API budget for the performance sync.
   stoppedForBudget?: boolean;
+  // Serialized size of the snapshot document, recorded by the pull.
+  sizeBytes?: number;
   // The forward query fell back to a reduced shape: multi-day spans collapse
   // to their start day and client names are missing. Surfaced in the UI.
   degraded: boolean;

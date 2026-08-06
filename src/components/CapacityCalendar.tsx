@@ -19,6 +19,8 @@ import {
   type CapacityBand, type CapacityCell, type CapacityRow, type CapacityWeek,
 } from '../lib/capacity';
 import { formatTodayInToronto } from '../lib/dateUtils';
+
+const round1 = (n: number) => Math.round(n * 10) / 10;
 import { DIVISIONS } from '../constants';
 
 interface Props {
@@ -148,36 +150,71 @@ function Cell({ cell, week, active, onClick, compact }: {
   }
   const s = styleFor(cell.band);
   const pct = cell.pct;
-  const fill = pct === null ? 0 : Math.max(2, Math.min(100, pct));
+  const cap = cell.capacity;
+  const full = cell.fullStrength;
+  // Full strength is only worth showing when it DIFFERS — that gap is the
+  // difference between "thin because nobody's scheduled" and "thin because
+  // nothing's sold", and those need opposite responses.
+  const shortStaffed = cap !== null && full !== null && full - cap > 0.5;
+  const scale = Math.max(cell.bh, cap || 0, full || 0, 1);
+  const w = (v: number) => `${Math.max(1, Math.min(100, (v / scale) * 100))}%`;
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={`Week ${week.rangeLabel}: ${bh(cell.bh)} billable hours`}
+      aria-label={`Week ${week.rangeLabel}: ${bh(cell.bh)} booked of ${cap === null ? 'unknown' : bh(cap)} capacity`}
       className={`w-full text-left rounded-lg p-2 transition-shadow ${s.cell} ${active ? 'ring-2 ring-slate-800 ring-offset-1' : 'hover:shadow-md'}`}
     >
+      {/* BOOKED and CAPACITY as separate numbers. 70% could be 140 of 200 or
+          70 of 100 — those call for different responses, so the percentage
+          is derived UNDER them rather than standing in for them. */}
       <div className="flex items-baseline justify-between gap-1">
         <span className={`font-black tabular-nums ${compact ? 'text-base' : 'text-lg'} ${s.text}`}>
-          {bh(cell.bh)}<span className="text-[10px] font-bold opacity-70 ml-0.5">BH</span>
+          {bh(cell.bh)}
+        </span>
+        <span className={`text-[10px] font-bold tabular-nums opacity-80 ${s.text}`}>
+          / {cap === null ? '—' : bh(cap)}
+        </span>
+      </div>
+      <div className={`text-[8px] font-black uppercase tracking-widest opacity-60 ${s.text}`}>
+        booked / capacity
+      </div>
+      {/* Paired bars: booked over capacity, both on the same scale, with a
+          faint full-strength marker where it sits beyond capacity. */}
+      <div className="mt-1.5 space-y-0.5 relative">
+        <div className={`h-1.5 rounded-full overflow-hidden ${s.track}`}>
+          <div className={`h-full ${s.bar}`} style={{ width: w(cell.bh) }} />
+        </div>
+        <div className={`h-1 rounded-full overflow-hidden ${s.track} relative`}>
+          {cap !== null && <div className={`h-full ${s.bar} opacity-40`} style={{ width: w(cap) }} />}
+          {shortStaffed && full !== null && (
+            <div
+              className={`absolute top-0 bottom-0 border-l-2 border-dashed ${s.text} opacity-50`}
+              style={{ left: w(full) }}
+              title={`Full strength ${bh(full)} BH`}
+            />
+          )}
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-1 mt-1">
+        <span className={`text-[9px] font-black uppercase tracking-widest inline-flex items-center gap-0.5 ${s.text}`}>
+          {cell.band === 'over' && <AlertTriangle className="w-2.5 h-2.5" />}
+          {cell.band ? BAND_META[cell.band].label : 'NO CAPACITY'}
         </span>
         {pct !== null && (
           <span className={`text-[10px] font-black tabular-nums ${s.text}`}>{pct}%</span>
         )}
       </div>
-      <div className={`h-1.5 rounded-full mt-1.5 overflow-hidden ${s.track}`}>
-        {pct !== null && <div className={`h-full ${s.bar}`} style={{ width: `${fill}%` }} />}
-      </div>
-      <div className="flex items-center justify-between gap-1 mt-1">
-        <span className={`text-[9px] font-black uppercase tracking-widest inline-flex items-center gap-0.5 ${s.text}`}>
-          {cell.band === 'over' && <AlertTriangle className="w-2.5 h-2.5" />}
-          {cell.band ? BAND_META[cell.band].label : 'NO CAPACITY SET'}
-        </span>
-        {cell.capacity !== null && (
-          <span className={`text-[9px] font-bold opacity-70 tabular-nums ${s.text}`}>of {bh(cell.capacity)}</span>
-        )}
-      </div>
+      {shortStaffed && (
+        <div className={`text-[8px] font-bold mt-0.5 leading-tight ${s.text} opacity-80`}>
+          short-staffed: {bh(full! - cap!)} BH under full strength ({bh(full!)})
+        </div>
+      )}
+      {cell.capacityBasis === 'projected' && (
+        <div className={`text-[8px] font-bold mt-0.5 ${s.text} opacity-70`}>projected — beyond schedule</div>
+      )}
       {(cell.hourlyCount > 0 || cell.untaggedCount > 0) && (
-        <div className={`text-[9px] font-bold mt-0.5 opacity-80 ${s.text}`}>
+        <div className={`text-[8px] font-bold mt-0.5 opacity-80 ${s.text}`}>
           {cell.hourlyCount > 0 && `${cell.hourlyCount} hourly`}
           {cell.hourlyCount > 0 && cell.untaggedCount > 0 && ' · '}
           {cell.untaggedCount > 0 && `${cell.untaggedCount} untagged`}
@@ -206,43 +243,46 @@ function BookedOut({ row, big }: { row: CapacityRow; big?: boolean }) {
 
 // Where a row's capacity came from, spelled out. A percentage with no
 // visible basis is a number nobody can check — this is the basis.
-function CapacityNote({ row, onOpenSettings }: {
+function CapacityNote({ row, cells, onOpenSettings }: {
   row: CapacityRow;
+  cells: CapacityCell[];
   onOpenSettings?: () => void;
 }) {
   const unset = (
     <span className="text-[10px] font-bold text-slate-400">
-      no capacity set —{' '}
+      no BH-per-person set —{' '}
       {onOpenSettings ? (
         <button type="button" onClick={onOpenSettings} className="font-black text-slate-600 underline hover:text-slate-900">set it</button>
       ) : <span className="font-black text-slate-500">ask an admin to set it</span>}
     </span>
   );
+  const withCap = cells.filter(c => c.capacity !== null);
+  if (withCap.length === 0) return unset;
+  const avg = round1(withCap.reduce((s2, c) => s2 + (c.capacity || 0), 0) / withCap.length);
 
+  if (row.kind === 'unassigned') {
+    return <span className="text-[10px] font-bold text-slate-400">no capacity — unattributed work</span>;
+  }
   if (row.kind === 'division') {
-    if (row.capacity === null) return unset;
     return (
       <span className="text-[10px] font-bold text-slate-500">
-        {bh(row.capacity)} BH/wk (sum of {row.crews?.filter(c => c.capacity !== null).length || 0} crew
-        {(row.crews?.filter(c => c.capacity !== null).length || 0) === 1 ? '' : 's'})
+        avg {avg} BH/wk across {withCap.length} week{withCap.length === 1 ? '' : 's'}
         {row.capacityPartial && (
-          <span className="text-amber-700"> · partial — {row.crews?.filter(c => c.capacity === null).length} crew(s) unset, so this bar covers less than the whole division</span>
+          <span className="text-amber-700"> · partial — {row.crews?.filter(c => c.cells.every(x => x.capacity === null)).length} crew(s) unset</span>
         )}
       </span>
     );
   }
-  if (row.kind === 'unassigned') {
-    return <span className="text-[10px] font-bold text-slate-400">no capacity — unattributed work</span>;
-  }
-  const d = row.capacityDetail;
-  if (!d || d.bh === null) return unset;
-  const basis = d.perPersonBH
-    ? `${d.source === 'crew' ? 'crew override' : 'division default'}: ${d.perPersonBH} BH/person × ${d.crewSize} crew`
-    : (d.source === 'crew' ? 'crew override' : 'division default');
+  // Crew row: state the basis of the FIRST visible week in full, plus the
+  // average as the baseline to read the individual weeks against.
+  const first = withCap[0];
   return (
     <span className="text-[10px] font-bold text-slate-500">
-      {bh(d.bh)} BH/wk <span className="text-slate-400">({basis})</span>
-      {d.placeholder && <span className="text-amber-700 font-black"> · PLACEHOLDER — confirm</span>}
+      <span className="text-slate-600">{first.capacityLabel}</span>
+      {' · '}avg {avg} BH/wk
+      {cells.some(c => c.capacityBasis === 'projected') && (
+        <span className="text-slate-400"> · later weeks projected</span>
+      )}
     </span>
   );
 }
@@ -268,6 +308,14 @@ export default function CapacityCalendar({
       : !isAdmin && managed === 'small' ? 'Small Projects'
         : !isAdmin && managed === 'large' ? 'Large Projects'
           : 'All';
+  // SCREEN = which half of the business, and it changes the question being
+  // asked. Projects: "when can we start?" — 4 rolling weeks with a month
+  // toggle. Lawn: "is the route full?" — a 2-week window matching the
+  // biweekly cycle. One component, switched at the top, so both entry points
+  // (SalesMaster tab, schedule-board toggle) reach either screen and there
+  // is still no second implementation.
+  const lawnDefault = !isAdmin && managed === 'lawn';
+  const [screen, setScreen] = useState<CapacityScope>(lawnDefault ? 'lawn' : 'projects');
   const [division, setDivision] = useState<string>(defaultDivision);
   const [range, setRange] = useState<'4week' | 'month'>('4week');
   const [monthOffset, setMonthOffset] = useState(0);
@@ -300,9 +348,10 @@ export default function CapacityCalendar({
     schedules: appData.schedules || {},
     employees: appData.employees || [],
     multiDayJobs: appData.multiDayJobs,
+    appData,
     settings: capacityOrDefault(appData.settings?.capacity),
     today,
-  }), [snapshots, appData.schedules, appData.employees, appData.multiDayJobs, appData.settings?.capacity, today]);
+  }), [snapshots, appData, today]);
 
   // Month anchor built from (year, month, 1) so month-stepping can't skip a
   // month from a 29th–31st start date.
@@ -314,22 +363,26 @@ export default function CapacityCalendar({
   // Visible week window: 4 rolling weeks, or every remaining week of the
   // selected calendar month.
   const visible = useMemo(() => {
+    // Lawn is a fixed 2-week window — its pull only covers 21 days, and the
+    // biweekly cycle is the unit ops thinks in.
+    if (screen === 'lawn') return model.weeks.slice(0, 2).map((w, i) => ({ week: w, index: i }));
     if (range === '4week') return model.weeks.slice(0, 4).map((w, i) => ({ week: w, index: i }));
     const ym = `${monthAnchor.getFullYear()}-${String(monthAnchor.getMonth() + 1).padStart(2, '0')}`;
     const inMonth = model.weeks
       .map((w, i) => ({ week: w, index: i }))
       .filter(({ week }) => week.start.slice(0, 7) === ym || week.end.slice(0, 7) === ym);
     return inMonth.length > 0 ? inMonth : model.weeks.slice(0, 4).map((w, i) => ({ week: w, index: i }));
-  }, [range, monthAnchor, model.weeks]);
+  }, [screen, range, monthAnchor, model.weeks]);
 
   const rows = useMemo(() => {
-    const list = division === 'All'
-      ? model.divisions
-      : model.divisions.filter(d => d.division === division);
-    return list;
-  }, [model.divisions, division]);
+    // Each screen shows only its own half. Lawn divisions are matched by
+    // name, the same rule the server's scope split uses.
+    const inScreen = model.divisions.filter(d =>
+      (/lawn/i.test(d.division) ? 'lawn' : 'projects') === screen);
+    return division === 'All' ? inScreen : inScreen.filter(d => d.division === division);
+  }, [model.divisions, division, screen]);
 
-  const showUnassigned = model.unassigned && (division === 'All');
+  const showUnassigned = model.unassigned && division === 'All' && screen === 'projects';
 
   const drillCell = useMemo(() => {
     if (!drill) return null;
@@ -380,7 +433,7 @@ export default function CapacityCalendar({
             </span>
           ) : null}
         </div>
-        <CapacityNote row={row} onOpenSettings={canEditSettings ? openSettings : undefined} />
+        <CapacityNote row={row} cells={visible.map(({ index }) => row.cells[index])} onOpenSettings={canEditSettings ? openSettings : undefined} />
         {row.bookedOutTo && (
           <div className="text-[10px] font-black text-slate-600 mt-0.5">
             booked to {longDate(row.bookedOutTo)}
@@ -417,7 +470,7 @@ export default function CapacityCalendar({
           )}
           <div className="min-w-0">
             <div className={`truncate ${row.kind === 'division' ? 'font-black text-slate-900' : 'font-bold text-slate-700 text-sm'}`}>{row.label}</div>
-            <CapacityNote row={row} onOpenSettings={canEditSettings ? openSettings : undefined} />
+            <CapacityNote row={row} cells={visible.map(({ index }) => row.cells[index])} onOpenSettings={canEditSettings ? openSettings : undefined} />
           </div>
         </div>
       </div>
@@ -446,25 +499,46 @@ export default function CapacityCalendar({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <CalendarRange className="w-5 h-5 text-slate-700" />
-            <h3 className="text-lg font-black text-slate-900">Capacity</h3>
+            <h3 className="text-lg font-black text-slate-900">
+              Capacity — {screen === 'lawn' ? 'Lawn' : 'Projects'}
+            </h3>
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-              scheduled BH by week
+              {screen === 'lawn' ? 'is the route full?' : 'when can we start?'}
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {/* SCREEN SWITCH — the two halves ask different questions and
+                get different windows. */}
             <div className="flex bg-slate-100 rounded-lg p-1">
-              <button
-                type="button"
-                onClick={() => { setRange('4week'); setDrill(null); }}
-                className={`px-3 py-1.5 text-xs font-black rounded ${range === '4week' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}
-              >4 WEEKS</button>
-              <button
-                type="button"
-                onClick={() => { setRange('month'); setDrill(null); }}
-                className={`px-3 py-1.5 text-xs font-black rounded ${range === 'month' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}
-              >MONTH</button>
+              {(['projects', 'lawn'] as CapacityScope[]).map(sc => (
+                <button
+                  key={sc}
+                  type="button"
+                  onClick={() => { setScreen(sc); setDrill(null); setDivision('All'); }}
+                  className={`px-3 py-1.5 text-xs font-black rounded uppercase ${screen === sc ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}
+                >{sc === 'projects' ? 'Projects' : 'Lawn'}</button>
+              ))}
             </div>
-            {range === 'month' && (
+            {screen === 'projects' && (
+              <div className="flex bg-slate-100 rounded-lg p-1">
+                <button
+                  type="button"
+                  onClick={() => { setRange('4week'); setDrill(null); }}
+                  className={`px-3 py-1.5 text-xs font-black rounded ${range === '4week' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}
+                >4 WEEKS</button>
+                <button
+                  type="button"
+                  onClick={() => { setRange('month'); setDrill(null); }}
+                  className={`px-3 py-1.5 text-xs font-black rounded ${range === 'month' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}
+                >MONTH</button>
+              </div>
+            )}
+            {screen === 'lawn' && (
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                2-week route window
+              </span>
+            )}
+            {screen === 'projects' && range === 'month' && (
               <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
                 <button
                   type="button"
@@ -496,29 +570,22 @@ export default function CapacityCalendar({
             {/* Refresh is SCOPED. Projects is the default because that's the
                 half that changes between refreshes; lawn is 250+ visits a
                 week, moves slowly, and gets its own (slower) schedule. */}
+            {/* Each screen refreshes its OWN scope — pulling one leaves the
+                other's snapshot untouched. */}
             {canRefresh && onRefresh && (
-              <div className="inline-flex rounded-lg overflow-hidden border border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => refresh('projects')}
-                  disabled={busy}
-                  title="Re-pull Large + Small Projects (leaves the lawn snapshot alone)"
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${busy && busyScope === 'projects' ? 'animate-spin' : ''}`} />
-                  {busy && busyScope === 'projects' ? 'Pulling' : 'Refresh projects'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => refresh('lawn')}
-                  disabled={busy}
-                  title="Re-pull Lawn — bigger and slower; it refreshes on its own three times a day"
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest bg-white text-slate-700 border-l border-slate-800 hover:bg-slate-100 disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${busy && busyScope === 'lawn' ? 'animate-spin' : ''}`} />
-                  {busy && busyScope === 'lawn' ? 'Pulling' : 'Lawn'}
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => refresh(screen)}
+                disabled={busy}
+                title={screen === 'lawn'
+                  ? 'Re-pull the lawn route (leaves the projects snapshot alone)'
+                  : 'Re-pull Large + Small Projects (leaves the lawn snapshot alone)'}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest bg-slate-800 text-white rounded-lg hover:bg-slate-700 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${busy && busyScope === screen ? 'animate-spin' : ''}`} />
+                {busy && busyScope === screen ? 'Pulling' :
+                  `Refresh ${screen === 'lawn' ? 'lawn' : 'projects'}`}
+              </button>
             )}
             {canEditSettings && (
               <button

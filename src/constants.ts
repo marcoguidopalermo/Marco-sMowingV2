@@ -119,8 +119,11 @@ export const CAPACITY_LAWN_SEED_PER_PERSON = 35;
 export const DEFAULT_CAPACITY_SETTINGS: CapacitySettings = {
   divisions: {
     'Lawn Division': { perPersonBH: CAPACITY_LAWN_SEED_PER_PERSON, placeholder: true },
-    'Large Projects': { weeklyBH: null, placeholder: true },
-    'Small Projects': { weeklyBH: null, placeholder: true },
+    // Left EMPTY on purpose — no defensible per-person figure exists for
+    // project work yet, and a wrong rate is worse than no bar at all. These
+    // crews show raw BH with no percentage until Marco sets a rate.
+    'Large Projects': { perPersonBH: null, placeholder: true },
+    'Small Projects': { perPersonBH: null, placeholder: true },
   },
   crews: {},
   thresholds: DEFAULT_CAPACITY_THRESHOLDS,

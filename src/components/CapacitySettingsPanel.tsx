@@ -36,11 +36,11 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
       [division]: { ...(cap.divisions?.[division] || {}), ...patch, placeholder: false },
     },
   });
-  const setCrew = (division: string, crewNumber: number, weeklyBH: number | null) => {
+  const setCrew = (division: string, crewNumber: number, perPersonBH: number | null) => {
     const key = capacityCrewKey(division, crewNumber);
     const crews = { ...(cap.crews || {}) };
-    if (weeklyBH === null) delete crews[key];
-    else crews[key] = { weeklyBH };
+    if (perPersonBH === null) delete crews[key];
+    else crews[key] = { ...(crews[key] || {}), perPersonBH };
     write({ crews });
   };
 
@@ -55,11 +55,15 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
           Capacity Calendar — Weekly BH
         </label>
         <p className="text-xs text-slate-500">
-          What one crew can deliver in a week, in billable hours. Set a DIVISION default;
-          a crew value overrides it when filled in. Leave both blank and that crew shows
-          raw BH with <strong>no bar and no percentage</strong> rather than a misleading one.
-          Nothing here touches performance, efficiency or pay — it is the yardstick the
-          forward calendar measures scheduled work against.
+          <strong>BH one person delivers in a week.</strong> Capacity is DERIVED from this
+          × the people actually scheduled that week, less approved time off — so it follows
+          a crew that changes shape instead of assuming full strength every week. Set a
+          DIVISION default; a crew value overrides it. <strong>Standard size</strong> is the
+          crew at full strength: it projects weeks the schedule hasn&apos;t reached yet and
+          is the faint reference that shows when a week is thin because nobody&apos;s
+          scheduled rather than because nothing&apos;s sold. Leave the rate blank and that
+          crew shows raw BH with <strong>no bar and no percentage</strong>.
+          Nothing here touches performance, efficiency or pay.
         </p>
       </div>
 
@@ -78,17 +82,6 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
             </div>
             <div className="flex flex-wrap items-center gap-4">
               <label className="flex items-center gap-2">
-                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">BH / week</span>
-                <input
-                  type="number" min={0} step={1} placeholder="blank"
-                  disabled={!isAdmin}
-                  value={rule.weeklyBH ?? ''}
-                  onChange={e => setDivision(division, { weeklyBH: numOrNull(e.target.value) })}
-                  className={inputCls}
-                />
-              </label>
-              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">or</span>
-              <label className="flex items-center gap-2">
                 <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">BH / person / week</span>
                 <input
                   type="number" min={0} step={1} placeholder="blank"
@@ -97,17 +90,32 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
                   onChange={e => setDivision(division, { perPersonBH: numOrNull(e.target.value) })}
                   className={inputCls}
                 />
-                <span className="text-[10px] text-slate-400">× crew size</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Standard crew size</span>
+                <input
+                  type="number" min={0} step={1} placeholder="auto"
+                  disabled={!isAdmin}
+                  value={rule.standardSize ?? ''}
+                  onChange={e => setDivision(division, { standardSize: numOrNull(e.target.value) })}
+                  className={inputCls}
+                />
+                <span className="text-[10px] text-slate-400">blank = most recent actual size</span>
               </label>
             </div>
-            {rule.weeklyBH && rule.perPersonBH ? (
+            {rule.weeklyBH ? (
               <p className="text-[10px] font-bold text-amber-700">
-                Both set — the flat BH/week value wins. Clear it to use the per-person rate.
+                A flat {rule.weeklyBH} BH/week is pinned for this division — it OVERRIDES the
+                derivation and ignores who is scheduled.{' '}
+                {isAdmin && (
+                  <button type="button" onClick={() => setDivision(division, { weeklyBH: null })}
+                    className="underline font-black">Clear it</button>
+                )}
               </p>
             ) : null}
             <div>
               <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
-                Crew overrides (blank = use the division default)
+                Crew BH/person overrides (blank = use the division default)
               </div>
               <div className="flex flex-wrap gap-2">
                 {CREW_NUMBERS.map(n => (
@@ -116,7 +124,7 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
                     <input
                       type="number" min={0} step={1} placeholder="—"
                       disabled={!isAdmin}
-                      value={cap.crews?.[capacityCrewKey(division, n)]?.weeklyBH ?? ''}
+                      value={cap.crews?.[capacityCrewKey(division, n)]?.perPersonBH ?? ''}
                       onChange={e => setCrew(division, n, numOrNull(e.target.value))}
                       className="w-14 bg-white border border-slate-300 rounded p-1 text-xs font-mono font-bold outline-none disabled:opacity-60"
                     />
