@@ -69,6 +69,18 @@ const MAX_ENTRIES = 2500;
 // Forward visits query. SEPARATE from the sync's VISITS_QUERY (which stays
 // exactly as it is) because this one needs two extra things the sync doesn't:
 // `endAt` (multi-day span) and the client name (drill-down readability).
+//
+// `assignedUsers(first: 10)` is a COST control. Jobber prices a query by the
+// maximum objects it could return, so an unbounded nested connection is
+// charged at its default page size — 25 visits × 25 possible assignees. That
+// cost matters here because this query paginates a 120-day window against the
+// same 10,000-point budget the performance sync draws from.
+// THE BOUND, stated plainly: a visit with more than 10 assignees has its
+// trailing assignees unseen, and if those trailing people were the only ones
+// from a second crew, that crew wouldn't be credited with its share. Ten is
+// well past any real crew (2–5) or pair of crews on one visit, so this is a
+// theoretical edge rather than a live one — but it is a real bound, not a
+// display-only truncation.
 const FORWARD_VISITS_QUERY = `query ForwardVisits(
   $after: ISO8601DateTime!,
   $before: ISO8601DateTime!,
@@ -87,7 +99,7 @@ const FORWARD_VISITS_QUERY = `query ForwardVisits(
       completedAt
       isComplete
       job { id jobNumber title client { name } }
-      assignedUsers { nodes { id name { full } } }
+      assignedUsers(first: 10) { nodes { id name { full } } }
     }
     pageInfo { endCursor hasNextPage }
   }
@@ -389,6 +401,16 @@ export async function runCapacityForecast(
 
   const {visits: raw, degraded, truncated, warnings} =
     await fetchForwardVisits(client, after, before);
+  // Logged BEFORE any processing so a run that dies later is still
+  // diagnosable. Without this, a stall between "last page fetched" and
+  // "document written" is silent — and silence reads exactly like success.
+  logger.info("Capacity forecast fetched", {
+    visits: raw.length,
+    windowStart,
+    windowEnd,
+    degraded,
+    truncated,
+  });
 
   const stats = {
     fetched: raw.length,
@@ -478,6 +500,7 @@ export async function runCapacityForecast(
     warnings,
   };
 
+  logger.info("Capacity forecast writing", {entries: entries.length});
   await db.doc(FORECAST_DOC).set(snapshot);
   logger.info("Capacity forecast written", {
     kept: stats.kept,
