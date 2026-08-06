@@ -61,13 +61,25 @@ const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 // query costs enough that a 250ms gap drains 10,000 points to under 1,000
 // within ~30 seconds of paging.
 const PAGE_DELAY_MS = 600;
-// HARD FLOOR on the shared Jobber API budget. The capacity forecast is a
-// convenience view; the PERFORMANCE SYNC that runs on the same account every
-// 15 minutes is pay. If a long pull would draw the budget below this, the
-// pull stops early and says so — the forecast yields to the sync, never the
-// other way round. This is the guardrail that keeps a read-only view from
-// ever costing someone their numbers.
-const BUDGET_FLOOR = 3000;
+// SHARED-BUDGET ETIQUETTE. The capacity forecast is a convenience view; the
+// PERFORMANCE SYNC running on the same Jobber account every 15 minutes is
+// pay. Measured on the live account, an uncontrolled pull pins the 10,000-
+// point bucket at ~900 for its whole duration — which is exactly when a sync
+// firing at :00/:15/:30/:45 would find nothing left.
+//
+// The fix is to PAUSE, not to quit. Stopping outright at the floor would cut
+// coverage to a couple of weeks (the bucket reaches the floor within a few
+// pages), and a forecast that only sees two weeks out is barely a forecast.
+// So: whenever the budget sits below RESUME, the page-cycle takes an extra
+// beat. The pull takes longer and spends most of its life leaving the bucket
+// comfortably full, which is what the sync needs. Waiting is bounded — past
+// the caps below the pull gives up its REMAINING coverage rather than
+// running forever, and records exactly how far it got.
+const BUDGET_RESUME = 6000;
+const BUDGET_WAIT_STEP_MS = 2000;
+const MAX_BUDGET_WAIT_MS = 150_000;
+// Whole-pull time box, comfortably inside the 540s function timeout.
+const MAX_PULL_MS = 400_000;
 
 // How far FORWARD we pull, per scope.
 // PROJECTS: wide, because "booked out to" is computed over the whole horizon
@@ -463,6 +475,8 @@ async function fetchForwardVisits(
   let truncated = false;
   let stoppedForBudget = false;
   let pages = 0;
+  let waitedMs = 0;
+  const startedAt = Date.now();
 
   for (let i = 0; i < MAX_PAGES; i++) {
     if (i > 0) await sleep(PAGE_DELAY_MS);
@@ -498,19 +512,32 @@ async function fetchForwardVisits(
         stoppedForBudget: false, pages,
       };
     }
-    // Yield to the performance sync. Better a forecast that admits it only
-    // covers the next N weeks than a sync that can't compute pay.
+    // Yield to the performance sync. When the shared budget is running low
+    // this page-cycle takes an extra beat, which is what lets the bucket
+    // refill instead of sitting pinned at the floor for the whole pull.
+    // getLastThrottleStatus reflects the response we just got, so this is a
+    // reaction to real remaining budget, not a guess.
     const available = client.getLastThrottleStatus()?.currentlyAvailable;
-    if (typeof available === "number" && available < BUDGET_FLOOR) {
+    if (typeof available === "number" && available < BUDGET_RESUME) {
+      await sleep(BUDGET_WAIT_STEP_MS);
+      waitedMs += BUDGET_WAIT_STEP_MS;
+    }
+    // Give up the REST of the window — never the whole run — when we've
+    // spent too long waiting or the pull has run long. Coverage stops here
+    // and `coveredThrough` says exactly where, so the view can mark the
+    // remaining weeks "not pulled" instead of "open".
+    if (waitedMs >= MAX_BUDGET_WAIT_MS ||
+        Date.now() - startedAt >= MAX_PULL_MS) {
       stoppedForBudget = true;
       truncated = true;
       warnings.push(
-        `budget_floor — stopped after ${pages} pages (${out.length} ` +
-        `visits) with ${available} Jobber points left, to leave headroom ` +
-        "for the performance sync; later weeks are NOT covered",
+        `budget_yield — stopped after ${pages} pages (${out.length} ` +
+        `visits, ${Math.round(waitedMs / 1000)}s spent waiting on the ` +
+        "shared Jobber budget) to leave headroom for the performance " +
+        "sync; later weeks are NOT covered",
       );
-      logger.warn("Capacity pull stopped to protect the sync's API budget", {
-        pages, visits: out.length, available,
+      logger.warn("Capacity pull yielded the rest of its window to the sync", {
+        pages, visits: out.length, available, waitedMs,
       });
       break;
     }
