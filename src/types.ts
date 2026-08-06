@@ -1083,6 +1083,11 @@ export interface CapacityForecast {
     otherScope?: number;
   };
   truncated: boolean;
+  // The date this snapshot actually covers through. Weeks past it were never
+  // fetched — UNKNOWN, not empty. The view must never colour them "open".
+  coveredThrough?: string;
+  // The pull stopped early to leave Jobber API budget for the performance sync.
+  stoppedForBudget?: boolean;
   // The forward query fell back to a reduced shape: multi-day spans collapse
   // to their start day and client names are missing. Surfaced in the UI.
   degraded: boolean;

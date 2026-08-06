@@ -270,6 +270,11 @@ export interface CapacityJobSlice {
 
 export interface CapacityCell {
   weekStart: string;
+  // TRUE when this week lies past what the pull actually fetched. Such a
+  // week has no number — not a zero. It is rendered as "not pulled" and is
+  // excluded from "booked out to", because a week nobody looked at must
+  // never read as an open week somebody can sell into.
+  uncovered: boolean;
   bh: number;
   capacity: number | null;
   pct: number | null;
@@ -352,13 +357,28 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
 
   // crew key → per-week accumulator
   const acc = new Map<string, { ref: CrewRef; cells: CapacityCell[] }>();
-  const blankCells = (): CapacityCell[] => weeks.map(w => ({
-    weekStart: w.start, bh: 0, capacity: null, pct: null, band: null,
+  // Coverage is per SCOPE: lawn and projects pull different horizons, so a
+  // week can be known for one and unknown for the other. A crew row uses its
+  // own division's scope.
+  const coverageOf = (division: string): string => {
+    const scope = /lawn/i.test(division) ? 'lawn' : 'projects';
+    const snap = snapshots.find(s2 => (s2.scope || 'projects') === scope);
+    // No snapshot for this scope at all → nothing is covered.
+    if (!snap) return '';
+    return snap.coveredThrough || snap.windowEnd || '';
+  };
+  const blankCells = (coverThrough?: string): CapacityCell[] => weeks.map(w => ({
+    weekStart: w.start,
+    uncovered: coverThrough !== undefined && !!coverThrough ? w.start > coverThrough : false,
+    bh: 0, capacity: null, pct: null, band: null,
     jobs: [], hourlyCount: 0, untaggedCount: 0,
   }));
   const rowFor = (ref: CrewRef) => {
     let row = acc.get(ref.key);
-    if (!row) { row = { ref, cells: blankCells() }; acc.set(ref.key, row); }
+    if (!row) {
+      row = { ref, cells: blankCells(coverageOf(ref.division)) };
+      acc.set(ref.key, row);
+    }
     return row;
   };
 
@@ -420,7 +440,7 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
     for (const [key, byWeek] of perCrewWeekBH) {
       let cells: CapacityCell[];
       if (key === UNASSIGNED_KEY) {
-        if (!unassignedCells) unassignedCells = blankCells();
+        if (!unassignedCells) unassignedCells = blankCells(coverageOf('projects'));
         cells = unassignedCells;
       } else {
         cells = acc.get(key)!.cells;
@@ -454,6 +474,8 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
   const bookedOut = (cells: CapacityCell[]): { week: string | null; to: string | null } => {
     for (let i = cells.length - 1; i >= 0; i--) {
       const c = cells[i];
+      // Never quote a booked-out date from a week we didn't fetch.
+      if (c.uncovered) continue;
       // "Meaningful load" = at or above the underbooked threshold when a
       // capacity is known; any scheduled BH at all when it isn't.
       const meaningful = c.capacity !== null && c.pct !== null
@@ -470,7 +492,10 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
     const cap = resolveCapacity(settings, ref.division, ref.crewNumber, size);
     for (const cell of cells) {
       cell.capacity = cap.bh;
-      cell.pct = cap.bh && cap.bh > 0 ? Math.round((cell.bh / cap.bh) * 100) : null;
+      // An uncovered week gets NO percentage and NO band. Leaving it at 0%
+      // would paint it "underbooked — sell into it".
+      cell.pct = cell.uncovered || !cap.bh || cap.bh <= 0 ? null :
+        Math.round((cell.bh / cap.bh) * 100);
       cell.band = cell.pct === null ? null : bandFor(cell.pct, thresholds);
       cell.jobs.sort((a, b) => b.bh - a.bh);
     }
@@ -502,9 +527,12 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
       : null;
     const cells: CapacityCell[] = weeks.map((w, i) => {
       const bh = round1(crews.reduce((s, c) => s + c.cells[i].bh, 0));
-      const pct = capacity && capacity > 0 ? Math.round((bh / capacity) * 100) : null;
+      const uncovered = crews.length > 0 && crews.every(c => c.cells[i].uncovered);
+      const pct = !uncovered && capacity && capacity > 0 ?
+        Math.round((bh / capacity) * 100) : null;
       return {
         weekStart: w.start,
+        uncovered,
         bh,
         capacity,
         pct,

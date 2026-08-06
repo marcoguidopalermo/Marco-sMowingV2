@@ -84,6 +84,14 @@ const NO_CAP_STYLE = {
   chip: 'bg-slate-100 text-slate-600 border border-slate-300',
   text: 'text-slate-700',
 };
+// A week the pull never reached. Deliberately NOT a band and deliberately
+// not zero — hatched grey, no number, no percentage. Showing 0 BH here would
+// colour it "underbooked — sell into it" and send a salesman to fill a week
+// nobody has looked at.
+const UNCOVERED_STYLE = {
+  cell: 'bg-slate-100 border border-dashed border-slate-300',
+  text: 'text-slate-400',
+};
 
 const styleFor = (band: CapacityBand | null) => (band ? BAND_STYLE[band] : NO_CAP_STYLE);
 const bh = (n: number) => (Math.round(n * 10) / 10).toLocaleString();
@@ -110,6 +118,9 @@ function Legend() {
       <span className={`px-2 py-1 rounded ${NO_CAP_STYLE.cell} ${NO_CAP_STYLE.text}`}>
         no capacity set — raw BH only
       </span>
+      <span className={`px-2 py-1 rounded ${UNCOVERED_STYLE.cell} ${UNCOVERED_STYLE.text}`}>
+        not pulled — beyond this snapshot&apos;s coverage, NOT an open week
+      </span>
     </div>
   );
 }
@@ -119,6 +130,22 @@ function Cell({ cell, week, active, onClick, compact }: {
   cell: CapacityCell; week: CapacityWeek; active: boolean;
   onClick: () => void; compact?: boolean;
 }) {
+  if (cell.uncovered) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={`Week ${week.rangeLabel}: not pulled — coverage ends earlier`}
+        className={`w-full text-left rounded-lg p-2 ${UNCOVERED_STYLE.cell} ${active ? 'ring-2 ring-slate-800 ring-offset-1' : ''}`}
+      >
+        <div className={`text-[11px] font-black ${UNCOVERED_STYLE.text}`}>—</div>
+        <div className={`text-[9px] font-black uppercase tracking-widest mt-2 leading-tight ${UNCOVERED_STYLE.text}`}>
+          not pulled
+        </div>
+        <div className={`text-[9px] font-bold ${UNCOVERED_STYLE.text}`}>coverage ends earlier</div>
+      </button>
+    );
+  }
   const s = styleFor(cell.band);
   const pct = cell.pct;
   const fill = pct === null ? 0 : Math.max(2, Math.min(100, pct));
@@ -585,9 +612,12 @@ export default function CapacityCalendar({
             )}
             {f.truncated && (
               <p>
-                <strong>{label} — truncated:</strong> the pull hit its ceiling, so weeks past
-                roughly {new Date(`${f.visits[f.visits.length - 1]?.startDate || f.today}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} are
-                understated. This should not be the normal state — tell Marco if it persists.
+                <strong>{label} — coverage ends {f.coveredThrough ? longDate(f.coveredThrough) : 'early'}.</strong>{' '}
+                {f.stoppedForBudget
+                  ? 'The pull stopped to leave Jobber API budget for the performance sync (pay comes first).'
+                  : 'The pull hit its ceiling.'}{' '}
+                Weeks past that date are shown as <strong>not pulled</strong> — they are unknown,
+                not open. Don&apos;t sell into them on the strength of this view.
               </p>
             )}
           </div>

@@ -56,7 +56,18 @@ const LEGACY_FORECAST_DOC =
   `artifacts/${APP_ID}/public/data/capacityForecast/current`;
 const TIMEZONE = "America/Toronto";
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
-const PAGE_DELAY_MS = 250;
+// Paced so the shared Jobber budget can refill between pages rather than
+// being pinned at the floor. Measured on the live account: a page of this
+// query costs enough that a 250ms gap drains 10,000 points to under 1,000
+// within ~30 seconds of paging.
+const PAGE_DELAY_MS = 600;
+// HARD FLOOR on the shared Jobber API budget. The capacity forecast is a
+// convenience view; the PERFORMANCE SYNC that runs on the same account every
+// 15 minutes is pay. If a long pull would draw the budget below this, the
+// pull stops early and says so — the forecast yields to the sync, never the
+// other way round. This is the guardrail that keeps a read-only view from
+// ever costing someone their numbers.
+const BUDGET_FLOOR = 3000;
 
 // How far FORWARD we pull, per scope.
 // PROJECTS: wide, because "booked out to" is computed over the whole horizon
@@ -66,8 +77,8 @@ const PAGE_DELAY_MS = 250;
 // densest visit stream in the business buys nothing. This is the single
 // biggest reduction in pages fetched.
 const SCOPE_HORIZON_DAYS: Record<ForecastScope, number> = {
-  projects: 120,
-  lawn: 56,
+  projects: 84,
+  lawn: 42,
 };
 // How far BACK we look. Only to catch IN-FLIGHT multi-day work: a visit that
 // started last week, isn't complete, and still runs into this week is
@@ -255,6 +266,15 @@ export interface CapacityForecastDoc {
     hourly: number;
   };
   truncated: boolean;
+  // THE DATE THIS SNAPSHOT ACTUALLY COVERS THROUGH. When a pull stops early
+  // (page cap or budget floor) the weeks past this point were never fetched
+  // — they are UNKNOWN, not empty. Without this the UI would paint them 0 BH
+  // and colour them "underbooked — sell into it", which is the single most
+  // dangerous thing this tool could say: it would send a salesman to fill a
+  // week nobody ever looked at.
+  coveredThrough: string;
+  // The pull yielded to protect the performance sync's API budget.
+  stoppedForBudget: boolean;
   // Set when the rich query fell back to the minimal one — multi-day spans
   // and client names are unavailable in that mode, and the UI says so.
   degraded: boolean;
@@ -432,6 +452,8 @@ async function fetchForwardVisits(
   degraded: boolean;
   truncated: boolean;
   warnings: string[];
+  stoppedForBudget: boolean;
+  pages: number;
 }> {
   const warnings: string[] = [];
   let degraded = false;
@@ -439,6 +461,8 @@ async function fetchForwardVisits(
   const out: ForwardVisitNode[] = [];
   let cursor: string | null = null;
   let truncated = false;
+  let stoppedForBudget = false;
+  let pages = 0;
 
   for (let i = 0; i < MAX_PAGES; i++) {
     if (i > 0) await sleep(PAGE_DELAY_MS);
@@ -467,19 +491,39 @@ async function fetchForwardVisits(
       continue;
     }
     out.push(...data.visits.nodes);
+    pages++;
     if (!data.visits.pageInfo.hasNextPage) {
-      return {visits: out, degraded, truncated: false, warnings};
+      return {
+        visits: out, degraded, truncated: false, warnings,
+        stoppedForBudget: false, pages,
+      };
+    }
+    // Yield to the performance sync. Better a forecast that admits it only
+    // covers the next N weeks than a sync that can't compute pay.
+    const available = client.getLastThrottleStatus()?.currentlyAvailable;
+    if (typeof available === "number" && available < BUDGET_FLOOR) {
+      stoppedForBudget = true;
+      truncated = true;
+      warnings.push(
+        `budget_floor — stopped after ${pages} pages (${out.length} ` +
+        `visits) with ${available} Jobber points left, to leave headroom ` +
+        "for the performance sync; later weeks are NOT covered",
+      );
+      logger.warn("Capacity pull stopped to protect the sync's API budget", {
+        pages, visits: out.length, available,
+      });
+      break;
     }
     cursor = data.visits.pageInfo.endCursor;
     truncated = true; // stays true only if the loop exits by exhausting pages
   }
-  if (truncated) {
+  if (truncated && !stoppedForBudget) {
     warnings.push(
       `page_cap_reached — stopped after ${MAX_PAGES} pages ` +
-      `(${out.length} visits); later weeks may be understated`,
+      `(${out.length} visits); later weeks are NOT covered`,
     );
   }
-  return {visits: out, degraded, truncated, warnings};
+  return {visits: out, degraded, truncated, warnings, stoppedForBudget, pages};
 }
 
 /**
@@ -514,13 +558,15 @@ export async function runCapacityForecast(
   const after = torontoMidnightIso(windowStart);
   const before = torontoMidnightIso(windowEnd);
 
-  const {visits: raw, degraded, truncated, warnings} =
+  const {visits: raw, degraded, truncated, warnings, stoppedForBudget, pages} =
     await fetchForwardVisits(client, after, before);
   // Logged BEFORE any processing so a run that dies later is still
   // diagnosable. Without this, a stall between "last page fetched" and
   // "document written" is silent — and silence reads exactly like success.
   logger.info("Capacity forecast fetched", {
     scope,
+    pages,
+    stoppedForBudget,
     visits: raw.length,
     windowStart,
     windowEnd,
@@ -615,8 +661,20 @@ export async function runCapacityForecast(
   entries.sort((a, b) => (a.startDate < b.startDate ? -1 :
     a.startDate > b.startDate ? 1 : 0));
 
+  // A complete pull covers the whole window. A stopped one covers only as
+  // far as the last visit it actually saw — Jobber returns visits in start
+  // order, so the furthest startAt fetched is the honest coverage boundary.
+  const furthestFetched = raw.reduce((max, v) => {
+    const d = v.startAt ? ymdInToronto(new Date(v.startAt)) : "";
+    return d > max ? d : max;
+  }, "");
+  const coveredThrough = (truncated || entries.length >= MAX_ENTRIES) ?
+    (furthestFetched || today) : windowEnd;
+
   const snapshot: CapacityForecastDoc = {
     scope,
+    coveredThrough,
+    stoppedForBudget,
     generatedAt: Date.now(),
     generatedBy: triggeredBy,
     windowStart,
@@ -633,6 +691,7 @@ export async function runCapacityForecast(
   await db.doc(forecastDoc(scope)).set(snapshot);
   logger.info("Capacity forecast written", {
     scope,
+    coveredThrough,
     kept: stats.kept,
     fetched: stats.fetched,
     otherScope: stats.otherScope,

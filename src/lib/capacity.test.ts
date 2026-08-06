@@ -294,5 +294,41 @@ test('newer snapshot wins for a visit whose BH changed between pulls', () => {
   assert.equal(cellOf(m, '2026-08-03').bh, 40);
 });
 
+console.log('\nCoverage — weeks the pull never reached');
+const covered = (through: string) => ({
+  ...forecast([visit({ visitId: 'c1', bh: 50 })]), coveredThrough: through, truncated: true,
+});
+test('a week past coverage is UNCOVERED, not an empty open week', () => {
+  const m = buildCapacityModel({
+    forecasts: [covered('2026-08-16')], schedules: SCHEDULES, employees: EMPLOYEES,
+    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { weeklyBH: 100 } } }, today: TODAY,
+  });
+  const div = m.divisions.find(d => d.division === 'Large Projects')!;
+  const wk3 = m.weeks.findIndex(w => w.start === '2026-08-17');
+  assert.equal(div.cells[0].uncovered, false);
+  assert.equal(div.cells[wk3].uncovered, true);
+  // The dangerous case: an uncovered week must carry NO percentage and NO
+  // band, or it renders as "underbooked — sell into it".
+  assert.equal(div.cells[wk3].pct, null);
+  assert.equal(div.cells[wk3].band, null);
+});
+test('booked-out never quotes a date from an uncovered week', () => {
+  const m = buildCapacityModel({
+    forecasts: [covered('2026-08-16')], schedules: SCHEDULES, employees: EMPLOYEES,
+    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { weeklyBH: 100 } } }, today: TODAY,
+  });
+  const div = m.divisions.find(d => d.division === 'Large Projects')!;
+  assert.ok(div.bookedOutWeek === null || div.bookedOutWeek <= '2026-08-16');
+});
+test('a complete pull marks nothing uncovered', () => {
+  const full = { ...forecast([visit({ visitId: 'f1', bh: 50 })]), coveredThrough: '2026-12-01' };
+  const m = buildCapacityModel({
+    forecasts: [full], schedules: SCHEDULES, employees: EMPLOYEES,
+    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { weeklyBH: 100 } } }, today: TODAY,
+  });
+  const div = m.divisions.find(d => d.division === 'Large Projects')!;
+  assert.equal(div.cells.some(c => c.uncovered), false);
+});
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 if (fail > 0) process.exit(1);
