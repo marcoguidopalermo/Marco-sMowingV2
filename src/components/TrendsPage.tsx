@@ -16,6 +16,10 @@ interface TrendsPageProps {
     reason?: BonusExcludeReason;
     reasonNote?: string;
   }) => void | Promise<void>;
+  onEditBonusAmount: (args: {
+    ym: string; empId: string; empName: string;
+    amount: number | null; calculated: number; reason?: string;
+  }) => void | Promise<void>;
 }
 
 const fmtPct = (v: number | null | undefined) => (v == null ? '—' : `${v.toFixed(1)}%`);
@@ -26,7 +30,7 @@ const monthColLabel = (ym: string) => {
   return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
 };
 
-export default function TrendsPage({ appData, today, isAdmin, bonusPayouts, onMarkBonusPayout }: TrendsPageProps) {
+export default function TrendsPage({ appData, today, isAdmin, bonusPayouts, onMarkBonusPayout, onEditBonusAmount }: TrendsPageProps) {
   const currentYm = today.slice(0, 7);
   const [expandedDiv, setExpandedDiv] = useState<Record<string, boolean>>({});
 
@@ -131,6 +135,7 @@ export default function TrendsPage({ appData, today, isAdmin, bonusPayouts, onMa
           isAdmin={isAdmin}
           payouts={bonusPayouts}
           onMark={onMarkBonusPayout}
+          onEditAmount={onEditBonusAmount}
         />
       )}
 

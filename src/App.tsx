@@ -2558,6 +2558,36 @@ export default function App() {
     }
   };
 
+  // Bonus AMOUNT ADJUSTMENT write. Admin only. Like the paid/excluded marks,
+  // this writes ONLY the per-month payout document — the calculated share is
+  // passed in so the record and audit can show both figures, and is never
+  // written back over anything the bonus calculation reads.
+  const editBonusAmount = async (args: {
+    ym: string; empId: string; empName: string;
+    amount: number | null; calculated: number; reason?: string;
+  }) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    const { applyAmountEdit } = await import('./lib/bonusPayouts');
+    const next = applyAmountEdit({
+      rec: bonusPayouts[args.ym],
+      ym: args.ym,
+      empId: args.empId,
+      empName: args.empName,
+      amount: args.amount,
+      calculated: args.calculated,
+      reason: args.reason,
+      by: displayEmail,
+      byName: displayName,
+      at: Date.now(),
+    });
+    try {
+      const clean = JSON.parse(JSON.stringify(next, (_k, v) => (v === undefined ? null : v)));
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bonusPayouts', args.ym), clean);
+    } catch (err: any) {
+      showToastMsg(`Could not save amount: ${err?.message || String(err)}`);
+    }
+  };
+
   // Capacity settings (weekly BH + colour thresholds) saved straight from the
   // Capacity view. Same settings block Manage Resources edits — bounded,
   // admin-only, and the ONLY thing that view writes.
@@ -4654,6 +4684,7 @@ export default function App() {
       isAdmin={isAdmin}
       bonusPayouts={bonusPayouts}
       onMarkBonusPayout={markBonusPayout}
+      onEditBonusAmount={editBonusAmount}
     />
   );
 

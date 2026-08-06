@@ -13,6 +13,7 @@
 // change what colleagues earned because of an unrelated employment event.
 import type {
   BonusPayoutRecord, BonusPayoutMark, BonusMarkState, BonusExcludeReason,
+  BonusAmountEdit,
 } from '../types';
 import type { BonusResult } from './bonusTiers';
 
@@ -38,16 +39,40 @@ export const markOf = (
   empId: string,
 ): BonusPayoutMark | undefined => rec?.marks?.[empId];
 
+export const editOf = (
+  rec: BonusPayoutRecord | undefined,
+  empId: string,
+): BonusAmountEdit | undefined => rec?.edits?.[empId];
+
+// Quick reasons for an adjustment. Free text stays available — unlike
+// exclusion (a policy decision with a fixed vocabulary), an adjustment is
+// usually one word and occasionally needs its own.
+export const AMOUNT_REASONS = ['Rounded up', 'Rounded down', 'Manager discretion'];
+
+// What this person is actually PAID, before the excluded check:
+// the adjusted amount when one is set, otherwise the calculated figure.
+export function effectiveAmount(
+  rec: BonusPayoutRecord | undefined,
+  empId: string,
+  calculated: number,
+): number {
+  const e = editOf(rec, empId);
+  return e ? e.amount : calculated;
+}
+
 // Money is summed in CENTS so a long list of shares can't drift a cent.
 const cents = (n: number): number => Math.round(n * 100);
 const fromCents = (c: number): number => c / 100;
 
 export interface PayoutTotals {
-  // What the bonus calculation produced. NEVER altered by marking.
+  // What the bonus calculation produced. NEVER altered by marking or editing.
   calculated: number;
   // The sum of excluded people's calculated shares — withheld, not moved.
   excluded: number;
-  // calculated − excluded. What actually goes out.
+  // Net effect of adjusted amounts on rows that are actually being paid.
+  // Signed: +7.00 means the payout is seven dollars above the calculation.
+  adjustments: number;
+  // calculated − excluded + adjustments. What actually goes out.
   toPay: number;
 }
 
@@ -56,6 +81,7 @@ export interface PayoutProgress {
   payable: number;
   paid: number;
   excluded: number;
+  edited: number;
   totals: PayoutTotals;
 }
 
@@ -71,28 +97,44 @@ export function summarisePayout(
   result: BonusResult | null | undefined,
   rec: BonusPayoutRecord | undefined,
 ): PayoutSummary {
-  const empty: PayoutTotals = { calculated: 0, excluded: 0, toPay: 0 };
+  const empty: PayoutTotals = { calculated: 0, excluded: 0, adjustments: 0, toPay: 0 };
   if (!result) {
-    return { company: { ...empty }, byDivision: {}, progress: { payable: 0, paid: 0, excluded: 0, totals: { ...empty } } };
+    return {
+      company: { ...empty }, byDivision: {},
+      progress: { payable: 0, paid: 0, excluded: 0, edited: 0, totals: { ...empty } },
+    };
   }
 
   let calcC = 0;
   let exclC = 0;
+  let adjC = 0;
   let payable = 0;
   let paidCount = 0;
   let excludedCount = 0;
+  let editedCount = 0;
+  // empId → signed adjustment in cents, for proportional division attribution.
+  const adjByEmp = new Map<string, number>();
 
   for (const p of result.perPerson) {
     const c = cents(p.total);
     calcC += c;
     const st = stateOf(rec, p.empId);
+    const edit = editOf(rec, p.empId);
+    if (edit) editedCount++;
     if (st === 'excluded') {
+      // An excluded row pays nothing REGARDLESS of any adjustment. The edit
+      // is kept on the record (and shown) but contributes no money.
       exclC += c;
       excludedCount++;
-    } else if (c > 0) {
-      // Only rows that actually pay something count toward "N of M paid" —
-      // otherwise a $0 row would sit unpaid forever and the readout would
-      // never reach completion.
+      continue;
+    }
+    if (edit) {
+      const delta = cents(edit.amount) - c;
+      adjC += delta;
+      adjByEmp.set(p.empId, delta);
+    }
+    const payC = edit ? cents(edit.amount) : c;
+    if (payC > 0) {
       payable++;
       if (st === 'paid') paidCount++;
     }
@@ -102,28 +144,93 @@ export function summarisePayout(
   for (const d of result.divisions) {
     let dCalc = 0;
     let dExcl = 0;
+    let dAdj = 0;
     for (const pp of d.perPerson) {
       const c = cents(pp.payout);
       dCalc += c;
-      if (stateOf(rec, pp.empId) === 'excluded') dExcl += c;
+      if (stateOf(rec, pp.empId) === 'excluded') { dExcl += c; continue; }
+      // An adjustment is per PERSON; a person can earn across divisions. Split
+      // it in proportion to what they earned in each, so the divisions still
+      // sum to the company figure. Exact for the single-division case, which
+      // is the norm.
+      const delta = adjByEmp.get(pp.empId);
+      if (delta) {
+        const person = result.perPerson.find(x => x.empId === pp.empId);
+        const personCalc = person ? cents(person.total) : 0;
+        dAdj += personCalc > 0 ? Math.round(delta * (c / personCalc)) :
+          // A person with $0 calculated has no proportion to split by — put
+          // the whole adjustment on the first division they appear in.
+          (person?.byDivision[0]?.division === d.division ? delta : 0);
+      }
     }
     byDivision[d.division] = {
       calculated: fromCents(dCalc),
       excluded: fromCents(dExcl),
-      toPay: fromCents(dCalc - dExcl),
+      adjustments: fromCents(dAdj),
+      toPay: fromCents(dCalc - dExcl + dAdj),
     };
   }
 
   const company: PayoutTotals = {
     calculated: fromCents(calcC),
     excluded: fromCents(exclC),
-    toPay: fromCents(calcC - exclC),
+    adjustments: fromCents(adjC),
+    toPay: fromCents(calcC - exclC + adjC),
   };
   return {
     company,
     byDivision,
-    progress: { payable, paid: paidCount, excluded: excludedCount, totals: company },
+    progress: {
+      payable, paid: paidCount, excluded: excludedCount, edited: editedCount,
+      totals: company,
+    },
   };
+}
+
+export interface ApplyAmountEditArgs {
+  rec: BonusPayoutRecord | undefined;
+  ym: string;
+  empId: string;
+  empName: string;
+  // null clears the adjustment and returns the row to its calculated figure.
+  amount: number | null;
+  calculated: number;
+  reason?: string;
+  by: string;
+  byName: string;
+  at: number;
+}
+
+// Sets or clears an adjusted payout amount. The calculated figure is never
+// written over — it is passed in only so the audit and the record can show
+// both numbers side by side.
+export function applyAmountEdit(args: ApplyAmountEditArgs): BonusPayoutRecord {
+  const { rec, ym, empId, empName, amount, calculated, reason, by, byName, at } = args;
+  const edits: Record<string, BonusAmountEdit> = { ...(rec?.edits || {}) };
+  const before = edits[empId]?.amount ?? calculated;
+  if (amount === null) {
+    delete edits[empId];
+  } else {
+    edits[empId] = {
+      empId, empName, amount, calculatedAtEdit: calculated,
+      by, byName, at,
+      ...(reason && reason.trim() ? { reason: reason.trim() } : {}),
+    };
+  }
+  const state = stateOf(rec, empId);
+  const audit = [
+    ...(rec?.audit || []),
+    {
+      at, by, byName, empId, empName,
+      kind: 'amount' as const,
+      from: state, to: state,
+      amount: calculated,
+      fromAmount: before,
+      toAmount: amount === null ? calculated : amount,
+      ...(reason && reason.trim() ? { amountReason: reason.trim() } : {}),
+    },
+  ];
+  return { ym, marks: { ...(rec?.marks || {}) }, edits, audit };
 }
 
 // The next state when a toggle is tapped: tapping the active state clears it.
@@ -174,10 +281,10 @@ export function applyMark(args: ApplyMarkArgs): BonusPayoutRecord {
   const audit = [
     ...(rec?.audit || []),
     {
-      at, by, byName, empId, empName, from, to, amount,
+      at, by, byName, empId, empName, kind: 'state' as const, from, to, amount,
       ...(to === 'excluded' && reason ? { reason } : {}),
       ...(to === 'excluded' && reason === 'other' && reasonNote ? { reasonNote } : {}),
     },
   ];
-  return { ym, marks, audit };
+  return { ym, marks, edits: { ...(rec?.edits || {}) }, audit };
 }

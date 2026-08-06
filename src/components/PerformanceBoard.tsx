@@ -143,6 +143,10 @@ interface PerformanceBoardProps {
     reason?: BonusExcludeReason;
     reasonNote?: string;
   }) => void | Promise<void>;
+  onEditBonusAmount: (args: {
+    ym: string; empId: string; empName: string;
+    amount: number | null; calculated: number; reason?: string;
+  }) => void | Promise<void>;
 }
 
 // Compact, append-only scope history for a multi-day ledger — one line per
@@ -225,6 +229,7 @@ export default function PerformanceBoard({
   isAdmin,
   bonusPayouts,
   onMarkBonusPayout,
+  onEditBonusAmount,
   jobberBhConflicts,
   onApplyJobberBhConflict,
   onIgnoreJobberBhConflict,
@@ -1400,6 +1405,7 @@ export default function PerformanceBoard({
           isAdmin={isAdmin}
           bonusPayouts={bonusPayouts}
           onMarkBonusPayout={onMarkBonusPayout}
+          onEditBonusAmount={onEditBonusAmount}
         />
       ) : perfTab === 'entry' ? (
         <div className="max-w-4xl mx-auto w-full pb-20 relative">

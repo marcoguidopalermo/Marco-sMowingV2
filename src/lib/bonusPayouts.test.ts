@@ -4,7 +4,7 @@
 // The load-bearing assertion in this file is that marking NEVER changes what
 // anyone earned — only what is paid.
 import assert from 'node:assert/strict';
-import { summarisePayout, applyMark, nextState, stateOf, reasonLabel } from './bonusPayouts';
+import { summarisePayout, applyMark, applyAmountEdit, nextState, stateOf, reasonLabel, effectiveAmount, editOf } from './bonusPayouts';
 import { computeBonus, STANDARD_BONUS_TIERS } from './bonusTiers';
 import type { BonusPayoutRecord, MonthlySummary } from '../types';
 
@@ -150,6 +150,101 @@ test('a reason is only stored for exclusions', () => {
     amount: 180, reason: 'left_before_month_end', by: 'a', byName: 'A', at: 1,
   });
   assert.equal(r.marks.e1.reason, undefined);
+});
+
+console.log('\nAdjusted amounts');
+const withEdit = (empId: string, amount: number, calculated: number, marks: any = {}): BonusPayoutRecord =>
+  applyAmountEdit({
+    rec: { ym: '2026-07', marks, audit: [] }, ym: '2026-07', empId, empName: 'X',
+    amount, calculated, reason: 'Rounded up', by: 'a', byName: 'A', at: 1,
+  });
+
+test('rounding $30 up to $50 shows as a +$20 adjustment, not a new calculated figure', () => {
+  const s = summarisePayout(RESULT, withEdit('e3', 50, 30));
+  assert.equal(s.company.calculated, 300, 'the calculation is untouched');
+  assert.equal(s.company.adjustments, 20);
+  assert.equal(s.company.toPay, 320);
+  // And the earned figure is still 30 on the result itself.
+  assert.equal(RESULT.perPerson.find(p => p.empId === 'e3')!.total, 30);
+});
+test('an adjustment DOWN is a negative adjustment', () => {
+  const s = summarisePayout(RESULT, withEdit('e1', 150, 180));
+  assert.equal(s.company.adjustments, -30);
+  assert.equal(s.company.toPay, 270);
+});
+test('the three totals always reconcile: calculated - excluded + adjustments = to pay', () => {
+  let r = withEdit('e3', 50, 30);
+  r = applyMark({ rec: r, ym: '2026-07', empId: 'e2', empName: 'Ben', to: 'excluded', amount: 90, reason: 'left_before_month_end', by: 'a', byName: 'A', at: 2 });
+  const s = summarisePayout(RESULT, r);
+  assert.equal(s.company.calculated, 300);
+  assert.equal(s.company.excluded, 90);
+  assert.equal(s.company.adjustments, 20);
+  assert.equal(s.company.toPay, 230);
+  assert.equal(s.company.calculated - s.company.excluded + s.company.adjustments, s.company.toPay);
+});
+test('an EXCLUDED row pays nothing regardless of an edit, and keeps the edit on record', () => {
+  let r = withEdit('e1', 500, 180);
+  r = applyMark({ rec: r, ym: '2026-07', empId: 'e1', empName: 'Ann', to: 'excluded', amount: 180, reason: 'left_before_month_end', by: 'a', byName: 'A', at: 2 });
+  const s = summarisePayout(RESULT, r);
+  assert.equal(s.company.excluded, 180, 'the CALCULATED share is what is withheld');
+  assert.equal(s.company.adjustments, 0, 'the edit contributes no money');
+  assert.equal(s.company.toPay, 120);
+  assert.ok(editOf(r, 'e1'), 'the edit is still on the record');
+});
+test('an edited row can still be marked paid, and both survive', () => {
+  let r = withEdit('e3', 50, 30);
+  r = applyMark({ rec: r, ym: '2026-07', empId: 'e3', empName: 'Cal', to: 'paid', amount: 50, by: 'a', byName: 'A', at: 2 });
+  assert.equal(stateOf(r, 'e3'), 'paid');
+  assert.equal(editOf(r, 'e3')!.amount, 50);
+  const s = summarisePayout(RESULT, r);
+  assert.equal(s.progress.paid, 1);
+  assert.equal(s.company.toPay, 320);
+});
+test('clearing a PAID mark leaves the adjustment intact (and vice versa)', () => {
+  let r = withEdit('e3', 50, 30);
+  r = applyMark({ rec: r, ym: '2026-07', empId: 'e3', empName: 'Cal', to: 'paid', amount: 50, by: 'a', byName: 'A', at: 2 });
+  r = applyMark({ rec: r, ym: '2026-07', empId: 'e3', empName: 'Cal', to: 'unmarked', amount: 50, by: 'a', byName: 'A', at: 3 });
+  assert.equal(editOf(r, 'e3')!.amount, 50, 'the adjustment survives clearing paid');
+  const cleared = applyAmountEdit({ rec: r, ym: '2026-07', empId: 'e3', empName: 'Cal', amount: null, calculated: 30, by: 'a', byName: 'A', at: 4 });
+  assert.equal(editOf(cleared, 'e3'), undefined);
+  assert.equal(summarisePayout(RESULT, cleared).company.toPay, 300, 'back to the calculated figure');
+});
+test('the division payout carries the adjustment so divisions still sum to company', () => {
+  const s = summarisePayout(RESULT, withEdit('e3', 50, 30));
+  const d = s.byDivision['Lawn Division'];
+  assert.equal(d.calculated, 300);
+  assert.equal(d.adjustments, 20);
+  assert.equal(d.toPay, 320);
+  const sumDiv = Object.values(s.byDivision).reduce((a, v) => a + v.toPay, 0);
+  assert.equal(sumDiv, s.company.toPay);
+});
+test('effectiveAmount reports the adjusted figure, falling back to calculated', () => {
+  const r = withEdit('e3', 50, 30);
+  assert.equal(effectiveAmount(r, 'e3', 30), 50);
+  assert.equal(effectiveAmount(r, 'e1', 180), 180);
+});
+test('an amount edit is audited with both figures and its reason', () => {
+  const r = withEdit('e3', 50, 30);
+  const a = r.audit[r.audit.length - 1];
+  assert.equal(a.kind, 'amount');
+  assert.equal(a.fromAmount, 30);
+  assert.equal(a.toAmount, 50);
+  assert.equal(a.amountReason, 'Rounded up');
+  assert.equal(a.empId, 'e3');
+});
+test('re-editing audits from the PREVIOUS adjusted figure, not the calculated one', () => {
+  const r1 = withEdit('e3', 50, 30);
+  const r2 = applyAmountEdit({ rec: r1, ym: '2026-07', empId: 'e3', empName: 'Cal', amount: 60, calculated: 30, by: 'a', byName: 'A', at: 5 });
+  const a = r2.audit[r2.audit.length - 1];
+  assert.equal(a.fromAmount, 50);
+  assert.equal(a.toAmount, 60);
+});
+test('marking does not discard edits and editing does not discard marks', () => {
+  let r = applyMark({ rec: undefined, ym: '2026-07', empId: 'e1', empName: 'Ann', to: 'paid', amount: 180, by: 'a', byName: 'A', at: 1 });
+  r = applyAmountEdit({ rec: r, ym: '2026-07', empId: 'e1', empName: 'Ann', amount: 200, calculated: 180, by: 'a', byName: 'A', at: 2 });
+  assert.equal(stateOf(r, 'e1'), 'paid');
+  assert.equal(editOf(r, 'e1')!.amount, 200);
+  assert.equal(r.audit.length, 2);
 });
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

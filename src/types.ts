@@ -1026,23 +1026,48 @@ export interface BonusPayoutMark {
   at: number;
 }
 
+// An ADJUSTED payout amount — e.g. rounding $43 up to $50. Stored SEPARATELY
+// from the paid/excluded state so the two compose: clearing "paid" doesn't
+// discard the adjustment, and adjusting doesn't disturb the state. The
+// calculated figure is never overwritten — it stays the record of what was
+// earned, and both numbers are shown together.
+export interface BonusAmountEdit {
+  empId: string;
+  empName: string;
+  amount: number;             // what to pay instead
+  calculatedAtEdit: number;   // what the math said at the moment of editing
+  reason?: string;            // "Rounded up", or a short typed note
+  by: string;
+  byName: string;
+  at: number;
+}
+
 export interface BonusPayoutAudit {
   at: number;
   by: string;
   byName: string;
   empId: string;
   empName: string;
+  // 'state' = paid/excluded change (the default for entries written before
+  // amount editing existed). 'amount' = the payable figure was adjusted.
+  kind?: 'state' | 'amount';
   from: BonusMarkState | 'unmarked';
   to: BonusMarkState | 'unmarked';
   reason?: BonusExcludeReason;
   reasonNote?: string;
   amount: number;
+  // Amount edits only: the figure before and after.
+  fromAmount?: number;
+  toAmount?: number;
+  amountReason?: string;
 }
 
 // One document per month, in its own subcollection — off the main appData doc.
 export interface BonusPayoutRecord {
   ym: string;
   marks: Record<string, BonusPayoutMark>;   // empId → mark (absent = unmarked)
+  // empId → adjusted amount (absent = pay the calculated figure).
+  edits?: Record<string, BonusAmountEdit>;
   audit: BonusPayoutAudit[];                // append-only
 }
 

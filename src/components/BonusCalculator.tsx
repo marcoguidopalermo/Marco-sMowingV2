@@ -3,7 +3,8 @@ import { DollarSign, FlaskConical, RotateCcw, TrendingUp, Check, Ban, History, X
 import { MonthlySummary, BonusTier, BonusPayoutRecord, BonusExcludeReason, BonusMarkState } from '../types';
 import { STANDARD_BONUS_TIERS, computeBonus, rateForPct, nextTier } from '../lib/bonusTiers';
 import {
-  summarisePayout, stateOf, markOf, nextState, reasonLabel, EXCLUDE_REASONS,
+  summarisePayout, stateOf, markOf, editOf, nextState, reasonLabel,
+  EXCLUDE_REASONS, AMOUNT_REASONS,
 } from '../lib/bonusPayouts';
 
 interface BonusCalculatorProps {
@@ -20,6 +21,11 @@ interface BonusCalculatorProps {
     reason?: BonusExcludeReason;
     reasonNote?: string;
   }) => void | Promise<void>;
+  // Set (or clear, with null) an adjusted payout amount for one person.
+  onEditAmount: (args: {
+    ym: string; empId: string; empName: string;
+    amount: number | null; calculated: number; reason?: string;
+  }) => void | Promise<void>;
 }
 
 const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -30,7 +36,7 @@ const monthName = (ym: string) => {
 };
 
 export default function BonusCalculator({
-  summaries, liveSummary, currentYm, isAdmin, payouts, onMark,
+  summaries, liveSummary, currentYm, isAdmin, payouts, onMark, onEditAmount,
 }: BonusCalculatorProps) {
   const months = useMemo(
     () => [...new Set([...Object.keys(summaries), currentYm])].sort().reverse(),
@@ -72,6 +78,30 @@ export default function BonusCalculator({
     }
     onMark({ ym: selected, empId, empName: name, to, amount });
   };
+  // Inline amount editing.
+  const [editing, setEditing] = useState<{ empId: string; name: string; calculated: number } | null>(null);
+  const [draftAmount, setDraftAmount] = useState('');
+  const [amountReason, setAmountReason] = useState('');
+  const startEdit = (empId: string, name: string, calculated: number, current: number) => {
+    setEditing({ empId, name, calculated });
+    setDraftAmount(current.toFixed(2));
+    setAmountReason('');
+  };
+  const commitEdit = () => {
+    if (!editing) return;
+    const v = Number(draftAmount);
+    if (!Number.isFinite(v) || v < 0) return;
+    // Setting it back to the calculated figure CLEARS the adjustment rather
+    // than storing a no-op edit that would read as "edited" forever.
+    const same = Math.round(v * 100) === Math.round(editing.calculated * 100);
+    onEditAmount({
+      ym: selected, empId: editing.empId, empName: editing.name,
+      amount: same ? null : v, calculated: editing.calculated,
+      reason: same ? undefined : (amountReason.trim() || undefined),
+    });
+    setEditing(null);
+  };
+
   const confirmExclude = () => {
     if (!excluding) return;
     onMark({
@@ -135,6 +165,11 @@ export default function BonusCalculator({
               {payout.progress.excluded} excluded
             </span>
           )}
+          {payout.progress.edited > 0 && (
+            <span className="text-sm font-black text-indigo-700">
+              {payout.progress.edited} edited ({payout.company.adjustments >= 0 ? '+' : '−'}{money(Math.abs(payout.company.adjustments))})
+            </span>
+          )}
           <span className="text-sm font-black text-emerald-700">
             {money(payout.company.toPay)} to pay
           </span>
@@ -167,9 +202,22 @@ export default function BonusCalculator({
                   {new Date(a.at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
                 </span>
                 <span className="font-bold text-slate-800">{a.empName}</span>
-                <span className="text-slate-500">{a.from} → <b className={a.to === 'excluded' ? 'text-rose-700' : a.to === 'paid' ? 'text-emerald-700' : 'text-slate-600'}>{a.to}</b></span>
-                <span className="font-mono text-slate-500">{money(a.amount)}</span>
-                {a.reason && <span className="text-rose-600">{reasonLabel(a.reason, a.reasonNote)}</span>}
+                {a.kind === 'amount' ? (
+                  <>
+                    <span className="text-indigo-700 font-bold">amount</span>
+                    <span className="font-mono text-slate-500">
+                      {money(a.fromAmount ?? a.amount)} → <b className="text-indigo-700">{money(a.toAmount ?? a.amount)}</b>
+                    </span>
+                    <span className="text-slate-400">calculated {money(a.amount)}</span>
+                    {a.amountReason && <span className="text-indigo-600">{a.amountReason}</span>}
+                  </>
+                ) : (
+                  <>
+                    <span className="text-slate-500">{a.from} → <b className={a.to === 'excluded' ? 'text-rose-700' : a.to === 'paid' ? 'text-emerald-700' : 'text-slate-600'}>{a.to}</b></span>
+                    <span className="font-mono text-slate-500">{money(a.amount)}</span>
+                    {a.reason && <span className="text-rose-600">{reasonLabel(a.reason, a.reasonNote)}</span>}
+                  </>
+                )}
                 <span className="text-slate-400">by {a.byName}</span>
               </div>
             ))}
@@ -211,6 +259,7 @@ export default function BonusCalculator({
                   <th className="py-1.5 px-3 text-right">BH</th>
                   <th className="py-1.5 px-3 text-right">Pool (calculated)</th>
                   <th className="py-1.5 px-3 text-right">Excluded</th>
+                  <th className="py-1.5 px-3 text-right">Adjustments</th>
                   <th className="py-1.5 pl-3 text-right">To pay</th>
                 </tr>
               </thead>
@@ -239,6 +288,11 @@ export default function BonusCalculator({
                         {(payout.byDivision[d.division]?.excluded || 0) > 0
                           ? `−${money(payout.byDivision[d.division].excluded)}` : '—'}
                       </td>
+                      <td className="py-1.5 px-3 text-right font-mono text-indigo-700">
+                        {(payout.byDivision[d.division]?.adjustments || 0) !== 0
+                          ? `${payout.byDivision[d.division].adjustments > 0 ? '+' : '−'}${money(Math.abs(payout.byDivision[d.division].adjustments))}`
+                          : '—'}
+                      </td>
                       <td className="py-1.5 pl-3 text-right font-mono font-black text-emerald-700">
                         {money(payout.byDivision[d.division]?.toPay ?? d.pool)}
                       </td>
@@ -250,6 +304,11 @@ export default function BonusCalculator({
                   <td className="py-1.5 px-3 text-right font-mono font-black text-slate-700">{money(payout.company.calculated)}</td>
                   <td className="py-1.5 px-3 text-right font-mono font-black text-rose-700">
                     {payout.company.excluded > 0 ? `−${money(payout.company.excluded)}` : '—'}
+                  </td>
+                  <td className="py-1.5 px-3 text-right font-mono font-black text-indigo-700">
+                    {payout.company.adjustments !== 0
+                      ? `${payout.company.adjustments > 0 ? '+' : '−'}${money(Math.abs(payout.company.adjustments))}`
+                      : '—'}
                   </td>
                   <td className="py-1.5 pl-3 text-right font-mono font-black text-emerald-800">{money(payout.company.toPay)}</td>
                 </tr>
@@ -273,11 +332,14 @@ export default function BonusCalculator({
                 {result.perPerson.map(p => {
                   const st = stateOf(payoutRec, p.empId);
                   const m = markOf(payoutRec, p.empId);
+                  const edit = editOf(payoutRec, p.empId);
+                  const effective = edit ? edit.amount : p.total;
                   const isPaid = st === 'paid';
                   const isExcluded = st === 'excluded';
                   const rowCls = isExcluded
                     ? 'bg-rose-50/70 border-rose-200'
-                    : isPaid ? 'bg-emerald-50/70 border-emerald-200' : 'border-slate-50';
+                    : isPaid ? 'bg-emerald-50/70 border-emerald-200'
+                      : edit ? 'bg-indigo-50/50 border-indigo-100' : 'border-slate-50';
                   return (
                     <Fragment key={p.empId}>
                       <tr className={`border-b ${rowCls}`}>
@@ -303,15 +365,50 @@ export default function BonusCalculator({
                             ))}
                           </div>
                         </td>
-                        {/* THE CALCULATED AMOUNT STAYS VISIBLE on an excluded
-                            row — struck through, never removed. The record has
-                            to read "earned X, excluded, not paid". */}
+                        {/* THE CALCULATED AMOUNT IS NEVER REPLACED. An edited
+                            row shows the payable figure AND the calculation it
+                            came from; an excluded row shows it struck through.
+                            The record has to read "earned X, excluded, not
+                            paid" / "paying Y, calculated X". */}
                         <td className="py-1.5 px-3 text-right font-mono font-black whitespace-nowrap">
-                          <span className={isExcluded ? 'line-through text-rose-400' : isPaid ? 'line-through text-emerald-700' : 'text-emerald-700'}>
-                            {money(p.total)}
-                          </span>
-                          {isExcluded && (
-                            <div className="text-[9px] font-black uppercase tracking-widest text-rose-700">not paid</div>
+                          {editing?.empId === p.empId ? (
+                            <div className="inline-flex items-center gap-1">
+                              <span className="text-slate-400 text-[11px]">$</span>
+                              <input
+                                autoFocus
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={draftAmount}
+                                onChange={e => setDraftAmount(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') commitEdit();
+                                  if (e.key === 'Escape') setEditing(null);
+                                }}
+                                className="w-24 text-right border border-emerald-400 rounded px-1 py-0.5 font-mono text-sm"
+                              />
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                disabled={!isAdmin}
+                                onClick={() => startEdit(p.empId, p.name, p.total, effective)}
+                                title={isAdmin ? 'Edit the payable amount' : undefined}
+                                className={`${isAdmin ? 'hover:underline decoration-dotted cursor-pointer' : 'cursor-default'} ${isExcluded ? 'line-through text-rose-400' : isPaid ? 'line-through text-emerald-700' : 'text-emerald-700'}`}
+                              >
+                                {money(effective)}
+                              </button>
+                              {edit && (
+                                <div className="text-[9px] font-bold text-indigo-700 normal-case">
+                                  <span className="font-black uppercase tracking-widest bg-indigo-100 border border-indigo-300 px-1 py-0.5 rounded">edited</span>
+                                  {' '}calculated <span className="font-mono">{money(p.total)}</span>
+                                </div>
+                              )}
+                              {isExcluded && (
+                                <div className="text-[9px] font-black uppercase tracking-widest text-rose-700">not paid</div>
+                              )}
+                            </>
                           )}
                         </td>
                         {isAdmin && (
@@ -343,6 +440,68 @@ export default function BonusCalculator({
                             <span className="text-rose-500">
                               {' '}· earned {money(p.total)}, excluded, not paid · marked by {m.byName}{' '}
                               {new Date(m.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            </span>
+                          </td>
+                        </tr>
+                      )}
+                      {/* Amount editor controls + quick reasons */}
+                      {editing?.empId === p.empId && (
+                        <tr className="bg-emerald-50">
+                          <td colSpan={isAdmin ? 4 : 3} className="p-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-emerald-800">
+                                Pay {p.name} — calculated {money(p.total)}
+                              </span>
+                              {AMOUNT_REASONS.map(r => (
+                                <button
+                                  key={r}
+                                  type="button"
+                                  onClick={() => setAmountReason(r)}
+                                  className={`px-2 py-1 rounded text-[11px] font-bold border ${amountReason === r ? 'bg-emerald-700 text-white border-emerald-800' : 'bg-white text-emerald-800 border-emerald-300'}`}
+                                >{r}</button>
+                              ))}
+                              <input
+                                value={amountReason}
+                                onChange={e => setAmountReason(e.target.value)}
+                                placeholder="reason (optional)"
+                                className="text-[12px] border border-emerald-300 rounded px-2 py-1 min-w-[9rem]"
+                              />
+                              <button
+                                type="button"
+                                onClick={commitEdit}
+                                className="px-3 py-1 rounded text-[10px] font-black uppercase tracking-widest bg-emerald-700 text-white"
+                              >Save amount</button>
+                              {edit && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onEditAmount({ ym: selected, empId: p.empId, empName: p.name, amount: null, calculated: p.total });
+                                    setEditing(null);
+                                  }}
+                                  className="px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest text-slate-600 border border-slate-300"
+                                >Reset to calculated</button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setEditing(null)}
+                                className="p-1 text-emerald-700 hover:text-emerald-900"
+                                aria-label="Cancel"
+                              ><X className="w-4 h-4" /></button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      {/* Edited note on a settled row */}
+                      {edit && editing?.empId !== p.empId && (
+                        <tr className={isExcluded ? 'bg-rose-50/40' : 'bg-indigo-50/40'}>
+                          <td colSpan={isAdmin ? 4 : 3} className="px-3 pb-1.5 text-[11px] text-indigo-800">
+                            <b>Amount edited</b>
+                            <span className="text-indigo-500">
+                              {' '}· paying {money(edit.amount)}, calculated {money(p.total)}
+                              {' '}({edit.amount >= p.total ? '+' : '−'}{money(Math.abs(edit.amount - p.total))})
+                              {edit.reason ? ` · ${edit.reason}` : ''}
+                              {' '}· by {edit.byName} {new Date(edit.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              {isExcluded ? ' · EXCLUDED, so nothing is paid' : ''}
                             </span>
                           </td>
                         </tr>
@@ -401,7 +560,8 @@ export default function BonusCalculator({
             numbers crews see (buildDivisionMtd). Per-person payouts sum to each division pool exactly.
             {' '}Paid / excluded marks are a PAYOUT RECORD laid over this calculation: an exclusion withholds that
             person's share and reduces the total to pay, and <b>does not redistribute</b> — nobody else's figure moves.
-            What each person earned is unchanged by any mark.
+            An edited amount is the same kind of decision: it changes what is PAID and shows the calculated figure
+            beside it. What each person earned is unchanged by any mark or edit.
             {!isProjection && summary.tierTable && ' Finalized month — computed from its stamped tier table.'}
           </div>
         </div>
