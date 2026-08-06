@@ -139,6 +139,7 @@ export default function SalesMaster(props: Props) {
             onRefresh={onRefreshCapacity}
             canRefresh={canRefreshCapacity}
             onSaveSettings={onSaveCapacitySettings}
+            defaultTool="booking"
           />
         )}
       </div>

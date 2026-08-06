@@ -1,95 +1,75 @@
-// CAPACITY CALENDAR — one component, two mounts (a SalesMaster tab and the
-// schedule board's CAPACITY toggle). Forward, READ-ONLY: scheduled and
-// uncompleted Jobber work, bucketed by week and crew, coloured against the
-// admin-set weekly BH capacity.
+// CAPACITY — two purpose-built tools behind one switch, mounted from the
+// SalesMaster tab (defaults to BOOKING) and the schedule board (defaults to
+// SCHEDULE BALANCE).
 //
-// The only thing it writes is the capacity SETTINGS (weekly BH + colour
-// thresholds), through the same shared editor Manage Resources hosts —
-// reachable from a gear on this view so the basis for every percentage is
-// one click away rather than buried two screens deep.
+//   BOOKING          division-level, rolling 4 weeks, booked vs a DECLARED
+//                    weekly number. Answers "should we be selling more?"
+//   SCHEDULE BALANCE crew-level, current + next week, week totals against a
+//                    headcount ceiling. Answers "is any crew overbooked, and
+//                    did we schedule this right?"
+//
+// Forward, READ-ONLY. The only thing written is the capacity SETTINGS, via
+// the same shared editor Manage Resources hosts.
 import { useMemo, useState } from 'react';
 import {
-  CalendarRange, ChevronDown, ChevronRight, ChevronLeft, RefreshCw,
-  AlertTriangle, Info, TrendingUp, Users, X, Clock, HelpCircle, Sliders,
+  CalendarRange, RefreshCw, AlertTriangle, Info, Users, X, Clock, HelpCircle,
+  Sliders, Scale, AlertOctagon,
 } from 'lucide-react';
-import type { AppData, AppSettings, CapacityForecast, CapacityScope, CapacitySettings, Employee } from '../types';
+import type {
+  AppData, AppSettings, CapacityForecast, CapacityScope, CapacitySettings, Employee,
+} from '../types';
 import CapacitySettingsPanel from './CapacitySettingsPanel';
 import {
-  buildCapacityModel, capacityOrDefault, mergeSlices, BAND_META, longDate,
-  type CapacityBand, type CapacityCell, type CapacityRow, type CapacityWeek,
+  buildBookingModel, buildBalanceModel, capacityOrDefault, mergeSlices, BAND_META,
+  longDate, dayLabel, UNATTRIBUTED,
+  type CapacityBand, type BookingCell, type BookingRow, type CapacityWeek,
+  type ForwardSlice, type BalanceCrewRow,
 } from '../lib/capacity';
 import { formatTodayInToronto } from '../lib/dateUtils';
-
-const round1 = (n: number) => Math.round(n * 10) / 10;
 import { DIVISIONS } from '../constants';
+
+export type CapacityTool = 'booking' | 'balance';
 
 interface Props {
   appData: AppData;
-  // The forward snapshots, one per scope — each its own Firestore doc, held
-  // outside appData so neither can be written back into the main document.
-  // They are merged for display; a stale lawn pull still renders next to a
-  // fresh projects one, each carrying its own "updated" stamp.
   forecasts: Record<CapacityScope, CapacityForecast | null>;
   isAdmin: boolean;
   currentUserEmployee: Employee | null;
-  // Re-pulls ONE scope from Jobber (the scheduled passes run on their own).
   onRefresh?: (scope: CapacityScope) => Promise<void>;
   canRefresh?: boolean;
-  // Saves the capacity settings block (admin only). Absent → the view is
-  // read-only and points at an admin instead of offering an editor.
   onSaveSettings?: (next: CapacitySettings) => Promise<void>;
-  // 'board' trims the outer chrome when mounted inside the schedule board,
-  // which supplies its own header bar.
+  // Which tool this mount opens on. Sales opens on Booking, the board on
+  // Schedule Balance — each entry point lands on the question it's about.
+  defaultTool?: CapacityTool;
   variant?: 'page' | 'board';
 }
 
-// ── Band styling. The two reds are deliberately opposite in WEIGHT as well
-// as hue: underbooked is a hollow, dashed outline (an empty slot you can
-// sell into); overbooked is a solid, heavy block (a wall you can't push
-// past). They can't be mistaken for one another at a glance or in print.
-const BAND_STYLE: Record<CapacityBand, {
-  cell: string; bar: string; track: string; chip: string; text: string;
-}> = {
+// ── Band styling. The two reds are deliberately opposite in WEIGHT as well as
+// hue: underbooked is a hollow dashed outline (an empty slot you can sell
+// into); overbooked is a solid heavy block (a wall you can't push past).
+const BAND_STYLE: Record<CapacityBand, { cell: string; bar: string; track: string; text: string }> = {
   under: {
     cell: 'bg-rose-50 border-2 border-dashed border-rose-400',
-    bar: 'bg-rose-300',
-    track: 'bg-rose-100',
-    chip: 'bg-white text-rose-700 border border-rose-300',
-    text: 'text-rose-800',
+    bar: 'bg-rose-300', track: 'bg-rose-100', text: 'text-rose-800',
   },
   light: {
     cell: 'bg-amber-50 border border-amber-300',
-    bar: 'bg-amber-400',
-    track: 'bg-amber-100',
-    chip: 'bg-amber-100 text-amber-800 border border-amber-300',
-    text: 'text-amber-900',
+    bar: 'bg-amber-400', track: 'bg-amber-100', text: 'text-amber-900',
   },
   healthy: {
     cell: 'bg-emerald-50 border border-emerald-300',
-    bar: 'bg-emerald-500',
-    track: 'bg-emerald-100',
-    chip: 'bg-emerald-100 text-emerald-800 border border-emerald-300',
-    text: 'text-emerald-900',
+    bar: 'bg-emerald-500', track: 'bg-emerald-100', text: 'text-emerald-900',
   },
   over: {
     cell: 'bg-red-900 border border-red-950 shadow-inner',
-    bar: 'bg-white',
-    track: 'bg-red-800',
-    chip: 'bg-white text-red-900 border border-red-950',
-    text: 'text-white',
+    bar: 'bg-white', track: 'bg-red-800', text: 'text-white',
   },
 };
 const NO_CAP_STYLE = {
   cell: 'bg-slate-50 border border-slate-200',
-  bar: 'bg-slate-300',
-  track: 'bg-slate-200',
-  chip: 'bg-slate-100 text-slate-600 border border-slate-300',
-  text: 'text-slate-700',
+  bar: 'bg-slate-300', track: 'bg-slate-200', text: 'text-slate-700',
 };
-// A week the pull never reached. Deliberately NOT a band and deliberately
-// not zero — hatched grey, no number, no percentage. Showing 0 BH here would
-// colour it "underbooked — sell into it" and send a salesman to fill a week
-// nobody has looked at.
+// A week the pull never reached — NOT zero, NOT open.
 const UNCOVERED_STYLE = {
   cell: 'bg-slate-100 border border-dashed border-slate-300',
   text: 'text-slate-400',
@@ -98,9 +78,6 @@ const UNCOVERED_STYLE = {
 const styleFor = (band: CapacityBand | null) => (band ? BAND_STYLE[band] : NO_CAP_STYLE);
 const bh = (n: number) => (Math.round(n * 10) / 10).toLocaleString();
 
-const monthLabel = (ymd: string) =>
-  new Date(`${ymd}T12:00:00`).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-
 function Legend() {
   return (
     <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold">
@@ -108,120 +85,57 @@ function Legend() {
       <span className={`px-2 py-1 rounded ${BAND_STYLE.under.cell} ${BAND_STYLE.under.text}`}>
         &lt;70% UNDERBOOKED — sell into it
       </span>
-      <span className={`px-2 py-1 rounded ${BAND_STYLE.light.cell} ${BAND_STYLE.light.text}`}>
-        70–90% LIGHT
-      </span>
-      <span className={`px-2 py-1 rounded ${BAND_STYLE.healthy.cell} ${BAND_STYLE.healthy.text}`}>
-        90–110% HEALTHY
-      </span>
+      <span className={`px-2 py-1 rounded ${BAND_STYLE.light.cell} ${BAND_STYLE.light.text}`}>70–90% LIGHT</span>
+      <span className={`px-2 py-1 rounded ${BAND_STYLE.healthy.cell} ${BAND_STYLE.healthy.text}`}>90–110% HEALTHY</span>
       <span className={`px-2 py-1 rounded inline-flex items-center gap-1 ${BAND_STYLE.over.cell} ${BAND_STYLE.over.text}`}>
         <AlertTriangle className="w-3 h-3" /> &gt;110% OVERBOOKED — can&apos;t deliver
       </span>
-      <span className={`px-2 py-1 rounded ${NO_CAP_STYLE.cell} ${NO_CAP_STYLE.text}`}>
-        no capacity set — raw BH only
-      </span>
+      <span className={`px-2 py-1 rounded ${NO_CAP_STYLE.cell} ${NO_CAP_STYLE.text}`}>no capacity declared — raw BH</span>
       <span className={`px-2 py-1 rounded ${UNCOVERED_STYLE.cell} ${UNCOVERED_STYLE.text}`}>
-        not pulled — beyond this snapshot&apos;s coverage, NOT an open week
+        not pulled — NOT an open week
       </span>
     </div>
   );
 }
 
-// One week cell: BH, bar, percentage, band label.
-function Cell({ cell, week, active, onClick, compact }: {
-  cell: CapacityCell; week: CapacityWeek; active: boolean;
-  onClick: () => void; compact?: boolean;
+function BookingWeekCell({ cell, week, active, onClick }: {
+  cell: BookingCell; week: CapacityWeek; active: boolean; onClick: () => void;
 }) {
   if (cell.uncovered) {
     return (
-      <button
-        type="button"
-        onClick={onClick}
-        aria-label={`Week ${week.rangeLabel}: not pulled — coverage ends earlier`}
-        className={`w-full text-left rounded-lg p-2 ${UNCOVERED_STYLE.cell} ${active ? 'ring-2 ring-slate-800 ring-offset-1' : ''}`}
-      >
-        <div className={`text-[11px] font-black ${UNCOVERED_STYLE.text}`}>—</div>
-        <div className={`text-[9px] font-black uppercase tracking-widest mt-2 leading-tight ${UNCOVERED_STYLE.text}`}>
-          not pulled
-        </div>
-        <div className={`text-[9px] font-bold ${UNCOVERED_STYLE.text}`}>coverage ends earlier</div>
+      <button type="button" onClick={onClick}
+        aria-label={`Week ${week.rangeLabel}: not pulled`}
+        className={`w-full text-left rounded-lg p-3 ${UNCOVERED_STYLE.cell} ${active ? 'ring-2 ring-slate-800' : ''}`}>
+        <div className={`text-lg font-black ${UNCOVERED_STYLE.text}`}>—</div>
+        <div className={`text-[9px] font-black uppercase tracking-widest mt-1 ${UNCOVERED_STYLE.text}`}>not pulled</div>
       </button>
     );
   }
   const s = styleFor(cell.band);
   const pct = cell.pct;
-  const cap = cell.capacity;
-  const full = cell.fullStrength;
-  // Full strength is only worth showing when it DIFFERS — that gap is the
-  // difference between "thin because nobody's scheduled" and "thin because
-  // nothing's sold", and those need opposite responses.
-  const shortStaffed = cap !== null && full !== null && full - cap > 0.5;
-  const scale = Math.max(cell.bh, cap || 0, full || 0, 1);
-  const w = (v: number) => `${Math.max(1, Math.min(100, (v / scale) * 100))}%`;
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={`Week ${week.rangeLabel}: ${bh(cell.bh)} booked of ${cap === null ? 'unknown' : bh(cap)} capacity`}
-      className={`w-full text-left rounded-lg p-2 transition-shadow ${s.cell} ${active ? 'ring-2 ring-slate-800 ring-offset-1' : 'hover:shadow-md'}`}
-    >
-      {/* BOOKED and CAPACITY as separate numbers. 70% could be 140 of 200 or
-          70 of 100 — those call for different responses, so the percentage
-          is derived UNDER them rather than standing in for them. */}
+    <button type="button" onClick={onClick}
+      aria-label={`Week ${week.rangeLabel}: ${bh(cell.bh)} booked of ${cell.capacity === null ? 'undeclared' : bh(cell.capacity)}`}
+      className={`w-full text-left rounded-lg p-3 transition-shadow ${s.cell} ${active ? 'ring-2 ring-slate-800 ring-offset-1' : 'hover:shadow-md'}`}>
       <div className="flex items-baseline justify-between gap-1">
-        <span className={`font-black tabular-nums ${compact ? 'text-base' : 'text-lg'} ${s.text}`}>
-          {bh(cell.bh)}
-        </span>
-        <span className={`text-[10px] font-bold tabular-nums opacity-80 ${s.text}`}>
-          / {cap === null ? '—' : bh(cap)}
+        <span className={`text-2xl font-black tabular-nums ${s.text}`}>{bh(cell.bh)}</span>
+        <span className={`text-[11px] font-bold tabular-nums opacity-80 ${s.text}`}>
+          / {cell.capacity === null ? '—' : bh(cell.capacity)}
         </span>
       </div>
-      <div className={`text-[8px] font-black uppercase tracking-widest opacity-60 ${s.text}`}>
-        booked / capacity
+      <div className={`text-[9px] font-black uppercase tracking-widest opacity-60 ${s.text}`}>booked / declared</div>
+      <div className={`h-2 rounded-full mt-2 overflow-hidden ${s.track}`}>
+        {pct !== null && <div className={`h-full ${s.bar}`} style={{ width: `${Math.max(2, Math.min(100, pct))}%` }} />}
       </div>
-      {/* Paired bars: booked over capacity, both on the same scale, with a
-          faint full-strength marker where it sits beyond capacity. */}
-      <div className="mt-1.5 space-y-0.5 relative">
-        <div className={`h-1.5 rounded-full overflow-hidden ${s.track}`}>
-          <div className={`h-full ${s.bar}`} style={{ width: w(cell.bh) }} />
-        </div>
-        <div className={`h-1 rounded-full overflow-hidden ${s.track} relative`}>
-          {cap !== null && <div className={`h-full ${s.bar} opacity-40`} style={{ width: w(cap) }} />}
-          {shortStaffed && full !== null && (
-            <div
-              className={`absolute top-0 bottom-0 border-l-2 border-dashed ${s.text} opacity-50`}
-              style={{ left: w(full) }}
-              title={`Full strength ${bh(full)} BH`}
-            />
-          )}
-        </div>
-      </div>
-      <div className="flex items-center justify-between gap-1 mt-1">
-        <span className={`text-[9px] font-black uppercase tracking-widest inline-flex items-center gap-0.5 ${s.text}`}>
-          {cell.band === 'over' && <AlertTriangle className="w-2.5 h-2.5" />}
-          {cell.band ? BAND_META[cell.band].label : 'NO CAPACITY'}
+      <div className="flex items-center justify-between gap-1 mt-1.5">
+        <span className={`text-[10px] font-black uppercase tracking-widest inline-flex items-center gap-0.5 ${s.text}`}>
+          {cell.band === 'over' && <AlertTriangle className="w-3 h-3" />}
+          {cell.band ? BAND_META[cell.band].label : 'NO TARGET'}
         </span>
-        {pct !== null && (
-          <span className={`text-[10px] font-black tabular-nums ${s.text}`}>{pct}%</span>
-        )}
+        {pct !== null && <span className={`text-sm font-black tabular-nums ${s.text}`}>{pct}%</span>}
       </div>
-      {shortStaffed && (
-        <div className={`text-[8px] font-bold mt-0.5 leading-tight ${s.text} opacity-80`}>
-          short-staffed: {bh(full! - cap!)} BH under full strength ({bh(full!)})
-        </div>
-      )}
-      {cell.capacityBasis === 'projected' && (
-        <div className={`text-[8px] font-bold mt-0.5 ${s.text} opacity-70`}>projected — beyond schedule</div>
-      )}
-      {/* A thin week that is thin because it hasn't been BUILT reads
-          differently from one with no work — say which. */}
-      {cell.partialRoster && (
-        <div className={`text-[8px] font-bold mt-0.5 leading-tight ${s.text} opacity-80`}>
-          only {cell.rosteredWeekdays} of 5 days rostered — not fully built yet
-        </div>
-      )}
       {(cell.hourlyCount > 0 || cell.untaggedCount > 0) && (
-        <div className={`text-[8px] font-bold mt-0.5 opacity-80 ${s.text}`}>
+        <div className={`text-[9px] font-bold mt-1 opacity-80 ${s.text}`}>
           {cell.hourlyCount > 0 && `${cell.hourlyCount} hourly`}
           {cell.hourlyCount > 0 && cell.untaggedCount > 0 && ' · '}
           {cell.untaggedCount > 0 && `${cell.untaggedCount} untagged`}
@@ -231,125 +145,84 @@ function Cell({ cell, week, active, onClick, compact }: {
   );
 }
 
-// "Booked out to <date>" — the number a salesman says on the phone.
-function BookedOut({ row, big }: { row: CapacityRow; big?: boolean }) {
+function JobList({ jobs }: { jobs: ForwardSlice[] }) {
+  const merged = mergeSlices(jobs);
+  if (merged.length === 0) return <p className="text-sm text-slate-500">Nothing scheduled here.</p>;
   return (
-    <div className={`rounded-xl border px-3 py-2 ${row.bookedOutTo ? 'bg-slate-900 border-slate-900 text-white' : 'bg-white border-slate-200 text-slate-500'}`}>
-      <div className="text-[9px] font-black uppercase tracking-widest opacity-70">Booked out to</div>
-      {row.bookedOutTo ? (
-        <>
-          <div className={`font-black leading-tight ${big ? 'text-2xl' : 'text-lg'}`}>{longDate(row.bookedOutTo)}</div>
-          <div className="text-[10px] font-bold opacity-60">week of {row.bookedOutWeek && longDate(row.bookedOutWeek)}</div>
-        </>
-      ) : (
-        <div className={`font-black leading-tight ${big ? 'text-2xl' : 'text-lg'}`}>Nothing booked</div>
-      )}
+    <div className="divide-y divide-slate-100">
+      {merged.map(j => (
+        <div key={j.visitId} className="py-2 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-bold text-slate-800 text-sm truncate">{j.client || 'No client name'}</div>
+            <div className="text-xs text-slate-500 truncate">{j.desc}{j.jobNumber ? ` · #${j.jobNumber}` : ''}</div>
+            <div className="flex flex-wrap items-center gap-1.5 mt-1">
+              <span className="text-[10px] font-bold text-slate-500">
+                {j.multiDay ? `${longDate(j.startDate)} → ${longDate(j.endDate)}` : longDate(j.startDate)}
+              </span>
+              {j.multiDay && (
+                <span className="text-[9px] font-black uppercase tracking-widest bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded">
+                  multi-day · {bh(j.totalRemaining)} BH left
+                </span>
+              )}
+              {j.creditedBH > 0 && (
+                <span className="text-[9px] font-black uppercase tracking-widest bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded">
+                  {bh(j.creditedBH)} BH already credited
+                </span>
+              )}
+              {j.isHourly && (
+                <span className="text-[9px] font-black uppercase tracking-widest bg-sky-50 text-sky-700 border border-sky-200 px-1.5 py-0.5 rounded inline-flex items-center gap-0.5">
+                  <Clock className="w-2.5 h-2.5" /> hourly — no forward BH
+                </span>
+              )}
+              {j.untagged && (
+                <span className="text-[9px] font-black uppercase tracking-widest bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded">
+                  no [BH] tag — load unknown
+                </span>
+              )}
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5 truncate">
+              {j.assigneeNames.length > 0 ? j.assigneeNames.join(', ') : 'no assignee on the visit'}
+            </div>
+          </div>
+          <div className="text-right shrink-0">
+            <div className="text-lg font-black text-slate-900 tabular-nums">{bh(j.bh)}</div>
+            <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">BH</div>
+          </div>
+        </div>
+      ))}
     </div>
-  );
-}
-
-// Where a row's capacity came from, spelled out. A percentage with no
-// visible basis is a number nobody can check — this is the basis.
-function CapacityNote({ row, cells, onOpenSettings }: {
-  row: CapacityRow;
-  cells: CapacityCell[];
-  onOpenSettings?: () => void;
-}) {
-  const unset = (
-    <span className="text-[10px] font-bold text-slate-400">
-      no BH-per-person set —{' '}
-      {onOpenSettings ? (
-        <button type="button" onClick={onOpenSettings} className="font-black text-slate-600 underline hover:text-slate-900">set it</button>
-      ) : <span className="font-black text-slate-500">ask an admin to set it</span>}
-    </span>
-  );
-  const withCap = cells.filter(c => c.capacity !== null);
-  if (withCap.length === 0) return unset;
-  const avg = round1(withCap.reduce((s2, c) => s2 + (c.capacity || 0), 0) / withCap.length);
-
-  if (row.kind === 'unassigned') {
-    return <span className="text-[10px] font-bold text-slate-400">no capacity — unattributed work</span>;
-  }
-  if (row.kind === 'division') {
-    return (
-      <span className="text-[10px] font-bold text-slate-500">
-        avg {avg} BH/wk across {withCap.length} week{withCap.length === 1 ? '' : 's'}
-        {row.capacityPartial && (
-          <span className="text-amber-700"> · partial — {row.crews?.filter(c => c.cells.every(x => x.capacity === null)).length} crew(s) unset</span>
-        )}
-      </span>
-    );
-  }
-  // Crew row: state the basis of the FIRST visible week in full, plus the
-  // average as the baseline to read the individual weeks against, plus where
-  // the standard size came from — a configured decision and an inference
-  // from past days should never look the same.
-  const first = withCap[0];
-  const d = row.capacityDetail;
-  const stdNote = d && d.standardSize !== null ? (
-    d.standardSizeSource === 'set'
-      ? `standard size: ${d.standardSize} (set)`
-      : `standard size: ${d.standardSize} (inferred, median of ${d.standardSizeDays} past scheduled day${d.standardSizeDays === 1 ? '' : 's'} in the last 4 weeks)`
-  ) : null;
-  return (
-    <span className="text-[10px] font-bold text-slate-500">
-      <span className="text-slate-600">{first.capacityLabel}</span>
-      {' · '}avg {avg} BH/wk
-      {stdNote && <span className="text-slate-400"> · {stdNote}</span>}
-      {cells.some(c => c.capacityBasis === 'projected') && (
-        <span className="text-slate-400"> · later weeks projected</span>
-      )}
-    </span>
   );
 }
 
 export default function CapacityCalendar({
   appData, forecasts, isAdmin, currentUserEmployee, onRefresh, canRefresh,
-  onSaveSettings, variant = 'page',
+  onSaveSettings, defaultTool = 'booking', variant = 'page',
 }: Props) {
   const today = formatTodayInToronto();
   const snapshots = useMemo(
     () => [forecasts.projects, forecasts.lawn].filter(Boolean) as CapacityForecast[],
     [forecasts.projects, forecasts.lawn],
   );
-  // "Have we got anything at all to show?" — one scope arriving is enough.
-  const forecast: CapacityForecast | null =
-    snapshots.length === 0 ? null :
-      snapshots.reduce((a, b) => (a.generatedAt >= b.generatedAt ? a : b));
+  const settings = useMemo(() => capacityOrDefault(appData.settings?.capacity), [appData.settings?.capacity]);
 
-  // A division manager lands on their own division; admins see everything.
-  const managed = currentUserEmployee?.managedDivision;
-  const defaultDivision =
-    !isAdmin && managed === 'lawn' ? 'Lawn Division'
-      : !isAdmin && managed === 'small' ? 'Small Projects'
-        : !isAdmin && managed === 'large' ? 'Large Projects'
-          : 'All';
-  // SCREEN = which half of the business, and it changes the question being
-  // asked. Projects: "when can we start?" — 4 rolling weeks with a month
-  // toggle. Lawn: "is the route full?" — a 2-week window matching the
-  // biweekly cycle. One component, switched at the top, so both entry points
-  // (SalesMaster tab, schedule-board toggle) reach either screen and there
-  // is still no second implementation.
-  const lawnDefault = !isAdmin && managed === 'lawn';
-  const [screen, setScreen] = useState<CapacityScope>(lawnDefault ? 'lawn' : 'projects');
-  const [division, setDivision] = useState<string>(defaultDivision);
-  const [range, setRange] = useState<'4week' | 'month'>('4week');
-  const [monthOffset, setMonthOffset] = useState(0);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [tool, setTool] = useState<CapacityTool>(defaultTool);
   const [drill, setDrill] = useState<{ rowKey: string; weekStart: string } | null>(null);
+  const [dayDrill, setDayDrill] = useState<{ crewKey: string; date: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [busyScope, setBusyScope] = useState<CapacityScope | null>(null);
 
-  // ── Settings, reachable from here. The draft lives in local state so an
-  // admin can adjust several values and commit once; Save writes the whole
-  // capacity block through the App's normal settings write.
+  // A division manager sees their own division; admins see everything.
+  const managed = currentUserEmployee?.managedDivision;
+  const ownDivision = !isAdmin && managed === 'lawn' ? 'Lawn Division'
+    : !isAdmin && managed === 'small' ? 'Small Projects'
+      : !isAdmin && managed === 'large' ? 'Large Projects' : null;
+  const [division, setDivision] = useState<string>(ownDivision || 'All');
+
   const canEditSettings = isAdmin && !!onSaveSettings;
   const [showSettings, setShowSettings] = useState(false);
   const [draft, setDraft] = useState<AppSettings>(appData.settings || {});
   const [saving, setSaving] = useState(false);
-  const openSettings = () => {
-    setDraft(appData.settings || {});
-    setShowSettings(true);
-  };
+  const openSettings = () => { setDraft(appData.settings || {}); setShowSettings(true); };
   const saveSettings = async () => {
     if (!onSaveSettings || saving) return;
     setSaving(true);
@@ -359,288 +232,134 @@ export default function CapacityCalendar({
     } finally { setSaving(false); }
   };
 
-  const model = useMemo(() => buildCapacityModel({
-    forecasts: snapshots,
+  const booking = useMemo(() => buildBookingModel({
+    snapshots,
     schedules: appData.schedules || {},
-    employees: appData.employees || [],
     multiDayJobs: appData.multiDayJobs,
-    appData,
-    settings: capacityOrDefault(appData.settings?.capacity),
+    settings,
     today,
-  }), [snapshots, appData, today]);
+  }), [snapshots, appData.schedules, appData.multiDayJobs, settings, today]);
 
-  // Month anchor built from (year, month, 1) so month-stepping can't skip a
-  // month from a 29th–31st start date.
-  const monthAnchor = useMemo(() => {
-    const base = new Date(`${today}T12:00:00`);
-    return new Date(base.getFullYear(), base.getMonth() + monthOffset, 1);
-  }, [today, monthOffset]);
+  const balance = useMemo(() => buildBalanceModel({
+    snapshots,
+    appData,
+    multiDayJobs: appData.multiDayJobs,
+    settings,
+    today,
+  }), [snapshots, appData, settings, today]);
 
-  // Visible week window: 4 rolling weeks, or every remaining week of the
-  // selected calendar month.
-  const visible = useMemo(() => {
-    // Lawn is a fixed 2-week window — its pull only covers 21 days, and the
-    // biweekly cycle is the unit ops thinks in.
-    if (screen === 'lawn') return model.weeks.slice(0, 2).map((w, i) => ({ week: w, index: i }));
-    if (range === '4week') return model.weeks.slice(0, 4).map((w, i) => ({ week: w, index: i }));
-    const ym = `${monthAnchor.getFullYear()}-${String(monthAnchor.getMonth() + 1).padStart(2, '0')}`;
-    const inMonth = model.weeks
-      .map((w, i) => ({ week: w, index: i }))
-      .filter(({ week }) => week.start.slice(0, 7) === ym || week.end.slice(0, 7) === ym);
-    return inMonth.length > 0 ? inMonth : model.weeks.slice(0, 4).map((w, i) => ({ week: w, index: i }));
-  }, [screen, range, monthAnchor, model.weeks]);
-
-  const rows = useMemo(() => {
-    // Each screen shows only its own half. Lawn divisions are matched by
-    // name, the same rule the server's scope split uses.
-    const inScreen = model.divisions.filter(d =>
-      (/lawn/i.test(d.division) ? 'lawn' : 'projects') === screen);
-    return division === 'All' ? inScreen : inScreen.filter(d => d.division === division);
-  }, [model.divisions, division, screen]);
-
-  const showUnassigned = model.unassigned && division === 'All' && screen === 'projects';
-
-  const drillCell = useMemo(() => {
-    if (!drill) return null;
-    const all = [...model.divisions, ...model.divisions.flatMap(d => d.crews || []),
-      ...(model.unassigned ? [model.unassigned] : [])];
-    const row = all.find(r => r.key === drill.rowKey);
-    if (!row) return null;
-    const i = model.weeks.findIndex(w => w.start === drill.weekStart);
-    if (i < 0) return null;
-    return { row, cell: row.cells[i], week: model.weeks[i] };
-  }, [drill, model]);
-
-  const [busyScope, setBusyScope] = useState<CapacityScope | null>(null);
   const refresh = async (scope: CapacityScope) => {
     if (!onRefresh || busy) return;
-    setBusy(true);
-    setBusyScope(scope);
+    setBusy(true); setBusyScope(scope);
     try { await onRefresh(scope); } finally { setBusy(false); setBusyScope(null); }
   };
 
-  const toggleCell = (rowKey: string, weekStart: string) =>
-    setDrill(prev => (prev && prev.rowKey === rowKey && prev.weekStart === weekStart
-      ? null : { rowKey, weekStart }));
-
-  const monthName = monthAnchor.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-
-  // ── Rendering pieces ─────────────────────────────────────────────────────
-  const renderRowGrid = (row: CapacityRow, indent = false) => (
-    <div className="hidden md:grid gap-2 items-stretch" style={{ gridTemplateColumns: `minmax(190px, 1.2fr) repeat(${visible.length}, minmax(96px, 1fr))` }}>
-      <div className={`flex flex-col justify-center ${indent ? 'pl-6' : ''}`}>
-        <div className="flex items-center gap-1.5">
-          {row.kind === 'division' && (
-            <button
-              type="button"
-              onClick={() => setExpanded(e => ({ ...e, [row.key]: !e[row.key] }))}
-              className="text-slate-400 hover:text-slate-800"
-              aria-label={expanded[row.key] ? 'Collapse crews' : 'Expand crews'}
-            >
-              {expanded[row.key] ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            </button>
-          )}
-          <span className={`${row.kind === 'division' ? 'font-black text-slate-900' : 'font-bold text-slate-700 text-sm'}`}>
-            {row.label}
-          </span>
-          {row.crewSize ? (
-            <span className="text-[10px] font-bold text-slate-400 inline-flex items-center gap-0.5">
-              <Users className="w-3 h-3" />{row.crewSize}
-            </span>
-          ) : null}
-        </div>
-        <CapacityNote row={row} cells={visible.map(({ index }) => row.cells[index])} onOpenSettings={canEditSettings ? openSettings : undefined} />
-        {row.bookedOutTo && screen === 'projects' && (
-          <div className="text-[10px] font-black text-slate-600 mt-0.5">
-            booked to {longDate(row.bookedOutTo)}
-          </div>
-        )}
-      </div>
-      {visible.map(({ week, index }) => (
-        <Cell
-          key={week.start}
-          cell={row.cells[index]}
-          week={week}
-          compact={row.kind === 'crew'}
-          active={!!drill && drill.rowKey === row.key && drill.weekStart === week.start}
-          onClick={() => toggleCell(row.key, week.start)}
-        />
-      ))}
-    </div>
+  const visibleRows = useMemo(
+    () => (division === 'All' ? booking.rows : booking.rows.filter(r => r.division === division)),
+    [booking.rows, division],
+  );
+  const visibleCrews = useMemo(
+    () => (division === 'All' ? balance.crews : balance.crews.filter(c => c.division === division)),
+    [balance.crews, division],
   );
 
-  // Mobile: one card per division/crew, weeks stacked as rows.
-  const renderRowStack = (row: CapacityRow, indent = false) => (
-    <div className={`md:hidden ${indent ? 'pl-3 border-l-2 border-slate-200 ml-2' : ''}`}>
-      <div className="flex items-center justify-between gap-2 py-2">
-        <div className="flex items-center gap-1.5 min-w-0">
-          {row.kind === 'division' && (
-            <button
-              type="button"
-              onClick={() => setExpanded(e => ({ ...e, [row.key]: !e[row.key] }))}
-              className="text-slate-400"
-              aria-label={expanded[row.key] ? 'Collapse crews' : 'Expand crews'}
-            >
-              {expanded[row.key] ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            </button>
-          )}
-          <div className="min-w-0">
-            <div className={`truncate ${row.kind === 'division' ? 'font-black text-slate-900' : 'font-bold text-slate-700 text-sm'}`}>{row.label}</div>
-            <CapacityNote row={row} cells={visible.map(({ index }) => row.cells[index])} onOpenSettings={canEditSettings ? openSettings : undefined} />
-          </div>
-        </div>
-      </div>
-      <div className="space-y-1.5">
-        {visible.map(({ week, index }) => (
-          <div key={week.start} className="grid grid-cols-[64px_1fr] gap-2 items-center">
-            <div className="text-[11px] font-black text-slate-500 leading-tight">{week.rangeLabel}</div>
-            <Cell
-              cell={row.cells[index]}
-              week={week}
-              compact
-              active={!!drill && drill.rowKey === row.key && drill.weekStart === week.start}
-              onClick={() => toggleCell(row.key, week.start)}
-            />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  const drillCell = useMemo(() => {
+    if (!drill) return null;
+    const all: BookingRow[] = [...booking.rows, ...(booking.unattributed ? [booking.unattributed] : [])];
+    const row = all.find(r => r.division === drill.rowKey);
+    if (!row) return null;
+    const i = booking.weeks.findIndex(w => w.start === drill.weekStart);
+    if (i < 0) return null;
+    return { row, cell: row.cells[i], week: booking.weeks[i] };
+  }, [drill, booking]);
 
+  const dayCell = useMemo(() => {
+    if (!dayDrill) return null;
+    const crew = balance.crews.find(c => c.key === dayDrill.crewKey);
+    if (!crew) return null;
+    for (const w of crew.weeks) {
+      const d = w.days.find(x => x.date === dayDrill.date);
+      if (d) return { crew, day: d };
+    }
+    return null;
+  }, [dayDrill, balance]);
+
+  const hasForecast = snapshots.length > 0;
 
   return (
     <div className={variant === 'board' ? 'p-4 md:p-6 space-y-4' : 'space-y-4'}>
-      {/* Header / controls */}
+      {/* Header */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <CalendarRange className="w-5 h-5 text-slate-700" />
+            {tool === 'booking'
+              ? <CalendarRange className="w-5 h-5 text-slate-700" />
+              : <Scale className="w-5 h-5 text-slate-700" />}
             <h3 className="text-lg font-black text-slate-900">
-              Capacity — {screen === 'lawn' ? 'Lawn' : 'Projects'}
+              {tool === 'booking' ? 'Booking' : 'Schedule balance'}
             </h3>
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-              {screen === 'lawn' ? 'is the route full?' : 'when can we start?'}
+              {tool === 'booking' ? 'should we be selling more?' : 'is any crew overbooked?'}
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {/* SCREEN SWITCH — the two halves ask different questions and
-                get different windows. */}
             <div className="flex bg-slate-100 rounded-lg p-1">
-              {(['projects', 'lawn'] as CapacityScope[]).map(sc => (
-                <button
-                  key={sc}
-                  type="button"
-                  onClick={() => { setScreen(sc); setDrill(null); setDivision('All'); }}
-                  className={`px-3 py-1.5 text-xs font-black rounded uppercase ${screen === sc ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}
-                >{sc === 'projects' ? 'Projects' : 'Lawn'}</button>
-              ))}
+              <button type="button" onClick={() => { setTool('booking'); setDrill(null); setDayDrill(null); }}
+                className={`px-3 py-1.5 text-xs font-black rounded uppercase ${tool === 'booking' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>
+                Booking
+              </button>
+              <button type="button" onClick={() => { setTool('balance'); setDrill(null); setDayDrill(null); }}
+                className={`px-3 py-1.5 text-xs font-black rounded uppercase ${tool === 'balance' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>
+                Schedule balance
+              </button>
             </div>
-            {screen === 'projects' && (
-              <div className="flex bg-slate-100 rounded-lg p-1">
-                <button
-                  type="button"
-                  onClick={() => { setRange('4week'); setDrill(null); }}
-                  className={`px-3 py-1.5 text-xs font-black rounded ${range === '4week' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}
-                >4 WEEKS</button>
-                <button
-                  type="button"
-                  onClick={() => { setRange('month'); setDrill(null); }}
-                  className={`px-3 py-1.5 text-xs font-black rounded ${range === 'month' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}
-                >MONTH</button>
-              </div>
-            )}
-            {screen === 'lawn' && (
-              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                2-week route window
-              </span>
-            )}
-            {screen === 'projects' && range === 'month' && (
-              <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
-                <button
-                  type="button"
-                  disabled={monthOffset === 0}
-                  onClick={() => setMonthOffset(o => Math.max(0, o - 1))}
-                  className="p-1 rounded text-slate-600 disabled:opacity-30"
-                  aria-label="Previous month"
-                ><ChevronLeft className="w-4 h-4" /></button>
-                <span className="text-xs font-black text-slate-700 px-1 whitespace-nowrap">{monthName}</span>
-                <button
-                  type="button"
-                  disabled={monthOffset >= 3}
-                  onClick={() => setMonthOffset(o => Math.min(3, o + 1))}
-                  className="p-1 rounded text-slate-600 disabled:opacity-30"
-                  aria-label="Next month"
-                ><ChevronRight className="w-4 h-4" /></button>
-              </div>
-            )}
             {isAdmin && (
-              <select
-                value={division}
-                onChange={e => { setDivision(e.target.value); setDrill(null); }}
-                className="text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded-lg px-2 py-2 outline-none"
-              >
+              <select value={division} onChange={e => { setDivision(e.target.value); setDrill(null); setDayDrill(null); }}
+                className="text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded-lg px-2 py-2 outline-none">
                 <option value="All">All divisions</option>
                 {DIVISIONS.map(d => <option key={d} value={d}>{d}</option>)}
               </select>
             )}
-            {/* Refresh is SCOPED. Projects is the default because that's the
-                half that changes between refreshes; lawn is 250+ visits a
-                week, moves slowly, and gets its own (slower) schedule. */}
-            {/* Each screen refreshes its OWN scope — pulling one leaves the
-                other's snapshot untouched. */}
             {canRefresh && onRefresh && (
-              <button
-                type="button"
-                onClick={() => refresh(screen)}
-                disabled={busy}
-                title={screen === 'lawn'
-                  ? 'Re-pull the lawn route (leaves the projects snapshot alone)'
-                  : 'Re-pull Large + Small Projects (leaves the lawn snapshot alone)'}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest bg-slate-800 text-white rounded-lg hover:bg-slate-700 disabled:opacity-50"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${busy && busyScope === screen ? 'animate-spin' : ''}`} />
-                {busy && busyScope === screen ? 'Pulling' :
-                  `Refresh ${screen === 'lawn' ? 'lawn' : 'projects'}`}
-              </button>
+              <div className="inline-flex rounded-lg overflow-hidden border border-slate-800">
+                <button type="button" onClick={() => refresh('projects')} disabled={busy}
+                  title="Re-pull Large + Small Projects"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-50">
+                  <RefreshCw className={`w-3.5 h-3.5 ${busy && busyScope === 'projects' ? 'animate-spin' : ''}`} />
+                  {busy && busyScope === 'projects' ? 'Pulling' : 'Projects'}
+                </button>
+                <button type="button" onClick={() => refresh('lawn')} disabled={busy}
+                  title="Re-pull the lawn route"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest bg-white text-slate-700 border-l border-slate-800 hover:bg-slate-100 disabled:opacity-50">
+                  <RefreshCw className={`w-3.5 h-3.5 ${busy && busyScope === 'lawn' ? 'animate-spin' : ''}`} />
+                  {busy && busyScope === 'lawn' ? 'Pulling' : 'Lawn'}
+                </button>
+              </div>
             )}
             {canEditSettings && (
-              <button
-                type="button"
-                onClick={() => (showSettings ? setShowSettings(false) : openSettings())}
+              <button type="button" onClick={() => (showSettings ? setShowSettings(false) : openSettings())}
                 aria-expanded={showSettings}
-                title="Set the weekly BH capacity and colour thresholds"
-                className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest rounded-lg border ${showSettings ? 'bg-slate-800 text-white border-slate-900' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`}
-              >
-                <Sliders className="w-3.5 h-3.5" /> Capacity settings
+                className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest rounded-lg border ${showSettings ? 'bg-slate-800 text-white border-slate-900' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`}>
+                <Sliders className="w-3.5 h-3.5" /> Settings
               </button>
             )}
           </div>
         </div>
 
-        <Legend />
+        {tool === 'booking' && <Legend />}
 
-        {/* The caveat. Quiet, one line, always on. */}
         <div className="flex items-start gap-2 text-[11px] text-slate-500 border-t border-slate-100 pt-2">
           <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" />
           <p>
-            Reflects work <strong>scheduled in Jobber</strong> — won-but-unscheduled work
-            doesn&apos;t appear, so an empty week may not be truly open.
-            {screen === 'lawn' && (
-              <> The lawn pull reaches ~3 weeks, so there is no &quot;booked out to&quot; here —
-              on a recurring route that date would just repeat the horizon.</>
-            )}
-            {' '}
-            {/* Per-scope stamps: the two halves refresh on different
-                cadences, so one "updated" time would misrepresent the other. */}
+            Reflects work <strong>scheduled in Jobber</strong> — won-but-unscheduled work doesn&apos;t
+            appear, so an empty week may not be truly open.{' '}
             {(['projects', 'lawn'] as CapacityScope[]).map(scope => {
               const f = forecasts[scope];
               const label = scope === 'projects' ? 'Projects' : 'Lawn';
               if (!f) return <span key={scope} className="mr-2">{label}: <strong>not pulled yet</strong>.</span>;
-              const old = Date.now() - f.generatedAt > (scope === 'lawn' ? 12 : 6) * 3600 * 1000;
               return (
                 <span key={scope} className="mr-2">
-                  {label} updated {new Date(f.generatedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                  {old && <span className="text-amber-700 font-bold"> (stale)</span>}.
+                  {label} updated {new Date(f.generatedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.
                 </span>
               );
             })}
@@ -648,254 +367,270 @@ export default function CapacityCalendar({
         </div>
       </div>
 
-      {/* Settings, inline. Same editor Manage Resources hosts; this host
-          commits it itself so an admin never has to leave the view whose
-          numbers they're calibrating. */}
       {showSettings && canEditSettings && (
         <div className="space-y-3">
           <CapacitySettingsPanel settings={draft} setSettings={setDraft} isAdmin={isAdmin} />
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={saveSettings}
-              disabled={saving}
-              className="px-4 py-2 text-xs font-black uppercase tracking-widest bg-slate-800 text-white rounded-lg hover:bg-slate-700 disabled:opacity-50"
-            >{saving ? 'Saving…' : 'Save capacity settings'}</button>
-            <button
-              type="button"
-              onClick={() => setShowSettings(false)}
-              className="px-3 py-2 text-xs font-black uppercase tracking-widest text-slate-500 hover:text-slate-800"
-            >Cancel</button>
-            <span className="text-[10px] font-bold text-slate-400">
-              These same values live in Manage Resources → App Settings.
-            </span>
+            <button type="button" onClick={saveSettings} disabled={saving}
+              className="px-4 py-2 text-xs font-black uppercase tracking-widest bg-slate-800 text-white rounded-lg hover:bg-slate-700 disabled:opacity-50">
+              {saving ? 'Saving…' : 'Save capacity settings'}
+            </button>
+            <button type="button" onClick={() => setShowSettings(false)}
+              className="px-3 py-2 text-xs font-black uppercase tracking-widest text-slate-500 hover:text-slate-800">Cancel</button>
+            <span className="text-[10px] font-bold text-slate-400">Also in Manage Resources → App Settings.</span>
           </div>
         </div>
       )}
 
-      {!forecast && (
+      {!hasForecast && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 text-center space-y-2">
           <HelpCircle className="w-6 h-6 text-slate-300 mx-auto" />
           <p className="text-sm font-bold text-slate-700">No forecast pulled yet.</p>
           <p className="text-xs text-slate-500">
-            The forward pull runs on its own schedule through the day.
-            {canRefresh ? ' Hit Refresh to pull it now.' : ' Check back shortly.'}
+            The forward pull runs on its own schedule.{canRefresh ? ' Hit Refresh to pull it now.' : ' Check back shortly.'}
           </p>
         </div>
       )}
 
-      {/* Per-scope health. Truncation is reported against the SCOPE it
-          happened in — "later weeks understated" means something different
-          for a 120-day projects pull than for a 56-day lawn one, and a
-          blanket banner would tar the healthy half with the other's fault. */}
-      {(['projects', 'lawn'] as CapacityScope[]).map(scope => {
-        const f = forecasts[scope];
-        if (!f || (!f.degraded && !f.truncated)) return null;
-        const label = scope === 'projects' ? 'Projects' : 'Lawn';
-        return (
-          <div key={scope} className="bg-amber-50 border border-amber-300 rounded-xl p-3 text-[11px] text-amber-900 space-y-1">
-            {f.degraded && (
-              <p><strong>{label} — reduced pull:</strong> multi-day spans are collapsed onto their start day and client names are missing.</p>
-            )}
-            {f.truncated && (
-              <p>
-                <strong>{label} — coverage ends {f.coveredThrough ? longDate(f.coveredThrough) : 'early'}.</strong>{' '}
-                {f.stoppedForBudget
-                  ? 'The pull stopped to leave Jobber API budget for the performance sync (pay comes first).'
-                  : 'The pull hit its ceiling.'}{' '}
-                Weeks past that date are shown as <strong>not pulled</strong> — they are unknown,
-                not open. Don&apos;t sell into them on the strength of this view.
-              </p>
-            )}
-          </div>
-        );
-      })}
-
-      {/* HEADLINE. Projects gets "booked out to" — the number a salesman says
-          on the phone. Lawn does NOT: the route is recurring, the pull only
-          reaches 21 days, so a booked-out date there would just be reporting
-          the horizon back as if it were a booking depth. Lawn gets the
-          question it actually asks instead — how full is the route. */}
-      {forecast && rows.length > 0 && (
-        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-          {rows.map(row => {
-            const cells = visible.map(({ index }) => row.cells[index]);
-            const booked = round1(cells.reduce((a, c) => a + c.bh, 0));
-            const capacity = cells.reduce((a, c) => a + (c.capacity || 0), 0);
-            const fill = capacity > 0 ? Math.round((booked / capacity) * 100) : null;
-            return (
-              <div key={row.key} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="font-black text-slate-900 truncate">{row.division}</div>
-                  <div className="text-[10px] font-bold text-slate-400">
-                    {row.crews?.length || 0} crew{(row.crews?.length || 0) === 1 ? '' : 's'} ·{' '}
-                    {bh(booked)} booked{capacity > 0 ? ` of ${bh(round1(capacity))}` : ''} in view
-                  </div>
+      {/* ══ TOOL 1: BOOKING ══════════════════════════════════════════════ */}
+      {hasForecast && tool === 'booking' && (
+        <>
+          {/* BOOKED OUT TO — the number said on a phone call, and the most
+              prominent thing on this screen by design. */}
+          <div className="grid gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
+            {visibleRows.map(row => (
+              <div key={row.division} className={`rounded-2xl border-2 shadow-sm p-4 ${row.bookedOutTo ? 'bg-slate-900 border-slate-900 text-white' : 'bg-white border-slate-200'}`}>
+                <div className={`text-[10px] font-black uppercase tracking-widest ${row.bookedOutTo ? 'text-white/60' : 'text-slate-400'}`}>
+                  {row.division} — booked out to
                 </div>
-                {screen === 'lawn' ? (
-                  <div className="rounded-xl border px-3 py-2 bg-slate-900 border-slate-900 text-white text-right">
-                    <div className="text-[9px] font-black uppercase tracking-widest opacity-70">Route fill</div>
-                    <div className="font-black leading-tight text-2xl">
-                      {fill === null ? '—' : `${fill}%`}
+                {row.bookedOutTo ? (
+                  <>
+                    <div className="text-3xl font-black leading-tight mt-0.5">{longDate(row.bookedOutTo)}</div>
+                    <div className="text-[11px] font-bold text-white/60">
+                      week of {row.bookedOutWeek && longDate(row.bookedOutWeek)} · {bh(row.totalBH)} BH booked in view
                     </div>
-                    <div className="text-[10px] font-bold opacity-60">next 2 weeks</div>
-                  </div>
+                  </>
                 ) : (
-                  <BookedOut row={row} big />
+                  <>
+                    <div className="text-3xl font-black leading-tight mt-0.5 text-slate-400">Nothing booked</div>
+                    <div className="text-[11px] font-bold text-slate-400">
+                      {row.declared === null ? 'no weekly capacity declared' : `${bh(row.totalBH)} BH in view`}
+                    </div>
+                  </>
                 )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* The grid */}
-      {forecast && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3 md:p-4 space-y-3 overflow-x-auto">
-          {/* Week header (desktop) */}
-          <div className="hidden md:grid gap-2 pb-1 border-b border-slate-100" style={{ gridTemplateColumns: `minmax(190px, 1.2fr) repeat(${visible.length}, minmax(96px, 1fr))` }}>
-            <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 self-end">Division / crew</div>
-            {visible.map(({ week, index }) => (
-              <div key={week.start} className="text-center">
-                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                  {index === 0 ? 'This week' : `Week ${index + 1}`}
-                </div>
-                <div className="text-sm font-black text-slate-800">{week.rangeLabel}</div>
               </div>
             ))}
           </div>
 
-          {rows.length === 0 && (
-            <p className="text-sm text-slate-500 py-6 text-center">
-              No crews found for this division in the last month of schedules.
-            </p>
-          )}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3 md:p-4 space-y-4 overflow-x-auto">
+            {visibleRows.length === 0 && (
+              <p className="text-sm text-slate-500 py-6 text-center">No divisions to show.</p>
+            )}
+            {visibleRows.map(row => (
+              <div key={row.division} className="space-y-2">
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <span className="font-black text-slate-900">{row.division}</span>
+                  <span className="text-[10px] font-bold text-slate-400">
+                    {row.declared === null
+                      ? 'no weekly capacity declared — showing raw BH'
+                      : `${bh(row.declared)} BH/week declared`}
+                  </span>
+                  {row.declared === null && canEditSettings && (
+                    <button type="button" onClick={openSettings}
+                      className="text-[10px] font-black uppercase tracking-widest text-slate-600 underline hover:text-slate-900">
+                      set it
+                    </button>
+                  )}
+                </div>
+                <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
+                  {booking.weeks.map((week, i) => (
+                    <div key={week.start}>
+                      <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+                        {i === 0 ? 'This week' : week.rangeLabel}
+                      </div>
+                      <BookingWeekCell
+                        cell={row.cells[i]} week={week}
+                        active={!!drill && drill.rowKey === row.division && drill.weekStart === week.start}
+                        onClick={() => setDrill(prev => (prev && prev.rowKey === row.division && prev.weekStart === week.start
+                          ? null : { rowKey: row.division, weekStart: week.start }))}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
 
-          {rows.map(row => (
-            <div key={row.key} className="border-b border-slate-100 last:border-0 pb-3 last:pb-0">
-              {renderRowGrid(row)}
-              {renderRowStack(row)}
-              {expanded[row.key] && (row.crews || []).map(crewRow => (
-                <div key={crewRow.key} className="mt-2">
-                  {renderRowGrid(crewRow, true)}
-                  {renderRowStack(crewRow, true)}
+            {booking.unattributed && division === 'All' && (
+              <div className="space-y-2 border-t border-slate-200 pt-3">
+                <div className="flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                  <span className="text-[10px] font-black uppercase tracking-widest text-amber-700">
+                    Unattributed — {bh(booking.unattributed.totalBH)} BH whose Jobber assignee maps to no division
+                  </span>
+                </div>
+                <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
+                  {booking.weeks.map((week, i) => (
+                    <BookingWeekCell key={week.start}
+                      cell={booking.unattributed!.cells[i]} week={week}
+                      active={!!drill && drill.rowKey === UNATTRIBUTED && drill.weekStart === week.start}
+                      onClick={() => setDrill(prev => (prev && prev.rowKey === UNATTRIBUTED && prev.weekStart === week.start
+                        ? null : { rowKey: UNATTRIBUTED, weekStart: week.start }))}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {drillCell && (
+            <div className="bg-white rounded-2xl border-2 border-slate-800 shadow-lg p-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                    {drillCell.row.division} · week {drillCell.week.rangeLabel}
+                  </div>
+                  <div className="text-xl font-black text-slate-900">
+                    {bh(drillCell.cell.bh)} BH
+                    {drillCell.cell.pct !== null && (
+                      <span className="text-sm font-bold text-slate-500 ml-2">
+                        {drillCell.cell.pct}% of {bh(drillCell.cell.capacity || 0)} declared
+                        {drillCell.cell.band && ` · ${BAND_META[drillCell.cell.band].meaning} — ${BAND_META[drillCell.cell.band].action}`}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <button type="button" onClick={() => setDrill(null)} className="p-1.5 text-slate-400 hover:text-slate-800" aria-label="Close">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <JobList jobs={drillCell.cell.jobs} />
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ══ TOOL 2: SCHEDULE BALANCE ═════════════════════════════════════ */}
+      {hasForecast && tool === 'balance' && (
+        <>
+          {/* Scheduling errors first — this view doubles as a correctness
+              check, and a wrong grid is worth less than knowing it's wrong. */}
+          {balance.issues.length > 0 && (
+            <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 space-y-1">
+              <div className="text-[10px] font-black uppercase tracking-widest text-amber-800 inline-flex items-center gap-1.5">
+                <AlertOctagon className="w-3.5 h-3.5" /> Scheduling issues in this window ({balance.issues.length})
+              </div>
+              {balance.issues.slice(0, 12).map((iss, i) => (
+                <div key={i} className="text-[11px] text-amber-900">
+                  {iss.date && <span className="font-mono text-amber-700">{iss.date} </span>}
+                  {iss.crew && <b>{iss.crew} — </b>}
+                  {iss.detail}
                 </div>
               ))}
+              {balance.issues.length > 12 && (
+                <div className="text-[11px] font-bold text-amber-700">+{balance.issues.length - 12} more</div>
+              )}
+            </div>
+          )}
+
+          {balance.weeks.map((week, wi) => (
+            <div key={week.start} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3 md:p-4 overflow-x-auto">
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+                {wi === 0 ? 'This week' : 'Next week'} — {week.rangeLabel}
+              </div>
+              <table className="w-full text-sm min-w-[720px]">
+                <thead>
+                  <tr className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                    <th className="py-1.5 pr-3 text-left">Crew</th>
+                    {week.days.map(d => (
+                      <th key={d} className="py-1.5 px-1 text-center">{dayLabel(d)}<div className="font-mono text-[9px] text-slate-300">{d.slice(8)}</div></th>
+                    ))}
+                    <th className="py-1.5 pl-2 text-right">Week</th>
+                    <th className="py-1.5 pl-2 text-right">Ceiling</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleCrews.map(crew => {
+                    const w = crew.weeks[wi];
+                    return (
+                      <tr key={crew.key} className={`border-t border-slate-100 ${w.over ? 'bg-red-50' : ''}`}>
+                        <td className="py-1.5 pr-3 text-left whitespace-nowrap">
+                          <div className="font-bold text-slate-800">{crew.label}</div>
+                          <div className="text-[10px] font-bold text-slate-400 inline-flex items-center gap-1">
+                            {w.scheduled
+                              ? <><Users className="w-3 h-3" />{w.headcount} rostered</>
+                              : <span className="text-slate-400">not scheduled</span>}
+                          </div>
+                        </td>
+                        {w.days.map(d => (
+                          <td key={d.date} className="py-1.5 px-1 text-center">
+                            <button
+                              type="button"
+                              onClick={() => setDayDrill(prev => (prev && prev.crewKey === crew.key && prev.date === d.date
+                                ? null : { crewKey: crew.key, date: d.date }))}
+                              className={`w-full rounded px-1 py-1 font-mono text-xs ${d.bh > 0 ? 'font-black text-slate-800 hover:bg-slate-100' : 'text-slate-300'} ${dayDrill?.crewKey === crew.key && dayDrill?.date === d.date ? 'ring-2 ring-slate-800' : ''}`}
+                              title={d.isScheduled ? `${d.rostered} rostered` : 'not scheduled'}
+                            >
+                              {d.bh > 0 ? bh(d.bh) : '·'}
+                              {!d.isScheduled && d.bh > 0 && (
+                                <div className="text-[8px] font-black uppercase text-amber-600">no crew</div>
+                              )}
+                            </button>
+                          </td>
+                        ))}
+                        <td className={`py-1.5 pl-2 text-right font-mono font-black ${w.over ? 'text-red-900' : 'text-slate-800'}`}>
+                          {bh(w.totalBH)}
+                        </td>
+                        <td className="py-1.5 pl-2 text-right whitespace-nowrap">
+                          {w.ceiling === null ? (
+                            <span className="text-[10px] font-bold text-slate-400">not scheduled</span>
+                          ) : w.over ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-red-900 text-white text-[10px] font-black uppercase tracking-widest">
+                              <AlertTriangle className="w-3 h-3" /> Over by {bh(w.overBy)}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-mono text-slate-500">
+                              of {bh(w.ceiling)}{w.ceilingPlaceholder ? '*' : ''}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {visibleCrews.length === 0 && (
+                    <tr><td colSpan={10} className="py-6 text-center text-sm text-slate-500">No crews scheduled in this window.</td></tr>
+                  )}
+                </tbody>
+              </table>
+              <p className="text-[10px] text-slate-400 mt-2">
+                Daily cells are informational; the <b>week total</b> is what&apos;s checked against the
+                ceiling, because the ceiling is a weekly figure. Headcount is the median of the days
+                the crew is rostered, less approved time off. <b>*</b> = placeholder ceiling.
+              </p>
             </div>
           ))}
 
-          {showUnassigned && model.unassigned && (
-            <div className="pt-2 border-t border-slate-200">
-              <div className="flex items-center gap-1.5 mb-1">
-                <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                <span className="text-[10px] font-black uppercase tracking-widest text-amber-700">
-                  Unassigned — scheduled work whose Jobber assignees don&apos;t map to a crew
-                </span>
-              </div>
-              {renderRowGrid(model.unassigned)}
-              {renderRowStack(model.unassigned)}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Drill-down: the jobs behind a week */}
-      {drillCell && (
-        <div className="bg-white rounded-2xl border-2 border-slate-800 shadow-lg p-4 space-y-3">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                Week {drillCell.week.rangeLabel} — {drillCell.row.label}
-              </div>
-              <div className="text-xl font-black text-slate-900">
-                {bh(drillCell.cell.bh)} BH
-                {drillCell.cell.pct !== null && (
-                  <span className="text-sm font-bold text-slate-500 ml-2">
-                    {drillCell.cell.pct}% of {bh(drillCell.cell.capacity || 0)}
-                    {drillCell.cell.band && ` · ${BAND_META[drillCell.cell.band].meaning} — ${BAND_META[drillCell.cell.band].action}`}
-                  </span>
-                )}
-              </div>
-            </div>
-            <button type="button" onClick={() => setDrill(null)} className="p-1.5 text-slate-400 hover:text-slate-800" aria-label="Close">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          {mergeSlices(drillCell.cell.jobs).length === 0 ? (
-            <p className="text-sm text-slate-500">Nothing scheduled in this week.</p>
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {mergeSlices(drillCell.cell.jobs).map(job => (
-                <div key={job.visitId} className="py-2 flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="font-bold text-slate-800 text-sm truncate">
-                      {job.client || 'No client name'}
-                    </div>
-                    <div className="text-xs text-slate-500 truncate">
-                      {job.desc}{job.jobNumber ? ` · #${job.jobNumber}` : ''}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                      <span className="text-[10px] font-bold text-slate-500">
-                        {job.multiDay
-                          ? `${longDate(job.startDate)} → ${longDate(job.endDate)}`
-                          : longDate(job.startDate)}
-                      </span>
-                      {job.multiDay && (
-                        <span className="text-[9px] font-black uppercase tracking-widest bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded">
-                          multi-day · {bh(job.totalRemaining)} BH left
-                        </span>
-                      )}
-                      {job.creditedBH > 0 && (
-                        <span className="text-[9px] font-black uppercase tracking-widest bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded">
-                          {bh(job.creditedBH)} BH already credited
-                        </span>
-                      )}
-                      {job.isHourly && (
-                        <span className="text-[9px] font-black uppercase tracking-widest bg-sky-50 text-sky-700 border border-sky-200 px-1.5 py-0.5 rounded inline-flex items-center gap-0.5">
-                          <Clock className="w-2.5 h-2.5" /> hourly — no forward BH
-                        </span>
-                      )}
-                      {job.untagged && (
-                        <span className="text-[9px] font-black uppercase tracking-widest bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded">
-                          no [BH] tag — load unknown
-                        </span>
-                      )}
-                      {job.inferredCrew && (
-                        <span className="text-[9px] font-black uppercase tracking-widest bg-slate-100 text-slate-500 border border-slate-200 px-1.5 py-0.5 rounded">
-                          crew inferred — day not scheduled yet
-                        </span>
-                      )}
-                    </div>
-                    {job.assigneeNames.length > 0 && (
-                      <div className="text-[10px] text-slate-400 mt-0.5 truncate">{job.assigneeNames.join(', ')}</div>
-                    )}
+          {dayCell && (
+            <div className="bg-white rounded-2xl border-2 border-slate-800 shadow-lg p-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                    {dayCell.crew.label} · {longDate(dayCell.day.date)}
                   </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-lg font-black text-slate-900 tabular-nums">{bh(job.bh)}</div>
-                    <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">BH this week</div>
+                  <div className="text-xl font-black text-slate-900">
+                    {bh(dayCell.day.bh)} BH
+                    <span className="text-sm font-bold text-slate-500 ml-2">
+                      {dayCell.day.isScheduled ? `${dayCell.day.rostered} rostered` : 'crew not scheduled this day'}
+                    </span>
                   </div>
                 </div>
-              ))}
+                <button type="button" onClick={() => setDayDrill(null)} className="p-1.5 text-slate-400 hover:text-slate-800" aria-label="Close">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <JobList jobs={dayCell.day.jobs} />
             </div>
           )}
-          {(drillCell.cell.hourlyCount > 0 || drillCell.cell.untaggedCount > 0) && (
-            <p className="text-[11px] text-slate-500 border-t border-slate-100 pt-2">
-              {drillCell.cell.untaggedCount > 0 && `${drillCell.cell.untaggedCount} scheduled job${drillCell.cell.untaggedCount === 1 ? '' : 's'} carry no [BH] tag and add 0 to this week's number. `}
-              {drillCell.cell.hourlyCount > 0 && `${drillCell.cell.hourlyCount} [hourly] job${drillCell.cell.hourlyCount === 1 ? '' : 's'} have no forward BH by design.`}
-            </p>
-          )}
-        </div>
-      )}
-
-      {forecast && (
-        <div className="flex flex-wrap items-center gap-3 text-[10px] font-bold text-slate-400">
-          <span className="inline-flex items-center gap-1"><TrendingUp className="w-3 h-3" />
-            {bh(model.totals.forwardBH)} BH remaining across {model.totals.visits} scheduled visit{model.totals.visits === 1 ? '' : 's'}
-          </span>
-          {model.totals.untagged > 0 && <span>{model.totals.untagged} untagged</span>}
-          {model.totals.hourly > 0 && <span>{model.totals.hourly} hourly</span>}
-          <span>horizon {monthLabel(model.weeks[0].start)} → {monthLabel(model.weeks[model.weeks.length - 1].start)}</span>
-        </div>
+        </>
       )}
     </div>
   );

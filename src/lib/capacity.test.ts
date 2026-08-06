@@ -1,10 +1,10 @@
-// Tests for the capacity-calendar model.
+// Tests for the two capacity tools.
 //   npx tsx src/lib/capacity.test.ts
 import assert from 'node:assert/strict';
 import {
-  buildWeeks, mondayOf, bandFor, thresholdsOrDefault,
-  buildCapacityModel, capacityCrewKey, mergeSlices, weekCapacityFor,
-  type CapacityContext,
+  buildWeeks, mondayOf, bandFor, thresholdsOrDefault, ceilingFor, declaredFor,
+  assigneeDivisionIndex, buildBookingModel, buildBalanceModel, mergeSlices,
+  forwardSlices,
 } from './capacity';
 import type { AppData, CapacityForecast, CapacityForecastVisit, Crew, Employee, MultiDayJob } from '../types';
 
@@ -16,548 +16,290 @@ const test = (n: string, fn: () => void) => {
 
 // Anchor: Thursday 2026-08-06. Its week starts Monday 2026-08-03.
 const TODAY = '2026-08-06';
+const MON_FRI = ['2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06', '2026-08-07'];
+// Jobber assignee ids behave as ROUTE SLOTS — one per crew-day.
+const LAWN_SLOT = 'slot-lawn-1';
+const PROJ_SLOT = 'slot-proj-1';
 
 const visit = (o: Partial<CapacityForecastVisit>): CapacityForecastVisit => ({
   visitId: 'v', jobId: 'j', jobNumber: '100', desc: 'Job', client: 'Client',
   startDate: TODAY, endDate: TODAY, bh: 10, isHourly: false, untagged: false,
-  assigneeIds: ['a1'], assigneeNames: ['Worker One'], ...o,
+  assigneeIds: [PROJ_SLOT], assigneeNames: ['#1 (SOUTH)'], ...o,
 });
-const forecast = (visits: CapacityForecastVisit[]): CapacityForecast => ({
+const forecast = (visits: CapacityForecastVisit[], o: Partial<CapacityForecast> = {}): CapacityForecast => ({
   generatedAt: 1, generatedBy: 'scheduled', windowStart: '2026-07-16',
   windowEnd: '2026-12-04', today: TODAY, visits,
   stats: { fetched: visits.length, kept: visits.length, completeSkipped: 0, endedBeforeToday: 0, untagged: 0, hourly: 0 },
-  truncated: false, degraded: false, warnings: [],
+  truncated: false, degraded: false, warnings: [], ...o,
 });
-const crew = (division: string, crewNumber: number, assignees: string[], employees: string[]): Crew => ({
+const crew = (division: string, crewNumber: number, slots: string[], employees: string[]): Crew => ({
   id: `c-${division}-${crewNumber}`, division, crewNumber, employees,
-  fleet: [], inventory: [], jobberAssigneeIds: assignees,
+  fleet: [], inventory: [], jobberAssigneeIds: slots,
 });
-const EMPLOYEES: Employee[] = [
-  { id: 'e1', name: 'Worker One', status: 'Active', hasLicense: false, hasClassA: false, hasHeavyMachinery: false, awayDates: [] },
-  { id: 'e2', name: 'Worker Two', status: 'Active', hasLicense: false, hasClassA: false, hasHeavyMachinery: false, awayDates: [] },
-];
-// A NORMAL week: one Large Projects crew of 2, rostered Mon–Fri. Under the
-// person-day rule a fixture must span the week to represent a full crew —
-// a single day is 1/5 of one, which is the whole point of the change.
-const MON_FRI = ['2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06', '2026-08-07'];
+const EMPLOYEES: Employee[] = ['e1', 'e2', 'e3'].map((id, i) => ({
+  id, name: `Worker ${i + 1}`, status: 'Active', hasLicense: false,
+  hasClassA: false, hasHeavyMachinery: false, awayDates: [],
+}));
 const fullWeek = (crews: Crew[]): Record<string, Crew[]> =>
   Object.fromEntries(MON_FRI.map(d => [d, crews]));
-const SCHEDULES: Record<string, Crew[]> = fullWeek([crew('Large Projects', 1, ['a1'], ['e1', 'e2'])]);
-
-const appDataOf = (schedules: Record<string, Crew[]>, employees: Employee[] = EMPLOYEES, dailyAbsences: Record<string, any> = {}): AppData =>
+const SCHEDULES = fullWeek([
+  crew('Large Projects', 1, [PROJ_SLOT], ['e1', 'e2']),
+  crew('Lawn Division', 1, [LAWN_SLOT], ['e3']),
+]);
+const appDataOf = (schedules: Record<string, Crew[]>, employees = EMPLOYEES, dailyAbsences: Record<string, any> = {}): AppData =>
   ({ schedules, employees, dailyAbsences, fleet: [] } as unknown as AppData);
 
-const model = (visits: CapacityForecastVisit[], extra: Partial<Parameters<typeof buildCapacityModel>[0]> = {}) => {
-  const schedules = (extra.schedules as Record<string, Crew[]>) || SCHEDULES;
-  const employees = (extra.employees as Employee[]) || EMPLOYEES;
-  return buildCapacityModel({
-    appData: appDataOf(schedules, employees),
-    forecast: forecast(visits),
-    schedules,
-    employees,
-    multiDayJobs: {},
-    settings: { divisions: { 'Large Projects': { perPersonBH: 50, standardSize: 2 } } },
-    today: TODAY,
-    ...extra,
-  });
+const DECLARED = {
+  declared: { 'Large Projects': { weeklyBH: 100 }, 'Lawn Division': { weeklyBH: 200 } },
+  headcountCeilings: [
+    { headcount: 1, weeklyBH: 40 },
+    { headcount: 2, weeklyBH: 70 },
+    { headcount: 3, weeklyBH: 90 },
+  ],
 };
 
-const cellOf = (m: ReturnType<typeof model>, weekStart: string) => {
-  const div = m.divisions.find(d => d.division === 'Large Projects')!;
-  const i = m.weeks.findIndex(w => w.start === weekStart);
-  return div.cells[i];
+const booking = (visits: CapacityForecastVisit[], extra: any = {}) => buildBookingModel({
+  snapshots: [forecast(visits)], schedules: SCHEDULES, multiDayJobs: {},
+  settings: DECLARED, today: TODAY, ...extra,
+});
+const cellOf = (m: ReturnType<typeof booking>, division: string, weekStart: string) => {
+  const row = m.rows.find(r => r.division === division)!;
+  return row.cells[m.weeks.findIndex(w => w.start === weekStart)];
 };
 
 console.log('\nWeek arithmetic');
-test('mondayOf snaps to Monday (and Sunday goes back 6)', () => {
-  assert.equal(mondayOf('2026-08-06'), '2026-08-03');   // Thursday
-  assert.equal(mondayOf('2026-08-03'), '2026-08-03');   // Monday itself
-  assert.equal(mondayOf('2026-08-09'), '2026-08-03');   // Sunday
-});
-test('buildWeeks walks Mondays with Friday quote-dates', () => {
-  const w = buildWeeks(TODAY, 3);
-  assert.deepEqual(w.map(x => x.start), ['2026-08-03', '2026-08-10', '2026-08-17']);
+test('weeks start Monday and carry a full range label', () => {
+  assert.equal(mondayOf(TODAY), '2026-08-03');
+  const w = buildWeeks(TODAY, 2);
+  assert.equal(w[0].rangeLabel, 'Aug 3 – Aug 9');
+  assert.equal(w[0].days.length, 7);
   assert.equal(w[0].friday, '2026-08-07');
-  assert.equal(w[0].end, '2026-08-09');
 });
 
-console.log('\nThresholds + bands');
-test('seeded bands: <70 under, <90 light, <=110 healthy, >110 over', () => {
+console.log('\nThresholds and ceilings');
+test('bands: <70 under, <90 light, <=110 healthy, >110 over', () => {
   const t = thresholdsOrDefault(undefined);
-  assert.equal(bandFor(0, t), 'under');
   assert.equal(bandFor(69, t), 'under');
   assert.equal(bandFor(70, t), 'light');
-  assert.equal(bandFor(89, t), 'light');
   assert.equal(bandFor(90, t), 'healthy');
   assert.equal(bandFor(110, t), 'healthy');
   assert.equal(bandFor(111, t), 'over');
 });
-test('admin threshold overrides are honoured', () => {
-  const t = thresholdsOrDefault({ thresholds: { underPct: 50, lightPct: 80, healthyPct: 120 } });
-  assert.equal(bandFor(60, t), 'light');
-  assert.equal(bandFor(119, t), 'healthy');
-  assert.equal(bandFor(121, t), 'over');
+test('ceilings are non-linear and read with FLOOR semantics', () => {
+  const c = DECLARED.headcountCeilings;
+  assert.equal(ceilingFor(c, 1).bh, 40);
+  assert.equal(ceilingFor(c, 2).bh, 70);
+  assert.equal(ceilingFor(c, 3).bh, 90);
+  // A solo crew delivers MORE than half a pair — the point of the table.
+  assert.ok(40 > 70 / 2);
+});
+test('a crew bigger than every row takes the top row ("N or more")', () => {
+  assert.equal(ceilingFor(DECLARED.headcountCeilings, 9).bh, 90);
+});
+test('declared capacity is null until management sets it', () => {
+  assert.equal(declaredFor({ declared: { 'Small Projects': { weeklyBH: null } } }, 'Small Projects').bh, null);
+  assert.equal(declaredFor(undefined, 'Small Projects').bh, null);
+  assert.equal(declaredFor(DECLARED, 'Large Projects').bh, 100);
 });
 
-console.log('\nSchedule-derived capacity');
-// A week of Mon-Fri schedule for one Large Projects crew of 4.
-const WEEK = buildWeeks(TODAY, 1)[0];   // Mon 2026-08-03 .. Sun 2026-08-09
-const FOUR = ['e1', 'e2', 'e3', 'e4'];
-const FOUR_EMPLOYEES: Employee[] = FOUR.map((id, i) => ({
-  id, name: `Worker ${i + 1}`, status: 'Active', hasLicense: false,
-  hasClassA: false, hasHeavyMachinery: false, awayDates: [],
-}));
-const weekSchedule = (people: string[]): Record<string, Crew[]> => {
-  const out: Record<string, Crew[]> = {};
-  for (let i = 0; i < 5; i++) {
-    out[buildWeeks(TODAY, 1)[0].start.slice(0, 8) + String(3 + i).padStart(2, '0')] =
-      [crew('Large Projects', 1, ['a1'], people)];
-  }
-  return out;
-};
-const ctxFor = (schedules: Record<string, Crew[]>, employees: Employee[], settings: any, typical?: [string, { size: number; days: number }][]): CapacityContext => ({
-  appData: appDataOf(schedules, employees),
-  settings,
-  typicalSize: new Map(typical || []),
-  testUserIds: new Set(),
+console.log('\nAssignee → division (Tool 1 needs no crew mapping)');
+test('a route slot resolves to its division', () => {
+  const idx = assigneeDivisionIndex(SCHEDULES);
+  assert.equal(idx.get(PROJ_SLOT), 'Large Projects');
+  assert.equal(idx.get(LAWN_SLOT), 'Lawn Division');
 });
-const PER35 = { divisions: { 'Large Projects': { perPersonBH: 35 } } };
-
-test('SCHEDULED basis: people actually on the crew that week × BH/person', () => {
-  const ctx = ctxFor(weekSchedule(FOUR), FOUR_EMPLOYEES, PER35);
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  assert.equal(c.basis, 'scheduled');
-  assert.equal(c.headcount, 4);
-  assert.equal(c.bh, 140);
-  assert.match(c.label, /scheduled: 4 people × 35 = 140/);
-});
-
-test('ROTATION no longer inflates: person-days, not distinct people', () => {
-  // A+B Monday, C+D Tuesday. The union said 4 people; the truth is 4
-  // person-days = 0.8 of a person-week.
-  const schedules: Record<string, Crew[]> = {
-    '2026-08-03': [crew('Large Projects', 1, ['a1'], ['e1', 'e2'])],
-    '2026-08-04': [crew('Large Projects', 1, ['a1'], ['e3', 'e4'])],
+test('a slot that MOVES between crews inside one division still resolves', () => {
+  // The exact failure the crew-level model tripped on: same slot, two crews.
+  const sched: Record<string, Crew[]> = {
+    '2026-08-03': [crew('Large Projects', 1, [PROJ_SLOT], ['e1'])],
+    '2026-08-04': [crew('Large Projects', 2, [PROJ_SLOT], ['e2'])],
   };
-  const ctx = ctxFor(schedules, FOUR_EMPLOYEES, PER35);
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  assert.equal(c.headcount, 4, 'four distinct people did work');
-  assert.equal(c.effectivePeople, 0.8, 'but only 4 person-days = 0.8 person-weeks');
-  assert.equal(c.bh, 28);
-  assert.equal(c.rosteredWeekdays, 2);
-  assert.match(c.label, /2 of 5 days rostered/);
+  assert.equal(assigneeDivisionIndex(sched).get(PROJ_SLOT), 'Large Projects');
+});
+test('division is decided by MODE, so one odd day cannot reassign a route', () => {
+  const sched: Record<string, Crew[]> = { ...fullWeek([crew('Lawn Division', 1, [LAWN_SLOT], ['e3'])]) };
+  sched['2026-08-08'] = [crew('Large Projects', 3, [LAWN_SLOT], ['e1'])];  // one stray day
+  assert.equal(assigneeDivisionIndex(sched).get(LAWN_SLOT), 'Lawn Division');
 });
 
-test('ROSTER and TIME OFF compose: rostered 3 days, off 1 of them = 0.4', () => {
-  const schedules: Record<string, Crew[]> = {
-    '2026-08-03': [crew('Large Projects', 1, ['a1'], ['e1'])],
-    '2026-08-04': [crew('Large Projects', 1, ['a1'], ['e1'])],
-    '2026-08-05': [crew('Large Projects', 1, ['a1'], ['e1'])],
-  };
-  const employees = FOUR_EMPLOYEES.map(e => e.id === 'e1'
-    ? { ...e, awayDates: [{ start: '2026-08-05', end: '2026-08-05' }] } : e);
-  const ctx = ctxFor(schedules, employees, PER35);
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  assert.equal(c.effectivePeople, 0.4, '3 rostered - 1 off = 2 person-days / 5');
-  assert.equal(c.bh, 14);
-  assert.match(c.label, /3 of 5 days rostered/);
-  assert.match(c.label, /1 booked off/);
+console.log('\nTOOL 1 — Booking');
+test('booked BH lands on its division and is measured against the declared number', () => {
+  const m = booking([visit({ visitId: 'v1', bh: 70 })]);
+  const c = cellOf(m, 'Large Projects', '2026-08-03');
+  assert.equal(c.bh, 70);
+  assert.equal(c.capacity, 100);
+  assert.equal(c.pct, 70);
+  assert.equal(c.band, 'light');
 });
-
-test('a full Mon-Fri crew is unchanged by the person-day rule', () => {
-  const ctx = ctxFor(weekSchedule(FOUR), FOUR_EMPLOYEES, PER35);
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  assert.equal(c.effectivePeople, 4);
-  assert.equal(c.bh, 140);
-  assert.doesNotMatch(c.label, /days rostered/, 'a full week says nothing extra');
-});
-
-test('weekend work adds capacity above a full week rather than vanishing', () => {
-  const schedules = weekSchedule(FOUR);
-  schedules['2026-08-08'] = [crew('Large Projects', 1, ['a1'], ['e1'])];  // Saturday
-  const ctx = ctxFor(schedules, FOUR_EMPLOYEES, PER35);
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  assert.equal(c.effectivePeople, 4.2);
-  assert.match(c.label, /\+1 weekend day/);
-});
-
-test('a partially-built week is FLAGGED against the crew own norm', () => {
-  // Week 1 fully built, week 2 only two days in.
-  const schedules = weekSchedule(FOUR);
-  schedules['2026-08-10'] = [crew('Large Projects', 1, ['a1'], FOUR)];
-  schedules['2026-08-11'] = [crew('Large Projects', 1, ['a1'], FOUR)];
-  const m = buildCapacityModel({
-    appData: appDataOf(schedules, FOUR_EMPLOYEES),
-    forecast: forecast([]), schedules, employees: FOUR_EMPLOYEES, multiDayJobs: {},
-    settings: PER35, today: TODAY,
+test('no declared number → raw BH, no percentage, no band', () => {
+  const m = buildBookingModel({
+    snapshots: [forecast([visit({ visitId: 'v2', bh: 70 })])], schedules: SCHEDULES,
+    multiDayJobs: {}, settings: { declared: { 'Large Projects': { weeklyBH: null } } }, today: TODAY,
   });
-  const row = m.divisions.find(d => d.division === 'Large Projects')!.crews![0];
-  assert.equal(row.cells[0].partialRoster, false, 'the full week is not flagged');
-  assert.equal(row.cells[1].partialRoster, true, 'the half-built week is');
-  assert.equal(row.cells[1].rosteredWeekdays, 2);
+  const c = cellOf(m, 'Large Projects', '2026-08-03');
+  assert.equal(c.bh, 70);
+  assert.equal(c.capacity, null);
+  assert.equal(c.pct, null);
+  assert.equal(c.band, null);
 });
-
-test('APPROVED TIME OFF reduces capacity proportionally (2 of 5 days = 40%)', () => {
-  // Worker 1 booked off Wed + Thu of this week.
-  const employees = FOUR_EMPLOYEES.map(e => e.id === 'e1'
-    ? { ...e, awayDates: [{ start: '2026-08-05', end: '2026-08-06' }] } : e);
-  const ctx = ctxFor(weekSchedule(FOUR), employees, PER35);
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  // 3 full people + 1 at 3/5 = 3.6 → 126 BH.
-  assert.equal(c.effectivePeople, 3.6);
-  assert.equal(c.bh, 126);
-  assert.equal(c.headcount, 4, 'headcount still counts the person');
-  assert.match(c.label, /3\.6 people \(1 booked off/);
-  // Full strength is unchanged — that gap is the whole point of the display.
-  assert.equal(c.fullStrengthBH, 140);
+test('work whose assignee maps nowhere lands in ONE visible Unattributed row', () => {
+  const m = booking([visit({ visitId: 'v3', assigneeIds: ['ghost'], bh: 25 })]);
+  assert.ok(m.unattributed, 'expected an Unattributed row');
+  assert.equal(m.unattributed!.cells[0].bh, 25);
+  assert.equal(m.unattributed!.declared, null);
 });
-
-test('a DAY-OF absence counts the same as booked-off time', () => {
-  const schedules = weekSchedule(FOUR);
-  const ctx: CapacityContext = {
-    appData: appDataOf(schedules, FOUR_EMPLOYEES, { '2026-08-04': ['e2'] }),
-    settings: PER35, typicalSize: new Map(), testUserIds: new Set(),
-  };
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  assert.equal(c.effectivePeople, 3.8);
-  assert.equal(c.bh, 133);
-});
-
-test('PROJECTED basis for a week the schedule does not reach', () => {
-  const settings = { divisions: { 'Large Projects': { perPersonBH: 35, standardSize: 4 } } };
-  const ctx = ctxFor({}, FOUR_EMPLOYEES, settings);
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  assert.equal(c.basis, 'projected');
-  assert.equal(c.bh, 140);
-  assert.match(c.label, /projected: 4 people \(set\) × 35 = 140 \(beyond schedule\)/);
-});
-
-test('projection falls back to the INFERRED size when none configured, and labels it', () => {
-  const ctx = ctxFor({}, FOUR_EMPLOYEES, PER35, [[capacityCrewKey('Large Projects', 1), { size: 3, days: 14 }]]);
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  assert.equal(c.basis, 'projected');
-  assert.equal(c.bh, 105);
-  assert.equal(c.standardSizeSource, 'inferred');
-  assert.match(c.label, /inferred, median of 14 past scheduled days/);
-});
-
-test('a crew BH/person override beats the division default', () => {
-  const settings = {
-    divisions: { 'Large Projects': { perPersonBH: 35 } },
-    crews: { [capacityCrewKey('Large Projects', 1)]: { perPersonBH: 40 } },
-  };
-  const ctx = ctxFor(weekSchedule(FOUR), FOUR_EMPLOYEES, settings);
-  assert.equal(weekCapacityFor(ctx, 'Large Projects', 1, WEEK).bh, 160);
-});
-
-test('no BH/person set → no capacity at all (no bar, no percentage)', () => {
-  const ctx = ctxFor(weekSchedule(FOUR), FOUR_EMPLOYEES, { divisions: {} });
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  assert.equal(c.bh, null);
-  assert.equal(c.basis, 'none');
-});
-
-test('V1: a manual figure does NOT override a scheduled week', () => {
-  // Both a legacy flat total AND a standard size are configured, and the
-  // week has a real roster. The roster wins.
-  const settings = {
-    divisions: { 'Large Projects': { perPersonBH: 35, weeklyBH: 999, standardSize: 10 } },
-  };
-  const ctx = ctxFor(weekSchedule(FOUR), FOUR_EMPLOYEES, settings);
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  assert.equal(c.basis, 'scheduled');
-  assert.equal(c.bh, 140, '4 scheduled people x 35, not the manual 999 or 10x35');
-});
-
-test('V2: a week beyond the schedule falls back and says "projected"', () => {
-  const settings = { divisions: { 'Large Projects': { perPersonBH: 35, standardSize: 4 } } };
-  const ctx = ctxFor(weekSchedule(FOUR), FOUR_EMPLOYEES, settings);
-  const next = buildWeeks(TODAY, 2)[1];   // no schedule built for it
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, next);
-  assert.equal(c.basis, 'projected');
-  assert.equal(c.bh, 140);
-  assert.match(c.label, /projected: 4 people \(set\) × 35 = 140 \(beyond schedule\)/);
-});
-
-test('V4: an explicitly set standard size beats the inference', () => {
-  const ctx = ctxFor({}, FOUR_EMPLOYEES, { divisions: { 'Large Projects': { perPersonBH: 35, standardSize: 5 } } },
-    [[capacityCrewKey('Large Projects', 1), { size: 2, days: 12 }]]);
-  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
-  assert.equal(c.standardSize, 5);
-  assert.equal(c.standardSizeSource, 'set');
-  assert.equal(c.bh, 175);
-});
-
-test('changing BH/person recomputes capacity with no other input changing', () => {
-  const sched = weekSchedule(FOUR);
-  const at = (rate: number) => weekCapacityFor(
-    ctxFor(sched, FOUR_EMPLOYEES, { divisions: { 'Large Projects': { perPersonBH: rate } } }),
-    'Large Projects', 1, WEEK).bh;
-  assert.equal(at(30), 120);
-  assert.equal(at(35), 140);
-  assert.equal(at(40), 160);
-});
-
-test('V3: a thin FUTURE day no longer skews the inferred size', () => {
-  // Four weeks of 4-person history, then next Tuesday roughed in with 2.
-  // The old "latest non-zero wins" returned 2; the median of past days is 4.
-  const schedules: Record<string, Crew[]> = {};
-  for (let d = 6; d <= 30; d++) {
-    const day = `2026-07-${String(d).padStart(2, '0')}`;
-    schedules[day] = [crew('Small Projects', 1, ['a1'], FOUR)];
-  }
-  for (let d = 1; d <= 5; d++) {
-    schedules[`2026-08-0${d}`] = [crew('Small Projects', 1, ['a1'], FOUR)];
-  }
-  schedules['2026-08-11'] = [crew('Small Projects', 1, ['a1'], ['e1', 'e2'])];  // future, thin
-  const m = buildCapacityModel({
-    appData: appDataOf(schedules, FOUR_EMPLOYEES),
-    forecast: forecast([]), schedules, employees: FOUR_EMPLOYEES, multiDayJobs: {},
-    settings: { divisions: { 'Small Projects': { perPersonBH: 35 } } }, today: TODAY,
-  });
-  const div = m.divisions.find(d2 => d2.division === 'Small Projects')!;
-  assert.equal(div.crews![0].crewSize, 4, 'inference must ignore the thin future day');
-});
-
-console.log('\nForward load');
-test('single-day visit lands entirely in its own week', () => {
-  const m = model([visit({ visitId: 'v1', bh: 40 })]);
-  assert.equal(cellOf(m, '2026-08-03').bh, 40);
-  assert.equal(cellOf(m, '2026-08-10').bh, 0);
-  assert.equal(cellOf(m, '2026-08-03').pct, 40);
-  assert.equal(cellOf(m, '2026-08-03').band, 'under');
-});
-test('multi-day visit spreads across the weeks it spans, not the start date', () => {
-  // Thu Aug 6 → Wed Aug 12: 4 days in week Aug 3, 3 days in week Aug 10.
-  const m = model([visit({ visitId: 'v2', startDate: '2026-08-06', endDate: '2026-08-12', bh: 70 })]);
-  assert.equal(cellOf(m, '2026-08-03').bh, 40);
-  assert.equal(cellOf(m, '2026-08-10').bh, 30);
+test('multi-day work spreads across the weeks it spans', () => {
+  // Thu Aug 6 → Wed Aug 12: 4 days this week, 3 next.
+  const m = booking([visit({ visitId: 'v4', startDate: '2026-08-06', endDate: '2026-08-12', bh: 70 })]);
+  assert.equal(cellOf(m, 'Large Projects', '2026-08-03').bh, 40);
+  assert.equal(cellOf(m, 'Large Projects', '2026-08-10').bh, 30);
 });
 test('already-credited BH is excluded — only the remainder is booked', () => {
   const ledger: MultiDayJob = {
-    jobberVisitId: 'v3', jobberJobId: 'j', jobberJobNumber: 1, title: 'Big job',
+    jobberVisitId: 'v5', jobberJobId: 'j', jobberJobNumber: 1, title: 'Big',
     totalBH: 100, isLawnJob: false, manualOverride: false, status: 'in_progress',
     firstSeenAt: 1,
-    completionHistory: [
-      { targetDate: '2026-08-04', percentComplete: 60, creditedBH: 60, crewId: 'c', markedAt: 1, markedBy: 'x', markedByName: 'X', isRetroactive: false },
-    ],
+    completionHistory: [{ targetDate: '2026-08-04', percentComplete: 60, creditedBH: 60, crewId: 'c', markedAt: 1, markedBy: 'x', markedByName: 'X', isRetroactive: false }],
   };
-  const m = model(
-    [visit({ visitId: 'v3', startDate: '2026-08-06', endDate: '2026-08-07', bh: 100 })],
-    { multiDayJobs: { v3: ledger } },
-  );
-  // 100 total − 60 credited = 40 remaining, both days inside week Aug 3.
-  assert.equal(cellOf(m, '2026-08-03').bh, 40);
-  assert.equal(cellOf(m, '2026-08-03').jobs[0].creditedBH, 60);
+  const m = booking([visit({ visitId: 'v5', bh: 100 })], { multiDayJobs: { v5: ledger } });
+  assert.equal(cellOf(m, 'Large Projects', '2026-08-03').bh, 40);
 });
-test('a fully credited (complete) ledger contributes nothing', () => {
+test('BOOKED OUT TO quotes the Friday of the last meaningfully-loaded week', () => {
+  const m = booking([
+    visit({ visitId: 'a', startDate: '2026-08-06', endDate: '2026-08-06', bh: 90 }),
+    visit({ visitId: 'b', startDate: '2026-08-12', endDate: '2026-08-12', bh: 80 }),
+    visit({ visitId: 'c', startDate: '2026-08-19', endDate: '2026-08-19', bh: 5 }),  // thin
+  ]);
+  const row = m.rows.find(r => r.division === 'Large Projects')!;
+  assert.equal(row.bookedOutWeek, '2026-08-10');
+  assert.equal(row.bookedOutTo, '2026-08-14');
+});
+test('a week the pull never reached is UNCOVERED — never an open week', () => {
+  const m = buildBookingModel({
+    snapshots: [forecast([visit({ visitId: 'v6', bh: 50 })], { coveredThrough: '2026-08-16', truncated: true })],
+    schedules: SCHEDULES, multiDayJobs: {}, settings: DECLARED, today: TODAY,
+  });
+  const row = m.rows.find(r => r.division === 'Large Projects')!;
+  assert.equal(row.cells[0].uncovered, false);
+  assert.equal(row.cells[2].uncovered, true);
+  assert.equal(row.cells[2].pct, null);
+  assert.equal(row.cells[2].band, null);
+});
+test('a division whose scope was never pulled reads uncovered, not empty', () => {
+  const m = buildBookingModel({
+    snapshots: [forecast([], { scope: 'projects', coveredThrough: '2026-12-01' })],
+    schedules: SCHEDULES, multiDayJobs: {}, settings: DECLARED, today: TODAY,
+  });
+  const lawn = m.rows.find(r => r.division === 'Lawn Division')!;
+  assert.equal(lawn.cells[0].uncovered, true);
+});
+
+console.log('\nTOOL 2 — Schedule balance');
+const balance = (visits: CapacityForecastVisit[], schedules = SCHEDULES, employees = EMPLOYEES, absences = {}) =>
+  buildBalanceModel({
+    snapshots: [forecast(visits)], appData: appDataOf(schedules, employees, absences),
+    multiDayJobs: {}, settings: DECLARED, today: TODAY,
+  });
+
+test('covers the current and next week only', () => {
+  const m = balance([]);
+  assert.equal(m.weeks.length, 2);
+  assert.equal(m.weeks[0].start, '2026-08-03');
+  assert.equal(m.weeks[1].start, '2026-08-10');
+});
+test('WEEK TOTAL is what trips the ceiling, not a daily figure', () => {
+  // 80 BH on one day for a 2-person crew: ceiling 70 → over by 10 on the
+  // WEEK, with no daily derivation applied anywhere.
+  const m = balance([visit({ visitId: 'v7', bh: 80 })]);
+  const c = m.crews.find(x => x.key === 'Large Projects#1')!;
+  assert.equal(c.weeks[0].totalBH, 80);
+  assert.equal(c.weeks[0].headcount, 2);
+  assert.equal(c.weeks[0].ceiling, 70);
+  assert.equal(c.weeks[0].over, true);
+  assert.equal(c.weeks[0].overBy, 10);
+});
+test('under the ceiling is normal — no over flag', () => {
+  const m = balance([visit({ visitId: 'v8', bh: 50 })]);
+  const c = m.crews.find(x => x.key === 'Large Projects#1')!;
+  assert.equal(c.weeks[0].over, false);
+  assert.equal(c.weeks[0].overBy, 0);
+});
+test('approved time off lowers headcount, which can lower the ceiling', () => {
+  const employees = EMPLOYEES.map(e => e.id === 'e2'
+    ? { ...e, awayDates: [{ start: '2026-08-03', end: '2026-08-07' }] } : e);
+  const m = balance([visit({ visitId: 'v9', bh: 50 })], SCHEDULES, employees);
+  const c = m.crews.find(x => x.key === 'Large Projects#1')!;
+  assert.equal(c.weeks[0].headcount, 1, 'one of the two is off all week');
+  assert.equal(c.weeks[0].ceiling, 40);
+  assert.equal(c.weeks[0].over, true, '50 booked against a 40 ceiling');
+});
+test('an unrostered week says "not scheduled" rather than projecting', () => {
+  const m = balance([]);
+  const c = m.crews.find(x => x.key === 'Large Projects#1')!;
+  assert.equal(c.weeks[1].scheduled, false);
+  assert.equal(c.weeks[1].headcount, null);
+  assert.equal(c.weeks[1].ceiling, null);
+  assert.equal(c.weeks[1].over, false);
+});
+test('daily cells carry the day BH for context', () => {
+  const m = balance([visit({ visitId: 'v10', bh: 30, startDate: '2026-08-06', endDate: '2026-08-06' })]);
+  const c = m.crews.find(x => x.key === 'Large Projects#1')!;
+  const day = c.weeks[0].days.find(d => d.date === '2026-08-06')!;
+  assert.equal(day.bh, 30);
+  assert.equal(day.rostered, 2);
+  assert.equal(day.isScheduled, true);
+});
+
+console.log('\nScheduling errors surfaced');
+test('an unmapped crew-day is reported', () => {
+  const sched = fullWeek([crew('Small Projects', 9, [], ['e1'])]);   // no slots
+  const m = balance([], sched);
+  const issues = m.issues.filter(i => i.kind === 'unmapped_crew_day');
+  assert.ok(issues.length >= 1);
+  assert.match(issues[0].detail, /No Jobber assignee/);
+});
+test('work matching no crew is reported with its assignee and BH', () => {
+  const m = balance([visit({ visitId: 'v11', assigneeIds: ['ghost'], assigneeNames: ['#9 (NORTH)'], bh: 20 })]);
+  const iss = m.issues.find(i => i.kind === 'unassigned_work')!;
+  assert.ok(iss, 'expected an unassigned_work issue');
+  assert.match(iss.detail, /#9 \(NORTH\)/);
+  assert.equal(m.unassignedBH, 20);
+});
+test('one assignee on two crews the SAME day is reported', () => {
+  const sched = fullWeek([
+    crew('Large Projects', 1, [PROJ_SLOT], ['e1']),
+    crew('Large Projects', 2, [PROJ_SLOT], ['e2']),   // same slot, same day
+  ]);
+  const m = balance([], sched);
+  const iss = m.issues.filter(i => i.kind === 'duplicate_assignee');
+  assert.ok(iss.length >= 1);
+  assert.match(iss[0].detail, /2 crews the same day/);
+});
+
+console.log('\nShared plumbing');
+test('forward slices exclude a completed ledger entirely', () => {
   const ledger: MultiDayJob = {
-    jobberVisitId: 'v4', jobberJobId: 'j', jobberJobNumber: 1, title: 'Done',
+    jobberVisitId: 'done', jobberJobId: 'j', jobberJobNumber: 1, title: 'Done',
     totalBH: 50, isLawnJob: false, manualOverride: false, status: 'complete',
     firstSeenAt: 1, completionHistory: [],
   };
-  const m = model([visit({ visitId: 'v4', bh: 50 })], { multiDayJobs: { v4: ledger } });
-  assert.equal(cellOf(m, '2026-08-03').bh, 0);
+  const slices = forwardSlices([forecast([visit({ visitId: 'done', bh: 50 })])], { done: ledger }, TODAY);
+  assert.equal(slices.length, 0);
 });
-test('an in-flight multi-day job started before today books only its remaining days', () => {
-  // Started Mon Aug 3, runs to Fri Aug 7 → only Aug 6 + Aug 7 are ahead.
-  const m = model([visit({ visitId: 'v5', startDate: '2026-08-03', endDate: '2026-08-07', bh: 20 })]);
-  assert.equal(cellOf(m, '2026-08-03').bh, 20);
-  assert.equal(cellOf(m, '2026-08-03').jobs[0].totalRemaining, 20);
+test('mergeSlices sums a visit that contributed more than once', () => {
+  const slices = forwardSlices([forecast([visit({ visitId: 'm1', startDate: '2026-08-06', endDate: '2026-08-07', bh: 20 })])], {}, TODAY);
+  assert.equal(slices.length, 2);
+  assert.equal(mergeSlices(slices).length, 1);
+  assert.equal(mergeSlices(slices)[0].bh, 20);
 });
-test('hourly + untagged visits carry 0 BH but are counted, not hidden', () => {
-  const m = model([
-    visit({ visitId: 'v6', bh: 0, isHourly: true }),
-    visit({ visitId: 'v7', bh: 0, untagged: true }),
-  ]);
-  const c = cellOf(m, '2026-08-03');
-  assert.equal(c.bh, 0);
-  assert.equal(c.hourlyCount, 1);
-  assert.equal(c.untaggedCount, 1);
-});
-test('unmatched assignees land in an Unassigned row, never dropped', () => {
-  const m = model([visit({ visitId: 'v8', assigneeIds: ['ghost'], bh: 25 })]);
-  assert.ok(m.unassigned, 'expected an unassigned row');
-  const i = m.weeks.findIndex(w => w.start === '2026-08-03');
-  assert.equal(m.unassigned!.cells[i].bh, 25);
-});
-test('a scheduled crew with no forward work still shows as an empty row', () => {
-  const m = model([]);
-  const div = m.divisions.find(d => d.division === 'Large Projects')!;
-  assert.equal(div.crews!.length, 1);
-  assert.equal(div.crews![0].cells[0].bh, 0);
-  assert.equal(div.crews![0].cells[0].band, 'under');
-});
-
-console.log('\nBooked out to');
-test('quotes the Friday of the last week at or above the underbooked line', () => {
-  const m = model([
-    visit({ visitId: 'v9', startDate: '2026-08-06', endDate: '2026-08-06', bh: 90 }),
-    visit({ visitId: 'v10', startDate: '2026-08-12', endDate: '2026-08-12', bh: 80 }),
-    visit({ visitId: 'v11', startDate: '2026-08-19', endDate: '2026-08-19', bh: 10 }),  // 10% — thin
-  ]);
-  const div = m.divisions.find(d => d.division === 'Large Projects')!;
-  assert.equal(div.bookedOutWeek, '2026-08-10');
-  assert.equal(div.bookedOutTo, '2026-08-14');
-});
-test('with no capacity set, any scheduled BH counts as booked', () => {
-  const m = model(
-    [visit({ visitId: 'v12', startDate: '2026-08-19', endDate: '2026-08-19', bh: 3 })],
-    { settings: {} },
-  );
-  const div = m.divisions.find(d => d.division === 'Large Projects')!;
-  assert.equal(div.cells[0].capacity, null);
-  assert.equal(div.cells[0].pct, null);
-  assert.equal(div.bookedOutWeek, '2026-08-17');
-});
-test('nothing booked → no booked-out date at all', () => {
-  const m = model([]);
-  assert.equal(m.divisions[0].bookedOutTo, null);
-});
-
-console.log('\nDivision rollup');
-test('division capacity sums its crews and flags partial coverage', () => {
-  const schedules = fullWeek([
-    crew('Lawn Division', 1, ['a1'], ['e1', 'e2']),
-    crew('Lawn Division', 2, ['a2'], ['e1']),
-  ]);
-  const m = buildCapacityModel({
-    appData: appDataOf(schedules), forecast: forecast([]), schedules, employees: EMPLOYEES, multiDayJobs: {},
-    settings: { crews: { [capacityCrewKey('Lawn Division', 1)]: { perPersonBH: 35, standardSize: 2 } } },
-    today: TODAY,
+test('the two scope snapshots merge, newest winning per visit', () => {
+  const older = forecast([visit({ visitId: 'x', bh: 10 })], { generatedAt: 1 });
+  const newer = forecast([visit({ visitId: 'x', bh: 40 })], { generatedAt: 99 });
+  const m = buildBookingModel({
+    snapshots: [older, newer], schedules: SCHEDULES, multiDayJobs: {},
+    settings: DECLARED, today: TODAY,
   });
-  const div = m.divisions.find(d => d.division === 'Lawn Division')!;
-  assert.equal(div.capacity, 70);
-  assert.equal(div.capacityPartial, true);
-});
-test('multi-crew visits split evenly and the drill-down merges the slices', () => {
-  const schedules: Record<string, Crew[]> = {
-    [TODAY]: [
-      crew('Lawn Division', 1, ['a1'], ['e1']),
-      crew('Lawn Division', 2, ['a2'], ['e2']),
-    ],
-  };
-  const m = buildCapacityModel({
-    appData: appDataOf(schedules),
-    forecast: forecast([visit({ visitId: 'v13', assigneeIds: ['a1', 'a2'], bh: 30 })]),
-    schedules, employees: EMPLOYEES, multiDayJobs: {},
-    settings: { divisions: { 'Lawn Division': { perPersonBH: 50, standardSize: 1 } } }, today: TODAY,
-  });
-  const div = m.divisions.find(d => d.division === 'Lawn Division')!;
-  assert.equal(div.crews![0].cells[0].bh, 15);
-  assert.equal(div.crews![1].cells[0].bh, 15);
-  assert.equal(div.cells[0].bh, 30);
-  assert.equal(mergeSlices(div.cells[0].jobs).length, 1);
-  assert.equal(mergeSlices(div.cells[0].jobs)[0].bh, 30);
-});
-
-console.log('\nWeek range labels');
-test('weeks are labelled with their FULL range, weekends included', () => {
-  const w = buildWeeks(TODAY, 2);
-  assert.equal(w[0].rangeLabel, 'Aug 3 – Aug 9');
-  assert.equal(w[1].rangeLabel, 'Aug 10 – Aug 16');
-  // The range must cover Saturday and Sunday — weekend work is counted in
-  // the week's BH, so the label has to say so.
-  assert.equal(w[0].end, '2026-08-09');
-});
-
-console.log('\nScope snapshots');
-test('projects + lawn snapshots merge into one model', () => {
-  const projects = forecast([visit({ visitId: 'p1', bh: 20 })]);
-  const lawn = { ...forecast([visit({ visitId: 'l1', bh: 15 })]), generatedAt: 2, scope: 'lawn' as const };
-  const m = buildCapacityModel({
-    appData: appDataOf(SCHEDULES), forecasts: [projects, lawn], schedules: SCHEDULES, employees: EMPLOYEES,
-    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { perPersonBH: 50, standardSize: 2 } } }, today: TODAY,
-  });
-  assert.equal(cellOf(m, '2026-08-03').bh, 35);
-  assert.equal(m.totals.visits, 2);
-});
-test('a visit present in BOTH scope documents is counted once', () => {
-  const a = forecast([visit({ visitId: 'dup', bh: 20 })]);
-  const b = { ...forecast([visit({ visitId: 'dup', bh: 20 })]), generatedAt: 99 };
-  const m = buildCapacityModel({
-    appData: appDataOf(SCHEDULES), forecasts: [a, b], schedules: SCHEDULES, employees: EMPLOYEES,
-    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { perPersonBH: 50, standardSize: 2 } } }, today: TODAY,
-  });
-  assert.equal(cellOf(m, '2026-08-03').bh, 20);
-  assert.equal(m.totals.visits, 1);
-});
-test('one scope alone still renders (the other simply absent)', () => {
-  const m = buildCapacityModel({
-    appData: appDataOf(SCHEDULES),
-    forecasts: [null, forecast([visit({ visitId: 'l1', bh: 12 })])],
-    schedules: SCHEDULES, employees: EMPLOYEES, multiDayJobs: {},
-    settings: { divisions: { 'Large Projects': { perPersonBH: 50, standardSize: 2 } } }, today: TODAY,
-  });
-  assert.equal(cellOf(m, '2026-08-03').bh, 12);
-});
-test('newer snapshot wins for a visit whose BH changed between pulls', () => {
-  const older = { ...forecast([visit({ visitId: 'v', bh: 10 })]), generatedAt: 1 };
-  const newer = { ...forecast([visit({ visitId: 'v', bh: 40 })]), generatedAt: 500 };
-  const m = buildCapacityModel({
-    appData: appDataOf(SCHEDULES), forecasts: [older, newer], schedules: SCHEDULES, employees: EMPLOYEES,
-    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { perPersonBH: 50, standardSize: 2 } } }, today: TODAY,
-  });
-  assert.equal(cellOf(m, '2026-08-03').bh, 40);
-});
-
-console.log('\nCoverage — weeks the pull never reached');
-const covered = (through: string) => ({
-  ...forecast([visit({ visitId: 'c1', bh: 50 })]), coveredThrough: through, truncated: true,
-});
-test('a week past coverage is UNCOVERED, not an empty open week', () => {
-  const m = buildCapacityModel({
-    appData: appDataOf(SCHEDULES), forecasts: [covered('2026-08-16')], schedules: SCHEDULES, employees: EMPLOYEES,
-    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { perPersonBH: 50, standardSize: 2 } } }, today: TODAY,
-  });
-  const div = m.divisions.find(d => d.division === 'Large Projects')!;
-  const wk3 = m.weeks.findIndex(w => w.start === '2026-08-17');
-  assert.equal(div.cells[0].uncovered, false);
-  assert.equal(div.cells[wk3].uncovered, true);
-  // The dangerous case: an uncovered week must carry NO percentage and NO
-  // band, or it renders as "underbooked — sell into it".
-  assert.equal(div.cells[wk3].pct, null);
-  assert.equal(div.cells[wk3].band, null);
-});
-test('booked-out never quotes a date from an uncovered week', () => {
-  const m = buildCapacityModel({
-    appData: appDataOf(SCHEDULES), forecasts: [covered('2026-08-16')], schedules: SCHEDULES, employees: EMPLOYEES,
-    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { perPersonBH: 50, standardSize: 2 } } }, today: TODAY,
-  });
-  const div = m.divisions.find(d => d.division === 'Large Projects')!;
-  assert.ok(div.bookedOutWeek === null || div.bookedOutWeek <= '2026-08-16');
-});
-test('a complete pull marks nothing uncovered', () => {
-  const full = { ...forecast([visit({ visitId: 'f1', bh: 50 })]), coveredThrough: '2026-12-01' };
-  const m = buildCapacityModel({
-    appData: appDataOf(SCHEDULES), forecasts: [full], schedules: SCHEDULES, employees: EMPLOYEES,
-    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { perPersonBH: 50, standardSize: 2 } } }, today: TODAY,
-  });
-  const div = m.divisions.find(d => d.division === 'Large Projects')!;
-  assert.equal(div.cells.some(c => c.uncovered), false);
-});
-
-test('a scope that has NEVER been pulled is uncovered, not empty-and-open', () => {
-  // Only a projects snapshot exists. The lawn crews' weeks must read
-  // "not pulled", never "0 BH — sell into it".
-  const schedules: Record<string, Crew[]> = {
-    [TODAY]: [crew('Lawn Division', 1, ['a2'], ['e1', 'e2']), crew('Large Projects', 1, ['a1'], ['e1'])],
-  };
-  const projectsSnap = { ...forecast([visit({ visitId: 'p1', bh: 30 })]), scope: 'projects' as const, coveredThrough: '2026-12-01' };
-  const m = buildCapacityModel({
-    appData: appDataOf(schedules), forecasts: [projectsSnap], schedules, employees: EMPLOYEES, multiDayJobs: {},
-    settings: { divisions: { 'Lawn Division': { perPersonBH: 40, standardSize: 2 }, 'Large Projects': { perPersonBH: 50, standardSize: 2 } } },
-    today: TODAY,
-  });
-  const lawn = m.divisions.find(d => d.division === 'Lawn Division')!;
-  const proj = m.divisions.find(d => d.division === 'Large Projects')!;
-  assert.equal(lawn.cells[0].uncovered, true, 'lawn must be uncovered');
-  assert.equal(lawn.cells[0].pct, null);
-  assert.equal(lawn.cells[0].band, null);
-  assert.equal(lawn.bookedOutTo, null);
-  // The scope that WAS pulled is unaffected.
-  assert.equal(proj.cells[0].uncovered, false);
-  assert.equal(proj.cells[0].bh, 30);
+  assert.equal(cellOf(m, 'Large Projects', '2026-08-03').bh, 40);
 });
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

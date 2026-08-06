@@ -94,38 +94,44 @@ export const TRAINING_WINDOW_DAYS = 7;
 // is suspicious (someone employed 8 months is not a new hire) and
 // the toggle warns before applying rather than silently crediting.
 export const TRAINEE_STALE_HIRE_DAYS = 90;
-// ── CAPACITY CALENDAR ───────────────────────────────────────────────────────
-// Colour bands as a percentage of a crew's weekly BH capacity. Admin-editable
-// from App Settings; these are only the seed values.
+// ── CAPACITY ────────────────────────────────────────────────────────────────
+// Colour bands as a percentage of DECLARED weekly capacity. Admin-editable;
+// these are only the seeds.
 //   < 70%     RED    — underbooked, sell into it
 //   70–90%    AMBER  — light
 //   90–110%   GREEN  — healthy
 //   > 110%    DARK RED — overbooked, can't deliver
 // The two reds are opposite signals and are drawn differently (outlined vs
 // solid) so they can never be confused for one another.
-import type { CapacityThresholds, CapacitySettings } from './types';
+import type { CapacityThresholds, CapacitySettings, HeadcountCeiling } from './types';
 export const DEFAULT_CAPACITY_THRESHOLDS: CapacityThresholds = {
   underPct: 70,
   lightPct: 90,
   healthyPct: 110,
 };
 
-// Midpoint of the existing 30–40 BH/person/week lawn standard. Seeded as a
-// PLACEHOLDER — it renders with a "placeholder" flag everywhere until an
-// admin confirms or replaces it. Large/Small Projects are seeded EMPTY on
-// purpose: no defensible number exists yet, and a wrong number is worse than
-// no bar at all (a blank crew shows raw BH with no percentage).
-export const CAPACITY_LAWN_SEED_PER_PERSON = 35;
+// WEEKLY BH a crew of N people can deliver. Non-linear by design: travel and
+// setup are per-crew, so a solo crew delivers more than half of a pair. The
+// first three are Marco's figures; 4 and 5+ are extrapolated PLACEHOLDERS and
+// are flagged as such in the editor until confirmed.
+export const DEFAULT_HEADCOUNT_CEILINGS: HeadcountCeiling[] = [
+  { headcount: 1, weeklyBH: 40 },
+  { headcount: 2, weeklyBH: 70 },
+  { headcount: 3, weeklyBH: 90 },
+  { headcount: 4, weeklyBH: 110, placeholder: true },
+  { headcount: 5, weeklyBH: 130, placeholder: true },
+];
+
+// Declared weekly capacity is left EMPTY for every division on purpose. It is
+// a management decision, not something the app should guess — a division with
+// no declared number shows raw booked BH with no bar and no percentage.
 export const DEFAULT_CAPACITY_SETTINGS: CapacitySettings = {
-  divisions: {
-    'Lawn Division': { perPersonBH: CAPACITY_LAWN_SEED_PER_PERSON, placeholder: true },
-    // Left EMPTY on purpose — no defensible per-person figure exists for
-    // project work yet, and a wrong rate is worse than no bar at all. These
-    // crews show raw BH with no percentage until Marco sets a rate.
-    'Large Projects': { perPersonBH: null, placeholder: true },
-    'Small Projects': { perPersonBH: null, placeholder: true },
+  declared: {
+    'Large Projects': { weeklyBH: null, placeholder: true },
+    'Small Projects': { weeklyBH: null, placeholder: true },
+    'Lawn Division': { weeklyBH: null, placeholder: true },
   },
-  crews: {},
+  headcountCeilings: DEFAULT_HEADCOUNT_CEILINGS,
   thresholds: DEFAULT_CAPACITY_THRESHOLDS,
 };
 

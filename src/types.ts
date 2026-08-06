@@ -1076,28 +1076,22 @@ export interface BonusPayoutRecord {
 // a display + admin settings values only. They never touch performance, pay,
 // efficiency or the multi-day ledger.
 
-// Weekly capacity for one division or one crew. Two ways to express it:
-//   weeklyBH    — an absolute weekly BH number for the crew.
-//   perPersonBH — BH per person per week; the crew's capacity is this × the
-//                 crew's scheduled size (how the Lawn standard is stated).
-// weeklyBH wins when both are set. null/absent on both = NO capacity set.
-export interface CapacityRule {
-  // PRIMARY setting: BH one person delivers in a week. Capacity is derived
-  // from this × the people actually scheduled (less approved time off), so
-  // it tracks a crew that changes shape week to week — which a flat weekly
-  // total cannot.
-  perPersonBH?: number | null;
-  // Full-strength crew size. Used to PROJECT weeks the schedule hasn't
-  // reached, and as the faint reference that distinguishes "thin because
-  // nobody's scheduled" from "thin because nothing's sold". Absent → the
-  // crew's most recent actual scheduled size stands in.
-  standardSize?: number | null;
-  // LEGACY / escape hatch: a fixed weekly total that pins capacity and
-  // ignores the schedule entirely. Kept because some crews may genuinely
-  // want a hand-set number, but it opts out of every derivation above.
+// ── TOOL 1: BOOKING CAPACITY. A number MANAGEMENT DECLARES per division per
+// week. No derivation, no crew involvement — deliberately, because Jobber
+// "assignees" are route slots rather than people and any crew-level
+// derivation inherits that mapping's gaps. A declared number is a decision,
+// and a decision can be checked.
+export interface DeclaredCapacity {
   weeklyBH?: number | null;
-  // Seeded by the app as a starting point, not confirmed by an admin. The UI
-  // flags these loudly so nobody mistakes a placeholder for a real target.
+  placeholder?: boolean;
+}
+
+// ── TOOL 2: HEADCOUNT CEILINGS. Company-wide weekly BH a crew of N can
+// deliver. NON-LINEAR on purpose: a 1-person crew does not deliver half of a
+// 2-person crew, because travel and setup are per-crew, not per-head.
+export interface HeadcountCeiling {
+  headcount: number;    // "this many people or more"
+  weeklyBH: number;
   placeholder?: boolean;
 }
 
@@ -1114,11 +1108,10 @@ export interface CapacityThresholds {
 }
 
 export interface CapacitySettings {
-  // Per-division defaults, keyed by division name ('Lawn Division', ...).
-  divisions?: Record<string, CapacityRule>;
-  // Per-crew overrides, keyed by `${division}#${crewNumber}`. When present
-  // and populated, a crew value OVERRIDES its division default.
-  crews?: Record<string, CapacityRule>;
+  // Tool 1 — declared weekly BH, keyed by division name.
+  declared?: Record<string, DeclaredCapacity>;
+  // Tool 2 — weekly ceiling by crew headcount, ascending.
+  headcountCeilings?: HeadcountCeiling[];
   thresholds?: CapacityThresholds;
 }
 

@@ -1221,6 +1221,7 @@ export default function ScheduleBoard({
             onRefresh={onRefreshCapacity}
             canRefresh={canRefreshCapacity}
             onSaveSettings={onSaveCapacitySettings}
+            defaultTool="balance"
             variant="board"
           />
         </div>
