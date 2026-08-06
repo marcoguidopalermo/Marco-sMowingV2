@@ -7,7 +7,7 @@ import { Sliders, Plus, Trash2, DollarSign, TrendingUp, Info, RotateCcw, Save, F
 import { SalesRates, SalesService, SalesMaterial, SalesMaterialUnit, SalesQuote } from '../types';
 import {
   computeQuote, computeProfitTable, bhFromPrice, labourCostFor, money, buildQuoteSnapshot, MaterialLine, round2,
-  coverageQty, roundUpHalf, hasCoverage, coverageWorking,
+  coverageQty, roundUpHalf, hasCoverage, coverageWorking, priceFirstWorking,
 } from '../lib/salesMaster';
 
 interface Props {
@@ -61,6 +61,18 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
   const hasContent = !!serviceId && (lines.length > 0 || bh > 0);
 
   const setBudgetBH = (v: number) => { const n = Number(v) || 0; setBh(n); setBaselineBH(n); };
+  // Free-typing buffers so a half-typed "45" in the price box doesn't get
+  // rewritten under the cursor by the recomputed canonical value.
+  const [bhDraft, setBhDraft] = useState<string | null>(null);
+  const [priceDraft, setPriceDraft] = useState<string | null>(null);
+  // The working behind the current total, shown whenever there's a rate to
+  // convert with. Reads the SAME identity the +/- buttons use.
+  const priceWorking = useMemo(
+    () => (q.serviceRate > 0 && (bh > 0 || q.materialsCharged > 0)
+      ? priceFirstWorking(q.quoteTotal, q.materialsCharged, q.serviceRate)
+      : null),
+    [q.quoteTotal, q.materialsCharged, q.serviceRate, bh],
+  );
   const applyPrice = (newTotal: number) => {
     if (!(q.serviceRate > 0)) return;
     setBh(bhFromPrice(newTotal, q.materialsCharged, q.serviceRate));
@@ -72,6 +84,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
   const resetCalc = () => {
     if (hasContent && !window.confirm('Clear the calculator? This discards the current quote.')) return;
     setServiceId(activeServices[0]?.id || ''); setLines([]); setBh(0); setBaselineBH(0); setPriceInput('');
+    setBhDraft(null); setPriceDraft(null);
     setLoadedQuoteId(null); setLoadedQuoteName('');
   };
   // Save the current calc as a quote. asNew=true (Save As) always mints a new
@@ -87,7 +100,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
   const loadQuote = (sq: SalesQuote) => {
     setServiceId(sq.serviceId);
     setLines(sq.lines.map(l => ({ materialId: l.materialId, qty: l.qty, coverageNote: l.coverageNote, area: l.area, depthInches: l.depthInches })));
-    setBh(sq.bh); setBaselineBH(sq.bh); setPriceInput('');
+    setBh(sq.bh); setBaselineBH(sq.bh); setPriceInput(''); setBhDraft(null); setPriceDraft(null);
     setLoadedQuoteId(sq.id); setLoadedQuoteName(sq.name);
     setTab('calculator');
   };
@@ -167,9 +180,79 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
                   </div>
                 </div>
 
+                {/* TWO FIRST-CLASS ENTRY POINTS. Quote from the hours you
+                    expect, or from the price you intend to charge — each
+                    recomputes the other live off the same identity the
+                    manipulation buttons already use. Neither is a workaround
+                    for the other. */}
                 <div>
-                  <label className="text-[11px] font-black uppercase tracking-widest text-slate-500 block mb-1">Budgeted BH (estimator's call)</label>
-                  <input type="number" value={bh ? bhDisp : ''} onChange={e => setBudgetBH(Number(e.target.value))} className="w-full border border-slate-300 rounded-lg p-2 text-lg font-mono font-bold text-right" placeholder="0" />
+                  <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1">
+                    Quote from hours <span className="text-slate-300">or</span> from price
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="block">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Budgeted BH</span>
+                      <input
+                        type="number" step="0.01" inputMode="decimal"
+                        value={bhDraft ?? (bh ? String(bhDisp) : '')}
+                        onChange={e => {
+                          setBhDraft(e.target.value);
+                          setPriceDraft(null);
+                          const v = Number(e.target.value);
+                          if (Number.isFinite(v)) setBudgetBH(v);
+                        }}
+                        onBlur={() => setBhDraft(null)}
+                        className="w-full border border-slate-300 rounded-lg p-2 text-lg font-mono font-bold text-right"
+                        placeholder="0"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Target price</span>
+                      <div className="relative">
+                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 font-mono">$</span>
+                        <input
+                          type="number" step="1" inputMode="decimal"
+                          disabled={!(q.serviceRate > 0)}
+                          value={priceDraft ?? (hasContent || bh ? String(q.quoteTotal) : '')}
+                          onChange={e => {
+                            setPriceDraft(e.target.value);
+                            setBhDraft(null);
+                            const v = Number(e.target.value);
+                            if (Number.isFinite(v) && q.serviceRate > 0) {
+                              setBudgetBH(bhFromPrice(v, q.materialsCharged, q.serviceRate));
+                            }
+                          }}
+                          onBlur={() => setPriceDraft(null)}
+                          className="w-full border border-emerald-300 rounded-lg p-2 pl-5 text-lg font-mono font-bold text-right disabled:opacity-50"
+                          placeholder="0"
+                        />
+                      </div>
+                    </label>
+                  </div>
+                  {/* THE WORKING. A derived number nobody can check is a
+                      number nobody should trust. */}
+                  {priceWorking && (
+                    <div className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-2 space-y-1">
+                      <div className="text-[12px] font-mono font-bold text-emerald-900">{priceWorking.working}</div>
+                      {priceWorking.shortfall && (
+                        <div className="text-[11px] font-bold text-rose-700">
+                          That price is below the {money(priceWorking.materialsCharged)} of materials — there is nothing left for labour.
+                        </div>
+                      )}
+                      {priceWorking.rounds && !priceWorking.shortfall && (
+                        <div className="text-[11px] text-emerald-800">
+                          Shown to 2 dp. The exact figure ({priceWorking.exact.toFixed(4)} BH) is what the quote
+                          carries, so the total stays {money(priceWorking.targetPrice)}.{' '}
+                          <button
+                            type="button"
+                            onClick={() => setBudgetBH(priceWorking.display)}
+                            className="font-black underline"
+                          >Snap to {priceWorking.display} BH</button>{' '}
+                          (total becomes {money(priceWorking.roundedPrice)}).
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 

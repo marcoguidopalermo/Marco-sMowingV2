@@ -126,6 +126,62 @@ export function priceFromBH(bh: number, materialsCharged: number, serviceRate: n
   return round2((Number(bh) || 0) * (Number(serviceRate) || 0) + (Number(materialsCharged) || 0));
 }
 
+// PRICE-FIRST QUOTING. The identity is the same one bhFromPrice already
+// implements; this exposes its WORKING so the resulting BH can be checked at
+// a glance rather than taken on trust:
+//
+//   $4,500 − $600 materials = $3,900 ÷ $120/hr = 32.5 BH
+//
+// PRECISION. `exact` is full precision and is what the quote carries —
+// rounding it here would break the identity (a stored 32.19 BH re-derives
+// $4,500.60, not the $4,500 that was typed). `display` is that figure at 2
+// decimals, matching the BH precision used elsewhere. When the two differ,
+// `roundedPrice` says what the total WOULD become if the displayed figure
+// were adopted, so snapping is an explicit choice with a visible cost rather
+// than a silent drift.
+export interface PriceFirstWorking {
+  targetPrice: number;
+  materialsCharged: number;
+  labourBudget: number;    // price − materials
+  serviceRate: number;
+  exact: number;           // BH, full precision
+  display: number;         // BH at 2 dp
+  rounds: boolean;         // display !== exact
+  roundedPrice: number;    // the total implied by the 2 dp figure
+  valid: boolean;          // a rate > 0 and a price that covers materials
+  shortfall: boolean;      // the price doesn't even cover the materials
+  working: string;
+}
+
+export function priceFirstWorking(
+  targetPrice: number,
+  materialsCharged: number,
+  serviceRate: number,
+): PriceFirstWorking {
+  const price = Number(targetPrice) || 0;
+  const mats = round2(Number(materialsCharged) || 0);
+  const rate = Number(serviceRate) || 0;
+  const labourBudget = round2(price - mats);
+  const exact = rate > 0 ? (price - mats) / rate : 0;
+  const display = round2(exact);
+  const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return {
+    targetPrice: price,
+    materialsCharged: mats,
+    labourBudget,
+    serviceRate: rate,
+    exact,
+    display,
+    rounds: display !== exact,
+    roundedPrice: priceFromBH(display, mats, rate),
+    valid: rate > 0 && price >= mats,
+    shortfall: price < mats,
+    working: rate > 0
+      ? `${money(price)} − ${money(mats)} materials = ${money(labourBudget)} ÷ $${rate}/hr = ${display} BH`
+      : 'pick a service — its hourly rate is what converts price into BH',
+  };
+}
+
 // The internal labour cost/hr for a service (its override, else global default).
 export function labourCostFor(service: SalesService | undefined, rates: SalesRates): number {
   const override = service?.labourCostPerHr;
