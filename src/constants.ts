@@ -94,6 +94,38 @@ export const TRAINING_WINDOW_DAYS = 7;
 // is suspicious (someone employed 8 months is not a new hire) and
 // the toggle warns before applying rather than silently crediting.
 export const TRAINEE_STALE_HIRE_DAYS = 90;
+// ── CAPACITY CALENDAR ───────────────────────────────────────────────────────
+// Colour bands as a percentage of a crew's weekly BH capacity. Admin-editable
+// from App Settings; these are only the seed values.
+//   < 70%     RED    — underbooked, sell into it
+//   70–90%    AMBER  — light
+//   90–110%   GREEN  — healthy
+//   > 110%    DARK RED — overbooked, can't deliver
+// The two reds are opposite signals and are drawn differently (outlined vs
+// solid) so they can never be confused for one another.
+import type { CapacityThresholds, CapacitySettings } from './types';
+export const DEFAULT_CAPACITY_THRESHOLDS: CapacityThresholds = {
+  underPct: 70,
+  lightPct: 90,
+  healthyPct: 110,
+};
+
+// Midpoint of the existing 30–40 BH/person/week lawn standard. Seeded as a
+// PLACEHOLDER — it renders with a "placeholder" flag everywhere until an
+// admin confirms or replaces it. Large/Small Projects are seeded EMPTY on
+// purpose: no defensible number exists yet, and a wrong number is worse than
+// no bar at all (a blank crew shows raw BH with no percentage).
+export const CAPACITY_LAWN_SEED_PER_PERSON = 35;
+export const DEFAULT_CAPACITY_SETTINGS: CapacitySettings = {
+  divisions: {
+    'Lawn Division': { perPersonBH: CAPACITY_LAWN_SEED_PER_PERSON, placeholder: true },
+    'Large Projects': { weeklyBH: null, placeholder: true },
+    'Small Projects': { weeklyBH: null, placeholder: true },
+  },
+  crews: {},
+  thresholds: DEFAULT_CAPACITY_THRESHOLDS,
+};
+
 export const EOD_WARNING_HOUR = 22;
 export const PERMISSION_DENIED = 'Permission denied.';
 

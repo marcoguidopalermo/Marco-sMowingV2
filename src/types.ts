@@ -990,6 +990,95 @@ export interface AppSettings {
   payPeriod?: { anchorStart: string; lengthDays: number; payLagDays: number };
   // Month-to-month notice length in days (default 60), admin-editable.
   contractingNoticeDays?: number;
+  // CAPACITY CALENDAR — weekly BH capacity per crew/division + the colour
+  // thresholds. Bounded (a handful of divisions × crews), admin-edited.
+  // Absent → nothing is assumed: a crew with no capacity shows raw BH and
+  // NO bar/percentage rather than a made-up number.
+  capacity?: CapacitySettings;
+}
+
+// ══ CAPACITY CALENDAR ═════════════════════════════════════════════════════
+// Forward view of SCHEDULED, UNCOMPLETED work. Read-only: these types feed
+// a display + admin settings values only. They never touch performance, pay,
+// efficiency or the multi-day ledger.
+
+// Weekly capacity for one division or one crew. Two ways to express it:
+//   weeklyBH    — an absolute weekly BH number for the crew.
+//   perPersonBH — BH per person per week; the crew's capacity is this × the
+//                 crew's scheduled size (how the Lawn standard is stated).
+// weeklyBH wins when both are set. null/absent on both = NO capacity set.
+export interface CapacityRule {
+  weeklyBH?: number | null;
+  perPersonBH?: number | null;
+  // Seeded by the app as a starting point, not confirmed by an admin. The UI
+  // flags these loudly so nobody mistakes a placeholder for a real target.
+  placeholder?: boolean;
+}
+
+// Colour bands, as PERCENTAGES of capacity. Every value is admin-editable.
+//   pct <  underPct   → RED, UNDERBOOKED ("sell into it")
+//   pct <  lightPct   → AMBER, light
+//   pct <= healthyPct → GREEN, healthy
+//   pct >  healthyPct → DARK RED, OVERBOOKED ("can't deliver")
+// The two red states mean opposite things and are drawn differently.
+export interface CapacityThresholds {
+  underPct: number;
+  lightPct: number;
+  healthyPct: number;
+}
+
+export interface CapacitySettings {
+  // Per-division defaults, keyed by division name ('Lawn Division', ...).
+  divisions?: Record<string, CapacityRule>;
+  // Per-crew overrides, keyed by `${division}#${crewNumber}`. When present
+  // and populated, a crew value OVERRIDES its division default.
+  crews?: Record<string, CapacityRule>;
+  thresholds?: CapacityThresholds;
+}
+
+// ── The forecast snapshot written by the jobberSyncCapacity function.
+// Mirrors functions/src/jobber/capacityForecast.ts — keep the two in step.
+export interface CapacityForecastVisit {
+  visitId: string;
+  jobId: string | null;
+  jobNumber: string | null;
+  // Title with the [BH] / [hourly] tag stripped.
+  desc: string;
+  client: string | null;
+  // Scheduled span (Toronto YYYY-MM-DD). endDate === startDate for a
+  // single-day visit.
+  startDate: string;
+  endDate: string;
+  // Parsed [BH] total for the WHOLE visit; 0 when hourly or untagged. What
+  // actually gets booked is this MINUS anything already credited on the
+  // multi-day ledger.
+  bh: number;
+  isHourly: boolean;
+  untagged: boolean;
+  assigneeIds: string[];
+  assigneeNames: string[];
+}
+
+export interface CapacityForecast {
+  generatedAt: number;
+  generatedBy: 'manual' | 'scheduled';
+  windowStart: string;
+  windowEnd: string;
+  today: string;
+  visits: CapacityForecastVisit[];
+  stats: {
+    fetched: number;
+    kept: number;
+    completeSkipped: number;
+    endedBeforeToday: number;
+    untagged: number;
+    hourly: number;
+  };
+  truncated: boolean;
+  // The forward query fell back to a reduced shape: multi-day spans collapse
+  // to their start day and client names are missing. Surfaced in the UI.
+  degraded: boolean;
+  warnings: string[];
 }
 
 // ══ ContractingMaster (Palermo's Contracting) types ═══════════════════════
@@ -1827,3 +1916,7 @@ export interface AppData {
   // downstream availability gating is identical to manual entry.
   timeOffRequests?: Record<string, TimeOffRequest>;
 }
+// NOTE: the capacity FORECAST is deliberately NOT part of AppData. It lives
+// in its own document (capacityForecast/current), is held in its own React
+// state and passed as a prop — so a snapshot of a few thousand visits can
+// never be written back into the 1 MiB appData doc.

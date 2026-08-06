@@ -9,6 +9,10 @@ import {
   refreshJobberAccessToken,
 } from "./oauth.js";
 import {makeJobberClient, JobberClient, sleep} from "./client.js";
+// The [BH] tag parser now lives in its own module (moved verbatim) so the
+// forward capacity forecast reads titles through the SAME parser. Behavior
+// here is unchanged.
+import {BH_REGEX, ParsedBh, parseBh, stripBhTag} from "./bhParser.js";
 import {runArchivePass} from "./archive.js";
 import {runRoleGeneration} from "./roleMaster.js";
 import {runNotificationScan, runQuietFlush} from "../notifications.js";
@@ -587,21 +591,6 @@ export interface JobberBhConflict {
   detectedAt: number;
 }
 
-// Accepts both [3BH] (explicit suffix, original convention) and [3]
-// (implicit — bare number, used informally by office staff). Whitespace
-// inside the brackets around the optional BH suffix is tolerated.
-// Capture group 2 ("BH") is used to distinguish the two formats for
-// audit reporting.
-// The value pattern is \d*\.?\d+ — the integer part is OPTIONAL so
-// fractional-under-1 tags parse in both forms: [0.5] AND bare [.5].
-// (The old \d+\.?\d* required a leading digit, so crews typing [.5] /
-// [.9] fell through to "Awaiting BH tag".) Requires at least one digit
-// overall, so [] / [.] / [bh] still don't match.
-const BH_REGEX = /\[(\d*\.?\d+)\s*(BH)?\s*\]/i;
-// [hourly] takes precedence over [XBH] / [N]. T&M jobs where the
-// manager calculates BH manually (workers × hours).
-const HOURLY_REGEX = /\[\s*hourly\s*\]/i;
-
 /**
  * Returns the UTC offset in minutes for America/Toronto on a given date.
  * Handles EST/EDT transitions automatically.
@@ -853,50 +842,6 @@ async function fetchAllTimesheets(
     cursor = data.timeSheetEntries.pageInfo.endCursor;
   }
   return out;
-}
-
-interface ParsedBh {
-  bh: number;
-  format: "explicit" | "implicit" | "hourly";
-  isHourly: boolean;
-}
-
-/**
- * Parses a job/visit title for either a BH tag or the [hourly] marker.
- * [hourly] takes precedence — if both are present, the row is treated
- * as hourly (manager-entered BH) and the BH tag is ignored (caller
- * may log a warning).
- * @param {string | null | undefined} title The text to scan.
- * @return {ParsedBh | null} Parsed tag, or null if no recognized tag.
- */
-function parseBh(title: string | null | undefined): ParsedBh | null {
-  if (!title) return null;
-  if (HOURLY_REGEX.test(title)) {
-    return {bh: 0, format: "hourly", isHourly: true};
-  }
-  const m = BH_REGEX.exec(title);
-  if (!m) return null;
-  // parseFloat (not parseInt) so [.5] / [0.5] keep their decimal.
-  const n = parseFloat(m[1]);
-  // A valid BH tag must be a positive number. Reject 0 / negative /
-  // non-finite — those fall through to "Awaiting BH tag" rather than
-  // crediting 0 BH. (Negatives also can't reach the regex, but guard
-  // anyway.)
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return {bh: n, format: m[2] ? "explicit" : "implicit", isHourly: false};
-}
-
-/**
- * Strips any recognized job tag ([hourly], [XBH], [N]) from a title.
- * @param {string} title The raw title.
- * @return {string} Title without tag markers.
- */
-function stripBhTag(title: string): string {
-  return title
-    .replace(HOURLY_REGEX, "")
-    .replace(BH_REGEX, "")
-    .trim()
-    .replace(/\s{2,}/g, " ");
 }
 
 /**

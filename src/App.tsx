@@ -24,7 +24,8 @@ import {
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, JobberBhConflict, MonthlySummary,
   RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, RoleTaskInstance,
-  ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry
+  ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry,
+  CapacityForecast
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
@@ -152,6 +153,10 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [jobberUsers, setJobberUsers] = useState<JobberUser[]>([]);
   const [jobberConnected, setJobberConnected] = useState(false);
+  // Forward capacity snapshot. Held OUTSIDE appData on purpose — it is
+  // read-only view data written by the cloud pull, and keeping it out of
+  // appData means it can never be written back into the 1 MiB main doc.
+  const [capacityForecast, setCapacityForecast] = useState<CapacityForecast | null>(null);
 
   // Real signed-in identity. These are pinned to the Firebase auth
   // user and never change at the View As layer. The
@@ -1084,6 +1089,19 @@ export default function App() {
       () => setJobberUsers([]),
     );
     return () => { unsubAuth(); unsubUsers(); };
+  }, [user]);
+
+  // CAPACITY CALENDAR: live listener on the forward forecast snapshot. One
+  // document, written only by the cloud pull. Never merged into appData and
+  // never written back — read-only view data.
+  useEffect(() => {
+    if (!user) return;
+    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'capacityForecast', 'current');
+    return onSnapshot(
+      ref,
+      snap => setCapacityForecast(snap.exists() ? (snap.data() as CapacityForecast) : null),
+      err => { console.error('capacityForecast listen error:', err); setCapacityForecast(null); },
+    );
   }, [user]);
 
   // Phase 1: live multiDayJobs subcollection listener. Rebuilds the
@@ -2454,6 +2472,20 @@ export default function App() {
     }));
     showToastMsg('Request resolved.');
   };
+  // CAPACITY CALENDAR — manual forward pull. Read-only: the callable writes
+  // only the forecast snapshot document. The scheduled pass runs through the
+  // day regardless; this is the "I just booked something, show me" button.
+  const refreshCapacityForecast = async () => {
+    try {
+      const pull = httpsCallable<unknown, { stats?: { kept?: number } }>(functions, 'jobberSyncCapacity');
+      const res = await pull({});
+      const kept = res.data?.stats?.kept ?? 0;
+      showToastMsg(`Capacity refreshed — ${kept} scheduled visit${kept === 1 ? '' : 's'} ahead.`);
+    } catch (err: any) {
+      showToastMsg(`Capacity refresh failed: ${err?.message || String(err)}`);
+    }
+  };
+
   // SalesMaster rates — bounded, admin-only, stored in the settings doc.
   const saveSalesRates = async (r: import('./types').SalesRates) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
@@ -5445,6 +5477,11 @@ export default function App() {
           lawnActiveConfig={lawnActiveConfig}
           onSaveLawnConfig={saveLawnConfig}
           onRevertLawnConfig={revertLawnConfig}
+          appData={appData}
+          capacityForecast={capacityForecast}
+          currentUserEmployee={currentUserEmployee}
+          onRefreshCapacity={refreshCapacityForecast}
+          canRefreshCapacity={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
         />
       ) : currentView === 'contracting' ? (
         <ContractingMaster
@@ -5539,6 +5576,10 @@ export default function App() {
           addCrewToDay={addCrewToDay}
           jobberUsers={jobberUsers}
           jobberConnected={jobberConnected}
+          capacityForecast={capacityForecast}
+          onRefreshCapacity={refreshCapacityForecast}
+          canRefreshCapacity={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
+          isAdmin={isAdmin}
         />
       )}
       </div>

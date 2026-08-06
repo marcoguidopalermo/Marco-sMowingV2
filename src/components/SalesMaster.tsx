@@ -5,13 +5,14 @@
 // (salesMasterQuotes, snowQuotes). It just distributes the same props it always
 // received to the right module.
 import { useState } from 'react';
-import { Calculator, Snowflake, Sprout } from 'lucide-react';
-import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion } from '../types';
+import { Calculator, Snowflake, Sprout, CalendarRange } from 'lucide-react';
+import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, AppData, CapacityForecast, Employee } from '../types';
 import { SnowConfig } from '../lib/snowPricing';
 import { LawnConfig } from '../lib/lawnPricing';
 import ProjectMaster from './ProjectMaster';
 import SnowMaster from './SnowMaster';
 import LawnMaster from './LawnMaster';
+import CapacityCalendar from './CapacityCalendar';
 
 interface Props {
   rates: SalesRates;
@@ -39,13 +40,21 @@ interface Props {
   lawnActiveConfig: LawnConfig;
   onSaveLawnConfig: (next: LawnConfig) => Promise<boolean>;
   onRevertLawnConfig: (versionId: string) => Promise<boolean>;
+  // Capacity calendar — the SAME component the schedule board's CAPACITY
+  // toggle mounts. Read-only forward view; no second implementation.
+  appData: AppData;
+  capacityForecast: CapacityForecast | null;
+  currentUserEmployee: Employee | null;
+  onRefreshCapacity: () => Promise<void>;
+  canRefreshCapacity: boolean;
 }
 
-type ModuleKey = 'project' | 'snow' | 'lawn';
+type ModuleKey = 'project' | 'snow' | 'lawn' | 'capacity';
 const MODULES: { key: ModuleKey; label: string; Icon: typeof Calculator }[] = [
   { key: 'project', label: 'ProjectMaster', Icon: Calculator },
   { key: 'snow', label: 'SnowMaster', Icon: Snowflake },
   { key: 'lawn', label: 'LawnMaster', Icon: Sprout },
+  { key: 'capacity', label: 'Capacity', Icon: CalendarRange },
 ];
 
 export default function SalesMaster(props: Props) {
@@ -55,12 +64,15 @@ export default function SalesMaster(props: Props) {
     isSuperAdmin, snowConfigs, snowActiveVersion, snowActiveConfig, onSaveSnowConfig, onRevertSnowConfig,
     lawnQuotes, onSaveLawnQuote, onDeleteLawnQuote,
     lawnConfigs, lawnActiveVersion, lawnActiveConfig, onSaveLawnConfig, onRevertLawnConfig,
+    appData, capacityForecast, currentUserEmployee, onRefreshCapacity, canRefreshCapacity,
   } = props;
   const [module, setModule] = useState<ModuleKey>('project');
 
   return (
     <div className="flex-1 overflow-y-auto bg-gray-100 p-4 md:p-6">
-      <div className="max-w-3xl mx-auto space-y-4">
+      {/* The capacity calendar is a wide grid — it gets the full width the
+          quoting modules don't need. */}
+      <div className={`${module === 'capacity' ? 'max-w-6xl' : 'max-w-3xl'} mx-auto space-y-4`}>
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><Calculator className="w-6 h-6 text-slate-700" /> SalesMaster</h2>
           <div className="flex flex-wrap bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
@@ -114,6 +126,17 @@ export default function SalesMaster(props: Props) {
             configs={lawnConfigs}
             onSaveConfig={onSaveLawnConfig}
             onRevertConfig={onRevertLawnConfig}
+          />
+        )}
+
+        {module === 'capacity' && (
+          <CapacityCalendar
+            appData={appData}
+            forecast={capacityForecast}
+            isAdmin={isAdmin}
+            currentUserEmployee={currentUserEmployee}
+            onRefresh={onRefreshCapacity}
+            canRefresh={canRefreshCapacity}
           />
         )}
       </div>

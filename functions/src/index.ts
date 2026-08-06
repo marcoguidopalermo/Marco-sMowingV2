@@ -30,3 +30,9 @@ export {
   jobberSyncPerformance,
   jobberSyncPerformanceScheduled,
 } from "./jobber/syncPerformance.js";
+// Forward capacity forecast — read-only snapshot of scheduled, uncompleted
+// work. Independent of the performance sync (own schedule, own document).
+export {
+  jobberSyncCapacity,
+  jobberSyncCapacityScheduled,
+} from "./jobber/capacityForecast.js";

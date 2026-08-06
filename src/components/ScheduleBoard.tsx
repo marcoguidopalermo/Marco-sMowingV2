@@ -5,9 +5,9 @@ import {
   Filter, CloudSun, Cloud, Printer, Plus, Trash2, Users, Truck,
   ChevronDown, ChevronUp, X, Package, Hammer, Flame, CheckCircle, AlertTriangle, AlertCircle,
   TrendingUp, CreditCard as IdCard, Copy, ClipboardPaste, ShieldCheck,
-  Moon, Lock, Link2, ArrowLeft, Plane
+  Moon, Lock, Link2, ArrowLeft, Plane, CalendarRange
 } from 'lucide-react';
-import { AppData, Crew, Employee, FleetItem, OverrideRecord, UserRole, JobberUser, MechanicTask } from '../types';
+import { AppData, Crew, Employee, FleetItem, OverrideRecord, UserRole, JobberUser, MechanicTask, CapacityForecast } from '../types';
 import DispatchConfirmModal from './DispatchConfirmModal';
 import { logPerfActivity } from '../lib/perfAudit';
 import { DIVISIONS, CREW_NUMBERS, EOD_WARNING_HOUR, PERMISSION_DENIED } from '../constants';
@@ -23,6 +23,7 @@ import CrewCardWarning from './CrewCardWarning';
 import OverrideModal from './OverrideModal';
 import EndDayModal from './EndDayModal';
 import BookedOffCalendar from './BookedOffCalendar';
+import CapacityCalendar from './CapacityCalendar';
 
 const getCrewColors = (div: string, num: number) => {
   const palettes: Record<string, string[]> = {
@@ -83,6 +84,13 @@ interface ScheduleBoardProps {
 
   jobberUsers: JobberUser[];
   jobberConnected: boolean;
+
+  // CAPACITY view — the same component SalesMaster mounts, swapped into the
+  // board body by the toggle below (mirrors "Booked off").
+  capacityForecast: CapacityForecast | null;
+  onRefreshCapacity: () => Promise<void>;
+  canRefreshCapacity: boolean;
+  isAdmin: boolean;
 }
 
 export default function ScheduleBoard({
@@ -125,6 +133,10 @@ export default function ScheduleBoard({
   addCrewToDay,
   jobberUsers,
   jobberConnected,
+  capacityForecast,
+  onRefreshCapacity,
+  canRefreshCapacity,
+  isAdmin,
 }: ScheduleBoardProps) {
   const [overrideModalCtx, setOverrideModalCtx] = useState<{
     dateString: string;
@@ -144,6 +156,11 @@ export default function ScheduleBoard({
   // "Booked off" mode swaps the whole board body for the monthly approved
   // time-off view. Off by default; toggling returns to the normal board.
   const [bookedOffView, setBookedOffView] = useState(false);
+  // "Capacity" mode does the same with the forward capacity calendar —
+  // exactly the view SalesMaster hosts, mounted here. The two modes are
+  // mutually exclusive: turning one on turns the other off.
+  const [capacityView, setCapacityView] = useState(false);
+  const altView = bookedOffView || capacityView;
   // A division manager opens the booked-off view on their own division;
   // admins / all-division managers open on "All". Mirrors the crewFilter
   // division mapping used across the board.
@@ -1111,6 +1128,11 @@ export default function ScheduleBoard({
               <Plane className="w-5 h-5 text-rose-600" /> Booked off
               <span className="text-[11px] font-bold text-slate-400 normal-case tracking-normal">approved time off</span>
             </div>
+          ) : capacityView ? (
+            <div className="text-gray-800 text-lg font-black tracking-wide inline-flex items-center gap-2">
+              <CalendarRange className="w-5 h-5 text-slate-700" /> Capacity
+              <span className="text-[11px] font-bold text-slate-400 normal-case tracking-normal">scheduled BH by week</span>
+            </div>
           ) : (
             <>
               {scheduleMode === 'weekly' && (
@@ -1139,7 +1161,7 @@ export default function ScheduleBoard({
         </div>
 
         <div className="flex items-center gap-4 flex-wrap">
-          {!bookedOffView && (
+          {!altView && (
             <>
               <div className="text-gray-800 text-lg font-black tracking-wide print:text-xl mr-2">
                 {scheduleMode === 'weekly' ? `Week of ${startOfWeek.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}` : new Date(`${selectedDailyDate}T12:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
@@ -1156,11 +1178,17 @@ export default function ScheduleBoard({
           )}
 
           <button
-            onClick={() => setBookedOffView(v => !v)}
+            onClick={() => { setBookedOffView(v => !v); setCapacityView(false); }}
             aria-pressed={bookedOffView}
             className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors print:hidden shadow-sm border ${bookedOffView ? 'bg-rose-600 text-white border-rose-700 hover:bg-rose-700' : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'}`}
           ><Plane className="w-4 h-4" /> Booked off</button>
-          {!bookedOffView && (
+          <button
+            onClick={() => { setCapacityView(v => !v); setBookedOffView(false); }}
+            aria-pressed={capacityView}
+            title="Forward scheduled BH by week — how far out we're booked"
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors print:hidden shadow-sm border ${capacityView ? 'bg-slate-800 text-white border-slate-900 hover:bg-slate-700' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}
+          ><CalendarRange className="w-4 h-4" /> Capacity</button>
+          {!altView && (
             <>
               <button onClick={() => setIsWeatherModalOpen(true)} className="flex items-center gap-2 bg-green-50 text-green-700 border border-green-200 px-3 py-2 rounded-lg text-sm font-bold hover:bg-green-100 transition-colors print:hidden shadow-sm"><CloudSun className="w-4 h-4" /> Weather</button>
               <button onClick={handlePrint} className="flex items-center gap-2 bg-slate-800 text-white px-3 py-2 rounded-lg text-sm font-bold hover:bg-slate-700 transition-colors print:hidden shadow-sm"><Printer className="w-4 h-4" /> Print</button>
@@ -1174,6 +1202,18 @@ export default function ScheduleBoard({
           <BookedOffCalendar
             employees={appData.employees || []}
             defaultDivision={bookedOffDefaultDivision}
+          />
+        </div>
+      ) : capacityView ? (
+        <div className="flex-1 overflow-y-auto">
+          <CapacityCalendar
+            appData={appData}
+            forecast={capacityForecast}
+            isAdmin={isAdmin}
+            currentUserEmployee={currentUserEmployee}
+            onRefresh={onRefreshCapacity}
+            canRefresh={canRefreshCapacity}
+            variant="board"
           />
         </div>
       ) : (
