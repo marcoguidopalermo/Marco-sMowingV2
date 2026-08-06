@@ -3,14 +3,17 @@
 // uncompleted Jobber work, bucketed by week and crew, coloured against the
 // admin-set weekly BH capacity.
 //
-// Nothing here writes. Capacity + threshold VALUES are edited in
-// Manage Resources → App Settings; this view only reads them.
+// The only thing it writes is the capacity SETTINGS (weekly BH + colour
+// thresholds), through the same shared editor Manage Resources hosts —
+// reachable from a gear on this view so the basis for every percentage is
+// one click away rather than buried two screens deep.
 import { useMemo, useState } from 'react';
 import {
   CalendarRange, ChevronDown, ChevronRight, ChevronLeft, RefreshCw,
-  AlertTriangle, Info, TrendingUp, Users, X, Clock, HelpCircle,
+  AlertTriangle, Info, TrendingUp, Users, X, Clock, HelpCircle, Sliders,
 } from 'lucide-react';
-import type { AppData, CapacityForecast, Employee } from '../types';
+import type { AppData, AppSettings, CapacityForecast, CapacityScope, CapacitySettings, Employee } from '../types';
+import CapacitySettingsPanel from './CapacitySettingsPanel';
 import {
   buildCapacityModel, capacityOrDefault, mergeSlices, BAND_META, longDate,
   type CapacityBand, type CapacityCell, type CapacityRow, type CapacityWeek,
@@ -20,14 +23,19 @@ import { DIVISIONS } from '../constants';
 
 interface Props {
   appData: AppData;
-  // The forward snapshot — its own Firestore doc, held outside appData so it
-  // can never be written back into the main document.
-  forecast: CapacityForecast | null;
+  // The forward snapshots, one per scope — each its own Firestore doc, held
+  // outside appData so neither can be written back into the main document.
+  // They are merged for display; a stale lawn pull still renders next to a
+  // fresh projects one, each carrying its own "updated" stamp.
+  forecasts: Record<CapacityScope, CapacityForecast | null>;
   isAdmin: boolean;
   currentUserEmployee: Employee | null;
-  // Re-pulls the forecast from Jobber (the scheduled pass runs on its own).
-  onRefresh?: () => Promise<void>;
+  // Re-pulls ONE scope from Jobber (the scheduled passes run on their own).
+  onRefresh?: (scope: CapacityScope) => Promise<void>;
   canRefresh?: boolean;
+  // Saves the capacity settings block (admin only). Absent → the view is
+  // read-only and points at an admin instead of offering an editor.
+  onSaveSettings?: (next: CapacitySettings) => Promise<void>;
   // 'board' trims the outer chrome when mounted inside the schedule board,
   // which supplies its own header bar.
   variant?: 'page' | 'board';
@@ -118,7 +126,7 @@ function Cell({ cell, week, active, onClick, compact }: {
     <button
       type="button"
       onClick={onClick}
-      aria-label={`Week of ${week.label}: ${bh(cell.bh)} billable hours`}
+      aria-label={`Week ${week.rangeLabel}: ${bh(cell.bh)} billable hours`}
       className={`w-full text-left rounded-lg p-2 transition-shadow ${s.cell} ${active ? 'ring-2 ring-slate-800 ring-offset-1' : 'hover:shadow-md'}`}
     >
       <div className="flex items-baseline justify-between gap-1">
@@ -135,7 +143,7 @@ function Cell({ cell, week, active, onClick, compact }: {
       <div className="flex items-center justify-between gap-1 mt-1">
         <span className={`text-[9px] font-black uppercase tracking-widest inline-flex items-center gap-0.5 ${s.text}`}>
           {cell.band === 'over' && <AlertTriangle className="w-2.5 h-2.5" />}
-          {cell.band ? BAND_META[cell.band].label : 'NO CAP'}
+          {cell.band ? BAND_META[cell.band].label : 'NO CAPACITY SET'}
         </span>
         {cell.capacity !== null && (
           <span className={`text-[9px] font-bold opacity-70 tabular-nums ${s.text}`}>of {bh(cell.capacity)}</span>
@@ -169,33 +177,62 @@ function BookedOut({ row, big }: { row: CapacityRow; big?: boolean }) {
   );
 }
 
-function CapacityNote({ row }: { row: CapacityRow }) {
-  const d = row.capacityDetail;
+// Where a row's capacity came from, spelled out. A percentage with no
+// visible basis is a number nobody can check — this is the basis.
+function CapacityNote({ row, onOpenSettings }: {
+  row: CapacityRow;
+  onOpenSettings?: () => void;
+}) {
+  const unset = (
+    <span className="text-[10px] font-bold text-slate-400">
+      no capacity set —{' '}
+      {onOpenSettings ? (
+        <button type="button" onClick={onOpenSettings} className="font-black text-slate-600 underline hover:text-slate-900">set it</button>
+      ) : <span className="font-black text-slate-500">ask an admin to set it</span>}
+    </span>
+  );
+
   if (row.kind === 'division') {
-    if (row.capacity === null) return <span className="text-[10px] font-bold text-slate-400">no capacity set</span>;
+    if (row.capacity === null) return unset;
     return (
       <span className="text-[10px] font-bold text-slate-500">
-        {bh(row.capacity)} BH/wk{row.capacityPartial && (
-          <span className="text-amber-700"> · partial (some crews unset)</span>
+        {bh(row.capacity)} BH/wk (sum of {row.crews?.filter(c => c.capacity !== null).length || 0} crew
+        {(row.crews?.filter(c => c.capacity !== null).length || 0) === 1 ? '' : 's'})
+        {row.capacityPartial && (
+          <span className="text-amber-700"> · partial — {row.crews?.filter(c => c.capacity === null).length} crew(s) unset, so this bar covers less than the whole division</span>
         )}
       </span>
     );
   }
-  if (!d || d.bh === null) return <span className="text-[10px] font-bold text-slate-400">no capacity set</span>;
+  if (row.kind === 'unassigned') {
+    return <span className="text-[10px] font-bold text-slate-400">no capacity — unattributed work</span>;
+  }
+  const d = row.capacityDetail;
+  if (!d || d.bh === null) return unset;
+  const basis = d.perPersonBH
+    ? `${d.source === 'crew' ? 'crew override' : 'division default'}: ${d.perPersonBH} BH/person × ${d.crewSize} crew`
+    : (d.source === 'crew' ? 'crew override' : 'division default');
   return (
     <span className="text-[10px] font-bold text-slate-500">
-      {bh(d.bh)} BH/wk
-      {d.perPersonBH ? ` (${d.perPersonBH}/person × ${d.crewSize})` : ''}
-      {d.source === 'crew' ? ' · crew' : ' · division'}
-      {d.placeholder && <span className="text-amber-700 font-black"> · PLACEHOLDER</span>}
+      {bh(d.bh)} BH/wk <span className="text-slate-400">({basis})</span>
+      {d.placeholder && <span className="text-amber-700 font-black"> · PLACEHOLDER — confirm</span>}
     </span>
   );
 }
 
 export default function CapacityCalendar({
-  appData, forecast, isAdmin, currentUserEmployee, onRefresh, canRefresh, variant = 'page',
+  appData, forecasts, isAdmin, currentUserEmployee, onRefresh, canRefresh,
+  onSaveSettings, variant = 'page',
 }: Props) {
   const today = formatTodayInToronto();
+  const snapshots = useMemo(
+    () => [forecasts.projects, forecasts.lawn].filter(Boolean) as CapacityForecast[],
+    [forecasts.projects, forecasts.lawn],
+  );
+  // "Have we got anything at all to show?" — one scope arriving is enough.
+  const forecast: CapacityForecast | null =
+    snapshots.length === 0 ? null :
+      snapshots.reduce((a, b) => (a.generatedAt >= b.generatedAt ? a : b));
 
   // A division manager lands on their own division; admins see everything.
   const managed = currentUserEmployee?.managedDivision;
@@ -211,14 +248,34 @@ export default function CapacityCalendar({
   const [drill, setDrill] = useState<{ rowKey: string; weekStart: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // ── Settings, reachable from here. The draft lives in local state so an
+  // admin can adjust several values and commit once; Save writes the whole
+  // capacity block through the App's normal settings write.
+  const canEditSettings = isAdmin && !!onSaveSettings;
+  const [showSettings, setShowSettings] = useState(false);
+  const [draft, setDraft] = useState<AppSettings>(appData.settings || {});
+  const [saving, setSaving] = useState(false);
+  const openSettings = () => {
+    setDraft(appData.settings || {});
+    setShowSettings(true);
+  };
+  const saveSettings = async () => {
+    if (!onSaveSettings || saving) return;
+    setSaving(true);
+    try {
+      await onSaveSettings(capacityOrDefault(draft.capacity));
+      setShowSettings(false);
+    } finally { setSaving(false); }
+  };
+
   const model = useMemo(() => buildCapacityModel({
-    forecast,
+    forecasts: snapshots,
     schedules: appData.schedules || {},
     employees: appData.employees || [],
     multiDayJobs: appData.multiDayJobs,
     settings: capacityOrDefault(appData.settings?.capacity),
     today,
-  }), [forecast, appData.schedules, appData.employees, appData.multiDayJobs, appData.settings?.capacity, today]);
+  }), [snapshots, appData.schedules, appData.employees, appData.multiDayJobs, appData.settings?.capacity, today]);
 
   // Month anchor built from (year, month, 1) so month-stepping can't skip a
   // month from a 29th–31st start date.
@@ -258,10 +315,12 @@ export default function CapacityCalendar({
     return { row, cell: row.cells[i], week: model.weeks[i] };
   }, [drill, model]);
 
-  const refresh = async () => {
+  const [busyScope, setBusyScope] = useState<CapacityScope | null>(null);
+  const refresh = async (scope: CapacityScope) => {
     if (!onRefresh || busy) return;
     setBusy(true);
-    try { await onRefresh(); } finally { setBusy(false); }
+    setBusyScope(scope);
+    try { await onRefresh(scope); } finally { setBusy(false); setBusyScope(null); }
   };
 
   const toggleCell = (rowKey: string, weekStart: string) =>
@@ -294,7 +353,7 @@ export default function CapacityCalendar({
             </span>
           ) : null}
         </div>
-        <CapacityNote row={row} />
+        <CapacityNote row={row} onOpenSettings={canEditSettings ? openSettings : undefined} />
         {row.bookedOutTo && (
           <div className="text-[10px] font-black text-slate-600 mt-0.5">
             booked to {longDate(row.bookedOutTo)}
@@ -331,14 +390,14 @@ export default function CapacityCalendar({
           )}
           <div className="min-w-0">
             <div className={`truncate ${row.kind === 'division' ? 'font-black text-slate-900' : 'font-bold text-slate-700 text-sm'}`}>{row.label}</div>
-            <CapacityNote row={row} />
+            <CapacityNote row={row} onOpenSettings={canEditSettings ? openSettings : undefined} />
           </div>
         </div>
       </div>
       <div className="space-y-1.5">
         {visible.map(({ week, index }) => (
           <div key={week.start} className="grid grid-cols-[64px_1fr] gap-2 items-center">
-            <div className="text-[11px] font-black text-slate-500 tabular-nums">{week.label}</div>
+            <div className="text-[11px] font-black text-slate-500 leading-tight">{week.rangeLabel}</div>
             <Cell
               cell={row.cells[index]}
               week={week}
@@ -408,15 +467,42 @@ export default function CapacityCalendar({
                 {DIVISIONS.map(d => <option key={d} value={d}>{d}</option>)}
               </select>
             )}
+            {/* Refresh is SCOPED. Projects is the default because that's the
+                half that changes between refreshes; lawn is 250+ visits a
+                week, moves slowly, and gets its own (slower) schedule. */}
             {canRefresh && onRefresh && (
+              <div className="inline-flex rounded-lg overflow-hidden border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => refresh('projects')}
+                  disabled={busy}
+                  title="Re-pull Large + Small Projects (leaves the lawn snapshot alone)"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest bg-slate-800 text-white hover:bg-slate-700 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${busy && busyScope === 'projects' ? 'animate-spin' : ''}`} />
+                  {busy && busyScope === 'projects' ? 'Pulling' : 'Refresh projects'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => refresh('lawn')}
+                  disabled={busy}
+                  title="Re-pull Lawn — bigger and slower; it refreshes on its own three times a day"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest bg-white text-slate-700 border-l border-slate-800 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${busy && busyScope === 'lawn' ? 'animate-spin' : ''}`} />
+                  {busy && busyScope === 'lawn' ? 'Pulling' : 'Lawn'}
+                </button>
+              </div>
+            )}
+            {canEditSettings && (
               <button
                 type="button"
-                onClick={refresh}
-                disabled={busy}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest bg-slate-800 text-white rounded-lg hover:bg-slate-700 disabled:opacity-50"
+                onClick={() => (showSettings ? setShowSettings(false) : openSettings())}
+                aria-expanded={showSettings}
+                title="Set the weekly BH capacity and colour thresholds"
+                className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-black uppercase tracking-widest rounded-lg border ${showSettings ? 'bg-slate-800 text-white border-slate-900' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`}
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${busy ? 'animate-spin' : ''}`} />
-                {busy ? 'Pulling' : 'Refresh'}
+                <Sliders className="w-3.5 h-3.5" /> Capacity settings
               </button>
             )}
           </div>
@@ -430,13 +516,49 @@ export default function CapacityCalendar({
           <p>
             Reflects work <strong>scheduled in Jobber</strong> — won-but-unscheduled work
             doesn&apos;t appear, so an empty week may not be truly open.
-            {forecast && (
-              <> Updated {new Date(forecast.generatedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
-                {stale && <span className="text-amber-700 font-bold"> — over 6 h old</span>}.</>
-            )}
+            {' '}
+            {/* Per-scope stamps: the two halves refresh on different
+                cadences, so one "updated" time would misrepresent the other. */}
+            {(['projects', 'lawn'] as CapacityScope[]).map(scope => {
+              const f = forecasts[scope];
+              const label = scope === 'projects' ? 'Projects' : 'Lawn';
+              if (!f) return <span key={scope} className="mr-2">{label}: <strong>not pulled yet</strong>.</span>;
+              const old = Date.now() - f.generatedAt > (scope === 'lawn' ? 12 : 6) * 3600 * 1000;
+              return (
+                <span key={scope} className="mr-2">
+                  {label} updated {new Date(f.generatedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                  {old && <span className="text-amber-700 font-bold"> (stale)</span>}.
+                </span>
+              );
+            })}
           </p>
         </div>
       </div>
+
+      {/* Settings, inline. Same editor Manage Resources hosts; this host
+          commits it itself so an admin never has to leave the view whose
+          numbers they're calibrating. */}
+      {showSettings && canEditSettings && (
+        <div className="space-y-3">
+          <CapacitySettingsPanel settings={draft} setSettings={setDraft} isAdmin={isAdmin} />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={saveSettings}
+              disabled={saving}
+              className="px-4 py-2 text-xs font-black uppercase tracking-widest bg-slate-800 text-white rounded-lg hover:bg-slate-700 disabled:opacity-50"
+            >{saving ? 'Saving…' : 'Save capacity settings'}</button>
+            <button
+              type="button"
+              onClick={() => setShowSettings(false)}
+              className="px-3 py-2 text-xs font-black uppercase tracking-widest text-slate-500 hover:text-slate-800"
+            >Cancel</button>
+            <span className="text-[10px] font-bold text-slate-400">
+              These same values live in Manage Resources → App Settings.
+            </span>
+          </div>
+        </div>
+      )}
 
       {!forecast && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 text-center space-y-2">
@@ -449,16 +571,29 @@ export default function CapacityCalendar({
         </div>
       )}
 
-      {forecast && (forecast.degraded || forecast.truncated || forecast.warnings.length > 0) && (
-        <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 text-[11px] text-amber-900 space-y-1">
-          {forecast.degraded && (
-            <p><strong>Reduced pull:</strong> multi-day spans are collapsed onto their start day and client names are missing.</p>
-          )}
-          {forecast.truncated && (
-            <p><strong>Truncated:</strong> the pull hit its page cap — later weeks may be understated.</p>
-          )}
-        </div>
-      )}
+      {/* Per-scope health. Truncation is reported against the SCOPE it
+          happened in — "later weeks understated" means something different
+          for a 120-day projects pull than for a 56-day lawn one, and a
+          blanket banner would tar the healthy half with the other's fault. */}
+      {(['projects', 'lawn'] as CapacityScope[]).map(scope => {
+        const f = forecasts[scope];
+        if (!f || (!f.degraded && !f.truncated)) return null;
+        const label = scope === 'projects' ? 'Projects' : 'Lawn';
+        return (
+          <div key={scope} className="bg-amber-50 border border-amber-300 rounded-xl p-3 text-[11px] text-amber-900 space-y-1">
+            {f.degraded && (
+              <p><strong>{label} — reduced pull:</strong> multi-day spans are collapsed onto their start day and client names are missing.</p>
+            )}
+            {f.truncated && (
+              <p>
+                <strong>{label} — truncated:</strong> the pull hit its ceiling, so weeks past
+                roughly {new Date(`${f.visits[f.visits.length - 1]?.startDate || f.today}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} are
+                understated. This should not be the normal state — tell Marco if it persists.
+              </p>
+            )}
+          </div>
+        );
+      })}
 
       {/* Booked-out headline — the number for the phone call. */}
       {forecast && rows.length > 0 && (
@@ -489,7 +624,7 @@ export default function CapacityCalendar({
                 <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
                   {index === 0 ? 'This week' : `Week ${index + 1}`}
                 </div>
-                <div className="text-sm font-black text-slate-800">{week.label}</div>
+                <div className="text-sm font-black text-slate-800">{week.rangeLabel}</div>
               </div>
             ))}
           </div>
@@ -534,7 +669,7 @@ export default function CapacityCalendar({
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                Week of {longDate(drillCell.week.start)} — {drillCell.row.label}
+                Week {drillCell.week.rangeLabel} — {drillCell.row.label}
               </div>
               <div className="text-xl font-black text-slate-900">
                 {bh(drillCell.cell.bh)} BH

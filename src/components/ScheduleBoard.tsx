@@ -7,7 +7,7 @@ import {
   TrendingUp, CreditCard as IdCard, Copy, ClipboardPaste, ShieldCheck,
   Moon, Lock, Link2, ArrowLeft, Plane, CalendarRange
 } from 'lucide-react';
-import { AppData, Crew, Employee, FleetItem, OverrideRecord, UserRole, JobberUser, MechanicTask, CapacityForecast } from '../types';
+import { AppData, Crew, Employee, FleetItem, OverrideRecord, UserRole, JobberUser, MechanicTask, CapacityForecast, CapacityScope, CapacitySettings } from '../types';
 import DispatchConfirmModal from './DispatchConfirmModal';
 import { logPerfActivity } from '../lib/perfAudit';
 import { DIVISIONS, CREW_NUMBERS, EOD_WARNING_HOUR, PERMISSION_DENIED } from '../constants';
@@ -87,9 +87,10 @@ interface ScheduleBoardProps {
 
   // CAPACITY view — the same component SalesMaster mounts, swapped into the
   // board body by the toggle below (mirrors "Booked off").
-  capacityForecast: CapacityForecast | null;
-  onRefreshCapacity: () => Promise<void>;
+  capacityForecasts: Record<CapacityScope, CapacityForecast | null>;
+  onRefreshCapacity: (scope: CapacityScope) => Promise<void>;
   canRefreshCapacity: boolean;
+  onSaveCapacitySettings: (next: CapacitySettings) => Promise<void>;
   isAdmin: boolean;
 }
 
@@ -133,9 +134,10 @@ export default function ScheduleBoard({
   addCrewToDay,
   jobberUsers,
   jobberConnected,
-  capacityForecast,
+  capacityForecasts,
   onRefreshCapacity,
   canRefreshCapacity,
+  onSaveCapacitySettings,
   isAdmin,
 }: ScheduleBoardProps) {
   const [overrideModalCtx, setOverrideModalCtx] = useState<{
@@ -1213,11 +1215,12 @@ export default function ScheduleBoard({
         <div className="flex-1 overflow-y-auto">
           <CapacityCalendar
             appData={appData}
-            forecast={capacityForecast}
+            forecasts={capacityForecasts}
             isAdmin={isAdmin}
             currentUserEmployee={currentUserEmployee}
             onRefresh={onRefreshCapacity}
             canRefresh={canRefreshCapacity}
+            onSaveSettings={onSaveCapacitySettings}
             variant="board"
           />
         </div>

@@ -39,17 +39,35 @@ const db = admin.firestore();
 
 const REGION = "us-central1";
 const APP_ID = "crewmaster";
-const FORECAST_DOC =
+const APP_DATA_DOC = `artifacts/${APP_ID}/public/data/appData/main`;
+// SCOPED snapshots — one document per scope. Lawn runs 250+ visits a week and
+// changes slowly; projects are few and change constantly. Splitting them lets
+// a projects refresh leave the big lawn document alone, and lets lawn use a
+// much shorter horizon (its page count, not projects', is what blew the old
+// single pull past its ceiling).
+export type ForecastScope = "projects" | "lawn";
+export const FORECAST_SCOPES: ForecastScope[] = ["projects", "lawn"];
+const forecastDoc = (scope: ForecastScope): string =>
+  `artifacts/${APP_ID}/public/data/capacityForecast/${scope}`;
+// The pre-split single document. Deleted once on the first scoped run so a
+// stale snapshot can't sit there looking live. It is a regenerable cache.
+const LEGACY_FORECAST_DOC =
   `artifacts/${APP_ID}/public/data/capacityForecast/current`;
 const TIMEZONE = "America/Toronto";
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 const PAGE_DELAY_MS = 250;
 
-// How far FORWARD we pull. Wider than the widest view (a month toggle) on
-// purpose: the "booked out to" headline is computed over the whole horizon,
-// so a salesman sees the true end of the committed pipeline, not the end of
-// the visible grid.
-const HORIZON_DAYS = 120;
+// How far FORWARD we pull, per scope.
+// PROJECTS: wide, because "booked out to" is computed over the whole horizon
+// and project work is genuinely booked months ahead.
+// LAWN: short. Lawn is recurring, every week is full, and nobody sells
+// against a lawn week four months out — so paying for 120 days of the
+// densest visit stream in the business buys nothing. This is the single
+// biggest reduction in pages fetched.
+const SCOPE_HORIZON_DAYS: Record<ForecastScope, number> = {
+  projects: 120,
+  lawn: 56,
+};
 // How far BACK we look. Only to catch IN-FLIGHT multi-day work: a visit that
 // started last week, isn't complete, and still runs into this week is
 // remaining committed work. Past-ending visits are dropped below.
@@ -58,13 +76,19 @@ const LOOKBACK_DAYS = 21;
 // Jobber prices a query by its whole nested shape against a 10,000-point
 // ceiling, and `first: 50` with job+client+assignedUsers nested under it
 // exceeds that ceiling outright — it comes back "Throttled" even with the
-// budget completely full, and no amount of waiting fixes it. 80 pages × 25
-// = 2,000 visits; beyond that the snapshot is marked truncated rather than
-// silently short.
-const MAX_PAGES = 80;
-// Firestore caps a document at 1 MiB. Each entry is small (~250 B), but the
-// cap is enforced explicitly so a runaway pull can never fail the write.
-const MAX_ENTRIES = 2500;
+// budget completely full, and no amount of waiting fixes it.
+//
+// The ceiling below is a RUNAWAY GUARD, not a working limit. At 80 pages
+// (2,000 visits) it was neither: the live pull hit it every run and the UI
+// showed a permanent "later weeks may be understated" warning — a forecast
+// that silently understates is worse than none. 400 pages × 25 = 10,000
+// visits, comfortably past the real volume, and the timeout was raised to
+// match. If this is ever hit again the snapshot still says so.
+const MAX_PAGES = 400;
+// Firestore caps a document at 1 MiB. Each entry is ~250 B, so 10,000 would
+// not fit — the per-scope split is what keeps each document small. The cap
+// is still enforced so a runaway pull can never fail the write.
+const MAX_ENTRIES = 3000;
 
 // Forward visits query. SEPARATE from the sync's VISITS_QUERY (which stays
 // exactly as it is) because this one needs two extra things the sync doesn't:
@@ -205,6 +229,7 @@ export interface ForecastVisit {
 }
 
 export interface CapacityForecastDoc {
+  scope: ForecastScope;
   generatedAt: number;
   generatedBy: "manual" | "scheduled";
   // Toronto YYYY-MM-DD boundaries of what was pulled.
@@ -227,6 +252,74 @@ export interface CapacityForecastDoc {
   // and client names are unavailable in that mode, and the UI says so.
   degraded: boolean;
   warnings: string[];
+}
+
+/**
+ * Splits Jobber assignee ids into lawn and non-lawn by what crews those
+ * people have actually been scheduled on.
+ *
+ * This is a COARSE pre-filter — it only decides which document a visit is
+ * stored in. Exact crew attribution still happens client-side off the same
+ * schedule, so a visit filed under the "wrong" scope is still counted
+ * against the right crew: the client merges both documents before building
+ * the model. That is deliberate — it means a misclassification costs
+ * nothing, so this can stay simple.
+ * @return {Promise<object>} Lawn and projects assignee id sets.
+ */
+async function loadScopeAssignees(): Promise<{
+  lawn: Set<string>;
+  projects: Set<string>;
+}> {
+  const lawn = new Set<string>();
+  const projects = new Set<string>();
+  try {
+    const snap = await db.doc(APP_DATA_DOC).get();
+    const data = (snap.data() || {}) as {
+      schedules?: Record<string, Array<{
+        division?: string;
+        jobberAssigneeIds?: string[];
+      }>>;
+    };
+    for (const crews of Object.values(data.schedules || {})) {
+      for (const crew of crews || []) {
+        const isLawn = /lawn/i.test(crew.division || "");
+        for (const id of crew.jobberAssigneeIds || []) {
+          (isLawn ? lawn : projects).add(id);
+        }
+      }
+    }
+  } catch (e) {
+    logger.warn("Could not load schedules for scope split", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+  return {lawn, projects};
+}
+
+/**
+ * Decides a visit's scope from its assignees.
+ * A visit counts as LAWN only when it has at least one lawn assignee and no
+ * projects assignee. Everything else — including work we can't attribute at
+ * all — files under projects, which is also where the client's "Unassigned"
+ * row is surfaced, so unattributable work stays visible rather than being
+ * quietly parked in the document nobody refreshes.
+ * @param {string[]} assigneeIds The visit's Jobber assignee ids.
+ * @param {Set<string>} lawnSet Lawn assignee ids.
+ * @param {Set<string>} projectsSet Projects assignee ids.
+ * @return {ForecastScope} Which document this visit belongs in.
+ */
+function scopeOfVisit(
+  assigneeIds: string[],
+  lawnSet: Set<string>,
+  projectsSet: Set<string>,
+): ForecastScope {
+  let lawnHits = 0;
+  let projectHits = 0;
+  for (const id of assigneeIds) {
+    if (lawnSet.has(id)) lawnHits++;
+    if (projectsSet.has(id)) projectHits++;
+  }
+  return lawnHits > 0 && projectHits === 0 ? "lawn" : "projects";
 }
 
 /**
@@ -383,19 +476,23 @@ async function fetchForwardVisits(
 }
 
 /**
- * Pulls forward scheduled work from Jobber and writes the snapshot doc.
+ * Pulls forward scheduled work for ONE scope and writes that scope's
+ * snapshot document. The other scope's document is left untouched.
+ * @param {ForecastScope} scope Which half of the business to refresh.
  * @param {"manual" | "scheduled"} triggeredBy Trigger source, for the doc.
  * @return {Promise<CapacityForecastDoc>} The snapshot that was written.
  */
 export async function runCapacityForecast(
+  scope: ForecastScope,
   triggeredBy: "manual" | "scheduled",
 ): Promise<CapacityForecastDoc> {
   const token = await getValidAccessToken();
   const client = makeJobberClient(token);
+  const {lawn: lawnSet, projects: projectsSet} = await loadScopeAssignees();
 
   const today = ymdInToronto(new Date());
   const windowStart = shiftYmd(today, -LOOKBACK_DAYS);
-  const windowEnd = shiftYmd(today, HORIZON_DAYS);
+  const windowEnd = shiftYmd(today, SCOPE_HORIZON_DAYS[scope]);
   const after = torontoMidnightIso(windowStart);
   const before = torontoMidnightIso(windowEnd);
 
@@ -405,6 +502,7 @@ export async function runCapacityForecast(
   // diagnosable. Without this, a stall between "last page fetched" and
   // "document written" is silent — and silence reads exactly like success.
   logger.info("Capacity forecast fetched", {
+    scope,
     visits: raw.length,
     windowStart,
     windowEnd,
@@ -419,6 +517,7 @@ export async function runCapacityForecast(
     endedBeforeToday: 0,
     untagged: 0,
     hourly: 0,
+    otherScope: 0,
   };
 
   const entries: ForecastVisit[] = [];
@@ -460,6 +559,12 @@ export async function runCapacityForecast(
     if (untagged) stats.untagged++;
 
     const assignees = v.assignedUsers?.nodes || [];
+    const assigneeIds = assignees.map((a) => a.id);
+    // Belongs to the other half of the business — its own run owns it.
+    if (scopeOfVisit(assigneeIds, lawnSet, projectsSet) !== scope) {
+      stats.otherScope++;
+      continue;
+    }
     entries.push({
       visitId: v.id,
       jobId: v.job?.id || null,
@@ -471,7 +576,7 @@ export async function runCapacityForecast(
       bh: isHourly ? 0 : (parsed?.bh ?? 0),
       isHourly,
       untagged,
-      assigneeIds: assignees.map((a) => a.id),
+      assigneeIds,
       assigneeNames: assignees.map((a) => a.name?.full || "").slice(0, 6),
     });
     if (entries.length >= MAX_ENTRIES) {
@@ -488,6 +593,7 @@ export async function runCapacityForecast(
     a.startDate > b.startDate ? 1 : 0));
 
   const snapshot: CapacityForecastDoc = {
+    scope,
     generatedAt: Date.now(),
     generatedBy: triggeredBy,
     windowStart,
@@ -500,14 +606,24 @@ export async function runCapacityForecast(
     warnings,
   };
 
-  logger.info("Capacity forecast writing", {entries: entries.length});
-  await db.doc(FORECAST_DOC).set(snapshot);
+  logger.info("Capacity forecast writing", {scope, entries: entries.length});
+  await db.doc(forecastDoc(scope)).set(snapshot);
   logger.info("Capacity forecast written", {
+    scope,
     kept: stats.kept,
     fetched: stats.fetched,
+    otherScope: stats.otherScope,
     degraded,
     truncated: snapshot.truncated,
   });
+  // One-time cleanup of the pre-split document so a stale snapshot can't sit
+  // in Firestore looking live. Regenerable cache, no data loss; failure here
+  // is irrelevant to the run.
+  try {
+    await db.doc(LEGACY_FORECAST_DOC).delete();
+  } catch {
+    // ignore
+  }
   return snapshot;
 }
 
@@ -515,35 +631,63 @@ export const jobberSyncCapacity = onCall(
   {
     region: REGION,
     secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET],
-    timeoutSeconds: 300,
+    timeoutSeconds: 540,
   },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError("unauthenticated", "Sign in required.");
     }
-    return await runCapacityForecast("manual");
+    // Defaults to PROJECTS — the half that actually moves between refreshes.
+    const raw = (request.data ?? {}) as {scope?: string};
+    const scope: ForecastScope = raw.scope === "lawn" ? "lawn" : "projects";
+    return await runCapacityForecast(scope, "manual");
   },
 );
 
-// Forward bookings move on office hours, not minutes. Twice an hour during
-// the working day is plenty, and the :07/:37 offset keeps it clear of the
-// performance sync's :00/:15/:30/:45 slots so the two never contend for the
-// Jobber API budget.
+// PROJECTS: twice an hour through the working day. Project bookings change
+// constantly and the document is small. The :07/:37 offset keeps this clear
+// of the performance sync's :00/:15/:30/:45 slots so the two never contend
+// for the Jobber API budget.
 export const jobberSyncCapacityScheduled = onSchedule(
   {
     region: REGION,
     schedule: "7,37 6-20 * * *",
     timeZone: TIMEZONE,
     secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET],
-    timeoutSeconds: 300,
+    timeoutSeconds: 540,
   },
   async () => {
     try {
-      await runCapacityForecast("scheduled");
+      await runCapacityForecast("projects", "scheduled");
     } catch (e) {
       // Never let the forecast's failure surface as a function crash loop —
       // it is a read-only convenience view. Log and move on.
       logger.error("Scheduled capacity forecast failed", {
+        scope: "projects",
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+);
+
+// LAWN: three times a day, not twice an hour. It is the densest visit stream
+// in the business and the slowest-moving picture — a recurring route booked
+// weeks out doesn't change between lunch and mid-afternoon. Early morning
+// (after overnight scheduling), midday, and end of day.
+export const jobberSyncCapacityLawnScheduled = onSchedule(
+  {
+    region: REGION,
+    schedule: "22 6,12,18 * * *",
+    timeZone: TIMEZONE,
+    secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET],
+    timeoutSeconds: 540,
+  },
+  async () => {
+    try {
+      await runCapacityForecast("lawn", "scheduled");
+    } catch (e) {
+      logger.error("Scheduled capacity forecast failed", {
+        scope: "lawn",
         error: e instanceof Error ? e.message : String(e),
       });
     }

@@ -6,7 +6,7 @@
 // received to the right module.
 import { useState } from 'react';
 import { Calculator, Snowflake, Sprout, CalendarRange } from 'lucide-react';
-import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, AppData, CapacityForecast, Employee } from '../types';
+import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, AppData, CapacityForecast, CapacityScope, CapacitySettings, Employee } from '../types';
 import { SnowConfig } from '../lib/snowPricing';
 import { LawnConfig } from '../lib/lawnPricing';
 import ProjectMaster from './ProjectMaster';
@@ -43,10 +43,11 @@ interface Props {
   // Capacity calendar — the SAME component the schedule board's CAPACITY
   // toggle mounts. Read-only forward view; no second implementation.
   appData: AppData;
-  capacityForecast: CapacityForecast | null;
+  capacityForecasts: Record<CapacityScope, CapacityForecast | null>;
   currentUserEmployee: Employee | null;
-  onRefreshCapacity: () => Promise<void>;
+  onRefreshCapacity: (scope: CapacityScope) => Promise<void>;
   canRefreshCapacity: boolean;
+  onSaveCapacitySettings: (next: CapacitySettings) => Promise<void>;
 }
 
 type ModuleKey = 'project' | 'snow' | 'lawn' | 'capacity';
@@ -64,7 +65,7 @@ export default function SalesMaster(props: Props) {
     isSuperAdmin, snowConfigs, snowActiveVersion, snowActiveConfig, onSaveSnowConfig, onRevertSnowConfig,
     lawnQuotes, onSaveLawnQuote, onDeleteLawnQuote,
     lawnConfigs, lawnActiveVersion, lawnActiveConfig, onSaveLawnConfig, onRevertLawnConfig,
-    appData, capacityForecast, currentUserEmployee, onRefreshCapacity, canRefreshCapacity,
+    appData, capacityForecasts, currentUserEmployee, onRefreshCapacity, canRefreshCapacity, onSaveCapacitySettings,
   } = props;
   const [module, setModule] = useState<ModuleKey>('project');
 
@@ -132,11 +133,12 @@ export default function SalesMaster(props: Props) {
         {module === 'capacity' && (
           <CapacityCalendar
             appData={appData}
-            forecast={capacityForecast}
+            forecasts={capacityForecasts}
             isAdmin={isAdmin}
             currentUserEmployee={currentUserEmployee}
             onRefresh={onRefreshCapacity}
             canRefresh={canRefreshCapacity}
+            onSaveSettings={onSaveCapacitySettings}
           />
         )}
       </div>

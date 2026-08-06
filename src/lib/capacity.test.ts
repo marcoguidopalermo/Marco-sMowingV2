@@ -245,5 +245,54 @@ test('multi-crew visits split evenly and the drill-down merges the slices', () =
   assert.equal(mergeSlices(div.cells[0].jobs)[0].bh, 30);
 });
 
+console.log('\nWeek range labels');
+test('weeks are labelled with their FULL range, weekends included', () => {
+  const w = buildWeeks(TODAY, 2);
+  assert.equal(w[0].rangeLabel, 'Aug 3 – Aug 9');
+  assert.equal(w[1].rangeLabel, 'Aug 10 – Aug 16');
+  // The range must cover Saturday and Sunday — weekend work is counted in
+  // the week's BH, so the label has to say so.
+  assert.equal(w[0].end, '2026-08-09');
+});
+
+console.log('\nScope snapshots');
+test('projects + lawn snapshots merge into one model', () => {
+  const projects = forecast([visit({ visitId: 'p1', bh: 20 })]);
+  const lawn = { ...forecast([visit({ visitId: 'l1', bh: 15 })]), generatedAt: 2, scope: 'lawn' as const };
+  const m = buildCapacityModel({
+    forecasts: [projects, lawn], schedules: SCHEDULES, employees: EMPLOYEES,
+    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { weeklyBH: 100 } } }, today: TODAY,
+  });
+  assert.equal(cellOf(m, '2026-08-03').bh, 35);
+  assert.equal(m.totals.visits, 2);
+});
+test('a visit present in BOTH scope documents is counted once', () => {
+  const a = forecast([visit({ visitId: 'dup', bh: 20 })]);
+  const b = { ...forecast([visit({ visitId: 'dup', bh: 20 })]), generatedAt: 99 };
+  const m = buildCapacityModel({
+    forecasts: [a, b], schedules: SCHEDULES, employees: EMPLOYEES,
+    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { weeklyBH: 100 } } }, today: TODAY,
+  });
+  assert.equal(cellOf(m, '2026-08-03').bh, 20);
+  assert.equal(m.totals.visits, 1);
+});
+test('one scope alone still renders (the other simply absent)', () => {
+  const m = buildCapacityModel({
+    forecasts: [null, forecast([visit({ visitId: 'l1', bh: 12 })])],
+    schedules: SCHEDULES, employees: EMPLOYEES, multiDayJobs: {},
+    settings: { divisions: { 'Large Projects': { weeklyBH: 100 } } }, today: TODAY,
+  });
+  assert.equal(cellOf(m, '2026-08-03').bh, 12);
+});
+test('newer snapshot wins for a visit whose BH changed between pulls', () => {
+  const older = { ...forecast([visit({ visitId: 'v', bh: 10 })]), generatedAt: 1 };
+  const newer = { ...forecast([visit({ visitId: 'v', bh: 40 })]), generatedAt: 500 };
+  const m = buildCapacityModel({
+    forecasts: [older, newer], schedules: SCHEDULES, employees: EMPLOYEES,
+    multiDayJobs: {}, settings: { divisions: { 'Large Projects': { weeklyBH: 100 } } }, today: TODAY,
+  });
+  assert.equal(cellOf(m, '2026-08-03').bh, 40);
+});
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 if (fail > 0) process.exit(1);

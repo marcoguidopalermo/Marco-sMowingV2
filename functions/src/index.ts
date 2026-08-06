@@ -35,4 +35,5 @@ export {
 export {
   jobberSyncCapacity,
   jobberSyncCapacityScheduled,
+  jobberSyncCapacityLawnScheduled,
 } from "./jobber/capacityForecast.js";

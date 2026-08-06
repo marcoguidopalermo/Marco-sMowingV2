@@ -1059,7 +1059,13 @@ export interface CapacityForecastVisit {
   assigneeNames: string[];
 }
 
+// Which half of the business a snapshot covers. Lawn is high-volume and
+// slow-moving; projects are few and change constantly, so each gets its own
+// document, horizon and refresh cadence.
+export type CapacityScope = 'projects' | 'lawn';
+
 export interface CapacityForecast {
+  scope?: CapacityScope;
   generatedAt: number;
   generatedBy: 'manual' | 'scheduled';
   windowStart: string;
@@ -1073,6 +1079,8 @@ export interface CapacityForecast {
     endedBeforeToday: number;
     untagged: number;
     hourly: number;
+    // Visits skipped because they belong to the other scope's document.
+    otherScope?: number;
   };
   truncated: boolean;
   // The forward query fell back to a reduced shape: multi-day spans collapse

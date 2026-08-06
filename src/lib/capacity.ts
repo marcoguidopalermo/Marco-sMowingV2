@@ -28,6 +28,11 @@ export interface CapacityWeek {
   end: string;     // Sunday, YYYY-MM-DD
   friday: string;  // last ordinary working day — what "booked out to" quotes
   label: string;   // "Aug 11"
+  // FULL week range, weekends included — "Aug 11 – Aug 17". Weekend work is
+  // real here (jobs land on Saturdays and Sundays and are counted in the
+  // week's BH), so a column headed with only its Monday misrepresents what
+  // the number covers.
+  rangeLabel: string;
 }
 
 const shortDate = (ymd: string): string =>
@@ -40,11 +45,13 @@ export function buildWeeks(anchorYmd: string, count: number): CapacityWeek[] {
   const out: CapacityWeek[] = [];
   let start = mondayOf(anchorYmd);
   for (let i = 0; i < count; i++) {
+    const end = addDaysToronto(start, 6);
     out.push({
       start,
-      end: addDaysToronto(start, 6),
+      end,
       friday: addDaysToronto(start, 4),
       label: shortDate(start),
+      rangeLabel: `${shortDate(start)} – ${shortDate(end)}`,
     });
     start = addDaysToronto(start, 7);
   }
@@ -308,7 +315,14 @@ const round1 = (n: number): number => Math.round(n * 10) / 10;
 export const HORIZON_WEEKS = 18;
 
 export interface CapacityModelInput {
-  forecast: CapacityForecast | null | undefined;
+  // One snapshot per SCOPE (projects, lawn). They are merged here rather
+  // than server-side so a stale lawn pull still renders alongside a fresh
+  // projects one — and so a visit that lands in the "wrong" scope document
+  // (the server's scope split is a coarse pre-filter) is still attributed
+  // correctly by crew. Deduped by visitId.
+  forecasts?: Array<CapacityForecast | null | undefined>;
+  // Single-snapshot form, kept for the legacy one-document layout.
+  forecast?: CapacityForecast | null | undefined;
   schedules: Record<string, Crew[]>;
   employees: Employee[];
   multiDayJobs: Record<string, MultiDayJob> | undefined;
@@ -317,7 +331,19 @@ export interface CapacityModelInput {
 }
 
 export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
-  const { forecast, schedules, employees, multiDayJobs, settings, today } = input;
+  const { schedules, employees, multiDayJobs, settings, today } = input;
+  const snapshots = (input.forecasts || [input.forecast]).filter(Boolean) as CapacityForecast[];
+  // Merge the scope snapshots, newest-wins per visit. A visit can legitimately
+  // appear in both documents (it straddles the scope split, or a scope was
+  // re-pulled while the other was mid-flight); it must be counted ONCE.
+  const seen = new Map<string, CapacityForecastVisit>();
+  for (const snap of [...snapshots].sort((a, b) => a.generatedAt - b.generatedAt)) {
+    for (const v of snap.visits || []) seen.set(v.visitId, v);
+  }
+  const forecast: CapacityForecast | null = snapshots.length === 0 ? null : {
+    ...snapshots.reduce((a, b) => (a.generatedAt >= b.generatedAt ? a : b)),
+    visits: Array.from(seen.values()),
+  };
   const thresholds = thresholdsOrDefault(settings);
   const weeks = buildWeeks(today, HORIZON_WEEKS);
   const weekIndex = new Map<string, number>();

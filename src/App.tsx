@@ -153,10 +153,12 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [jobberUsers, setJobberUsers] = useState<JobberUser[]>([]);
   const [jobberConnected, setJobberConnected] = useState(false);
-  // Forward capacity snapshot. Held OUTSIDE appData on purpose — it is
-  // read-only view data written by the cloud pull, and keeping it out of
-  // appData means it can never be written back into the 1 MiB main doc.
-  const [capacityForecast, setCapacityForecast] = useState<CapacityForecast | null>(null);
+  // Forward capacity snapshots, one per SCOPE (projects / lawn). Held
+  // OUTSIDE appData on purpose — read-only view data written by the cloud
+  // pull, so keeping it out of appData means it can never be written back
+  // into the 1 MiB main doc. The two are merged at render time.
+  const [capacityForecasts, setCapacityForecasts] =
+    useState<Record<'projects' | 'lawn', CapacityForecast | null>>({ projects: null, lawn: null });
 
   // Real signed-in identity. These are pinned to the Firebase auth
   // user and never change at the View As layer. The
@@ -1091,17 +1093,24 @@ export default function App() {
     return () => { unsubAuth(); unsubUsers(); };
   }, [user]);
 
-  // CAPACITY CALENDAR: live listener on the forward forecast snapshot. One
-  // document, written only by the cloud pull. Never merged into appData and
-  // never written back — read-only view data.
+  // CAPACITY CALENDAR: live listeners on the forward forecast snapshots —
+  // one document per scope, written only by the cloud pull. Never merged
+  // into appData and never written back — read-only view data.
   useEffect(() => {
     if (!user) return;
-    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'capacityForecast', 'current');
-    return onSnapshot(
-      ref,
-      snap => setCapacityForecast(snap.exists() ? (snap.data() as CapacityForecast) : null),
-      err => { console.error('capacityForecast listen error:', err); setCapacityForecast(null); },
+    const sub = (scope: 'projects' | 'lawn') => onSnapshot(
+      doc(db, 'artifacts', appId, 'public', 'data', 'capacityForecast', scope),
+      snap => setCapacityForecasts(prev => ({
+        ...prev, [scope]: snap.exists() ? (snap.data() as CapacityForecast) : null,
+      })),
+      err => {
+        console.error(`capacityForecast/${scope} listen error:`, err);
+        setCapacityForecasts(prev => ({ ...prev, [scope]: null }));
+      },
     );
+    const u1 = sub('projects');
+    const u2 = sub('lawn');
+    return () => { u1(); u2(); };
   }, [user]);
 
   // Phase 1: live multiDayJobs subcollection listener. Rebuilds the
@@ -2475,15 +2484,31 @@ export default function App() {
   // CAPACITY CALENDAR — manual forward pull. Read-only: the callable writes
   // only the forecast snapshot document. The scheduled pass runs through the
   // day regardless; this is the "I just booked something, show me" button.
-  const refreshCapacityForecast = async () => {
+  // Scoped: projects (the half that moves between refreshes) or lawn (huge,
+  // slow-moving, on its own slower schedule). Refreshing one leaves the
+  // other's snapshot document untouched.
+  const refreshCapacityForecast = async (scope: 'projects' | 'lawn' = 'projects') => {
     try {
-      const pull = httpsCallable<unknown, { stats?: { kept?: number } }>(functions, 'jobberSyncCapacity');
-      const res = await pull({});
+      const pull = httpsCallable<{ scope: string }, { stats?: { kept?: number }; truncated?: boolean }>(functions, 'jobberSyncCapacity');
+      const res = await pull({ scope });
       const kept = res.data?.stats?.kept ?? 0;
-      showToastMsg(`Capacity refreshed — ${kept} scheduled visit${kept === 1 ? '' : 's'} ahead.`);
+      const label = scope === 'lawn' ? 'Lawn' : 'Projects';
+      showToastMsg(
+        `${label} capacity refreshed — ${kept} scheduled visit${kept === 1 ? '' : 's'} ahead.` +
+        (res.data?.truncated ? ' NOTE: the pull hit its ceiling — later weeks understated.' : ''),
+      );
     } catch (err: any) {
       showToastMsg(`Capacity refresh failed: ${err?.message || String(err)}`);
     }
+  };
+
+  // Capacity settings (weekly BH + colour thresholds) saved straight from the
+  // Capacity view. Same settings block Manage Resources edits — bounded,
+  // admin-only, and the ONLY thing that view writes.
+  const saveCapacitySettings = async (next: import('./types').CapacitySettings) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), capacity: next } });
+    showToastMsg('Capacity settings saved.');
   };
 
   // SalesMaster rates — bounded, admin-only, stored in the settings doc.
@@ -5478,10 +5503,11 @@ export default function App() {
           onSaveLawnConfig={saveLawnConfig}
           onRevertLawnConfig={revertLawnConfig}
           appData={appData}
-          capacityForecast={capacityForecast}
+          capacityForecasts={capacityForecasts}
           currentUserEmployee={currentUserEmployee}
           onRefreshCapacity={refreshCapacityForecast}
           canRefreshCapacity={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
+          onSaveCapacitySettings={saveCapacitySettings}
         />
       ) : currentView === 'contracting' ? (
         <ContractingMaster
@@ -5576,9 +5602,10 @@ export default function App() {
           addCrewToDay={addCrewToDay}
           jobberUsers={jobberUsers}
           jobberConnected={jobberConnected}
-          capacityForecast={capacityForecast}
+          capacityForecasts={capacityForecasts}
           onRefreshCapacity={refreshCapacityForecast}
           canRefreshCapacity={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
+          onSaveCapacitySettings={saveCapacitySettings}
           isAdmin={isAdmin}
         />
       )}
