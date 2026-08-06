@@ -434,7 +434,7 @@ export default function CapacityCalendar({
           ) : null}
         </div>
         <CapacityNote row={row} cells={visible.map(({ index }) => row.cells[index])} onOpenSettings={canEditSettings ? openSettings : undefined} />
-        {row.bookedOutTo && (
+        {row.bookedOutTo && screen === 'projects' && (
           <div className="text-[10px] font-black text-slate-600 mt-0.5">
             booked to {longDate(row.bookedOutTo)}
           </div>
@@ -609,6 +609,10 @@ export default function CapacityCalendar({
           <p>
             Reflects work <strong>scheduled in Jobber</strong> — won-but-unscheduled work
             doesn&apos;t appear, so an empty week may not be truly open.
+            {screen === 'lawn' && (
+              <> The lawn pull reaches ~3 weeks, so there is no &quot;booked out to&quot; here —
+              on a recurring route that date would just repeat the horizon.</>
+            )}
             {' '}
             {/* Per-scope stamps: the two halves refresh on different
                 cadences, so one "updated" time would misrepresent the other. */}
@@ -691,21 +695,41 @@ export default function CapacityCalendar({
         );
       })}
 
-      {/* Booked-out headline — the number for the phone call. */}
+      {/* HEADLINE. Projects gets "booked out to" — the number a salesman says
+          on the phone. Lawn does NOT: the route is recurring, the pull only
+          reaches 21 days, so a booked-out date there would just be reporting
+          the horizon back as if it were a booking depth. Lawn gets the
+          question it actually asks instead — how full is the route. */}
       {forecast && rows.length > 0 && (
         <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-          {rows.map(row => (
-            <div key={row.key} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3 flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="font-black text-slate-900 truncate">{row.division}</div>
-                <div className="text-[10px] font-bold text-slate-400">
-                  {row.crews?.length || 0} crew{(row.crews?.length || 0) === 1 ? '' : 's'} ·{' '}
-                  {bh(visible.reduce((s, { index }) => s + row.cells[index].bh, 0))} BH in view
+          {rows.map(row => {
+            const cells = visible.map(({ index }) => row.cells[index]);
+            const booked = round1(cells.reduce((a, c) => a + c.bh, 0));
+            const capacity = cells.reduce((a, c) => a + (c.capacity || 0), 0);
+            const fill = capacity > 0 ? Math.round((booked / capacity) * 100) : null;
+            return (
+              <div key={row.key} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-black text-slate-900 truncate">{row.division}</div>
+                  <div className="text-[10px] font-bold text-slate-400">
+                    {row.crews?.length || 0} crew{(row.crews?.length || 0) === 1 ? '' : 's'} ·{' '}
+                    {bh(booked)} booked{capacity > 0 ? ` of ${bh(round1(capacity))}` : ''} in view
+                  </div>
                 </div>
+                {screen === 'lawn' ? (
+                  <div className="rounded-xl border px-3 py-2 bg-slate-900 border-slate-900 text-white text-right">
+                    <div className="text-[9px] font-black uppercase tracking-widest opacity-70">Route fill</div>
+                    <div className="font-black leading-tight text-2xl">
+                      {fill === null ? '—' : `${fill}%`}
+                    </div>
+                    <div className="text-[10px] font-bold opacity-60">next 2 weeks</div>
+                  </div>
+                ) : (
+                  <BookedOut row={row} big />
+                )}
               </div>
-              <BookedOut row={row} big />
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
