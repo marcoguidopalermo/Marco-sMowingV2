@@ -36,10 +36,13 @@ const EMPLOYEES: Employee[] = [
   { id: 'e1', name: 'Worker One', status: 'Active', hasLicense: false, hasClassA: false, hasHeavyMachinery: false, awayDates: [] },
   { id: 'e2', name: 'Worker Two', status: 'Active', hasLicense: false, hasClassA: false, hasHeavyMachinery: false, awayDates: [] },
 ];
-// A schedule covering today with one Large Projects crew of 2.
-const SCHEDULES: Record<string, Crew[]> = {
-  [TODAY]: [crew('Large Projects', 1, ['a1'], ['e1', 'e2'])],
-};
+// A NORMAL week: one Large Projects crew of 2, rostered Mon–Fri. Under the
+// person-day rule a fixture must span the week to represent a full crew —
+// a single day is 1/5 of one, which is the whole point of the change.
+const MON_FRI = ['2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06', '2026-08-07'];
+const fullWeek = (crews: Crew[]): Record<string, Crew[]> =>
+  Object.fromEntries(MON_FRI.map(d => [d, crews]));
+const SCHEDULES: Record<string, Crew[]> = fullWeek([crew('Large Projects', 1, ['a1'], ['e1', 'e2'])]);
 
 const appDataOf = (schedules: Record<string, Crew[]>, employees: Employee[] = EMPLOYEES, dailyAbsences: Record<string, any> = {}): AppData =>
   ({ schedules, employees, dailyAbsences, fleet: [] } as unknown as AppData);
@@ -127,6 +130,71 @@ test('SCHEDULED basis: people actually on the crew that week × BH/person', () =
   assert.equal(c.headcount, 4);
   assert.equal(c.bh, 140);
   assert.match(c.label, /scheduled: 4 people × 35 = 140/);
+});
+
+test('ROTATION no longer inflates: person-days, not distinct people', () => {
+  // A+B Monday, C+D Tuesday. The union said 4 people; the truth is 4
+  // person-days = 0.8 of a person-week.
+  const schedules: Record<string, Crew[]> = {
+    '2026-08-03': [crew('Large Projects', 1, ['a1'], ['e1', 'e2'])],
+    '2026-08-04': [crew('Large Projects', 1, ['a1'], ['e3', 'e4'])],
+  };
+  const ctx = ctxFor(schedules, FOUR_EMPLOYEES, PER35);
+  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
+  assert.equal(c.headcount, 4, 'four distinct people did work');
+  assert.equal(c.effectivePeople, 0.8, 'but only 4 person-days = 0.8 person-weeks');
+  assert.equal(c.bh, 28);
+  assert.equal(c.rosteredWeekdays, 2);
+  assert.match(c.label, /2 of 5 days rostered/);
+});
+
+test('ROSTER and TIME OFF compose: rostered 3 days, off 1 of them = 0.4', () => {
+  const schedules: Record<string, Crew[]> = {
+    '2026-08-03': [crew('Large Projects', 1, ['a1'], ['e1'])],
+    '2026-08-04': [crew('Large Projects', 1, ['a1'], ['e1'])],
+    '2026-08-05': [crew('Large Projects', 1, ['a1'], ['e1'])],
+  };
+  const employees = FOUR_EMPLOYEES.map(e => e.id === 'e1'
+    ? { ...e, awayDates: [{ start: '2026-08-05', end: '2026-08-05' }] } : e);
+  const ctx = ctxFor(schedules, employees, PER35);
+  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
+  assert.equal(c.effectivePeople, 0.4, '3 rostered - 1 off = 2 person-days / 5');
+  assert.equal(c.bh, 14);
+  assert.match(c.label, /3 of 5 days rostered/);
+  assert.match(c.label, /1 booked off/);
+});
+
+test('a full Mon-Fri crew is unchanged by the person-day rule', () => {
+  const ctx = ctxFor(weekSchedule(FOUR), FOUR_EMPLOYEES, PER35);
+  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
+  assert.equal(c.effectivePeople, 4);
+  assert.equal(c.bh, 140);
+  assert.doesNotMatch(c.label, /days rostered/, 'a full week says nothing extra');
+});
+
+test('weekend work adds capacity above a full week rather than vanishing', () => {
+  const schedules = weekSchedule(FOUR);
+  schedules['2026-08-08'] = [crew('Large Projects', 1, ['a1'], ['e1'])];  // Saturday
+  const ctx = ctxFor(schedules, FOUR_EMPLOYEES, PER35);
+  const c = weekCapacityFor(ctx, 'Large Projects', 1, WEEK);
+  assert.equal(c.effectivePeople, 4.2);
+  assert.match(c.label, /\+1 weekend day/);
+});
+
+test('a partially-built week is FLAGGED against the crew own norm', () => {
+  // Week 1 fully built, week 2 only two days in.
+  const schedules = weekSchedule(FOUR);
+  schedules['2026-08-10'] = [crew('Large Projects', 1, ['a1'], FOUR)];
+  schedules['2026-08-11'] = [crew('Large Projects', 1, ['a1'], FOUR)];
+  const m = buildCapacityModel({
+    appData: appDataOf(schedules, FOUR_EMPLOYEES),
+    forecast: forecast([]), schedules, employees: FOUR_EMPLOYEES, multiDayJobs: {},
+    settings: PER35, today: TODAY,
+  });
+  const row = m.divisions.find(d => d.division === 'Large Projects')!.crews![0];
+  assert.equal(row.cells[0].partialRoster, false, 'the full week is not flagged');
+  assert.equal(row.cells[1].partialRoster, true, 'the half-built week is');
+  assert.equal(row.cells[1].rosteredWeekdays, 2);
 });
 
 test('APPROVED TIME OFF reduces capacity proportionally (2 of 5 days = 40%)', () => {
@@ -349,12 +417,10 @@ test('nothing booked → no booked-out date at all', () => {
 
 console.log('\nDivision rollup');
 test('division capacity sums its crews and flags partial coverage', () => {
-  const schedules: Record<string, Crew[]> = {
-    [TODAY]: [
-      crew('Lawn Division', 1, ['a1'], ['e1', 'e2']),
-      crew('Lawn Division', 2, ['a2'], ['e1']),
-    ],
-  };
+  const schedules = fullWeek([
+    crew('Lawn Division', 1, ['a1'], ['e1', 'e2']),
+    crew('Lawn Division', 2, ['a2'], ['e1']),
+  ]);
   const m = buildCapacityModel({
     appData: appDataOf(schedules), forecast: forecast([]), schedules, employees: EMPLOYEES, multiDayJobs: {},
     settings: { crews: { [capacityCrewKey('Lawn Division', 1)]: { perPersonBH: 35, standardSize: 2 } } },

@@ -213,6 +213,13 @@ function Cell({ cell, week, active, onClick, compact }: {
       {cell.capacityBasis === 'projected' && (
         <div className={`text-[8px] font-bold mt-0.5 ${s.text} opacity-70`}>projected — beyond schedule</div>
       )}
+      {/* A thin week that is thin because it hasn't been BUILT reads
+          differently from one with no work — say which. */}
+      {cell.partialRoster && (
+        <div className={`text-[8px] font-bold mt-0.5 leading-tight ${s.text} opacity-80`}>
+          only {cell.rosteredWeekdays} of 5 days rostered — not fully built yet
+        </div>
+      )}
       {(cell.hourlyCount > 0 || cell.untaggedCount > 0) && (
         <div className={`text-[8px] font-bold mt-0.5 opacity-80 ${s.text}`}>
           {cell.hourlyCount > 0 && `${cell.hourlyCount} hourly`}

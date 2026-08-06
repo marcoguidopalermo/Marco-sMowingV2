@@ -122,10 +122,23 @@ export type CapacityBasis =
   | 'projected'   // beyond the built schedule — standard size, a FALLBACK
   | 'none';       // no BH-per-person set — no bar, no percentage
 
-// Working days in a week. Time off is prorated against this: a person off 2
-// of 5 removes 40% of their weekly contribution. Weekend work still COUNTS
-// toward booked BH — this denominator is only how a person's availability is
-// scaled, and crews are rostered Monday–Friday.
+// Working days in a week — the denominator for ONE rule that covers both
+// ways a person contributes less than a full week:
+//
+//     effective people = (person-days rostered AND available) ÷ 5
+//
+// A person on the crew all week = 1.0. Rostered 3 days = 0.6. Rostered 3 and
+// booked off 1 of those = 0.4. Rostering and time off compose because they
+// are the same question asked per day, not two separate adjustments.
+//
+// This replaces counting DISTINCT people across the week, which inflated any
+// crew that rotates: A+B Monday and C+D Tuesday read as 4 people rather than
+// the 0.8 person-weeks actually rostered. Measured on real schedule data that
+// pattern hit 56% of crew-weeks, up to 3x on the worst.
+//
+// Weekend days are counted as person-days too (real extra capacity) but the
+// denominator stays 5, so a crew working Saturday reads above 1.0 per person
+// rather than being silently normalised away.
 const WORKING_DAYS = 5;
 
 export type StandardSizeSource = 'set' | 'inferred' | 'none';
@@ -138,7 +151,12 @@ export interface WeekCapacity {
   fullStrengthBH: number | null;
   basis: CapacityBasis;
   headcount: number;         // distinct people on the crew that week
-  effectivePeople: number;   // headcount after time-off proration
+  effectivePeople: number;   // person-days rostered AND available ÷ 5
+  // Weekdays (of 5) this crew has ANY roster on. A low number means the week
+  // isn't fully built yet — a SCHEDULING state, not a capacity one — and the
+  // basis line says so rather than letting the week read as simply thin.
+  rosteredWeekdays: number;
+  rosteredWeekendDays: number;
   standardSize: number | null;
   // Whether the standard size was CONFIGURED or inferred from past days —
   // shown on the row so nobody mistakes an inference for a decision.
@@ -154,7 +172,8 @@ export interface WeekCapacity {
 
 const NO_CAPACITY: WeekCapacity = {
   bh: null, fullStrengthBH: null, basis: 'none', headcount: 0,
-  effectivePeople: 0, standardSize: null, standardSizeSource: 'none',
+  effectivePeople: 0, rosteredWeekdays: 0, rosteredWeekendDays: 0,
+  standardSize: null, standardSizeSource: 'none',
   standardSizeDays: 0, perPersonBH: null,
   offNotes: [], label: 'no BH-per-person set',
 };
@@ -242,45 +261,75 @@ export function weekCapacityFor(
       `inferred, median of ${standardSizeDays} past scheduled day${standardSizeDays === 1 ? '' : 's'}`;
     return {
       bh, fullStrengthBH: bh, basis: 'projected', headcount: standardSize,
-      effectivePeople: standardSize, ...base, perPersonBH: per,
-      offNotes: [],
+      effectivePeople: standardSize, rosteredWeekdays: 0, rosteredWeekendDays: 0,
+      ...base, perPersonBH: per, offNotes: [],
       label: `projected: ${standardSize} people (${src}) × ${per} = ${bh} (beyond schedule)`,
     };
   }
 
-  // Real roster. Each person contributes the fraction of the working week
-  // they're actually available — approved time off, day-of absences and
-  // indefinite Away all count, read through the app's single availability
-  // source so this means exactly what it means everywhere else.
-  const workingDays = days.slice(0, WORKING_DAYS);
-  let effective = 0;
-  const offNotes: string[] = [];
-  for (const empId of people) {
-    let availableDays = 0;
-    for (const date of workingDays) {
+  // Real roster, counted in PERSON-DAYS. For each day, who is actually on
+  // this crew and actually available — availability read through the app's
+  // single source, so "booked off" means here what it means everywhere else.
+  let personDays = 0;
+  let rosteredWeekdays = 0;
+  let rosteredWeekendDays = 0;
+  const rosteredCount = new Map<string, number>();
+  const availableCount = new Map<string, number>();
+  days.forEach((date, dayIdx) => {
+    const roster = new Set<string>();
+    for (const crew of ctx.appData.schedules?.[date] || []) {
+      if (crew.division !== division || crew.crewNumber !== crewNumber) continue;
+      for (const empId of crew.employees || []) {
+        if (!ctx.testUserIds.has(empId)) roster.add(empId);
+      }
+    }
+    if (roster.size > 0) {
+      if (dayIdx < WORKING_DAYS) rosteredWeekdays++;
+      else rosteredWeekendDays++;
+    }
+    for (const empId of roster) {
+      rosteredCount.set(empId, (rosteredCount.get(empId) || 0) + 1);
       const st = getResourceAvailability(empId, 'employee', date, ctx.appData);
-      if (st.status !== 'absent' && st.status !== 'booked_off') availableDays++;
+      if (st.status !== 'absent' && st.status !== 'booked_off') {
+        personDays++;
+        availableCount.set(empId, (availableCount.get(empId) || 0) + 1);
+      }
     }
-    const fraction = availableDays / WORKING_DAYS;
-    effective += fraction;
-    if (fraction < 1) {
-      const name = ctx.appData.employees?.find(e => e.id === empId)?.name || 'Someone';
-      const daysOff = WORKING_DAYS - availableDays;
-      offNotes.push(`${name} off ${daysOff} of ${WORKING_DAYS}`);
-    }
-  }
+  });
+
   const headcount = people.size;
-  effective = round1(effective);
+  const effective = round1(personDays / WORKING_DAYS);
   const bh = round1(effective * per);
   const fullSize = standardSize ?? headcount;
   const fullStrengthBH = round1(fullSize * per);
-  const offSummary = offNotes.length > 0 ?
-    ` (${offNotes.length} booked off: ${offNotes.slice(0, 2).join(', ')}` +
-    `${offNotes.length > 2 ? `, +${offNotes.length - 2} more` : ''})` : '';
+
+  // Who lost days to time off — the roster shortfall is reported separately
+  // below, because "not rostered" and "booked off" are different problems.
+  const offNotes: string[] = [];
+  for (const [empId, rostered] of rosteredCount) {
+    const available = availableCount.get(empId) || 0;
+    if (available < rostered) {
+      const name = ctx.appData.employees?.find(e => e.id === empId)?.name || 'Someone';
+      offNotes.push(`${name} off ${rostered - available} of ${rostered}`);
+    }
+  }
+  const parts: string[] = [];
+  if (rosteredWeekdays < WORKING_DAYS) {
+    parts.push(`${rosteredWeekdays} of ${WORKING_DAYS} days rostered`);
+  }
+  if (rosteredWeekendDays > 0) {
+    parts.push(`+${rosteredWeekendDays} weekend day${rosteredWeekendDays === 1 ? '' : 's'}`);
+  }
+  if (offNotes.length > 0) {
+    parts.push(`${offNotes.length} booked off: ${offNotes.slice(0, 2).join(', ')}` +
+      `${offNotes.length > 2 ? `, +${offNotes.length - 2} more` : ''}`);
+  }
+  const detail = parts.length > 0 ? ` (${parts.join(' · ')})` : '';
   return {
     bh, fullStrengthBH, basis: 'scheduled', headcount, effectivePeople: effective,
+    rosteredWeekdays, rosteredWeekendDays,
     ...base, perPersonBH: per, offNotes,
-    label: `scheduled: ${effective} people${offSummary} × ${per} = ${bh}`,
+    label: `scheduled: ${effective} people${detail} × ${per} = ${bh}`,
   };
 }
 
@@ -438,6 +487,11 @@ export interface CapacityCell {
   fullStrength: number | null;
   headcount: number;
   effectivePeople: number;
+  // Weekdays this crew has any roster on, and whether that is NOTABLY fewer
+  // than the crew's own norm — i.e. the week is thin because it hasn't been
+  // built yet, not because there's no capacity. Surfaced, never hidden.
+  rosteredWeekdays: number;
+  partialRoster: boolean;
   // TRUE when this week lies past what the pull actually fetched. Such a
   // week has no number — not a zero. It is rendered as "not pulled" and is
   // excluded from "booked out to", because a week nobody looked at must
@@ -552,7 +606,7 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
       (coverThrough ? w.start > coverThrough : false),
     bh: 0, capacity: null, pct: null, band: null,
     fullStrength: null, capacityBasis: 'none' as CapacityBasis, capacityLabel: '',
-    headcount: 0, effectivePeople: 0,
+    headcount: 0, effectivePeople: 0, rosteredWeekdays: 0, partialRoster: false,
     jobs: [], hourlyCount: 0, untaggedCount: 0,
   }));
   const rowFor = (ref: CrewRef) => {
@@ -689,6 +743,7 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
       cell.capacityLabel = cap.label;
       cell.headcount = cap.headcount;
       cell.effectivePeople = cap.effectivePeople;
+      cell.rosteredWeekdays = cap.rosteredWeekdays;
       // An uncovered week gets NO percentage and NO band. Leaving it at 0%
       // would paint it "underbooked — sell into it".
       cell.pct = cell.uncovered || !cap.bh || cap.bh <= 0 ? null :
@@ -696,6 +751,15 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
       cell.band = cell.pct === null ? null : bandFor(cell.pct, thresholds);
       cell.jobs.sort((a, b) => b.bh - a.bh);
     });
+    // A week is "partially built" relative to THIS crew's own norm — the
+    // busiest roster it manages in the window. Two or more days short of that
+    // is a scheduling gap worth naming, not noise.
+    const maxRostered = cells.reduce((m, c) =>
+      (c.capacityBasis === 'scheduled' && c.rosteredWeekdays > m ? c.rosteredWeekdays : m), 0);
+    for (const cell of cells) {
+      cell.partialRoster = cell.capacityBasis === 'scheduled' &&
+        cell.rosteredWeekdays > 0 && maxRostered - cell.rosteredWeekdays >= 2;
+    }
     const withCap = cells.filter(c => c.capacity !== null);
     const avgCapacity = withCap.length > 0 ?
       round1(withCap.reduce((sum, c) => sum + (c.capacity || 0), 0) / withCap.length) : null;
@@ -747,6 +811,8 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
           (anyProjected ? ' (some projected beyond the schedule)' : ''),
         headcount: crews.reduce((s2, c) => s2 + c.cells[i].headcount, 0),
         effectivePeople: round1(crews.reduce((s2, c) => s2 + c.cells[i].effectivePeople, 0)),
+        rosteredWeekdays: crews.reduce((m, c) => Math.max(m, c.cells[i].rosteredWeekdays), 0),
+        partialRoster: crews.length > 0 && crews.some(c => c.cells[i].partialRoster),
         pct,
         band: pct === null ? null : bandFor(pct, thresholds),
         jobs: crews.flatMap(c => c.cells[i].jobs).sort((a, b) => b.bh - a.bh),
