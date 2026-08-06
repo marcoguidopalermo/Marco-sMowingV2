@@ -4,10 +4,11 @@
 // What this is: a picture of REMAINING COMMITTED WORK. It answers "how far
 // out are we booked?" It is NOT history and NOT pay.
 //
-// What it touches: nothing. It writes exactly one document
-// (capacityForecast/current) and reads nothing but Jobber. It never writes
-// performance logs, multi-day ledgers, BH splits, approvals or pay. The
-// performance sync is untouched by this file.
+// What it touches: nothing that matters. It writes ONE snapshot document per
+// scope (capacityForecast/projects, capacityForecast/lawn) and otherwise only
+// reads — Jobber, and the schedule (to decide which scope a visit files
+// under). It never writes performance logs, multi-day ledgers, BH splits,
+// approvals or pay. The performance sync is untouched by this file.
 //
 // The [BH] tag is read through the SAME parser the performance sync uses
 // (./bhParser) — there is no second parsing implementation.
@@ -85,10 +86,16 @@ const LOOKBACK_DAYS = 21;
 // visits, comfortably past the real volume, and the timeout was raised to
 // match. If this is ever hit again the snapshot still says so.
 const MAX_PAGES = 400;
-// Firestore caps a document at 1 MiB. Each entry is ~250 B, so 10,000 would
-// not fit — the per-scope split is what keeps each document small. The cap
-// is still enforced so a runaway pull can never fail the write.
+// Firestore caps a document at 1 MiB. Each entry is ~300 B, so 10,000 would
+// not fit — the per-scope split is what keeps each document small. Both caps
+// below exist so a big pull DEGRADES (flagged truncation) instead of failing
+// the write outright, which would leave the last good snapshot in place with
+// no indication anything went wrong.
 const MAX_ENTRIES = 3000;
+// Byte budget for the entries array, well under the 1 MiB document limit.
+// Entry count alone is a poor proxy — a run of long titles and client names
+// can be twice the size of a run of short ones.
+const MAX_ENTRY_BYTES = 800_000;
 
 // Forward visits query. SEPARATE from the sync's VISITS_QUERY (which stays
 // exactly as it is) because this one needs two extra things the sync doesn't:
@@ -489,6 +496,17 @@ export async function runCapacityForecast(
   const token = await getValidAccessToken();
   const client = makeJobberClient(token);
   const {lawn: lawnSet, projects: projectsSet} = await loadScopeAssignees();
+  // If the schedule yields no lawn assignees, the scope split can't split:
+  // EVERY visit files under projects and the lawn document stays empty. No
+  // work is lost (the client merges both documents), but the projects pull
+  // then carries the whole business and can hit its own ceiling — so say so
+  // loudly rather than let it look like lawn simply has nothing booked.
+  if (lawnSet.size === 0) {
+    logger.warn("Scope split found no lawn assignees — everything files " +
+      "under projects; check crews carry jobberAssigneeIds", {
+      projectsAssignees: projectsSet.size,
+    });
+  }
 
   const today = ymdInToronto(new Date());
   const windowStart = shiftYmd(today, -LOOKBACK_DAYS);
@@ -521,6 +539,7 @@ export async function runCapacityForecast(
   };
 
   const entries: ForecastVisit[] = [];
+  let entryBytes = 0;
   for (const v of raw) {
     // COMPLETED / CREDITED work is history, not remaining commitment.
     if (v.isComplete === true || v.completedAt) {
@@ -565,7 +584,7 @@ export async function runCapacityForecast(
       stats.otherScope++;
       continue;
     }
-    entries.push({
+    const entry: ForecastVisit = {
       visitId: v.id,
       jobId: v.job?.id || null,
       jobNumber: v.job?.jobNumber || null,
@@ -577,11 +596,15 @@ export async function runCapacityForecast(
       isHourly,
       untagged,
       assigneeIds,
-      assigneeNames: assignees.map((a) => a.name?.full || "").slice(0, 6),
-    });
-    if (entries.length >= MAX_ENTRIES) {
+      assigneeNames: assignees.map((a) => a.name?.full || "").slice(0, 4),
+    };
+    entries.push(entry);
+    entryBytes += JSON.stringify(entry).length;
+    if (entries.length >= MAX_ENTRIES || entryBytes >= MAX_ENTRY_BYTES) {
       warnings.push(
-        `entry_cap_reached — kept the first ${MAX_ENTRIES} forward visits`,
+        `entry_cap_reached — kept the first ${entries.length} forward ` +
+        `visits (${Math.round(entryBytes / 1024)} KB); later weeks of this ` +
+        "scope are understated",
       );
       break;
     }
