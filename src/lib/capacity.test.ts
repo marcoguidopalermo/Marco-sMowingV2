@@ -330,5 +330,28 @@ test('a complete pull marks nothing uncovered', () => {
   assert.equal(div.cells.some(c => c.uncovered), false);
 });
 
+test('a scope that has NEVER been pulled is uncovered, not empty-and-open', () => {
+  // Only a projects snapshot exists. The lawn crews' weeks must read
+  // "not pulled", never "0 BH — sell into it".
+  const schedules: Record<string, Crew[]> = {
+    [TODAY]: [crew('Lawn Division', 1, ['a2'], ['e1', 'e2']), crew('Large Projects', 1, ['a1'], ['e1'])],
+  };
+  const projectsSnap = { ...forecast([visit({ visitId: 'p1', bh: 30 })]), scope: 'projects' as const, coveredThrough: '2026-12-01' };
+  const m = buildCapacityModel({
+    forecasts: [projectsSnap], schedules, employees: EMPLOYEES, multiDayJobs: {},
+    settings: { divisions: { 'Lawn Division': { weeklyBH: 80 }, 'Large Projects': { weeklyBH: 100 } } },
+    today: TODAY,
+  });
+  const lawn = m.divisions.find(d => d.division === 'Lawn Division')!;
+  const proj = m.divisions.find(d => d.division === 'Large Projects')!;
+  assert.equal(lawn.cells[0].uncovered, true, 'lawn must be uncovered');
+  assert.equal(lawn.cells[0].pct, null);
+  assert.equal(lawn.cells[0].band, null);
+  assert.equal(lawn.bookedOutTo, null);
+  // The scope that WAS pulled is unaffected.
+  assert.equal(proj.cells[0].uncovered, false);
+  assert.equal(proj.cells[0].bh, 30);
+});
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 if (fail > 0) process.exit(1);

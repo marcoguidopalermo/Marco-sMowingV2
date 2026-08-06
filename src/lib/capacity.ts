@@ -360,16 +360,23 @@ export function buildCapacityModel(input: CapacityModelInput): CapacityModel {
   // Coverage is per SCOPE: lawn and projects pull different horizons, so a
   // week can be known for one and unknown for the other. A crew row uses its
   // own division's scope.
-  const coverageOf = (division: string): string => {
+  // NULL means "no snapshot for this scope at all" — every week is unknown.
+  // That case is not hypothetical: the two scopes pull on different
+  // schedules, so one can legitimately have never run. Treating a missing
+  // snapshot as "covered" would paint that whole division's weeks 0 BH and
+  // colour them OPEN — a division nobody has pulled would look like the
+  // emptiest, most sellable one on the board.
+  const coverageOf = (division: string): string | null => {
     const scope = /lawn/i.test(division) ? 'lawn' : 'projects';
     const snap = snapshots.find(s2 => (s2.scope || 'projects') === scope);
-    // No snapshot for this scope at all → nothing is covered.
-    if (!snap) return '';
+    if (!snap) return null;
+    // A snapshot with neither field is a legacy/complete pull — fully covered.
     return snap.coveredThrough || snap.windowEnd || '';
   };
-  const blankCells = (coverThrough?: string): CapacityCell[] => weeks.map(w => ({
+  const blankCells = (coverThrough: string | null): CapacityCell[] => weeks.map(w => ({
     weekStart: w.start,
-    uncovered: coverThrough !== undefined && !!coverThrough ? w.start > coverThrough : false,
+    uncovered: coverThrough === null ? true :
+      (coverThrough ? w.start > coverThrough : false),
     bh: 0, capacity: null, pct: null, band: null,
     jobs: [], hourlyCount: 0, untaggedCount: 0,
   }));
