@@ -220,18 +220,23 @@ export default function CapacityCalendar({
     today,
   }), [forecast, appData.schedules, appData.employees, appData.multiDayJobs, appData.settings?.capacity, today]);
 
+  // Month anchor built from (year, month, 1) so month-stepping can't skip a
+  // month from a 29th–31st start date.
+  const monthAnchor = useMemo(() => {
+    const base = new Date(`${today}T12:00:00`);
+    return new Date(base.getFullYear(), base.getMonth() + monthOffset, 1);
+  }, [today, monthOffset]);
+
   // Visible week window: 4 rolling weeks, or every remaining week of the
   // selected calendar month.
   const visible = useMemo(() => {
     if (range === '4week') return model.weeks.slice(0, 4).map((w, i) => ({ week: w, index: i }));
-    const anchor = new Date(`${today}T12:00:00`);
-    anchor.setMonth(anchor.getMonth() + monthOffset);
-    const ym = `${anchor.getFullYear()}-${String(anchor.getMonth() + 1).padStart(2, '0')}`;
+    const ym = `${monthAnchor.getFullYear()}-${String(monthAnchor.getMonth() + 1).padStart(2, '0')}`;
     const inMonth = model.weeks
       .map((w, i) => ({ week: w, index: i }))
       .filter(({ week }) => week.start.slice(0, 7) === ym || week.end.slice(0, 7) === ym);
     return inMonth.length > 0 ? inMonth : model.weeks.slice(0, 4).map((w, i) => ({ week: w, index: i }));
-  }, [range, monthOffset, model.weeks, today]);
+  }, [range, monthAnchor, model.weeks]);
 
   const rows = useMemo(() => {
     const list = division === 'All'
@@ -263,11 +268,7 @@ export default function CapacityCalendar({
     setDrill(prev => (prev && prev.rowKey === rowKey && prev.weekStart === weekStart
       ? null : { rowKey, weekStart }));
 
-  const monthName = (() => {
-    const anchor = new Date(`${today}T12:00:00`);
-    anchor.setMonth(anchor.getMonth() + monthOffset);
-    return anchor.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  })();
+  const monthName = monthAnchor.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
   // ── Rendering pieces ─────────────────────────────────────────────────────
   const renderRowGrid = (row: CapacityRow, indent = false) => (
@@ -468,8 +469,7 @@ export default function CapacityCalendar({
                 <div className="font-black text-slate-900 truncate">{row.division}</div>
                 <div className="text-[10px] font-bold text-slate-400">
                   {row.crews?.length || 0} crew{(row.crews?.length || 0) === 1 ? '' : 's'} ·{' '}
-                  {bh(row.cells.slice(0, visible.length ? visible[visible.length - 1].index + 1 : 4)
-                    .reduce((s, c) => s + c.bh, 0))} BH ahead
+                  {bh(visible.reduce((s, { index }) => s + row.cells[index].bh, 0))} BH in view
                 </div>
               </div>
               <BookedOut row={row} big />

@@ -1182,12 +1182,17 @@ export default function ScheduleBoard({
             aria-pressed={bookedOffView}
             className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors print:hidden shadow-sm border ${bookedOffView ? 'bg-rose-600 text-white border-rose-700 hover:bg-rose-700' : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'}`}
           ><Plane className="w-4 h-4" /> Booked off</button>
-          <button
-            onClick={() => { setCapacityView(v => !v); setBookedOffView(false); }}
-            aria-pressed={capacityView}
-            title="Forward scheduled BH by week — how far out we're booked"
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors print:hidden shadow-sm border ${capacityView ? 'bg-slate-800 text-white border-slate-900 hover:bg-slate-700' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}
-          ><CalendarRange className="w-4 h-4" /> Capacity</button>
+          {/* Capacity is a management view (the same one SalesMaster hosts) —
+              managers and admins only, matching who the booked-out number is
+              for. */}
+          {isManager && (
+            <button
+              onClick={() => { setCapacityView(v => !v); setBookedOffView(false); }}
+              aria-pressed={capacityView}
+              title="Forward scheduled BH by week — how far out we're booked"
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors print:hidden shadow-sm border ${capacityView ? 'bg-slate-800 text-white border-slate-900 hover:bg-slate-700' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}
+            ><CalendarRange className="w-4 h-4" /> Capacity</button>
+          )}
           {!altView && (
             <>
               <button onClick={() => setIsWeatherModalOpen(true)} className="flex items-center gap-2 bg-green-50 text-green-700 border border-green-200 px-3 py-2 rounded-lg text-sm font-bold hover:bg-green-100 transition-colors print:hidden shadow-sm"><CloudSun className="w-4 h-4" /> Weather</button>
@@ -1204,7 +1209,7 @@ export default function ScheduleBoard({
             defaultDivision={bookedOffDefaultDivision}
           />
         </div>
-      ) : capacityView ? (
+      ) : capacityView && isManager ? (
         <div className="flex-1 overflow-y-auto">
           <CapacityCalendar
             appData={appData}
