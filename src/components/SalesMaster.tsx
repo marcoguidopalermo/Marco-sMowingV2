@@ -6,6 +6,7 @@
 // received to the right module.
 import { useState } from 'react';
 import { Calculator, Snowflake, Sprout, CalendarRange } from 'lucide-react';
+import type { SnowContract } from '../types';
 import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, AppData, CapacityForecast, CapacityScope, CapacitySettings, Employee, JobberUser, HourlyEstimate } from '../types';
 import { SnowConfig } from '../lib/snowPricing';
 import { LawnConfig } from '../lib/lawnPricing';
@@ -51,6 +52,13 @@ interface Props {
   jobberUsers: JobberUser[];
   hourlyEstimates: Record<string, HourlyEstimate>;
   onSetHourlyEstimate: (visitId: string, bh: number | null, label?: string) => void | Promise<void>;
+  // SnowMaster commercial contracts.
+  snowContracts: Record<string, SnowContract>;
+  onSaveSnowContract: (c: SnowContract) => Promise<void>;
+  onCreateSnowContract: () => Promise<string | null>;
+  onDuplicateSnowContract: (id: string) => Promise<string | null>;
+  onUploadSnowContractMap: (contractId: string, file: File) => Promise<string | null>;
+  canEditSnowContracts: boolean;
 }
 
 type ModuleKey = 'project' | 'snow' | 'lawn' | 'capacity';
@@ -69,6 +77,8 @@ export default function SalesMaster(props: Props) {
     lawnQuotes, onSaveLawnQuote, onDeleteLawnQuote,
     lawnConfigs, lawnActiveVersion, lawnActiveConfig, onSaveLawnConfig, onRevertLawnConfig,
     appData, capacityForecasts, currentUserEmployee, onRefreshCapacity, canRefreshCapacity, onSaveCapacitySettings, jobberUsers, hourlyEstimates, onSetHourlyEstimate,
+    snowContracts, onSaveSnowContract, onCreateSnowContract, onDuplicateSnowContract,
+    onUploadSnowContractMap, canEditSnowContracts,
   } = props;
   const [module, setModule] = useState<ModuleKey>('project');
 
@@ -114,6 +124,12 @@ export default function SalesMaster(props: Props) {
             configs={snowConfigs}
             onSaveConfig={onSaveSnowConfig}
             onRevertConfig={onRevertSnowConfig}
+            snowContracts={snowContracts}
+            onSaveSnowContract={onSaveSnowContract}
+            onCreateSnowContract={onCreateSnowContract}
+            onDuplicateSnowContract={onDuplicateSnowContract}
+            onUploadSnowContractMap={onUploadSnowContractMap}
+            canEditSnowContracts={canEditSnowContracts}
           />
         )}
 

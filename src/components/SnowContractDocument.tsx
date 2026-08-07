@@ -12,6 +12,8 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { SnowContract } from '../types';
 import { SNOW_LOGO_DATA_URI } from '../assets/snowLogo';
+import { staticMapUrl, fitMapHeightIn, MAP_MAX_IN } from '../lib/snowContractMap';
+import { GOOGLE_MAPS_API_KEY } from '../lib/googleMaps';
 import {
   DOC_TITLE, CONTRACTOR_FOOTER_NAME, CONTRACTOR_ADDRESS, OFFICE_PHONE, OFFICE_EMAIL,
   SERVICE_LINE, INTRO_LINE, SCOPE_INTRO, SERVICES_LEGEND_ON_CALL, SERVICES_LEGEND_EXCL,
@@ -31,7 +33,15 @@ const dateLong = (ymd: string) => {
 };
 
 // The reference's CSS, verbatim in its values, scoped under .snowdoc.
+//
+// ONE DELIBERATE DEVIATION: list items are 8px apart, not the reference's 9px.
+// The Insurance section and the extra Payment bullet that this build adds cost
+// page 3 about 72px, which left it ONE PIXEL over a page and pushed Acceptance
+// onto a fourth page. Ten bullets at 1px each buys 10px — enough to restore the
+// three-page contract with headroom, and invisible at this size. Verified by
+// scripts/verify-snow-contract-print.tsx at both scope-text extremes.
 const DOC_CSS = `
+.snowdoc, .snowdoc * { box-sizing: border-box; }
 .snowdoc { font-family: "DejaVu Sans", Arial, Helvetica, sans-serif; font-size: 8.2pt;
   color: #16232e; line-height: 1.32; }
 .snowdoc .sheet { background:#fff; max-width: 8.5in; margin: 0 auto; padding: 0.5in 0.55in 0.6in; }
@@ -47,7 +57,7 @@ const DOC_CSS = `
 .snowdoc h2 .n { color:#9fb6c8; margin-right:6px; }
 .snowdoc p { margin:0 0 8px; }
 .snowdoc ul { margin:0 0 9px; padding-left:14px; }
-.snowdoc li { margin-bottom:9px; }
+.snowdoc li { margin-bottom:8px; }   /* reference is 9px — see note below */
 .snowdoc table { width:100%; border-collapse:collapse; }
 .snowdoc .kv td { padding:5px 6px; border-bottom:1px solid #cfdce7; vertical-align:bottom; }
 .snowdoc .kv td.l { width:26%; font-weight:bold; font-size:7.5pt; color:#45596b;
@@ -103,12 +113,6 @@ export interface SnowContractDocumentProps {
   mode?: 'preview' | 'print';
 }
 
-// Map box height in inches. The reference uses 4.2in, which fills an otherwise
-// empty page 1. Typed scope text pushes Property Scope down, so the box is the
-// tuning lever: it SHRINKS until the section fits, and never below the floor.
-const MAP_MAX_IN = 4.2;
-const MAP_MIN_IN = MAP_MAX_IN - 2.5;   // 1.7in — the stated cap on reduction
-
 export default function SnowContractDocument({ contract: c, mode = 'preview' }: SnowContractDocumentProps) {
   const hidden = new Set(c.hiddenSections || []);
   const show = (id: string) => !hidden.has(id);
@@ -122,19 +126,12 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
   useLayoutEffect(() => {
     const el = page1Ref.current;
     if (!el || !c.scope.showMap) { setMapIn(MAP_MAX_IN); return; }
-    // Usable page-1 height: Letter less the @page margins.
-    const dpi = 96;
-    const budget = (11 - 0.42 * 2) * dpi;
-    let next = MAP_MAX_IN;
-    // Height of everything except the map box, measured once.
+    // Height of everything on page 1 except the map box.
     const mapEl = el.querySelector('.mapwrap') as HTMLElement | null;
     const mapH = mapEl ? mapEl.getBoundingClientRect().height : 0;
     const withoutMap = el.getBoundingClientRect().height - mapH;
-    const available = budget - withoutMap;
-    if (available < MAP_MAX_IN * dpi) {
-      next = Math.max(MAP_MIN_IN, available / dpi);
-    }
-    const rounded = Math.round(next * 100) / 100;
+    // Same pure function the print verification exercises.
+    const rounded = fitMapHeightIn(withoutMap);
     setMapIn(prev => (Math.abs(prev - rounded) > 0.02 ? rounded : prev));
   }, [c.scope, c.client, c.term, c.season, mode]);
 
@@ -209,13 +206,25 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
               <div className="f" style={{ display: 'block', minHeight: 80, border: '1px solid #cfdce7', padding: '5px 7px' }}>
                 {c.scope.description || ' '}
               </div>
-              {c.scope.showMap && (
-                <div className="mapwrap" style={{ height: `${mapIn}in` }}>
-                  {(c.scope.mapImages || []).length === 0
-                    ? <span className="ph">Site map / property sketch</span>
-                    : c.scope.mapImages.map((src, i) => <img key={i} src={src} alt={`Site map ${i + 1}`} />)}
-                </div>
-              )}
+              {c.scope.showMap && (() => {
+                // The measured outline wins: it regenerates from the polygon,
+                // so re-measuring updates the printed map. Uploaded images are
+                // the fallback for a property nobody has measured.
+                const measured = staticMapUrl(c.scope.measurement, {
+                  width: 640, height: Math.round(640 * (mapIn / 6.5)),
+                  scale: 2, apiKey: GOOGLE_MAPS_API_KEY,
+                });
+                const uploads = c.scope.mapImages || [];
+                return (
+                  <div className="mapwrap" style={{ height: `${mapIn}in` }}>
+                    {measured
+                      ? <img src={measured} alt="Serviced area" />
+                      : uploads.length > 0
+                        ? uploads.map((src, i) => <img key={i} src={src} alt={`Site map ${i + 1}`} />)
+                        : <span className="ph">Site map / property sketch</span>}
+                  </div>
+                );
+              })()}
             </section>
           )}
         </div>

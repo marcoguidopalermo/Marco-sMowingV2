@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
-import { Snowflake, RotateCcw, Save, FolderOpen, Trash2, Search, AlertTriangle, BarChart3, Car, SlidersHorizontal } from 'lucide-react';
-import { SnowQuote, SnowRateConfigVersion } from '../types';
+import { Snowflake, RotateCcw, Save, FolderOpen, Trash2, Search, AlertTriangle, BarChart3, Car, SlidersHorizontal, FileText } from 'lucide-react';
+import { SnowQuote, SnowRateConfigVersion, SnowContract } from '../types';
 import {
   priceSnow, SnowConfig, SNOW_CONFIG_V1, SnowPrice, resolveSnowConfig,
 } from '../lib/snowPricing';
 import SnowRateSheet from './SnowRateSheet';
+import SnowContractsModule from './SnowContractsModule';
 
 // House style.
 const GREEN = '#1c4634';
@@ -45,14 +46,23 @@ interface Props {
   onRevertConfig?: (versionId: string) => Promise<boolean>;
   // Optional initial seed for the tracer (used by previews / future deep-links).
   initial?: { grid?: number[][]; premium?: boolean; busyRoad?: boolean; danger?: number };
+  // Commercial contract builder — its own sub-tab.
+  snowContracts?: Record<string, SnowContract>;
+  onSaveSnowContract?: (c: SnowContract) => Promise<void>;
+  onCreateSnowContract?: () => Promise<string | null>;
+  onDuplicateSnowContract?: (id: string) => Promise<string | null>;
+  onUploadSnowContractMap?: (contractId: string, file: File) => Promise<string | null>;
+  canEditSnowContracts?: boolean;
 }
 
 export default function SnowMaster({
   quotes, currentUser, isAdmin, onSave, onDelete, initial,
   isSuperAdmin = false, config = SNOW_CONFIG_V1, activeVersion = 'snow-v1', configs = {},
+  snowContracts = {}, onSaveSnowContract, onCreateSnowContract, onDuplicateSnowContract,
+  onUploadSnowContractMap, canEditSnowContracts = false,
   onSaveConfig, onRevertConfig,
 }: Props) {
-  const [sub, setSub] = useState<'quote' | 'saved' | 'report' | 'rates'>('quote');
+  const [sub, setSub] = useState<'quote' | 'saved' | 'report' | 'contracts' | 'rates'>('quote');
 
   // Config version map for resolving any quote's original prices.
   const versionMap = useMemo(() => {
@@ -155,14 +165,29 @@ export default function SnowMaster({
       {/* Sub-tabs — Rate sheet is super-admin only (also hard-guarded in the
           component + write handlers + firestore.rules). */}
       <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm w-fit">
-        {(['quote', 'saved', 'report', ...(isSuperAdmin ? ['rates'] as const : [])] as const).map(t => (
+        {(['quote', 'saved', 'report', 'contracts', ...(isSuperAdmin ? ['rates'] as const : [])] as const).map(t => (
           <button key={t} onClick={() => setSub(t)}
             className={`px-3 py-1.5 text-sm font-bold rounded-md inline-flex items-center gap-1 ${sub === t ? 'text-white' : 'text-gray-500'}`}
             style={sub === t ? { backgroundColor: GREEN } : undefined}>
-            {t === 'quote' ? 'Quote' : t === 'saved' ? 'Saved' : t === 'report' ? 'Report' : <><SlidersHorizontal className="w-3.5 h-3.5" /> Rate sheet</>}
+            {t === 'quote' ? 'Quote' : t === 'saved' ? 'Saved' : t === 'report' ? 'Report'
+              : t === 'contracts' ? <><FileText className="w-3.5 h-3.5" /> Contracts</>
+                : <><SlidersHorizontal className="w-3.5 h-3.5" /> Rate sheet</>}
           </button>
         ))}
       </div>
+
+      {sub === 'contracts' && (
+        <SnowContractsModule
+          contracts={snowContracts}
+          onSave={onSaveSnowContract || (async () => {})}
+          onCreate={onCreateSnowContract || (async () => null)}
+          onDuplicate={onDuplicateSnowContract || (async () => null)}
+          onUploadMap={onUploadSnowContractMap || (async () => null)}
+          canEdit={canEditSnowContracts}
+          currentUser={currentUser}
+          today={new Date().toISOString().slice(0, 10)}
+        />
+      )}
 
       {sub === 'quote' && (
         <div className="grid md:grid-cols-2 gap-4 items-start">

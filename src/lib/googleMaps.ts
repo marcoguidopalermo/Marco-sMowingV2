@@ -4,7 +4,7 @@
 // to ship in the client bundle. Prefer a build-time env var when present;
 // otherwise fall back to the committed restricted key. NEVER console.log the key.
 export const GOOGLE_MAPS_API_KEY: string =
-  (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined) ||
+  ((import.meta as any)?.env?.VITE_GOOGLE_MAPS_API_KEY as string | undefined) ||
   'AIzaSyCHRBrkEeL-4wyvk9xs9bxZG66cD9sdfgM';
 
 // m² → ft². google.maps.geometry.spherical.computeArea returns square metres.

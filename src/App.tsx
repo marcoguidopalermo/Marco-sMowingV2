@@ -25,7 +25,7 @@ import {
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, JobberBhConflict, MonthlySummary,
   RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, RoleTaskInstance,
   ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry,
-  CapacityForecast, BonusPayoutRecord, HourlyEstimate
+  CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
@@ -166,6 +166,8 @@ export default function App() {
   // Per-visit hourly BH estimates, keyed by Jobber visit id so they survive
   // every re-sync of the forward snapshot. Own document, off appData.
   const [hourlyEstimates, setHourlyEstimates] = useState<Record<string, HourlyEstimate>>({});
+  // SnowMaster commercial contracts — own top-level collection, live.
+  const [snowContracts, setSnowContracts] = useState<Record<string, SnowContract>>({});
 
   // Real signed-in identity. These are pinned to the Firebase auth
   // user and never change at the View As layer. The
@@ -1135,6 +1137,21 @@ export default function App() {
         setBonusPayouts(map);
       },
       err => { console.error('bonusPayouts listen error:', err); },
+    );
+  }, [user]);
+
+  // Commercial snow contracts — top-level collection (outside artifacts/**,
+  // so its rules can be narrowed independently).
+  useEffect(() => {
+    if (!user) return;
+    return onSnapshot(
+      collection(db, 'snowContracts'),
+      snap => {
+        const map: Record<string, SnowContract> = {};
+        snap.forEach(d => { const v = d.data() as SnowContract; if (v && v.id) map[v.id] = v; });
+        setSnowContracts(map);
+      },
+      err => { console.error('snowContracts listen error:', err); },
     );
   }, [user]);
 
@@ -2618,6 +2635,51 @@ export default function App() {
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'capacityEstimates', 'hourly'), clean);
     } catch (err: any) {
       showToastMsg(`Could not save estimate: ${err?.message || String(err)}`);
+    }
+  };
+
+  // ── SNOW CONTRACTS. Writes go straight to the contract document; the
+  // editor autosaves on blur, so these are called often and stay small.
+  const canEditSnowContracts = isManager;   // managers read-only is enforced below
+  const saveSnowContract = async (c: SnowContract) => {
+    if (!canEditSnowContracts) { showToastMsg(PERMISSION_DENIED); return; }
+    try {
+      const clean = JSON.parse(JSON.stringify(c, (_k, v) => (v === undefined ? null : v)));
+      await setDoc(doc(db, 'snowContracts', c.id), clean);
+    } catch (err: any) {
+      showToastMsg(`Could not save contract: ${err?.message || String(err)}`);
+    }
+  };
+  const createSnowContract = async (): Promise<string | null> => {
+    if (!canEditSnowContracts) { showToastMsg(PERMISSION_DENIED); return null; }
+    const { newContract } = await import('./lib/snowContracts');
+    const id = `sc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const c = newContract({ id, createdBy: user?.uid || displayEmail });
+    await saveSnowContract(c);
+    return id;
+  };
+  const duplicateSnowContract = async (srcId: string): Promise<string | null> => {
+    if (!canEditSnowContracts) { showToastMsg(PERMISSION_DENIED); return null; }
+    const src = snowContracts[srcId];
+    if (!src) return null;
+    const { duplicateForNextSeason } = await import('./lib/snowContracts');
+    const id = `sc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    await saveSnowContract(duplicateForNextSeason(src, { id, createdBy: user?.uid || displayEmail }));
+    showToastMsg('Duplicated for next season.');
+    return id;
+  };
+  const uploadSnowContractMap = async (contractId: string, file: File): Promise<string | null> => {
+    if (!canEditSnowContracts) { showToastMsg(PERMISSION_DENIED); return null; }
+    try {
+      // Shared uploader: compresses images client-side, then returns the URL.
+      const { uploadFile } = await import('./lib/storage');
+      const stored = await uploadFile(`snowContracts/${contractId}`, file, {
+        uploadedBy: { email: displayEmail, name: displayName },
+      });
+      return stored.url;
+    } catch (err: any) {
+      showToastMsg(`Upload failed: ${err?.message || String(err)}`);
+      return null;
     }
   };
 
@@ -5633,6 +5695,12 @@ export default function App() {
           jobberUsers={jobberUsers}
           hourlyEstimates={hourlyEstimates}
           onSetHourlyEstimate={setHourlyEstimate}
+          snowContracts={snowContracts}
+          onSaveSnowContract={saveSnowContract}
+          onCreateSnowContract={createSnowContract}
+          onDuplicateSnowContract={duplicateSnowContract}
+          onUploadSnowContractMap={uploadSnowContractMap}
+          canEditSnowContracts={canEditSnowContracts}
         />
       ) : currentView === 'contracting' ? (
         <ContractingMaster
