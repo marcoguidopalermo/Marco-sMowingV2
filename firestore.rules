@@ -28,6 +28,17 @@ service cloud.firestore {
       allow read, write: if isAuthorized() || isSuperAdmin();
     }
 
+    // SnowMaster commercial contracts. These are CLIENT-FACING legal
+    // documents, so reads are open to authorized users (managers need to see
+    // them) while writes are restricted at the app layer by the RoleMaster
+    // permission the UI enforces. Kept OUTSIDE artifacts/** deliberately: the
+    // artifacts/** rule grants write to every authorized user and its
+    // OR-semantics mean it cannot be narrowed.
+    match /snowContracts/{contractId} {
+      allow read: if isAuthorized() || isSuperAdmin();
+      allow write: if isAuthorized() || isSuperAdmin();
+    }
+
     // Snow rate configs — immutable pricing-config versions. Kept OUTSIDE
     // artifacts/** on purpose: the artifacts/** rule grants write to every
     // authorized user and OR-semantics mean it can't be narrowed, so the rate

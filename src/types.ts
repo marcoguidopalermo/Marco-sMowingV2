@@ -997,6 +997,98 @@ export interface AppSettings {
   capacity?: CapacitySettings;
 }
 
+// ══ SNOWMASTER · COMMERCIAL CONTRACT BUILDER ══════════════════════════════
+// One document per client per season in the snowContracts collection. Replaces
+// a standalone HTML file that was filled in, printed and emailed but saved
+// nothing — the point of this record is that the contract survives.
+export type SnowContractStatus = 'draft' | 'sent' | 'signed' | 'declined' | 'expired';
+export type SnowServiceStatus = 'included' | 'onCall' | 'excluded';
+
+export interface SnowContractService {
+  key: string;                    // 'plowing' | 'shovelling' | … | custom id
+  label: string;
+  detail: string;                 // the "— lot and driving areas" part
+  status: SnowServiceStatus;
+  notes: string;
+  custom: boolean;
+}
+
+export interface SnowContractOptionBLine {
+  label: string;
+  amount: number;
+  note?: string;
+}
+
+export interface SnowContract {
+  id: string;
+  season: string;                 // "2026/2027"
+  status: SnowContractStatus;
+  sentAt?: number;
+  signedAt?: number;
+  signedBy?: string;              // who marked it signed — contracts are paper
+  createdAt: number;
+  updatedAt: number;
+  createdBy: string;
+  clientId?: string;
+  client: {
+    businessName: string;
+    siteContact: string;
+    serviceAddress: string;
+    billingEmail: string;
+    phone: string;
+  };
+  term: { start: string; end: string };
+  scope: {
+    totalArea: string;            // auto-filled from the measuring tool, then editable
+    lotAreas: string;
+    walkwaysEntrances: string;
+    snowStorage: string;
+    markedHazards: string;
+    accessNotes: string;
+    description: string;
+    showMap: boolean;
+    mapImages: string[];          // 0–2 Storage URLs (manual fallback)
+    measuredSqft?: number;
+    measurement?: PropertyMeasurement;   // same shape SalesMaster stores
+  };
+  services: SnowContractService[];
+  pricing: {
+    selectedOption: 'A' | 'B' | null;
+    optionA: {
+      enabled: boolean;
+      totalPrice: number;
+      instalments: 6;
+      instalmentAmount: number;          // DERIVED
+      prepayDiscountEnabled: boolean;
+      prepayDeadline: string;
+      prepayDiscountPct: 5;
+      prepayTotal: number;               // DERIVED
+    };
+    optionB: {
+      enabled: boolean;
+      lines: SnowContractOptionBLine[];
+      totalPerVisit: number;             // DERIVED
+    };
+    addOns: {
+      sandPerTon: number;
+      sandLoadingFee: number;
+      relocation: string;
+      haulAway: string;
+      afterHours: string;
+    };
+  };
+  serviceTerms: {
+    triggerDepth: string;
+    priorityTier: 'standard' | 'priority';
+    clearedBefore: string;
+    snowfallEndsBy: string;
+    otherwiseWithinHours: string;
+  };
+  // Sections removed from THIS contract's printed output. Never deletes the
+  // underlying data — restoring a section brings its content back intact.
+  hiddenSections: string[];
+}
+
 // ══ BONUS PAYOUT MARKERS ══════════════════════════════════════════════════
 // A PAYOUT-TRACKING layer that sits ON TOP of the bonus calculation. It never
 // changes what was earned: efficiency, division pools and per-person shares

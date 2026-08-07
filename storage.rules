@@ -12,6 +12,7 @@ rules_version = '2';
 //   fleet/{unitId}/{docType}/{timestamp}-{filename}
 //   policies/{policyId}/{timestamp}-{filename}
 //   roleMaster/{instanceId}/{timestamp}-{filename}
+//   snowContracts/{contractId}/{timestamp}-{filename}
 service firebase.storage {
   match /b/{bucket}/o {
 
@@ -60,6 +61,16 @@ service firebase.storage {
     // photos. Namespaced under contracting/ (e.g. contracting/{projectId}/...
     // and contracting/wo-{workOrderId}/...). Own tenant, same auth gate.
     match /contracting/{scope}/{fileName} {
+      allow read: if signedIn();
+      allow write: if signedIn() && validUpload();
+      allow delete: if signedIn();
+    }
+
+    // SnowMaster commercial contract site maps — aerial + street view for the
+    // printed map block. snowContracts/{contractId}/{fileName}. Images are
+    // compressed client-side to 1600px on the long edge before upload, so the
+    // 10 MB guard is a backstop rather than the working limit.
+    match /snowContracts/{contractId}/{fileName} {
       allow read: if signedIn();
       allow write: if signedIn() && validUpload();
       allow delete: if signedIn();
