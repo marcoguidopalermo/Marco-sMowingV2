@@ -38,7 +38,7 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
     return Number.isFinite(v) && v > 0 ? v : null;
   };
 
-  const setDeclared = (division: string, field: 'crews' | 'peoplePerCrew' | 'bhPerPerson', value: number | null) => write({
+  const setDeclared = (division: string, field: 'crews' | 'peoplePerCrew' | 'bhPerPerson' | 'hourlyDefaultBH', value: number | null) => write({
     declared: {
       ...cap.declared,
       [division]: { ...(cap.declared?.[division] || {}), [field]: value, placeholder: false },
@@ -71,6 +71,15 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
             number needs changing it is obvious what to change. A division with nothing entered
             shows raw booked BH with <strong>no bar and no percentage</strong> rather than a
             made-up one.
+          </p>
+          <p className="text-xs text-slate-500 mt-1">
+            <strong>[hourly] work is estimated, not ignored.</strong> An hourly visit occupies
+            crew time whether or not it carries a [BH] tag, and counting it as zero makes a full
+            week read as open. Where Jobber gives the visit a scheduled duration that is used;
+            otherwise the per-division figure below stands in. Estimates are always drawn and
+            labelled apart from measured BH. <strong>Untagged</strong> visits get the duration
+            treatment but no default — a missing tag is a fixable data gap in Jobber, and
+            guessing at it would hide what should be corrected.
           </p>
         </div>
         <div className="space-y-2">
@@ -117,6 +126,26 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
                 <div className={`text-[11px] font-bold mt-1 ${basis.bh === null ? 'text-amber-700' : 'text-slate-500'}`}>
                   {basis.bh === null ? 'not set — this division shows raw booked BH with no percentage' : basis.basis}
                 </div>
+                <label className="flex items-center gap-1.5 mt-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                    [hourly] estimate
+                  </span>
+                  <input
+                    type="number" min={0} step={0.5} placeholder="—"
+                    disabled={!isAdmin}
+                    value={rule.hourlyDefaultBH ?? ''}
+                    onChange={e => setDeclared(division, 'hourlyDefaultBH', numOrNull(e.target.value))}
+                    className="w-14 border border-slate-300 rounded p-1 text-sm font-mono font-bold bg-white outline-none disabled:opacity-60 text-right"
+                  />
+                  <span className="text-[10px] text-slate-400">
+                    BH per hourly visit — used only when Jobber gives no scheduled duration
+                  </span>
+                  {rule.placeholder && rule.hourlyDefaultBH != null && (
+                    <span className="text-[9px] font-black uppercase tracking-widest bg-amber-100 text-amber-800 border border-amber-300 px-1 py-0.5 rounded">
+                      placeholder
+                    </span>
+                  )}
+                </label>
               </div>
             );
           })}

@@ -1091,6 +1091,11 @@ export interface DeclaredCapacity {
   crews?: number | null;
   peoplePerCrew?: number | null;
   bhPerPerson?: number | null;
+  // FALLBACK estimate for an [hourly] visit with no scheduled duration.
+  // Hourly work occupies crew time whether or not it carries a [BH] tag;
+  // counting it as zero makes a full week read as open, which is the more
+  // dangerous error. Used only when Jobber gives no duration.
+  hourlyDefaultBH?: number | null;
   placeholder?: boolean;
 }
 
@@ -1144,6 +1149,9 @@ export interface CapacityForecastVisit {
   untagged: boolean;
   assigneeIds: string[];
   assigneeNames: string[];
+  // Scheduled duration in hours from Jobber's startAt/endAt, same-day visits
+  // only. The basis for estimating an [hourly] visit's capacity load.
+  durationHours?: number;
 }
 
 // Which half of the business a snapshot covers. Lawn is high-volume and
@@ -1168,6 +1176,8 @@ export interface CapacityForecast {
     hourly: number;
     // Visits skipped because they belong to the other scope's document.
     otherScope?: number;
+    hourlyWithDuration?: number;
+    untaggedWithDuration?: number;
   };
   truncated: boolean;
   // The date this snapshot actually covers through. Weeks past it were never

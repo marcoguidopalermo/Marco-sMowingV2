@@ -94,6 +94,11 @@ function Legend() {
       <span className={`px-2 py-1 rounded ${UNCOVERED_STYLE.cell} ${UNCOVERED_STYLE.text}`}>
         not pulled — NOT an open week
       </span>
+      <span className="px-2 py-1 rounded border border-slate-300 text-slate-600 inline-flex items-center gap-1">
+        <span className="inline-block w-3 h-2 rounded-sm bg-slate-400"
+          style={{ backgroundImage: 'repeating-linear-gradient(45deg, #94a3b8 0 3px, transparent 3px 6px)' }} />
+        hatched = ESTIMATED hourly work
+      </span>
     </div>
   );
 }
@@ -118,14 +123,38 @@ function BookingWeekCell({ cell, week, active, onClick }: {
       aria-label={`Week ${week.rangeLabel}: ${bh(cell.bh)} booked of ${cell.capacity === null ? 'undeclared' : bh(cell.capacity)}`}
       className={`w-full text-left rounded-lg p-3 transition-shadow ${s.cell} ${active ? 'ring-2 ring-slate-800 ring-offset-1' : 'hover:shadow-md'}`}>
       <div className="flex items-baseline justify-between gap-1">
-        <span className={`text-2xl font-black tabular-nums ${s.text}`}>{bh(cell.bh)}</span>
+        <span className={`text-2xl font-black tabular-nums ${s.text}`}>{bh(cell.totalBH)}</span>
         <span className={`text-[11px] font-bold tabular-nums opacity-80 ${s.text}`}>
           / {cell.capacity === null ? '—' : bh(cell.capacity)}
         </span>
       </div>
       <div className={`text-[9px] font-black uppercase tracking-widest opacity-60 ${s.text}`}>booked / declared</div>
-      <div className={`h-2 rounded-full mt-2 overflow-hidden ${s.track}`}>
-        {pct !== null && <div className={`h-full ${s.bar}`} style={{ width: `${Math.max(2, Math.min(100, pct))}%` }} />}
+      {/* THE SPLIT, stated. An estimate must never pass for a measured
+          number: the hatched part of the bar and this line are what keep
+          "42 BH booked" and "12 BH est." distinguishable. */}
+      {cell.estBH > 0 && (
+        <div className={`text-[10px] font-bold ${s.text}`}>
+          {bh(cell.bh)} booked + <span className="underline decoration-dotted">{bh(cell.estBH)} est.</span>
+          {' '}({cell.hourlyCount} hourly)
+        </div>
+      )}
+      <div className={`h-2 rounded-full mt-2 overflow-hidden flex ${s.track}`}>
+        {pct !== null && cell.totalBH > 0 && (
+          <>
+            <div className={`h-full ${s.bar}`}
+              style={{ width: `${Math.max(1, Math.min(100, pct) * (cell.bh / cell.totalBH))}%` }} />
+            {cell.estBH > 0 && (
+              <div
+                className="h-full opacity-90"
+                title={`${bh(cell.estBH)} BH estimated from hourly work`}
+                style={{
+                  width: `${Math.max(1, Math.min(100, pct) * (cell.estBH / cell.totalBH))}%`,
+                  backgroundImage: 'repeating-linear-gradient(45deg, currentColor 0 3px, transparent 3px 6px)',
+                }}
+              />
+            )}
+          </>
+        )}
       </div>
       <div className="flex items-center justify-between gap-1 mt-1.5">
         <span className={`text-[10px] font-black uppercase tracking-widest inline-flex items-center gap-0.5 ${s.text}`}>
@@ -134,11 +163,14 @@ function BookingWeekCell({ cell, week, active, onClick }: {
         </span>
         {pct !== null && <span className={`text-sm font-black tabular-nums ${s.text}`}>{pct}%</span>}
       </div>
-      {(cell.hourlyCount > 0 || cell.untaggedCount > 0) && (
-        <div className={`text-[9px] font-bold mt-1 opacity-80 ${s.text}`}>
-          {cell.hourlyCount > 0 && `${cell.hourlyCount} hourly`}
-          {cell.hourlyCount > 0 && cell.untaggedCount > 0 && ' · '}
-          {cell.untaggedCount > 0 && `${cell.untaggedCount} untagged`}
+      {cell.estBH > 0 && (
+        <div className={`text-[9px] font-bold mt-1 opacity-90 ${s.text}`}>
+          includes estimated hourly work
+        </div>
+      )}
+      {cell.untaggedCount > 0 && (
+        <div className={`text-[9px] font-bold mt-0.5 opacity-80 ${s.text}`}>
+          {cell.untaggedCount} untagged — load unknown, NOT counted
         </div>
       )}
     </button>
@@ -171,7 +203,14 @@ function JobList({ jobs }: { jobs: ForwardSlice[] }) {
               )}
               {j.isHourly && (
                 <span className="text-[9px] font-black uppercase tracking-widest bg-sky-50 text-sky-700 border border-sky-200 px-1.5 py-0.5 rounded inline-flex items-center gap-0.5">
-                  <Clock className="w-2.5 h-2.5" /> hourly — no forward BH
+                  <Clock className="w-2.5 h-2.5" /> hourly
+                </span>
+              )}
+              {j.estimated && (
+                <span className="text-[9px] font-black uppercase tracking-widest bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0.5 rounded">
+                  estimated — {j.estimateBasis === 'duration'
+                    ? `${j.durationHours}h scheduled in Jobber`
+                    : 'division default (no duration on the visit)'}
                 </span>
               )}
               {j.untagged && (
@@ -185,8 +224,12 @@ function JobList({ jobs }: { jobs: ForwardSlice[] }) {
             </div>
           </div>
           <div className="text-right shrink-0">
-            <div className="text-lg font-black text-slate-900 tabular-nums">{bh(j.bh)}</div>
-            <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">BH</div>
+            <div className={`text-lg font-black tabular-nums ${j.estimated ? 'text-slate-500' : 'text-slate-900'}`}>
+              {bh(j.bh)}
+            </div>
+            <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+              {j.estimated ? 'BH est.' : 'BH'}
+            </div>
           </div>
         </div>
       ))}
@@ -379,22 +422,49 @@ export default function CapacityCalendar({
 
         {tool === 'booking' && <Legend />}
 
-        <div className="flex items-start gap-2 text-[11px] text-slate-500 border-t border-slate-100 pt-2">
-          <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" />
-          <p>
-            Reflects work <strong>scheduled in Jobber</strong> — won-but-unscheduled work doesn&apos;t
-            appear, so an empty week may not be truly open.{' '}
-            {(['projects', 'lawn'] as CapacityScope[]).map(scope => {
-              const f = forecasts[scope];
-              const label = scope === 'projects' ? 'Projects' : 'Lawn';
-              if (!f) return <span key={scope} className="mr-2">{label}: <strong>not pulled yet</strong>.</span>;
+        {/* LAST UPDATED, prominently. Capacity is now pulled twice a day for
+            projects and once for lawn, so a number read mid-call has to say
+            how old it is — and say it loudly once it's stale. */}
+        <div className="border-t border-slate-100 pt-2 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2">
+            {(['projects', 'lawn'] as CapacityScope[]).map(sc => {
+              const f = forecasts[sc];
+              const label = sc === 'projects' ? 'Projects' : 'Lawn';
+              if (!f) {
+                return (
+                  <span key={sc} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-amber-300 bg-amber-50 text-[11px] font-black text-amber-800">
+                    {label}: never pulled
+                  </span>
+                );
+              }
+              const ageMs = Date.now() - f.generatedAt;
+              const stale = ageMs > 24 * 3600 * 1000;
+              const hours = Math.floor(ageMs / 3600000);
+              const ageLabel = hours < 1 ? 'just now'
+                : hours < 24 ? `${hours}h ago`
+                  : `${Math.floor(hours / 24)}d ${hours % 24}h ago`;
               return (
-                <span key={scope} className="mr-2">
-                  {label} updated {new Date(f.generatedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}.
+                <span key={sc}
+                  className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] font-black ${stale ? 'border-amber-400 bg-amber-50 text-amber-900' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+                  {stale && <AlertTriangle className="w-3 h-3" />}
+                  {label} updated{' '}
+                  {new Date(f.generatedAt).toLocaleString('en-US', {
+                    weekday: 'short', hour: 'numeric', minute: '2-digit',
+                  })}
+                  <span className={stale ? 'font-bold' : 'font-bold text-slate-400'}>· {ageLabel}</span>
+                  {stale && <span className="uppercase tracking-widest">— over a day old, refresh before quoting</span>}
                 </span>
               );
             })}
-          </p>
+          </div>
+          <div className="flex items-start gap-2 text-[11px] text-slate-500">
+            <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" />
+            <p>
+              Reflects work <strong>scheduled in Jobber</strong> — won-but-unscheduled work doesn&apos;t
+              appear, so an empty week may not be truly open. Pulled automatically twice a day
+              (projects) and each morning (lawn); use Refresh for anything booked since.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -522,7 +592,12 @@ export default function CapacityCalendar({
                     {drillCell.row.division} · week {drillCell.week.rangeLabel}
                   </div>
                   <div className="text-xl font-black text-slate-900">
-                    {bh(drillCell.cell.bh)} BH
+                    {bh(drillCell.cell.totalBH)} BH
+                    {drillCell.cell.estBH > 0 && (
+                      <span className="text-sm font-bold text-slate-500 ml-2">
+                        ({bh(drillCell.cell.bh)} booked + {bh(drillCell.cell.estBH)} estimated)
+                      </span>
+                    )}
                     {drillCell.cell.pct !== null && (
                       <span className="text-sm font-bold text-slate-500 ml-2">
                         {drillCell.cell.pct}% of {bh(drillCell.cell.capacity || 0)} declared

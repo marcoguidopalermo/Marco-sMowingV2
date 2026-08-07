@@ -198,6 +198,56 @@ export interface ForwardSlice {
   assigneeNames: string[];
   totalRemaining: number;
   creditedBH: number;
+  // Scheduled duration from Jobber (same-day visits only) and how many days
+  // this visit spans — together these let a consumer estimate an [hourly]
+  // visit's load and divide it across the days it occupies.
+  durationHours?: number;
+  spanDays: number;
+  // Set when this slice's BH is an ESTIMATE rather than a tagged figure.
+  estimated?: boolean;
+  estimateBasis?: EstimateBasis;
+}
+
+// ── ESTIMATING WORK THAT CARRIES NO [BH] TAG ───────────────────────────────
+// An [hourly] visit occupies crew time whether or not anyone tagged it. Left
+// at zero it makes a full week read as open, which is the more dangerous
+// error — so it is ESTIMATED and then flagged everywhere it appears. The
+// estimate never masquerades as a measured number.
+//
+// UNTAGGED visits are treated differently on purpose. A missing tag is a
+// fixable data-entry gap, not a category of work: where Jobber gives a real
+// duration we use it, but there is NO default fallback, because inventing a
+// number would paper over the very thing that should be corrected in Jobber.
+export type EstimateBasis = 'duration' | 'default' | null;
+
+export interface SliceLoad {
+  bh: number;              // BH counted for this slice
+  estimated: boolean;
+  basis: EstimateBasis;
+}
+
+export function loadForSlice(
+  slice: ForwardSlice,
+  division: string,
+  settings: CapacitySettings | undefined,
+): SliceLoad {
+  if (!slice.isHourly && !slice.untagged) {
+    return { bh: slice.bh, estimated: false, basis: null };
+  }
+  const days = Math.max(1, slice.spanDays);
+  // Real scheduled time beats any default.
+  if (typeof slice.durationHours === 'number' && slice.durationHours > 0) {
+    return { bh: round1(slice.durationHours / days), estimated: true, basis: 'duration' };
+  }
+  if (slice.untagged) {
+    // No guess for a missing tag — see the note above.
+    return { bh: 0, estimated: false, basis: null };
+  }
+  const fallback = settings?.declared?.[division]?.hourlyDefaultBH;
+  if (typeof fallback === 'number' && Number.isFinite(fallback) && fallback > 0) {
+    return { bh: round1(fallback / days), estimated: true, basis: 'default' };
+  }
+  return { bh: 0, estimated: false, basis: null };
 }
 
 // Merges the scope snapshots (newest wins per visit), then expands each visit
@@ -226,6 +276,8 @@ export function forwardSlices(
     const perDay = remaining / days.length;
     for (const date of days) {
       out.push({
+        spanDays: days.length,
+        ...(typeof v.durationHours === 'number' ? { durationHours: v.durationHours } : {}),
         visitId: v.visitId,
         desc: v.desc,
         client: v.client,
@@ -301,7 +353,18 @@ export const UNATTRIBUTED = 'Unattributed';
 // ── TOOL 1: BOOKING ────────────────────────────────────────────────────────
 export interface BookingCell {
   weekStart: string;
+  // CONFIRMED BH — from [BH] tags, less anything already credited.
   bh: number;
+  // ESTIMATED BH — hourly work with no tag, from its scheduled duration or
+  // the division's default. Kept SEPARATE so the cell can show the split and
+  // never present an estimate as a measured figure.
+  estBH: number;
+  estCount: number;
+  // How the estimates in this cell were arrived at.
+  estFromDuration: number;
+  estFromDefault: number;
+  // What the percentage is actually computed from: bh + estBH.
+  totalBH: number;
   capacity: number | null;
   pct: number | null;
   band: CapacityBand | null;
@@ -354,6 +417,11 @@ export function buildBookingModel(input: BookingInput): BookingModel {
     return {
       weekStart: w.start,
       bh: 0,
+      estBH: 0,
+      estCount: 0,
+      estFromDuration: 0,
+      estFromDefault: 0,
+      totalBH: 0,
       capacity: null,
       pct: null,
       band: null,
@@ -387,10 +455,22 @@ export function buildBookingModel(input: BookingInput): BookingModel {
     for (const division of targets) {
       const cells = rowFor(division);
       const cell = cells[wi];
-      cell.bh = round1(cell.bh + share);
+      // Hourly work carries no tag, so its load is ESTIMATED here — counted
+      // toward the week, tracked apart from measured BH.
+      const load = loadForSlice(slice, division, settings);
+      const amount = load.estimated ? load.bh / targets.length : share;
+      if (load.estimated) {
+        cell.estBH = round1(cell.estBH + amount);
+        cell.estCount++;
+        if (load.basis === 'duration') cell.estFromDuration = round1(cell.estFromDuration + amount);
+        else cell.estFromDefault = round1(cell.estFromDefault + amount);
+      } else {
+        cell.bh = round1(cell.bh + amount);
+      }
+      cell.totalBH = round1(cell.bh + cell.estBH);
       if (slice.isHourly) cell.hourlyCount++;
       if (slice.untagged) cell.untaggedCount++;
-      cell.jobs.push({ ...slice, bh: round1(share) });
+      cell.jobs.push({ ...slice, bh: round1(amount), estimated: load.estimated, estimateBasis: load.basis } as ForwardSlice & { estimated: boolean; estimateBasis: EstimateBasis });
     }
   }
 
@@ -398,8 +478,11 @@ export function buildBookingModel(input: BookingInput): BookingModel {
     const dec = declaredFor(settings, division);
     for (const cell of cells) {
       cell.capacity = division === UNATTRIBUTED ? null : dec.bh;
+      cell.totalBH = round1(cell.bh + cell.estBH);
+      // The percentage INCLUDES the estimate — an hourly job occupying next
+      // Thursday means next Thursday is occupied. The cell says so.
       cell.pct = cell.uncovered || !cell.capacity ? null :
-        Math.round((cell.bh / cell.capacity) * 100);
+        Math.round((cell.totalBH / cell.capacity) * 100);
       cell.band = cell.pct === null ? null : bandFor(cell.pct, thresholds);
       cell.jobs.sort((a, b) => b.bh - a.bh);
     }
@@ -412,7 +495,7 @@ export function buildBookingModel(input: BookingInput): BookingModel {
       if (c.uncovered) continue;
       const meaningful = c.capacity && c.pct !== null
         ? c.pct >= thresholds.underPct
-        : c.bh > 0;
+        : c.totalBH > 0;
       if (meaningful) { bookedOutWeek = c.weekStart; bookedOutTo = weeks[i].friday; break; }
     }
     return {
@@ -425,7 +508,7 @@ export function buildBookingModel(input: BookingInput): BookingModel {
       cells,
       bookedOutWeek,
       bookedOutTo,
-      totalBH: round1(cells.reduce((s, c) => s + c.bh, 0)),
+      totalBH: round1(cells.reduce((s, c) => s + c.totalBH, 0)),
     };
   };
 
@@ -571,13 +654,17 @@ export function buildBalanceModel(input: BalanceInput): BalanceModel {
       unassignedByName.set(who, (unassignedByName.get(who) || 0) + slice.bh);
       continue;
     }
-    const share = slice.bh / keys.length;
     for (const key of keys) {
+      const division = crewIdentity.get(key)?.division || '';
+      // Hourly work occupies this crew's day whether or not it carries a tag.
+      const load = loadForSlice(slice, division, settings);
+      const share = load.bh / keys.length;
       if (!cellBH.has(key)) { cellBH.set(key, new Map()); cellJobs.set(key, new Map()); }
       const byD = cellBH.get(key)!;
       byD.set(slice.date, (byD.get(slice.date) || 0) + share);
       const jd = cellJobs.get(key)!;
-      jd.set(slice.date, [...(jd.get(slice.date) || []), { ...slice, bh: round1(share) }]);
+      jd.set(slice.date, [...(jd.get(slice.date) || []),
+        { ...slice, bh: round1(share), estimated: load.estimated, estimateBasis: load.basis }]);
     }
   }
 

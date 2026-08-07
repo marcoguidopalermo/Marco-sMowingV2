@@ -248,8 +248,10 @@ export interface ForecastVisit {
   // client subtracts already-credited BH from the multi-day ledger to get
   // what's actually remaining.
   bh: number;
-  // [hourly] (T&M) — BH is entered by a manager after the fact, so there is
-  // no forward number to book. Counted separately in the UI, never as 0 load.
+  // [hourly] (T&M) — BH is entered by a manager after the fact, so the tag
+  // carries no forward number. It still OCCUPIES CREW TIME, so the client
+  // estimates it (from durationHours below where present) rather than
+  // counting it as zero, which would make a full week read as open.
   isHourly: boolean;
   // Scheduled, but the title carries no [BH] tag at all — unknown load.
   // Surfaced as a count so an empty-looking week isn't mistaken for open.
@@ -257,6 +259,12 @@ export interface ForecastVisit {
   // Jobber assignee ids — the client maps these to crews using the schedule.
   assigneeIds: string[];
   assigneeNames: string[];
+  // SCHEDULED DURATION in hours, from Jobber's own startAt/endAt. Only set
+  // for a visit that starts and ends on the same day — across a multi-day
+  // span the difference includes the nights between and means nothing. This
+  // is the best available basis for estimating an [hourly] visit's load:
+  // real scheduled time, not a guess.
+  durationHours?: number;
 }
 
 export interface CapacityForecastDoc {
@@ -613,6 +621,8 @@ export async function runCapacityForecast(
     untagged: 0,
     hourly: 0,
     otherScope: 0,
+    hourlyWithDuration: 0,
+    untaggedWithDuration: 0,
   };
 
   const entries: ForecastVisit[] = [];
@@ -654,6 +664,20 @@ export async function runCapacityForecast(
     if (isHourly) stats.hourly++;
     if (untagged) stats.untagged++;
 
+    // Scheduled duration, same-day only (see ForecastVisit.durationHours).
+    let durationHours: number | undefined;
+    if (v.startAt && v.endAt && startDate === endDate) {
+      const ms = new Date(v.endAt).getTime() - new Date(v.startAt).getTime();
+      const hrs = ms / 3_600_000;
+      // Sane window: positive and inside a day. Anything else is bad data or
+      // an all-day marker, and a wrong duration is worse than none.
+      if (Number.isFinite(hrs) && hrs > 0 && hrs <= 24) {
+        durationHours = Math.round(hrs * 100) / 100;
+        if (isHourly) stats.hourlyWithDuration++;
+        if (untagged) stats.untaggedWithDuration++;
+      }
+    }
+
     const assignees = v.assignedUsers?.nodes || [];
     const assigneeIds = assignees.map((a) => a.id);
     // Belongs to the other half of the business — its own run owns it.
@@ -674,6 +698,7 @@ export async function runCapacityForecast(
       untagged,
       assigneeIds,
       assigneeNames: assignees.map((a) => a.name?.full || "").slice(0, 4),
+      ...(durationHours !== undefined ? {durationHours} : {}),
     };
     entries.push(entry);
     entryBytes += JSON.stringify(entry).length;
@@ -729,6 +754,12 @@ export async function runCapacityForecast(
     coveredThrough,
     sizeBytes,
     sizeKB: Math.round(sizeBytes / 1024),
+    // Hourly / untagged volume + how much of it carries a real duration.
+    // This is what says whether the estimate matters and how sound it is.
+    hourly: stats.hourly,
+    hourlyWithDuration: stats.hourlyWithDuration,
+    untagged: stats.untagged,
+    untaggedWithDuration: stats.untaggedWithDuration,
     kept: stats.kept,
     fetched: stats.fetched,
     otherScope: stats.otherScope,
@@ -763,14 +794,16 @@ export const jobberSyncCapacity = onCall(
   },
 );
 
-// PROJECTS: twice an hour through the working day. Project bookings change
-// constantly and the document is small. The :07/:37 offset keeps this clear
-// of the performance sync's :00/:15/:30/:45 slots so the two never contend
-// for the Jobber API budget.
+// PROJECTS: TWICE DAILY. Dropped from twice-hourly because the manual
+// Refresh button covers "I need it now", and every scheduled pull competes
+// with the performance sync for the same Jobber query budget — the earlier
+// throttle failures came from frequency multiplied by query cost. Early
+// morning (after overnight scheduling) and just after lunch, both offset
+// from the sync's :00/:15/:30/:45 slots.
 export const jobberSyncCapacityScheduled = onSchedule(
   {
     region: REGION,
-    schedule: "7,37 6-20 * * *",
+    schedule: "33 6,13 * * *",
     timeZone: TIMEZONE,
     secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET],
     timeoutSeconds: 540,
@@ -789,14 +822,14 @@ export const jobberSyncCapacityScheduled = onSchedule(
   },
 );
 
-// LAWN: hourly on the :22. At a 21-day horizon this pull is a fraction of
-// what it was, so the old "three times a day" rationing is no longer needed
-// — and route changes during the day are exactly what the ops question
-// cares about. Still clear of the performance sync's slots.
+// LAWN: ONCE DAILY, early morning. It is the densest visit stream in the
+// business and the slowest-moving picture — a recurring route booked weeks
+// out doesn't change hour to hour, and the manual Refresh covers the case
+// where it has.
 export const jobberSyncCapacityLawnScheduled = onSchedule(
   {
     region: REGION,
-    schedule: "22 6-20 * * *",
+    schedule: "18 6 * * *",
     timeZone: TIMEZONE,
     secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET],
     timeoutSeconds: 540,

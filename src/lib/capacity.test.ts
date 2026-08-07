@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   buildWeeks, mondayOf, bandFor, thresholdsOrDefault, ceilingFor, declaredFor,
   assigneeDivisionIndex, buildBookingModel, buildBalanceModel, mergeSlices,
-  forwardSlices,
+  forwardSlices, loadForSlice,
 } from './capacity';
 import type { AppData, CapacityForecast, CapacityForecastVisit, Crew, Employee, MultiDayJob } from '../types';
 
@@ -136,6 +136,79 @@ test('CAPACITY IS NEVER READ FROM THE SCHEDULE — rostering more people changes
   }).rows.find(r => r.division === 'Large Projects')!.cells[0].capacity;
   assert.equal(capOf(lean), 100);
   assert.equal(capOf(heavy), 100, 'the roster must not move declared capacity');
+});
+
+console.log('\nHourly work is estimated, not ignored');
+const HOURLY_SETTINGS = {
+  declared: {
+    'Large Projects': { peoplePerCrew: 4, bhPerPerson: 25, hourlyDefaultBH: 4 },
+  },
+};
+const sliceOf = (v: Partial<CapacityForecastVisit>) =>
+  forwardSlices([forecast([visit(v)])], {}, TODAY)[0];
+
+test('an hourly visit with a Jobber duration uses that duration', () => {
+  const s2 = sliceOf({ visitId: 'h1', bh: 0, isHourly: true, durationHours: 6 });
+  const load = loadForSlice(s2, 'Large Projects', HOURLY_SETTINGS);
+  assert.equal(load.bh, 6);
+  assert.equal(load.estimated, true);
+  assert.equal(load.basis, 'duration');
+});
+test('without a duration it falls back to the division default', () => {
+  const s2 = sliceOf({ visitId: 'h2', bh: 0, isHourly: true });
+  const load = loadForSlice(s2, 'Large Projects', HOURLY_SETTINGS);
+  assert.equal(load.bh, 4);
+  assert.equal(load.basis, 'default');
+});
+test('a tagged visit is never estimated', () => {
+  const s2 = sliceOf({ visitId: 'h3', bh: 12 });
+  const load = loadForSlice(s2, 'Large Projects', HOURLY_SETTINGS);
+  assert.equal(load.bh, 12);
+  assert.equal(load.estimated, false);
+  assert.equal(load.basis, null);
+});
+test('UNTAGGED uses a real duration but gets NO default guess', () => {
+  const withDur = loadForSlice(sliceOf({ visitId: 'u1', bh: 0, untagged: true, durationHours: 3 }), 'Large Projects', HOURLY_SETTINGS);
+  assert.equal(withDur.bh, 3);
+  assert.equal(withDur.basis, 'duration');
+  const without = loadForSlice(sliceOf({ visitId: 'u2', bh: 0, untagged: true }), 'Large Projects', HOURLY_SETTINGS);
+  assert.equal(without.bh, 0, 'a missing tag is a data gap, not a category of work');
+  assert.equal(without.estimated, false);
+});
+test('no default set → hourly contributes nothing rather than a made-up number', () => {
+  const load = loadForSlice(sliceOf({ visitId: 'h4', bh: 0, isHourly: true }), 'Large Projects', { declared: {} });
+  assert.equal(load.bh, 0);
+  assert.equal(load.estimated, false);
+});
+test('the week keeps booked and estimated SEPARATE, and the % includes both', () => {
+  const m = buildBookingModel({
+    snapshots: [forecast([
+      visit({ visitId: 'p1', bh: 42 }),
+      visit({ visitId: 'p2', bh: 0, isHourly: true, durationHours: 6 }),
+      visit({ visitId: 'p3', bh: 0, isHourly: true, durationHours: 6 }),
+    ])],
+    schedules: SCHEDULES, multiDayJobs: {}, settings: HOURLY_SETTINGS, today: TODAY,
+  });
+  const c = m.rows.find(r => r.division === 'Large Projects')!.cells[0];
+  assert.equal(c.bh, 42, 'measured BH stays measured');
+  assert.equal(c.estBH, 12, 'two 6-hour hourly visits');
+  assert.equal(c.totalBH, 54);
+  assert.equal(c.estCount, 2);
+  assert.equal(c.estFromDuration, 12);
+  assert.equal(c.pct, 54, '54 of 100 declared — the estimate is included');
+});
+test('booked-out-to counts a week that is only hourly work', () => {
+  const m = buildBookingModel({
+    snapshots: [forecast([
+      visit({ visitId: 'h5', bh: 0, isHourly: true, durationHours: 8, startDate: '2026-08-13', endDate: '2026-08-13' }),
+    ])],
+    schedules: SCHEDULES, multiDayJobs: {},
+    settings: { declared: { 'Large Projects': { hourlyDefaultBH: 4 } } }, today: TODAY,
+  });
+  const row = m.rows.find(r => r.division === 'Large Projects')!;
+  // No declared capacity here, so "meaningful" is any load — including the
+  // estimate. An hourly job next Thursday means next Thursday is booked.
+  assert.equal(row.bookedOutWeek, '2026-08-10');
 });
 
 console.log('\nAssignee → division (Tool 1 needs no crew mapping)');
