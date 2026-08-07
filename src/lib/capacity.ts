@@ -109,16 +109,42 @@ export function capacityOrDefault(c: CapacitySettings | undefined): CapacitySett
   };
 }
 
+export interface DeclaredBasis {
+  bh: number | null;          // the weekly capacity, or null when unset
+  crews: number | null;
+  peoplePerCrew: number | null;
+  bhPerPerson: number | null;
+  placeholder: boolean;
+  // The reasoning, rendered under the division so it's obvious what to change:
+  // "capacity based on 3 employees at 35 BH/employee = 105 BH/week".
+  basis: string;
+}
+
+// READS SETTINGS AND NOTHING ELSE. There is deliberately no `schedules`
+// parameter here: capacity is what management declared, and no part of it is
+// derived from who happens to be rostered. (The schedule is consulted
+// elsewhere in this file ONLY to decide which DIVISION a visit belongs to —
+// attribution, never capacity.)
 export const declaredFor = (
   s: CapacitySettings | undefined,
   division: string,
-): { bh: number | null; placeholder: boolean } => {
+): DeclaredBasis => {
   const d = s?.declared?.[division];
-  const v = d?.weeklyBH;
-  return {
-    bh: typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null,
-    placeholder: !!d?.placeholder,
-  };
+  const num = (v: unknown): number | null =>
+    (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
+  const people = num(d?.peoplePerCrew);
+  const perPerson = num(d?.bhPerPerson);
+  // Crews is optional — a single-crew division needn't say so.
+  const crewsRaw = num(d?.crews);
+  const crews = crewsRaw ?? (people !== null && perPerson !== null ? 1 : null);
+  const complete = people !== null && perPerson !== null;
+  const bh = complete ? Math.round((crews || 1) * people * perPerson * 10) / 10 : null;
+  const basis = !complete
+    ? 'capacity not set'
+    : (crews && crews > 1
+      ? `capacity based on ${crews} crews × ${people} employees at ${perPerson} BH/employee = ${bh} BH/week`
+      : `capacity based on ${people} employees at ${perPerson} BH/employee = ${bh} BH/week`);
+  return { bh, crews, peoplePerCrew: people, bhPerPerson: perPerson, placeholder: !!d?.placeholder, basis };
 };
 
 // Floor semantics: the highest ceiling row whose headcount is <= the crew's.
@@ -288,6 +314,7 @@ export interface BookingCell {
 export interface BookingRow {
   division: string;
   declared: number | null;
+  declaredBasis: string;
   declaredPlaceholder: boolean;
   cells: BookingCell[];
   bookedOutWeek: string | null;
@@ -391,6 +418,9 @@ export function buildBookingModel(input: BookingInput): BookingModel {
     return {
       division,
       declared: division === UNATTRIBUTED ? null : dec.bh,
+      declaredBasis: division === UNATTRIBUTED
+        ? 'work whose Jobber assignee maps to no division'
+        : dec.basis,
       declaredPlaceholder: dec.placeholder,
       cells,
       bookedOutWeek,

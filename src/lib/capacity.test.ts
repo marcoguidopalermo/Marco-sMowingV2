@@ -50,7 +50,11 @@ const appDataOf = (schedules: Record<string, Crew[]>, employees = EMPLOYEES, dai
   ({ schedules, employees, dailyAbsences, fleet: [] } as unknown as AppData);
 
 const DECLARED = {
-  declared: { 'Large Projects': { weeklyBH: 100 }, 'Lawn Division': { weeklyBH: 200 } },
+  // Declared as its PARTS: 1 crew x 4 people x 25 BH = 100; lawn 2 x 4 x 25 = 200.
+  declared: {
+    'Large Projects': { peoplePerCrew: 4, bhPerPerson: 25 },
+    'Lawn Division': { crews: 2, peoplePerCrew: 4, bhPerPerson: 25 },
+  },
   headcountCeilings: [
     { headcount: 1, weeklyBH: 40 },
     { headcount: 2, weeklyBH: 70 },
@@ -96,10 +100,42 @@ test('ceilings are non-linear and read with FLOOR semantics', () => {
 test('a crew bigger than every row takes the top row ("N or more")', () => {
   assert.equal(ceilingFor(DECLARED.headcountCeilings, 9).bh, 90);
 });
-test('declared capacity is null until management sets it', () => {
-  assert.equal(declaredFor({ declared: { 'Small Projects': { weeklyBH: null } } }, 'Small Projects').bh, null);
+test('declared capacity is null until management sets it, and says "not set"', () => {
+  const unset = declaredFor({ declared: { 'Small Projects': { peoplePerCrew: null, bhPerPerson: null } } }, 'Small Projects');
+  assert.equal(unset.bh, null);
+  assert.match(unset.basis, /not set/);
   assert.equal(declaredFor(undefined, 'Small Projects').bh, null);
-  assert.equal(declaredFor(DECLARED, 'Large Projects').bh, 100);
+});
+test('capacity is people x BH/person, with crews defaulting to 1', () => {
+  const d = declaredFor(DECLARED, 'Large Projects');
+  assert.equal(d.bh, 100);
+  assert.equal(d.crews, 1);
+  assert.equal(d.basis, 'capacity based on 4 employees at 25 BH/employee = 100 BH/week');
+});
+test('a multi-crew division multiplies by its crew count and says so', () => {
+  const d = declaredFor(DECLARED, 'Lawn Division');
+  assert.equal(d.bh, 200);
+  assert.equal(d.basis, 'capacity based on 2 crews × 4 employees at 25 BH/employee = 200 BH/week');
+});
+test("the spec's example renders exactly", () => {
+  const d = declaredFor({ declared: { X: { peoplePerCrew: 3, bhPerPerson: 35 } } }, 'X');
+  assert.equal(d.bh, 105);
+  assert.equal(d.basis, 'capacity based on 3 employees at 35 BH/employee = 105 BH/week');
+});
+test('a partial entry is NOT capacity — people alone yields nothing', () => {
+  assert.equal(declaredFor({ declared: { X: { peoplePerCrew: 3 } } }, 'X').bh, null);
+  assert.equal(declaredFor({ declared: { X: { bhPerPerson: 35 } } }, 'X').bh, null);
+});
+test('CAPACITY IS NEVER READ FROM THE SCHEDULE — rostering more people changes nothing', () => {
+  const settings = { declared: { 'Large Projects': { peoplePerCrew: 4, bhPerPerson: 25 } } };
+  const lean = fullWeek([crew('Large Projects', 1, [PROJ_SLOT], ['e1'])]);          // 1 person
+  const heavy = fullWeek([crew('Large Projects', 1, [PROJ_SLOT], ['e1', 'e2', 'e3'])]); // 3 people
+  const capOf = (schedules: Record<string, Crew[]>) => buildBookingModel({
+    snapshots: [forecast([visit({ visitId: 'z', bh: 10 })])], schedules,
+    multiDayJobs: {}, settings, today: TODAY,
+  }).rows.find(r => r.division === 'Large Projects')!.cells[0].capacity;
+  assert.equal(capOf(lean), 100);
+  assert.equal(capOf(heavy), 100, 'the roster must not move declared capacity');
 });
 
 console.log('\nAssignee → division (Tool 1 needs no crew mapping)');
@@ -134,7 +170,7 @@ test('booked BH lands on its division and is measured against the declared numbe
 test('no declared number → raw BH, no percentage, no band', () => {
   const m = buildBookingModel({
     snapshots: [forecast([visit({ visitId: 'v2', bh: 70 })])], schedules: SCHEDULES,
-    multiDayJobs: {}, settings: { declared: { 'Large Projects': { weeklyBH: null } } }, today: TODAY,
+    multiDayJobs: {}, settings: { declared: { 'Large Projects': { peoplePerCrew: null, bhPerPerson: null } } }, today: TODAY,
   });
   const c = cellOf(m, 'Large Projects', '2026-08-03');
   assert.equal(c.bh, 70);

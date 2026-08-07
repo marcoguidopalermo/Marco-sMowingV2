@@ -16,7 +16,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import { Plus, X } from 'lucide-react';
 import type { AppSettings, HeadcountCeiling } from '../types';
 import { DIVISIONS, DEFAULT_CAPACITY_THRESHOLDS, DEFAULT_HEADCOUNT_CEILINGS } from '../constants';
-import { capacityOrDefault, thresholdsOrDefault } from '../lib/capacity';
+import { capacityOrDefault, thresholdsOrDefault, declaredFor } from '../lib/capacity';
 
 export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }: {
   settings: AppSettings;
@@ -38,10 +38,10 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
     return Number.isFinite(v) && v > 0 ? v : null;
   };
 
-  const setDeclared = (division: string, weeklyBH: number | null) => write({
+  const setDeclared = (division: string, field: 'crews' | 'peoplePerCrew' | 'bhPerPerson', value: number | null) => write({
     declared: {
       ...cap.declared,
-      [division]: { weeklyBH, placeholder: false },
+      [division]: { ...(cap.declared?.[division] || {}), [field]: value, placeholder: false },
     },
   });
 
@@ -65,32 +65,59 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
             Booking — declared weekly capacity
           </label>
           <p className="text-xs text-slate-500">
-            The BH a division can deliver in a week, <strong>as management declares it</strong>.
-            Nothing derives this: it is a decision, and a decision is something you can check
-            against reality. A division with no number shows raw booked BH with{' '}
-            <strong>no bar and no percentage</strong> rather than a made-up one.
+            <strong>Crews × people per crew × BH per person per week.</strong> Every one of
+            these is typed in by management — <strong>none is read from the schedule or the
+            roster</strong>. Stating the parts rather than one flat total means that when the
+            number needs changing it is obvious what to change. A division with nothing entered
+            shows raw booked BH with <strong>no bar and no percentage</strong> rather than a
+            made-up one.
           </p>
         </div>
-        <div className="flex flex-wrap gap-3">
+        <div className="space-y-2">
           {DIVISIONS.map(division => {
             const rule = cap.declared?.[division] || {};
+            const basis = declaredFor(cap, division);
             return (
-              <label key={division} className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-                <span className="text-xs font-black text-slate-700">{division}</span>
-                <input
-                  type="number" min={0} step={5} placeholder="not set"
-                  disabled={!isAdmin}
-                  value={rule.weeklyBH ?? ''}
-                  onChange={e => setDeclared(division, numOrNull(e.target.value))}
-                  className={inputCls}
-                />
-                <span className="text-[10px] font-bold text-slate-400">BH / week</span>
-                {rule.placeholder && rule.weeklyBH == null && (
-                  <span className="text-[9px] font-black uppercase tracking-widest bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded">
-                    not set yet
-                  </span>
-                )}
-              </label>
+              <div key={division} className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-black text-slate-700 w-32">{division}</span>
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="number" min={1} step={1} placeholder="1"
+                      disabled={!isAdmin}
+                      value={rule.crews ?? ''}
+                      onChange={e => setDeclared(division, 'crews', numOrNull(e.target.value))}
+                      className="w-14 border border-slate-300 rounded p-1 text-sm font-mono font-bold bg-white outline-none disabled:opacity-60 text-right"
+                    />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">crews</span>
+                  </label>
+                  <span className="text-slate-300 font-black">×</span>
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="number" min={0} step={1} placeholder="—"
+                      disabled={!isAdmin}
+                      value={rule.peoplePerCrew ?? ''}
+                      onChange={e => setDeclared(division, 'peoplePerCrew', numOrNull(e.target.value))}
+                      className="w-14 border border-slate-300 rounded p-1 text-sm font-mono font-bold bg-white outline-none disabled:opacity-60 text-right"
+                    />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">people/crew</span>
+                  </label>
+                  <span className="text-slate-300 font-black">×</span>
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="number" min={0} step={1} placeholder="—"
+                      disabled={!isAdmin}
+                      value={rule.bhPerPerson ?? ''}
+                      onChange={e => setDeclared(division, 'bhPerPerson', numOrNull(e.target.value))}
+                      className="w-16 border border-slate-300 rounded p-1 text-sm font-mono font-bold bg-white outline-none disabled:opacity-60 text-right"
+                    />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">BH/person/wk</span>
+                  </label>
+                </div>
+                <div className={`text-[11px] font-bold mt-1 ${basis.bh === null ? 'text-amber-700' : 'text-slate-500'}`}>
+                  {basis.bh === null ? 'not set — this division shows raw booked BH with no percentage' : basis.basis}
+                </div>
+              </div>
             );
           })}
         </div>

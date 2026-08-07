@@ -122,14 +122,15 @@ export const DEFAULT_HEADCOUNT_CEILINGS: HeadcountCeiling[] = [
   { headcount: 5, weeklyBH: 130, placeholder: true },
 ];
 
-// Declared weekly capacity is left EMPTY for every division on purpose. It is
-// a management decision, not something the app should guess — a division with
-// no declared number shows raw booked BH with no bar and no percentage.
+// Declared capacity is left EMPTY for every division on purpose. It is a
+// management decision — crews x people x BH/person, all typed in — not
+// something the app should guess. A division with nothing entered shows raw
+// booked BH with no bar and no percentage, and its basis line reads "not set".
 export const DEFAULT_CAPACITY_SETTINGS: CapacitySettings = {
   declared: {
-    'Large Projects': { weeklyBH: null, placeholder: true },
-    'Small Projects': { weeklyBH: null, placeholder: true },
-    'Lawn Division': { weeklyBH: null, placeholder: true },
+    'Large Projects': { crews: null, peoplePerCrew: null, bhPerPerson: null, placeholder: true },
+    'Small Projects': { crews: null, peoplePerCrew: null, bhPerPerson: null, placeholder: true },
+    'Lawn Division': { crews: null, peoplePerCrew: null, bhPerPerson: null, placeholder: true },
   },
   headcountCeilings: DEFAULT_HEADCOUNT_CEILINGS,
   thresholds: DEFAULT_CAPACITY_THRESHOLDS,

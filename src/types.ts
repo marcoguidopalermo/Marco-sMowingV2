@@ -1076,13 +1076,21 @@ export interface BonusPayoutRecord {
 // a display + admin settings values only. They never touch performance, pay,
 // efficiency or the multi-day ledger.
 
-// ── TOOL 1: BOOKING CAPACITY. A number MANAGEMENT DECLARES per division per
-// week. No derivation, no crew involvement — deliberately, because Jobber
-// "assignees" are route slots rather than people and any crew-level
-// derivation inherits that mapping's gaps. A declared number is a decision,
-// and a decision can be checked.
+// ── TOOL 1: BOOKING CAPACITY. Declared by MANAGEMENT per division, and
+// carrying its own reasoning so it can be argued with:
+//
+//     crews × people per crew × BH per person per week = weekly capacity
+//
+// EVERY ONE OF THESE IS TYPED IN. None is inferred from the schedule or the
+// roster — that model was deliberately removed, because Jobber "assignees"
+// are route slots rather than people and any schedule-derived crew size
+// inherits that mapping's gaps. Stating the parts rather than one flat total
+// means that when the number needs changing, it is obvious WHAT to change.
 export interface DeclaredCapacity {
-  weeklyBH?: number | null;
+  // Absent → treated as 1 crew, so a single-crew division needn't state it.
+  crews?: number | null;
+  peoplePerCrew?: number | null;
+  bhPerPerson?: number | null;
   placeholder?: boolean;
 }
 

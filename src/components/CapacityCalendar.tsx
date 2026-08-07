@@ -216,7 +216,19 @@ export default function CapacityCalendar({
   const ownDivision = !isAdmin && managed === 'lawn' ? 'Lawn Division'
     : !isAdmin && managed === 'small' ? 'Small Projects'
       : !isAdmin && managed === 'large' ? 'Large Projects' : null;
+  // LAWN AND PROJECTS STAY SEPARATE on both tools. Lawn is a recurring route
+  // and projects are one-off builds — mixing them in one grid makes neither
+  // legible, and they're pulled as separate snapshots for the same reason.
+  const isLawnDivision = (d: string) => /lawn/i.test(d);
+  const [scope, setScope] = useState<CapacityScope>(
+    ownDivision && isLawnDivision(ownDivision) ? 'lawn' : 'projects');
   const [division, setDivision] = useState<string>(ownDivision || 'All');
+  // Divisions available inside the current scope — a manager stays pinned to
+  // their own regardless.
+  const scopeDivisions = useMemo(
+    () => DIVISIONS.filter(d => (isLawnDivision(d) ? 'lawn' : 'projects') === scope),
+    [scope],
+  );
 
   const canEditSettings = isAdmin && !!onSaveSettings;
   const [showSettings, setShowSettings] = useState(false);
@@ -254,13 +266,14 @@ export default function CapacityCalendar({
     try { await onRefresh(scope); } finally { setBusy(false); setBusyScope(null); }
   };
 
+  const inScope = (d: string) => (isLawnDivision(d) ? 'lawn' : 'projects') === scope;
   const visibleRows = useMemo(
-    () => (division === 'All' ? booking.rows : booking.rows.filter(r => r.division === division)),
-    [booking.rows, division],
+    () => booking.rows.filter(r => inScope(r.division) && (division === 'All' || r.division === division)),
+    [booking.rows, division, scope],
   );
   const visibleCrews = useMemo(
-    () => (division === 'All' ? balance.crews : balance.crews.filter(c => c.division === division)),
-    [balance.crews, division],
+    () => balance.crews.filter(c => inScope(c.division) && (division === 'All' || c.division === division)),
+    [balance.crews, division, scope],
   );
 
   const drillCell = useMemo(() => {
@@ -298,6 +311,11 @@ export default function CapacityCalendar({
             <h3 className="text-lg font-black text-slate-900">
               {tool === 'booking' ? 'Booking' : 'Schedule balance'}
             </h3>
+            {tool === 'balance' && (
+              <span className="text-[10px] font-black uppercase tracking-widest bg-yellow-300 text-yellow-900 border border-yellow-500 px-1.5 py-0.5 rounded">
+                Beta
+              </span>
+            )}
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
               {tool === 'booking' ? 'should we be selling more?' : 'is any crew overbooked?'}
             </span>
@@ -309,15 +327,28 @@ export default function CapacityCalendar({
                 Booking
               </button>
               <button type="button" onClick={() => { setTool('balance'); setDrill(null); setDayDrill(null); }}
-                className={`px-3 py-1.5 text-xs font-black rounded uppercase ${tool === 'balance' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>
+                className={`px-3 py-1.5 text-xs font-black rounded uppercase inline-flex items-center gap-1 ${tool === 'balance' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>
                 Schedule balance
+                <span className="text-[8px] font-black uppercase bg-yellow-300 text-yellow-900 border border-yellow-500 px-1 rounded">Beta</span>
               </button>
             </div>
-            {isAdmin && (
+            {/* SCOPE — lawn and projects never share a grid. */}
+            {!ownDivision && (
+              <div className="flex bg-slate-100 rounded-lg p-1">
+                {(['projects', 'lawn'] as CapacityScope[]).map(sc => (
+                  <button key={sc} type="button"
+                    onClick={() => { setScope(sc); setDivision('All'); setDrill(null); setDayDrill(null); }}
+                    className={`px-3 py-1.5 text-xs font-black rounded uppercase ${scope === sc ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>
+                    {sc === 'projects' ? 'Projects' : 'Lawn'}
+                  </button>
+                ))}
+              </div>
+            )}
+            {isAdmin && scopeDivisions.length > 1 && (
               <select value={division} onChange={e => { setDivision(e.target.value); setDrill(null); setDayDrill(null); }}
                 className="text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded-lg px-2 py-2 outline-none">
-                <option value="All">All divisions</option>
-                {DIVISIONS.map(d => <option key={d} value={d}>{d}</option>)}
+                <option value="All">All {scope === 'lawn' ? 'lawn' : 'project'} divisions</option>
+                {scopeDivisions.map(d => <option key={d} value={d}>{d}</option>)}
               </select>
             )}
             {canRefresh && onRefresh && (
@@ -430,15 +461,16 @@ export default function CapacityCalendar({
               <div key={row.division} className="space-y-2">
                 <div className="flex flex-wrap items-baseline gap-2">
                   <span className="font-black text-slate-900">{row.division}</span>
-                  <span className="text-[10px] font-bold text-slate-400">
-                    {row.declared === null
-                      ? 'no weekly capacity declared — showing raw BH'
-                      : `${bh(row.declared)} BH/week declared`}
+                  {/* THE BASIS. Not just the number but the reasoning behind
+                      it, so when it needs adjusting it's obvious what to
+                      change — and obvious that it was declared, not derived. */}
+                  <span className={`text-[10px] font-bold ${row.declared === null ? 'text-amber-700' : 'text-slate-400'}`}>
+                    {row.declared === null ? 'capacity not set — showing raw BH' : row.declaredBasis}
                   </span>
-                  {row.declared === null && canEditSettings && (
+                  {canEditSettings && (
                     <button type="button" onClick={openSettings}
                       className="text-[10px] font-black uppercase tracking-widest text-slate-600 underline hover:text-slate-900">
-                      set it
+                      {row.declared === null ? 'set it' : 'adjust'}
                     </button>
                   )}
                 </div>
@@ -460,7 +492,7 @@ export default function CapacityCalendar({
               </div>
             ))}
 
-            {booking.unattributed && division === 'All' && (
+            {booking.unattributed && division === 'All' && scope === 'projects' && (
               <div className="space-y-2 border-t border-slate-200 pt-3">
                 <div className="flex items-center gap-1.5">
                   <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
