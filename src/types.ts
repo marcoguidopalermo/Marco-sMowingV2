@@ -1120,9 +1120,28 @@ export interface CapacityThresholds {
   healthyPct: number;
 }
 
+// An EXPLICIT mapping from a Jobber assignee to where its work belongs.
+// Jobber "users" are route/crew SLOTS ("#1 (SOUTH)"), not people — one per
+// crew-day, and they move between crews over time. Deriving the mapping from
+// the schedule therefore works only as well as the schedule is filled in.
+// An explicit mapping is stated once, persists independently of the schedule,
+// and survives a route moving crews.
+export interface AssigneeMapping {
+  division: string;
+  // Optional finer grain. Division is what Booking needs; a crew number
+  // additionally pins the slot for Schedule Balance.
+  crewNumber?: number | null;
+  // The label at the time of mapping, so the list stays readable even if the
+  // Jobber user list hasn't been re-synced.
+  label?: string;
+}
+
 export interface CapacitySettings {
   // Tool 1 — declared weekly BH, keyed by division name.
   declared?: Record<string, DeclaredCapacity>;
+  // assigneeId → where its work belongs. Takes PRECEDENCE over the
+  // schedule-derived match; anything absent falls back to the schedule.
+  assigneeMap?: Record<string, AssigneeMapping>;
   // Tool 2 — weekly ceiling by crew headcount, ascending.
   headcountCeilings?: HeadcountCeiling[];
   thresholds?: CapacityThresholds;

@@ -1221,6 +1221,7 @@ export default function ScheduleBoard({
             onRefresh={onRefreshCapacity}
             canRefresh={canRefreshCapacity}
             onSaveSettings={onSaveCapacitySettings}
+            jobberUsers={jobberUsers}
             defaultTool="balance"
             variant="board"
           />

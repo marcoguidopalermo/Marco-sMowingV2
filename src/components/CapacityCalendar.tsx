@@ -17,10 +17,12 @@ import {
 } from 'lucide-react';
 import type {
   AppData, AppSettings, CapacityForecast, CapacityScope, CapacitySettings, Employee,
+  JobberUser,
 } from '../types';
 import CapacitySettingsPanel from './CapacitySettingsPanel';
+import AssigneeMappingPanel from './AssigneeMappingPanel';
 import {
-  buildBookingModel, buildBalanceModel, capacityOrDefault, mergeSlices, BAND_META,
+  buildBookingModel, buildBalanceModel, capacityOrDefault, mergeSlices, BAND_META, assigneeInventory,
   longDate, dayLabel, UNATTRIBUTED,
   type CapacityBand, type BookingCell, type BookingRow, type CapacityWeek,
   type ForwardSlice, type BalanceCrewRow,
@@ -42,6 +44,9 @@ interface Props {
   // Schedule Balance — each entry point lands on the question it's about.
   defaultTool?: CapacityTool;
   variant?: 'page' | 'board';
+  // Jobber user list (id → name), so the mapping editor reads as
+  // "#1 (SOUTH)" rather than a base64 id.
+  jobberUsers?: JobberUser[];
 }
 
 // ── Band styling. The two reds are deliberately opposite in WEIGHT as well as
@@ -239,7 +244,7 @@ function JobList({ jobs }: { jobs: ForwardSlice[] }) {
 
 export default function CapacityCalendar({
   appData, forecasts, isAdmin, currentUserEmployee, onRefresh, canRefresh,
-  onSaveSettings, defaultTool = 'booking', variant = 'page',
+  onSaveSettings, defaultTool = 'booking', variant = 'page', jobberUsers = [],
 }: Props) {
   const today = formatTodayInToronto();
   const snapshots = useMemo(
@@ -302,6 +307,18 @@ export default function CapacityCalendar({
     settings,
     today,
   }), [snapshots, appData, settings, today]);
+
+  // The mapping editor's data — every slot, its forward BH, where its work
+  // lands and why. Built from the DRAFT settings while the editor is open so
+  // a change previews before it's saved.
+  const inventory = useMemo(() => assigneeInventory({
+    snapshots,
+    schedules: appData.schedules || {},
+    jobberUsers,
+    settings: showSettings ? capacityOrDefault(draft.capacity) : settings,
+    multiDayJobs: appData.multiDayJobs,
+    today,
+  }), [snapshots, appData.schedules, appData.multiDayJobs, jobberUsers, showSettings, draft.capacity, settings, today]);
 
   const refresh = async (scope: CapacityScope) => {
     if (!onRefresh || busy) return;
@@ -471,6 +488,12 @@ export default function CapacityCalendar({
       {showSettings && canEditSettings && (
         <div className="space-y-3">
           <CapacitySettingsPanel settings={draft} setSettings={setDraft} isAdmin={isAdmin} />
+          <AssigneeMappingPanel
+            diagnostics={inventory}
+            settings={draft}
+            setSettings={setDraft}
+            isAdmin={isAdmin}
+          />
           <div className="flex items-center gap-2">
             <button type="button" onClick={saveSettings} disabled={saving}
               className="px-4 py-2 text-xs font-black uppercase tracking-widest bg-slate-800 text-white rounded-lg hover:bg-slate-700 disabled:opacity-50">
@@ -569,6 +592,12 @@ export default function CapacityCalendar({
                   <span className="text-[10px] font-black uppercase tracking-widest text-amber-700">
                     Unattributed — {bh(booking.unattributed.totalBH)} BH whose Jobber assignee maps to no division
                   </span>
+                  {canEditSettings && inventory.unmapped.length > 0 && (
+                    <button type="button" onClick={openSettings}
+                      className="text-[10px] font-black uppercase tracking-widest text-amber-800 underline">
+                      map {inventory.unmapped.length} slot{inventory.unmapped.length === 1 ? '' : 's'}
+                    </button>
+                  )}
                 </div>
                 <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
                   {booking.weeks.map((week, i) => (

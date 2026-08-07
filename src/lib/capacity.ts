@@ -24,7 +24,8 @@
 // writes NOTHING. No efficiency, pay, bonus or approval math is touched.
 import type {
   AppData, Crew, Employee, MultiDayJob, CapacityForecast, CapacityForecastVisit,
-  CapacitySettings, CapacityThresholds, HeadcountCeiling,
+  CapacitySettings, CapacityThresholds, HeadcountCeiling, AssigneeMapping,
+  JobberUser,
 } from '../types';
 import { remainingBHOf, creditedBHOf } from './multiDayResolution';
 import { addDaysToronto } from './dateUtils';
@@ -318,7 +319,26 @@ export function coverageByScope(
 // crew-level attribution fragile doesn't arise at this level. Resolution is
 // by MODE — the division an id has been rostered under on the most crew-days
 // — so one odd day can't reassign a route.
+// PRECEDENCE: an explicit mapping always wins. The schedule-derived mode is
+// the fallback for anything nobody has mapped yet, so the feature degrades to
+// exactly the previous behaviour rather than requiring a full mapping before
+// it works at all.
 export function assigneeDivisionIndex(
+  schedules: Record<string, Crew[]>,
+  settings?: CapacitySettings,
+): Map<string, string> {
+  const derived = scheduleDivisionIndex(schedules);
+  const out = new Map(derived);
+  for (const [aid, m] of Object.entries(settings?.assigneeMap || {})) {
+    if (m?.division) out.set(aid, m.division);
+  }
+  return out;
+}
+
+// The schedule-derived half, kept separate so the editor can show BOTH what
+// the schedule implies and what has been explicitly stated — and flag where
+// the two disagree.
+export function scheduleDivisionIndex(
   schedules: Record<string, Crew[]>,
 ): Map<string, string> {
   const counts = new Map<string, Map<string, number>>();
@@ -349,6 +369,129 @@ export function assigneeDivisionIndex(
 }
 
 export const UNATTRIBUTED = 'Unattributed';
+
+// ── ASSIGNEE INVENTORY (the mapping editor's data) ─────────────────────────
+// Everything needed to see and fix attribution in one place: who the slots
+// are, how much forward work each carries, where it currently lands and why.
+export interface AssigneeInfo {
+  id: string;
+  label: string;
+  archived: boolean;
+  forwardBH: number;
+  visits: number;
+  mapped: AssigneeMapping | null;
+  scheduleDivision: string | null;      // what the schedule implies
+  scheduleCrews: string[];              // crews it has appeared on
+  resolvedDivision: string | null;      // what attribution actually uses
+  source: 'mapped' | 'schedule' | 'none';
+  // Mapped to one division but rostered on another's crew — worth seeing,
+  // because one of the two is wrong.
+  conflict: boolean;
+}
+
+export interface AssigneeDiagnostics {
+  assignees: AssigneeInfo[];
+  unmapped: AssigneeInfo[];         // no explicit mapping AND no schedule match
+  unmappedBH: number;
+  conflicts: AssigneeInfo[];
+  // Crew-days carrying no jobberAssigneeIds at all — work scheduled to them
+  // can never be matched.
+  unmappedCrewDays: { date: string; crew: string }[];
+  mappedCount: number;
+  totalForwardBH: number;
+}
+
+export interface AssigneeInventoryInput {
+  snapshots: CapacityForecast[];
+  schedules: Record<string, Crew[]>;
+  jobberUsers: JobberUser[];
+  settings: CapacitySettings | undefined;
+  multiDayJobs: Record<string, MultiDayJob> | undefined;
+  today: string;
+  // How far back to scan the schedule for slots and gaps.
+  lookbackDays?: number;
+}
+
+export function assigneeInventory(input: AssigneeInventoryInput): AssigneeDiagnostics {
+  const { snapshots, schedules, jobberUsers, settings, multiDayJobs, today } = input;
+  const from = addDaysToronto(today, -(input.lookbackDays ?? 28));
+  const nameById = new Map<string, JobberUser>();
+  for (const u of jobberUsers || []) nameById.set(u.id, u);
+
+  // Forward BH + a fallback label from the snapshots themselves.
+  const bhById = new Map<string, number>();
+  const visitsById = new Map<string, Set<string>>();
+  const snapLabel = new Map<string, string>();
+  let totalForwardBH = 0;
+  for (const slice of forwardSlices(snapshots, multiDayJobs, today)) {
+    const ids = slice.assigneeIds || [];
+    const share = ids.length > 0 ? slice.bh / ids.length : 0;
+    totalForwardBH += slice.bh;
+    ids.forEach((id, i) => {
+      bhById.set(id, (bhById.get(id) || 0) + share);
+      const set = visitsById.get(id) || new Set<string>();
+      set.add(slice.visitId);
+      visitsById.set(id, set);
+      const nm = slice.assigneeNames?.[i];
+      if (nm && !snapLabel.has(id)) snapLabel.set(id, nm);
+    });
+  }
+
+  // Schedule presence: which crews each slot has been on recently, and which
+  // crew-days carry no slot at all.
+  const crewsById = new Map<string, Set<string>>();
+  const unmappedCrewDays: { date: string; crew: string }[] = [];
+  for (const date of Object.keys(schedules || {}).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= from).sort()) {
+    for (const crew of schedules[date] || []) {
+      if (!crew?.division || !crew.crewNumber) continue;
+      const label = `${crew.division} #${crew.crewNumber}`;
+      const ids = crew.jobberAssigneeIds || [];
+      if (ids.length === 0) { unmappedCrewDays.push({ date, crew: label }); continue; }
+      for (const id of ids) {
+        const set = crewsById.get(id) || new Set<string>();
+        set.add(label);
+        crewsById.set(id, set);
+      }
+    }
+  }
+
+  const scheduleIdx = scheduleDivisionIndex(schedules || {});
+  const map = settings?.assigneeMap || {};
+  const ids = new Set<string>([
+    ...bhById.keys(), ...crewsById.keys(), ...Object.keys(map),
+  ]);
+
+  const assignees: AssigneeInfo[] = [...ids].map(id => {
+    const mapped = map[id] || null;
+    const scheduleDivision = scheduleIdx.get(id) || null;
+    const resolvedDivision = mapped?.division || scheduleDivision || null;
+    const user = nameById.get(id);
+    return {
+      id,
+      label: user?.name || mapped?.label || snapLabel.get(id) || id.slice(0, 12),
+      archived: !!user?.isArchived,
+      forwardBH: Math.round((bhById.get(id) || 0) * 10) / 10,
+      visits: visitsById.get(id)?.size || 0,
+      mapped,
+      scheduleDivision,
+      scheduleCrews: [...(crewsById.get(id) || [])].sort(),
+      resolvedDivision,
+      source: (mapped ? 'mapped' : (scheduleDivision ? 'schedule' : 'none')) as AssigneeInfo['source'],
+      conflict: !!mapped && !!scheduleDivision && mapped.division !== scheduleDivision,
+    };
+  }).sort((a, b) => b.forwardBH - a.forwardBH || a.label.localeCompare(b.label));
+
+  const unmapped = assignees.filter(a => a.source === 'none');
+  return {
+    assignees,
+    unmapped,
+    unmappedBH: Math.round(unmapped.reduce((s2, a) => s2 + a.forwardBH, 0) * 10) / 10,
+    conflicts: assignees.filter(a => a.conflict),
+    unmappedCrewDays,
+    mappedCount: assignees.filter(a => a.source === 'mapped').length,
+    totalForwardBH: Math.round(totalForwardBH * 10) / 10,
+  };
+}
 
 // ── TOOL 1: BOOKING ────────────────────────────────────────────────────────
 export interface BookingCell {
@@ -408,7 +551,7 @@ export function buildBookingModel(input: BookingInput): BookingModel {
   const weeks = buildWeeks(today, input.weeks ?? 4);
   const weekIndex = new Map<string, number>();
   weeks.forEach((w, i) => weekIndex.set(w.start, i));
-  const divisionOf = assigneeDivisionIndex(schedules || {});
+  const divisionOf = assigneeDivisionIndex(schedules || {}, settings);
   const coverage = coverageByScope(snapshots);
 
   const blank = (division: string): BookingCell[] => weeks.map(w => {

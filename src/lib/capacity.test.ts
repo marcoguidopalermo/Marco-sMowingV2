@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   buildWeeks, mondayOf, bandFor, thresholdsOrDefault, ceilingFor, declaredFor,
   assigneeDivisionIndex, buildBookingModel, buildBalanceModel, mergeSlices,
-  forwardSlices, loadForSlice,
+  forwardSlices, loadForSlice, assigneeInventory, scheduleDivisionIndex,
 } from './capacity';
 import type { AppData, CapacityForecast, CapacityForecastVisit, Crew, Employee, MultiDayJob } from '../types';
 
@@ -229,6 +229,104 @@ test('division is decided by MODE, so one odd day cannot reassign a route', () =
   const sched: Record<string, Crew[]> = { ...fullWeek([crew('Lawn Division', 1, [LAWN_SLOT], ['e3'])]) };
   sched['2026-08-08'] = [crew('Large Projects', 3, [LAWN_SLOT], ['e1'])];  // one stray day
   assert.equal(assigneeDivisionIndex(sched).get(LAWN_SLOT), 'Lawn Division');
+});
+
+console.log('\nExplicit assignee mapping');
+const SLOT_A = 'slot-a';
+const SLOT_B = 'slot-b';
+
+test('two slots mapped to Small Projects BOTH attribute there', () => {
+  const settings = {
+    declared: { 'Small Projects': { peoplePerCrew: 2, bhPerPerson: 30 } },
+    assigneeMap: {
+      [SLOT_A]: { division: 'Small Projects' },
+      [SLOT_B]: { division: 'Small Projects' },
+    },
+  };
+  const m = buildBookingModel({
+    snapshots: [forecast([
+      visit({ visitId: 'a', assigneeIds: [SLOT_A], bh: 20 }),
+      visit({ visitId: 'b', assigneeIds: [SLOT_B], bh: 15 }),
+    ])],
+    schedules: SCHEDULES, multiDayJobs: {}, settings, today: TODAY,
+  });
+  const row = m.rows.find(r => r.division === 'Small Projects')!;
+  assert.equal(row.cells[0].bh, 35, 'a division holds as many slots as it needs');
+  assert.equal(m.unattributed, null, 'and nothing is left over');
+});
+test('an explicit mapping OVERRIDES what the schedule says', () => {
+  // PROJ_SLOT is rostered on Large Projects, but mapped to Small.
+  const settings = { assigneeMap: { [PROJ_SLOT]: { division: 'Small Projects' } } };
+  assert.equal(scheduleDivisionIndex(SCHEDULES).get(PROJ_SLOT), 'Large Projects');
+  const m = buildBookingModel({
+    snapshots: [forecast([visit({ visitId: 'c', bh: 10 })])],
+    schedules: SCHEDULES, multiDayJobs: {}, settings, today: TODAY,
+  });
+  assert.equal(m.rows.find(r => r.division === 'Small Projects')!.cells[0].bh, 10);
+  assert.equal(m.rows.find(r => r.division === 'Large Projects')?.cells[0].bh ?? 0, 0);
+});
+test('an UNMAPPED slot still falls back to schedule matching', () => {
+  const settings = { assigneeMap: { [SLOT_A]: { division: 'Small Projects' } } };
+  const m = buildBookingModel({
+    snapshots: [forecast([visit({ visitId: 'd', bh: 10 })])],  // PROJ_SLOT, unmapped
+    schedules: SCHEDULES, multiDayJobs: {}, settings, today: TODAY,
+  });
+  assert.equal(m.rows.find(r => r.division === 'Large Projects')!.cells[0].bh, 10);
+});
+test('mapping a previously-unattributed slot SHRINKS Unattributed', () => {
+  const snap = [forecast([visit({ visitId: 'e', assigneeIds: ['ghost'], bh: 25 })])];
+  const before = buildBookingModel({
+    snapshots: snap, schedules: SCHEDULES, multiDayJobs: {}, settings: DECLARED, today: TODAY,
+  });
+  assert.equal(before.unattributed!.cells[0].bh, 25);
+  const after = buildBookingModel({
+    snapshots: snap, schedules: SCHEDULES, multiDayJobs: {},
+    settings: { ...DECLARED, assigneeMap: { ghost: { division: 'Large Projects' } } }, today: TODAY,
+  });
+  assert.equal(after.unattributed, null, 'Unattributed is gone');
+  assert.equal(after.rows.find(r => r.division === 'Large Projects')!.cells[0].bh, 25);
+});
+
+console.log('\nMapping diagnostics');
+const inv = (settings: any = {}, visits = [visit({ visitId: 'i1', assigneeIds: ['ghost'], assigneeNames: ['#9 (NORTH)'], bh: 18 })]) =>
+  assigneeInventory({
+    snapshots: [forecast(visits)], schedules: SCHEDULES,
+    jobberUsers: [{ id: PROJ_SLOT, name: '#1 (SOUTH)', isAccountOwner: false }],
+    settings, multiDayJobs: {}, today: TODAY,
+  });
+
+test('every slot is listed with its forward BH and where it lands', () => {
+  const d = inv();
+  const proj = d.assignees.find(a => a.id === PROJ_SLOT)!;
+  assert.equal(proj.label, '#1 (SOUTH)', 'the Jobber user list supplies the name');
+  assert.equal(proj.resolvedDivision, 'Large Projects');
+  assert.equal(proj.source, 'schedule');
+  assert.deepEqual(proj.scheduleCrews, ['Large Projects #1']);
+});
+test('an unmapped slot is reported with the BH it is costing', () => {
+  const d = inv();
+  const ghost = d.unmapped.find(a => a.id === 'ghost')!;
+  assert.ok(ghost, 'the ghost slot is flagged as unmapped');
+  assert.equal(ghost.label, '#9 (NORTH)', 'name falls back to the snapshot');
+  assert.equal(ghost.forwardBH, 18);
+  assert.equal(d.unmappedBH, 18);
+});
+test('a slot mapped to one division but rostered on another is a CONFLICT', () => {
+  const d = inv({ assigneeMap: { [PROJ_SLOT]: { division: 'Lawn Division' } } });
+  const c = d.conflicts.find(a => a.id === PROJ_SLOT)!;
+  assert.ok(c, 'the disagreement is surfaced');
+  assert.equal(c.mapped!.division, 'Lawn Division');
+  assert.equal(c.scheduleDivision, 'Large Projects');
+  assert.equal(c.resolvedDivision, 'Lawn Division', 'the explicit mapping still wins');
+});
+test('crew-days carrying no Jobber slot are listed', () => {
+  const sched = { ...SCHEDULES, '2026-08-05': [crew('Small Projects', 3, [], ['e1'])] };
+  const d = assigneeInventory({
+    snapshots: [forecast([])], schedules: sched, jobberUsers: [],
+    settings: {}, multiDayJobs: {}, today: TODAY,
+  });
+  assert.equal(d.unmappedCrewDays.length, 1);
+  assert.equal(d.unmappedCrewDays[0].crew, 'Small Projects #3');
 });
 
 console.log('\nTOOL 1 — Booking');

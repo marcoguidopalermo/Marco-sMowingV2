@@ -5597,6 +5597,7 @@ export default function App() {
           onRefreshCapacity={refreshCapacityForecast}
           canRefreshCapacity={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
           onSaveCapacitySettings={saveCapacitySettings}
+          jobberUsers={jobberUsers}
         />
       ) : currentView === 'contracting' ? (
         <ContractingMaster

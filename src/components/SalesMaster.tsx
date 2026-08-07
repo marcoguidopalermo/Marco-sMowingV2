@@ -6,7 +6,7 @@
 // received to the right module.
 import { useState } from 'react';
 import { Calculator, Snowflake, Sprout, CalendarRange } from 'lucide-react';
-import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, AppData, CapacityForecast, CapacityScope, CapacitySettings, Employee } from '../types';
+import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, AppData, CapacityForecast, CapacityScope, CapacitySettings, Employee, JobberUser } from '../types';
 import { SnowConfig } from '../lib/snowPricing';
 import { LawnConfig } from '../lib/lawnPricing';
 import ProjectMaster from './ProjectMaster';
@@ -48,6 +48,7 @@ interface Props {
   onRefreshCapacity: (scope: CapacityScope) => Promise<void>;
   canRefreshCapacity: boolean;
   onSaveCapacitySettings: (next: CapacitySettings) => Promise<void>;
+  jobberUsers: JobberUser[];
 }
 
 type ModuleKey = 'project' | 'snow' | 'lawn' | 'capacity';
@@ -65,7 +66,7 @@ export default function SalesMaster(props: Props) {
     isSuperAdmin, snowConfigs, snowActiveVersion, snowActiveConfig, onSaveSnowConfig, onRevertSnowConfig,
     lawnQuotes, onSaveLawnQuote, onDeleteLawnQuote,
     lawnConfigs, lawnActiveVersion, lawnActiveConfig, onSaveLawnConfig, onRevertLawnConfig,
-    appData, capacityForecasts, currentUserEmployee, onRefreshCapacity, canRefreshCapacity, onSaveCapacitySettings,
+    appData, capacityForecasts, currentUserEmployee, onRefreshCapacity, canRefreshCapacity, onSaveCapacitySettings, jobberUsers,
   } = props;
   const [module, setModule] = useState<ModuleKey>('project');
 
@@ -139,6 +140,7 @@ export default function SalesMaster(props: Props) {
             onRefresh={onRefreshCapacity}
             canRefresh={canRefreshCapacity}
             onSaveSettings={onSaveCapacitySettings}
+            jobberUsers={jobberUsers}
             defaultTool="booking"
           />
         )}
