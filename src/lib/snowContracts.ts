@@ -62,14 +62,25 @@ export function withDerived(c: SnowContract): SnowContract {
 // ── DEFAULTS ───────────────────────────────────────────────────────────────
 // The seven standard rows, all EXCLUDED until someone includes them —
 // a contract should never imply a service nobody agreed to.
+// Labels and details are VERBATIM from the reference document — these print
+// on a client-facing agreement, so "Sanding — 95/5 winter sand/salt mix" is
+// the wording, not a tidier paraphrase of it.
 export const STANDARD_SERVICES: SnowContractService[] = [
-  { key: 'plowing', label: 'Plowing', detail: '— lot and driving areas', status: 'excluded', notes: '', custom: false },
-  { key: 'shovelling', label: 'Shovelling', detail: '— walkways and entrances', status: 'excluded', notes: '', custom: false },
-  { key: 'sanding', label: 'Sanding', detail: '— traction material', status: 'excluded', notes: '', custom: false },
-  { key: 'salting', label: 'Salting', detail: '— de-icing', status: 'excluded', notes: '', custom: false },
-  { key: 'iceManagement', label: 'Ice Management', detail: '— monitoring and treatment', status: 'excluded', notes: '', custom: false },
-  { key: 'relocation', label: 'Snow Relocation', detail: '— on-site stacking and repositioning', status: 'excluded', notes: 'Not included — priced and agreed when called.', custom: false },
-  { key: 'haulAway', label: 'Snow Haul-Away', detail: '— removal from site', status: 'excluded', notes: 'Not included — priced and agreed when called.', custom: false },
+  { key: 'plowing', label: 'Plowing', detail: 'lot and driving areas', status: 'excluded', notes: '', custom: false },
+  { key: 'shovelling', label: 'Shovelling / Blowing', detail: 'walkways, entrances', status: 'excluded', notes: '', custom: false },
+  { key: 'sanding', label: 'Sanding', detail: '95/5 winter sand/salt mix', status: 'excluded', notes: '', custom: false },
+  { key: 'salting', label: 'Salting', detail: 'walkways and entrances', status: 'excluded', notes: '', custom: false },
+  { key: 'iceManagement', label: 'Ice Management', detail: 'between clearings', status: 'excluded', notes: '', custom: false },
+  { key: 'relocation', label: 'On-Site Snow Relocation', detail: 'stacking / pushback', status: 'excluded', notes: 'Not included — priced and agreed when called.', custom: false },
+  { key: 'haulAway', label: 'Off-Site Haul-Away', detail: 'loading and removal', status: 'excluded', notes: 'Not included — priced and agreed when called.', custom: false },
+];
+
+// Option B starts with the four rate lines the reference seeds, amounts blank.
+export const DEFAULT_OPTION_B_LINES: SnowContractOptionBLine[] = [
+  { label: 'Plowing (per visit)', amount: 0 },
+  { label: 'Shovelling / Blowing (per visit)', amount: 0 },
+  { label: 'Sanding (per application)', amount: 0 },
+  { label: 'Salting (per application)', amount: 0 },
 ];
 
 export const DEFAULT_ADDONS = {
@@ -133,7 +144,7 @@ export function newContract(args: {
         prepayDiscountPct: PREPAY_DISCOUNT_PCT,
         prepayTotal: 0,
       },
-      optionB: { enabled: true, lines: [], totalPerVisit: 0 },
+      optionB: { enabled: true, lines: DEFAULT_OPTION_B_LINES.map(l => ({ ...l })), totalPerVisit: 0 },
       addOns: { ...DEFAULT_ADDONS },
     },
     serviceTerms: { ...DEFAULT_SERVICE_TERMS },
