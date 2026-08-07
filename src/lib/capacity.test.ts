@@ -287,6 +287,84 @@ test('mapping a previously-unattributed slot SHRINKS Unattributed', () => {
   assert.equal(after.rows.find(r => r.division === 'Large Projects')!.cells[0].bh, 25);
 });
 
+test('BOOKING resolves a week with NO schedule built, from mappings alone', () => {
+  // The whole point of the mapping: a week four out, no roster anywhere.
+  const settings = {
+    declared: { 'Small Projects': { peoplePerCrew: 2, bhPerPerson: 30 } },
+    assigneeMap: { [SLOT_A]: { division: 'Small Projects' } },
+  };
+  const far = '2026-09-01';   // Tuesday, four weeks out, nothing scheduled
+  const m = buildBookingModel({
+    snapshots: [forecast([visit({ visitId: 'far', assigneeIds: [SLOT_A], bh: 44, startDate: far, endDate: far })])],
+    schedules: {},   // NO schedule at all
+    multiDayJobs: {}, settings, today: TODAY, weeks: 6,
+  });
+  const row = m.rows.find(r => r.division === 'Small Projects')!;
+  const wi = m.weeks.findIndex(w => w.start === '2026-08-31');
+  assert.equal(row.cells[wi].bh, 44, 'attributed with no schedule in sight');
+  assert.equal(m.unattributed, null);
+});
+
+console.log('\nDerivation — where a division\'s number came from');
+test('each division names the assignees its BH came from', () => {
+  const settings = {
+    declared: { 'Small Projects': { peoplePerCrew: 2, bhPerPerson: 30 } },
+    assigneeMap: {
+      [SLOT_A]: { division: 'Small Projects', label: '#1 (SOUTH)' },
+      [SLOT_B]: { division: 'Small Projects', label: '#2 (NORTH)' },
+    },
+  };
+  const m = buildBookingModel({
+    snapshots: [forecast([
+      visit({ visitId: 'x', assigneeIds: [SLOT_A], assigneeNames: ['#1 (SOUTH)'], bh: 20 }),
+      visit({ visitId: 'y', assigneeIds: [SLOT_B], assigneeNames: ['#2 (NORTH)'], bh: 15 }),
+    ])],
+    schedules: SCHEDULES, multiDayJobs: {}, settings, today: TODAY,
+  });
+  const row = m.rows.find(r => r.division === 'Small Projects')!;
+  assert.deepEqual(row.sources.map(s2 => s2.label).sort(), ['#1 (SOUTH)', '#2 (NORTH)']);
+  assert.equal(row.sources.every(s2 => s2.viaMapping), true);
+  assert.equal(row.scheduleMatchedJobs, 0);
+});
+test('work matched via the SCHEDULE is counted and flagged separately', () => {
+  const m = buildBookingModel({
+    snapshots: [forecast([visit({ visitId: 'z', bh: 30 })])],  // PROJ_SLOT, unmapped
+    schedules: SCHEDULES, multiDayJobs: {}, settings: DECLARED, today: TODAY,
+  });
+  const row = m.rows.find(r => r.division === 'Large Projects')!;
+  assert.equal(row.sources[0].viaMapping, false);
+  assert.equal(row.scheduleMatchedJobs, 1, 'one job resting on the schedule');
+});
+
+console.log('\nRECONCILIATION — the raw lookup vs what Booking shows');
+test("a division's Booking total equals the raw BH of its source assignees", () => {
+  const settings = {
+    declared: { 'Small Projects': { peoplePerCrew: 2, bhPerPerson: 30 } },
+    assigneeMap: {
+      [SLOT_A]: { division: 'Small Projects' },
+      [SLOT_B]: { division: 'Small Projects' },
+    },
+  };
+  const visits = [
+    visit({ visitId: 'r1', assigneeIds: [SLOT_A], bh: 20 }),
+    visit({ visitId: 'r2', assigneeIds: [SLOT_B], bh: 15 }),
+    visit({ visitId: 'r3', assigneeIds: [SLOT_A], bh: 7, startDate: '2026-08-11', endDate: '2026-08-11' }),
+  ];
+  const m = buildBookingModel({
+    snapshots: [forecast(visits)], schedules: SCHEDULES, multiDayJobs: {}, settings, today: TODAY,
+  });
+  const row = m.rows.find(r => r.division === 'Small Projects')!;
+  // What the LOOKUP would show for those two assignees over the same window:
+  // the raw per-day slices, unfiltered by any model.
+  const raw = forwardSlices([forecast(visits)], {}, TODAY)
+    .filter(s2 => s2.assigneeIds.some(a => [SLOT_A, SLOT_B].includes(a)))
+    .filter(s2 => s2.date >= m.weeks[0].start && s2.date <= m.weeks[3].end)
+    .reduce((sum, s2) => sum + s2.bh, 0);
+  assert.equal(Math.round(raw * 10) / 10, 42);
+  assert.equal(row.totalBH, 42, 'Booking and the raw lookup agree exactly');
+  assert.equal(row.sources.reduce((sum, s2) => sum + s2.bh, 0), 42, 'and so do the per-source figures');
+});
+
 console.log('\nMapping diagnostics');
 const inv = (settings: any = {}, visits = [visit({ visitId: 'i1', assigneeIds: ['ghost'], assigneeNames: ['#9 (NORTH)'], bh: 18 })]) =>
   assigneeInventory({

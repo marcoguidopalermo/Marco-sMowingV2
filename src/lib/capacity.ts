@@ -517,8 +517,22 @@ export interface BookingCell {
   untaggedCount: number;
 }
 
+// Which Jobber assignees a division's booked BH actually came from — the
+// audit trail for the number. If a division looks light, the first question
+// is "is an assignee missing from this list?", and the list is right here.
+export interface BookingSource {
+  id: string;
+  label: string;
+  bh: number;
+  viaMapping: boolean;   // declared mapping vs schedule match
+}
+
 export interface BookingRow {
   division: string;
+  sources: BookingSource[];
+  // Jobs that landed here by SCHEDULE MATCHING rather than a declared
+  // mapping — i.e. resting on the schedule being built.
+  scheduleMatchedJobs: number;
   declared: number | null;
   declaredBasis: string;
   declaredPlaceholder: boolean;
@@ -552,6 +566,10 @@ export function buildBookingModel(input: BookingInput): BookingModel {
   const weekIndex = new Map<string, number>();
   weeks.forEach((w, i) => weekIndex.set(w.start, i));
   const divisionOf = assigneeDivisionIndex(schedules || {}, settings);
+  const explicit = settings?.assigneeMap || {};
+  // division → assigneeId → { bh, label, viaMapping }
+  const sourceAcc = new Map<string, Map<string, BookingSource>>();
+  const scheduleMatched = new Map<string, Set<string>>();
   const coverage = coverageByScope(snapshots);
 
   const blank = (division: string): BookingCell[] => weeks.map(w => {
@@ -611,6 +629,26 @@ export function buildBookingModel(input: BookingInput): BookingModel {
         cell.bh = round1(cell.bh + amount);
       }
       cell.totalBH = round1(cell.bh + cell.estBH);
+      // Record WHERE this came from, and by which route.
+      const srcMap = sourceAcc.get(division) || new Map<string, BookingSource>();
+      slice.assigneeIds.forEach((aid, i) => {
+        if (divisionOf.get(aid) !== division) return;
+        const viaMapping = !!explicit[aid]?.division;
+        const prev = srcMap.get(aid);
+        const add = amount / Math.max(1, slice.assigneeIds.filter(x => divisionOf.get(x) === division).length);
+        srcMap.set(aid, {
+          id: aid,
+          label: prev?.label || explicit[aid]?.label || slice.assigneeNames?.[i] || aid.slice(0, 10),
+          bh: round1((prev?.bh || 0) + add),
+          viaMapping,
+        });
+        if (!viaMapping) {
+          const set = scheduleMatched.get(division) || new Set<string>();
+          set.add(slice.visitId);
+          scheduleMatched.set(division, set);
+        }
+      });
+      sourceAcc.set(division, srcMap);
       if (slice.isHourly) cell.hourlyCount++;
       if (slice.untagged) cell.untaggedCount++;
       cell.jobs.push({ ...slice, bh: round1(amount), estimated: load.estimated, estimateBasis: load.basis } as ForwardSlice & { estimated: boolean; estimateBasis: EstimateBasis });
@@ -643,6 +681,8 @@ export function buildBookingModel(input: BookingInput): BookingModel {
     }
     return {
       division,
+      sources: [...(sourceAcc.get(division)?.values() || [])].sort((a, b) => b.bh - a.bh),
+      scheduleMatchedJobs: scheduleMatched.get(division)?.size || 0,
       declared: division === UNATTRIBUTED ? null : dec.bh,
       declaredBasis: division === UNATTRIBUTED
         ? 'work whose Jobber assignee maps to no division'

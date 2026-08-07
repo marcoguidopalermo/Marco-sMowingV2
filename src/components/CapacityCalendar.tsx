@@ -21,6 +21,7 @@ import type {
 } from '../types';
 import CapacitySettingsPanel from './CapacitySettingsPanel';
 import AssigneeMappingPanel from './AssigneeMappingPanel';
+import BookingLookup from './BookingLookup';
 import {
   buildBookingModel, buildBalanceModel, capacityOrDefault, mergeSlices, BAND_META, assigneeInventory,
   longDate, dayLabel, UNATTRIBUTED,
@@ -30,7 +31,7 @@ import {
 import { formatTodayInToronto } from '../lib/dateUtils';
 import { DIVISIONS } from '../constants';
 
-export type CapacityTool = 'booking' | 'balance';
+export type CapacityTool = 'booking' | 'balance' | 'lookup';
 
 interface Props {
   appData: AppData;
@@ -369,7 +370,7 @@ export default function CapacityCalendar({
               ? <CalendarRange className="w-5 h-5 text-slate-700" />
               : <Scale className="w-5 h-5 text-slate-700" />}
             <h3 className="text-lg font-black text-slate-900">
-              {tool === 'booking' ? 'Booking' : 'Schedule balance'}
+              {tool === 'booking' ? 'Booking' : tool === 'lookup' ? 'Booking lookup' : 'Schedule balance'}
             </h3>
             {tool === 'balance' && (
               <span className="text-[10px] font-black uppercase tracking-widest bg-yellow-300 text-yellow-900 border border-yellow-500 px-1.5 py-0.5 rounded">
@@ -377,7 +378,9 @@ export default function CapacityCalendar({
               </span>
             )}
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-              {tool === 'booking' ? 'should we be selling more?' : 'is any crew overbooked?'}
+              {tool === 'booking' ? 'should we be selling more?'
+                : tool === 'lookup' ? 'what has this route actually got booked?'
+                  : 'is any crew overbooked?'}
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -385,6 +388,10 @@ export default function CapacityCalendar({
               <button type="button" onClick={() => { setTool('booking'); setDrill(null); setDayDrill(null); }}
                 className={`px-3 py-1.5 text-xs font-black rounded uppercase ${tool === 'booking' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>
                 Booking
+              </button>
+              <button type="button" onClick={() => { setTool('lookup'); setDrill(null); setDayDrill(null); }}
+                className={`px-3 py-1.5 text-xs font-black rounded uppercase ${tool === 'lookup' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>
+                Lookup
               </button>
               <button type="button" onClick={() => { setTool('balance'); setDrill(null); setDayDrill(null); }}
                 className={`px-3 py-1.5 text-xs font-black rounded uppercase inline-flex items-center gap-1 ${tool === 'balance' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>
@@ -567,6 +574,33 @@ export default function CapacityCalendar({
                     </button>
                   )}
                 </div>
+                {/* WHERE THE NUMBER CAME FROM. If a division looks light the
+                    first question is "is an assignee missing from this
+                    list?" — so the list is right here. */}
+                <div className="text-[10px] text-slate-400 -mt-1">
+                  {row.sources.length > 0 ? (
+                    <>
+                      from jobs booked under:{' '}
+                      {row.sources.map((src, i) => (
+                        <span key={src.id}>
+                          {i > 0 && ', '}
+                          <span className={src.viaMapping ? 'font-bold text-slate-600' : 'text-slate-500'}>
+                            {src.label}
+                          </span>
+                          <span className="text-slate-300"> {bh(src.bh)}</span>
+                          {!src.viaMapping && <span className="text-amber-600" title="matched via the schedule, not a declared mapping">*</span>}
+                        </span>
+                      ))}
+                      {row.scheduleMatchedJobs > 0 && (
+                        <span className="text-amber-700">
+                          {' '}· * {row.scheduleMatchedJobs} job{row.scheduleMatchedJobs === 1 ? '' : 's'} matched via schedule (unmapped assignees)
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-slate-300">no forward work booked under any assignee for this division</span>
+                  )}
+                </div>
                 <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
                   {booking.weeks.map((week, i) => (
                     <div key={week.start}>
@@ -643,6 +677,17 @@ export default function CapacityCalendar({
             </div>
           )}
         </>
+      )}
+
+      {/* ══ THE RAW VIEW ═════════════════════════════════════════════════ */}
+      {hasForecast && tool === 'lookup' && (
+        <BookingLookup
+          snapshots={snapshots}
+          multiDayJobs={appData.multiDayJobs}
+          jobberUsers={jobberUsers}
+          settings={settings}
+          today={today}
+        />
       )}
 
       {/* ══ TOOL 2: SCHEDULE BALANCE ═════════════════════════════════════ */}
