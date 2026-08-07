@@ -1002,7 +1002,11 @@ export interface AppSettings {
 // a standalone HTML file that was filled in, printed and emailed but saved
 // nothing — the point of this record is that the contract survives.
 export type SnowContractStatus = 'draft' | 'sent' | 'signed' | 'declined' | 'expired';
-export type SnowServiceStatus = 'included' | 'onCall' | 'excluded';
+// 'blank' is the DEFAULT and it is not a fourth checkbox — it means no box is
+// ticked. A new contract must not assert anything about a service nobody has
+// filled in yet: defaulting to 'excluded' made an untouched contract state
+// that Marco's provides nothing.
+export type SnowServiceStatus = 'blank' | 'included' | 'onCall' | 'excluded';
 
 export interface SnowContractService {
   key: string;                    // 'plowing' | 'shovelling' | … | custom id

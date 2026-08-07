@@ -49,3 +49,4 @@ appData-backup-*.json
 
 # Local scratch (never commit — may hold secrets)
 scratchpad/
+scripts/.print-verify/

@@ -66,20 +66,20 @@ export function withDerived(c: SnowContract): SnowContract {
 // on a client-facing agreement, so "Sanding — 95/5 winter sand/salt mix" is
 // the wording, not a tidier paraphrase of it.
 export const STANDARD_SERVICES: SnowContractService[] = [
-  { key: 'plowing', label: 'Plowing', detail: 'lot and driving areas', status: 'excluded', notes: '', custom: false },
-  { key: 'shovelling', label: 'Shovelling / Blowing', detail: 'walkways, entrances', status: 'excluded', notes: '', custom: false },
-  { key: 'sanding', label: 'Sanding', detail: '95/5 winter sand/salt mix', status: 'excluded', notes: '', custom: false },
-  { key: 'salting', label: 'Salting', detail: 'walkways and entrances', status: 'excluded', notes: '', custom: false },
-  { key: 'iceManagement', label: 'Ice Management', detail: 'between clearings', status: 'excluded', notes: '', custom: false },
-  { key: 'relocation', label: 'On-Site Snow Relocation', detail: 'stacking / pushback', status: 'excluded', notes: 'Not included — priced and agreed when called.', custom: false },
-  { key: 'haulAway', label: 'Off-Site Haul-Away', detail: 'loading and removal', status: 'excluded', notes: 'Not included — priced and agreed when called.', custom: false },
+  { key: 'plowing', label: 'Plowing', detail: 'lot and driving areas', status: 'blank', notes: '', custom: false },
+  { key: 'shovelling', label: 'Shovelling / Blowing', detail: 'walkways, entrances', status: 'blank', notes: '', custom: false },
+  { key: 'sanding', label: 'Sanding', detail: '95/5 winter sand/salt mix', status: 'blank', notes: '', custom: false },
+  { key: 'salting', label: 'Salting', detail: 'walkways and entrances', status: 'blank', notes: '', custom: false },
+  { key: 'iceManagement', label: 'Ice Management', detail: 'between clearings', status: 'blank', notes: '', custom: false },
+  { key: 'relocation', label: 'On-Site Snow Relocation', detail: 'stacking / pushback', status: 'blank', notes: '', custom: false },
+  { key: 'haulAway', label: 'Off-Site Haul-Away', detail: 'loading and removal', status: 'blank', notes: '', custom: false },
 ];
 
 // Option B starts with the four rate lines the reference seeds, amounts blank.
 export const DEFAULT_OPTION_B_LINES: SnowContractOptionBLine[] = [
   { label: 'Plowing (per visit)', amount: 0 },
   { label: 'Shovelling / Blowing (per visit)', amount: 0 },
-  { label: 'Sanding (per application)', amount: 0 },
+  { label: 'Sanding (per application)', amount: 0, note: 'includes up to ___ tons' },
   { label: 'Salting (per application)', amount: 0 },
 ];
 

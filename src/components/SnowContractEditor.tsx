@@ -1,15 +1,22 @@
 // SNOWMASTER · CONTRACT EDITOR.
 //
-// Two-pane on desktop, tabbed on mobile. The right pane is the SAME
-// SnowContractDocument the print view renders — the preview is not a
-// approximation of the output, it IS the output.
+// Two-pane on desktop with a draggable split, tabbed on mobile. The right pane
+// is the SAME SnowContractDocument the print view renders — the preview is not
+// an approximation of the output, it IS the output.
 //
 // Autosave on blur; no save button. Derived figures (instalment, prepay,
 // per-visit total) recompute on every edit through withDerived, so they can
 // never be stale relative to the totals they describe.
-import { useMemo, useRef, useState } from 'react';
+//
+// THE TYPING TEST: filling in a contract end to end should feel like a normal
+// web form, not like editing a compressed document. That is why the controls
+// here are full height with 15px text rather than the dense 12px the printed
+// document uses — the form is a data-entry surface, and the only place the
+// document's own scale belongs is the preview pane.
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
-  ArrowLeft, Check, Loader2, Plus, Trash2, Printer, Copy, Ruler, Upload, X, RotateCcw,
+  ArrowLeft, Check, ChevronDown, Loader2, Plus, Trash2, Printer, Copy, Ruler, Upload, X,
 } from 'lucide-react';
 import type { SnowContract, SnowContractStatus, SnowServiceStatus, PropertyMeasurement } from '../types';
 import SnowContractDocument from './SnowContractDocument';
@@ -30,11 +37,27 @@ interface Props {
   currentUser: { email: string; name: string };
 }
 
-const L = ({ children }: { children: React.ReactNode }) => (
-  <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">{children}</span>
+// 44px is the thumb-sized minimum; 15px text is what stops this reading as a
+// spreadsheet. Both apply on every breakpoint — a phone gets the same control,
+// full width, not a shrunken one.
+const inputCls = 'w-full min-h-[44px] rounded-lg border border-slate-300 bg-white px-3 py-2.5 '
+  + 'text-[15px] leading-snug text-slate-900 outline-none transition '
+  + 'focus:border-sky-500 focus:ring-2 focus:ring-sky-500/30 '
+  + 'disabled:bg-slate-50 disabled:text-slate-500';
+const areaCls = `${inputCls} min-h-[92px] resize-y`;
+
+const L = ({ children }: { children: ReactNode }) => (
+  <span className="mb-1.5 block text-[11px] font-black uppercase tracking-wider text-slate-500">{children}</span>
 );
 
-const inputCls = 'w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-sky-500 disabled:opacity-60';
+// Label ABOVE the control, always — a label beside a field is the first thing
+// that breaks when the pane narrows.
+const Field = ({ label, span, children }: { label: string; span?: boolean; children: ReactNode }) => (
+  <label className={`block${span ? ' sm:col-span-2' : ''}`}><L>{label}</L>{children}</label>
+);
+
+const SPLIT_KEY = 'snowContractSplitPct';
+const PAPER_W = 8.5 * 96;
 
 export default function SnowContractEditor({
   contract, onChange, onBack, onPrint, onDuplicate, onUploadMap, canEdit, saving, currentUser,
@@ -42,8 +65,62 @@ export default function SnowContractEditor({
   const [pane, setPane] = useState<'form' | 'preview'>('form');
   const [measuring, setMeasuring] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const fileRef = useRef<HTMLInputElement>(null);
   const c = contract;
+
+  // ── DRAGGABLE SPLIT ──────────────────────────────────────────────────────
+  // Remembered per browser: how much room the form deserves depends on the
+  // screen and on whether you are typing or reviewing, and that is not a
+  // decision worth re-making every time the editor opens.
+  const [split, setSplit] = useState(() => {
+    const v = Number(localStorage.getItem(SPLIT_KEY));
+    return v >= 30 && v <= 75 ? v : 55;
+  });
+  const splitHostRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+  useEffect(() => {
+    const move = (e: PointerEvent) => {
+      if (!dragging.current || !splitHostRef.current) return;
+      const r = splitHostRef.current.getBoundingClientRect();
+      const pct = Math.min(75, Math.max(30, ((e.clientX - r.left) / r.width) * 100));
+      setSplit(pct);
+    };
+    const up = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      document.body.style.userSelect = '';
+      setSplit(p => { localStorage.setItem(SPLIT_KEY, String(Math.round(p))); return p; });
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+  }, []);
+
+  // ── PREVIEW SCALE-TO-FIT ─────────────────────────────────────────────────
+  // The sheet is a fixed 8.5in wide; the pane is not. Measure and scale so a
+  // full page width is always visible, however the split is dragged.
+  const previewHostRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(0.78);
+  const [docH, setDocH] = useState(0);
+  const sheetRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const host = previewHostRef.current;
+    if (!host) return;
+    const measure = () => {
+      const w = host.clientWidth - 24;             // the pane's own padding
+      if (w > 0) setScale(Math.min(1, w / PAPER_W));
+      // transform:scale leaves the ORIGINAL height in the flow, so the pane
+      // would keep a tall empty gap under a scaled-down page. Carry the scaled
+      // height explicitly instead.
+      if (sheetRef.current) setDocH(sheetRef.current.offsetHeight);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(host);
+    if (sheetRef.current) ro.observe(sheetRef.current);
+    return () => ro.disconnect();
+  }, []);
 
   // Every edit routes through here so derived figures stay honest.
   const patch = (fn: (draft: SnowContract) => void) => {
@@ -52,29 +129,42 @@ export default function SnowContractEditor({
     onChange(withDerived({ ...draft, updatedAt: Date.now() }));
   };
 
-  const hidden = new Set(c.hiddenSections || []);
+  const hidden = useMemo(() => new Set(c.hiddenSections || []), [c.hiddenSections]);
   const hiddenList = SECTIONS.filter(s => hidden.has(s.id));
   const removeSection = (id: string) => patch(d => { d.hiddenSections = [...new Set([...(d.hiddenSections || []), id])]; });
   const restoreSection = (id: string) => patch(d => { d.hiddenSections = (d.hiddenSections || []).filter(x => x !== id); });
+  const toggle = (id: string) => setCollapsed(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
-  const Section = ({ id, children }: { id: string; children: React.ReactNode }) => {
+  // Collapsible, because eleven sections open at once is a scroll problem, not
+  // a form. Open by default: a section you cannot see is a section you forget.
+  const Section = ({ id, children }: { id: string; children: ReactNode }) => {
     const s = SECTIONS.find(x => x.id === id)!;
     if (hidden.has(id)) return null;
+    const shut = collapsed.has(id);
     return (
-      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-black text-slate-800">
-            <span className="text-slate-300 mr-1.5">{s.n}</span>{s.title}
-          </h3>
+      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center gap-1 px-4 py-3">
+          <button type="button" onClick={() => toggle(id)}
+            className="flex min-h-[36px] flex-1 items-center gap-2 text-left"
+            aria-expanded={!shut}>
+            <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${shut ? '-rotate-90' : ''}`} />
+            <h3 className="text-[15px] font-black text-slate-800">
+              <span className="mr-1.5 text-slate-300">{s.n}</span>{s.title}
+            </h3>
+          </button>
           {canEdit && (
             <button type="button" onClick={() => removeSection(id)}
-              className="text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-rose-600 border border-slate-200 rounded px-1.5 py-0.5">
+              className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10px] font-black uppercase tracking-widest text-slate-400 hover:border-rose-200 hover:text-rose-600">
               remove
             </button>
           )}
         </div>
-        {children}
-      </div>
+        {!shut && <div className="space-y-5 border-t border-slate-100 px-4 py-5">{children}</div>}
+      </section>
     );
   };
 
@@ -95,28 +185,28 @@ export default function SnowContractEditor({
   };
 
   const form = (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {/* REMOVED-SECTION TRAY */}
       {hiddenList.length > 0 && (
-        <div className="bg-slate-100 border border-slate-200 rounded-xl p-3">
-          <L>Removed from this contract — click to restore</L>
-          <div className="flex flex-wrap gap-1.5 mt-1.5">
+        <div className="rounded-xl border border-slate-200 bg-slate-100 p-4">
+          <L>Removed from this contract — tap to restore</L>
+          <div className="mt-1 flex flex-wrap gap-2">
             {hiddenList.map(s => (
               <button key={s.id} type="button" onClick={() => restoreSection(s.id)}
-                className="text-[11px] font-bold bg-white border border-slate-300 rounded px-2 py-1 hover:border-sky-500 hover:text-sky-700">
+                className="min-h-[40px] rounded-lg border border-slate-300 bg-white px-3 text-[13px] font-bold hover:border-sky-500 hover:text-sky-700">
                 ↩ {s.title}
               </button>
             ))}
           </div>
-          <p className="text-[10px] text-slate-500 mt-1.5">
+          <p className="mt-2 text-[12px] text-slate-500">
             Removing a section hides it from the printed contract only — the content is kept.
           </p>
         </div>
       )}
 
       {/* STATUS + TERM */}
-      <div className="bg-white rounded-xl border border-slate-200 p-4 grid gap-3 sm:grid-cols-4">
-        <label className="block"><L>Status</L>
+      <div className="grid gap-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-2 xl:grid-cols-4">
+        <Field label="Status">
           <select disabled={!canEdit} value={c.status} className={inputCls}
             onChange={e => patch(d => {
               const s = e.target.value as SnowContractStatus;
@@ -127,83 +217,87 @@ export default function SnowContractEditor({
             {(Object.keys(STATUS_LABEL) as SnowContractStatus[]).map(s =>
               <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
           </select>
-        </label>
-        <label className="block"><L>Season</L>
+        </Field>
+        <Field label="Season">
           <input disabled={!canEdit} className={inputCls} defaultValue={c.season}
             onBlur={e => patch(d => { d.season = e.target.value; })} />
-        </label>
-        <label className="block"><L>Term start</L>
+        </Field>
+        <Field label="Term start">
           <input type="date" disabled={!canEdit} className={inputCls} defaultValue={c.term.start}
             onBlur={e => patch(d => { d.term.start = e.target.value; })} />
-        </label>
-        <label className="block"><L>Term end</L>
+        </Field>
+        <Field label="Term end">
           <input type="date" disabled={!canEdit} className={inputCls} defaultValue={c.term.end}
             onBlur={e => patch(d => { d.term.end = e.target.value; })} />
-        </label>
+        </Field>
       </div>
 
       {/* 1 · CLIENT */}
       <Section id="client">
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-5 sm:grid-cols-2">
           {([
             ['businessName', 'Client / Business'], ['siteContact', 'Site Contact'],
-            ['serviceAddress', 'Service Address'], ['billingEmail', 'Billing Email'],
-            ['phone', 'Phone'],
+            ['billingEmail', 'Billing Email'], ['phone', 'Phone'],
           ] as [keyof SnowContract['client'], string][]).map(([k, label]) => (
-            <label key={k} className={k === 'serviceAddress' ? 'block sm:col-span-2' : 'block'}>
-              <L>{label}</L>
+            <Field key={k} label={label}>
               <input disabled={!canEdit} className={inputCls} defaultValue={c.client[k]}
                 onBlur={e => patch(d => { d.client[k] = e.target.value; })} />
-            </label>
+            </Field>
           ))}
+          <Field label="Service Address" span>
+            <input disabled={!canEdit} className={inputCls} defaultValue={c.client.serviceAddress}
+              onBlur={e => patch(d => { d.client.serviceAddress = e.target.value; })} />
+          </Field>
         </div>
       </Section>
 
-      {/* 2 · SCOPE */}
+      {/* 2 · SCOPE — every one of these is prose in practice, so every one is
+          a textarea. They were single-line inputs, which is why describing a
+          lot meant typing into a slot that scrolled sideways. */}
       <Section id="scope">
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-5 sm:grid-cols-2">
+          <Field label="Total Serviced Area">
+            <input disabled={!canEdit} className={inputCls} defaultValue={String(c.scope.totalArea ?? '')}
+              onBlur={e => patch(d => { d.scope.totalArea = e.target.value; })} />
+          </Field>
+          <Field label="Access Notes">
+            <input disabled={!canEdit} className={inputCls} defaultValue={String(c.scope.accessNotes ?? '')}
+              onBlur={e => patch(d => { d.scope.accessNotes = e.target.value; })} />
+          </Field>
           {([
-            ['totalArea', 'Total Serviced Area'], ['lotAreas', 'Lot / Driving Areas'],
-            ['walkwaysEntrances', 'Walkways & Entrances'], ['snowStorage', 'Snow Storage Locations'],
-            ['markedHazards', 'Marked Hazards / Obstacles'], ['accessNotes', 'Access Notes'],
+            ['lotAreas', 'Lot / Driving Areas'], ['walkwaysEntrances', 'Walkways & Entrances'],
+            ['snowStorage', 'Snow Storage Locations'], ['markedHazards', 'Marked Hazards / Obstacles'],
           ] as [keyof SnowContract['scope'], string][]).map(([k, label]) => (
-            <label key={k} className="block"><L>{label}</L>
-              <input disabled={!canEdit} className={inputCls} defaultValue={String(c.scope[k] ?? '')}
+            <Field key={k} label={label}>
+              <textarea disabled={!canEdit} className={areaCls} defaultValue={String(c.scope[k] ?? '')}
                 onBlur={e => patch(d => { (d.scope as any)[k] = e.target.value; })} />
-            </label>
+            </Field>
           ))}
         </div>
-        <label className="block"><L>Scope Description</L>
-          <textarea rows={4} disabled={!canEdit} className={inputCls} defaultValue={c.scope.description}
+        <Field label="Scope Description">
+          <textarea rows={8} disabled={!canEdit} className={`${inputCls} min-h-[180px] resize-y`}
+            defaultValue={c.scope.description}
             onBlur={e => patch(d => { d.scope.description = e.target.value; })} />
-        </label>
+        </Field>
 
-        <div className="border-t border-slate-100 pt-3 space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <L>Site map</L>
-            <label className="text-[11px] font-bold text-slate-600 inline-flex items-center gap-1 cursor-pointer">
-              <input type="checkbox" checked={!c.scope.showMap} disabled={!canEdit}
-                onChange={e => patch(d => { d.scope.showMap = !e.target.checked; })} />
-              description only (hide map)
-            </label>
-          </div>
+        <div className="space-y-3 border-t border-slate-100 pt-4">
+          <label className="inline-flex min-h-[40px] cursor-pointer items-center gap-2.5 text-[14px] font-bold text-slate-700">
+            <input type="checkbox" className="h-5 w-5" checked={!c.scope.showMap} disabled={!canEdit}
+              onChange={e => patch(d => { d.scope.showMap = !e.target.checked; })} />
+            Description only — hide the site map
+          </label>
           {c.scope.showMap && (
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2.5">
               {/* THE SHARED MEASURING TOOL — the SalesMaster component, mounted
                   as-is. No second measuring implementation. */}
               <button type="button" disabled={!canEdit} onClick={() => setMeasuring(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest bg-slate-800 text-white disabled:opacity-50">
-                <Ruler className="w-3.5 h-3.5" />
+                className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-slate-800 px-4 text-xs font-black uppercase tracking-widest text-white disabled:opacity-50">
+                <Ruler className="h-4 w-4" />
                 {c.scope.measurement ? 'Re-measure area' : 'Measure area on satellite'}
               </button>
-              {c.scope.measuredSqft != null && (
-                <span className="text-[11px] font-bold text-emerald-700">
-                  {areaLabel(c.scope.measuredSqft)} measured — the printed map draws from this outline
-                </span>
-              )}
               <button type="button" disabled={!canEdit || uploading} onClick={() => fileRef.current?.click()}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-slate-300 disabled:opacity-50">
-                {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-slate-300 px-4 text-xs font-black uppercase tracking-widest disabled:opacity-50">
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                 Upload image
               </button>
               <input ref={fileRef} type="file" accept="image/*" className="hidden"
@@ -217,144 +311,190 @@ export default function SnowContractEditor({
                   if (fileRef.current) fileRef.current.value = '';
                 }} />
               {(c.scope.mapImages || []).map((src, i) => (
-                <span key={i} className="inline-flex items-center gap-1 text-[10px] bg-slate-100 border border-slate-200 rounded px-1.5 py-1">
+                <span key={i} className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-100 px-2.5 text-[12px] font-bold">
                   image {i + 1}
                   {canEdit && (
                     <button type="button" onClick={() => patch(d => { d.scope.mapImages = d.scope.mapImages.filter((_, j) => j !== i); })}
-                      className="text-slate-400 hover:text-rose-600"><X className="w-3 h-3" /></button>
+                      className="text-slate-400 hover:text-rose-600"><X className="h-4 w-4" /></button>
                   )}
                 </span>
               ))}
+              {c.scope.measuredSqft != null && (
+                <span className="w-full text-[12px] font-bold text-emerald-700">
+                  {areaLabel(c.scope.measuredSqft)} measured — the printed map draws from this outline
+                </span>
+              )}
             </div>
           )}
         </div>
       </Section>
 
-      {/* 3 · SERVICES */}
+      {/* 3 · SERVICES — stacked per row rather than crammed onto one line, and
+          BLANK is a real, selectable state, not the absence of a click. */}
       <Section id="services">
-        <div className="space-y-1.5">
+        <div className="space-y-4">
           {c.services.map((s, i) => (
-            <div key={s.key} className="grid gap-2 sm:grid-cols-[1fr_auto_1fr_auto] items-center border-b border-slate-100 pb-1.5">
-              <div className="flex gap-1">
-                <input disabled={!canEdit} className={`${inputCls} font-bold`} defaultValue={s.label}
-                  onBlur={e => patch(d => { d.services[i].label = e.target.value; })} />
-                <input disabled={!canEdit} className={inputCls} defaultValue={s.detail} placeholder="detail"
-                  onBlur={e => patch(d => { d.services[i].detail = e.target.value; })} />
+            <div key={s.key} className="rounded-lg border border-slate-200 p-3.5">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Service">
+                  <input disabled={!canEdit} className={`${inputCls} font-bold`} defaultValue={s.label}
+                    onBlur={e => patch(d => { d.services[i].label = e.target.value; })} />
+                </Field>
+                <Field label="Detail">
+                  <input disabled={!canEdit} className={inputCls} defaultValue={s.detail} placeholder="lot and driving areas"
+                    onBlur={e => patch(d => { d.services[i].detail = e.target.value; })} />
+                </Field>
               </div>
-              <div className="flex rounded-lg overflow-hidden border border-slate-300">
-                {(['included', 'onCall', 'excluded'] as SnowServiceStatus[]).map(st => (
-                  <button key={st} type="button" disabled={!canEdit}
-                    onClick={() => patch(d => { d.services[i].status = st; })}
-                    className={`px-2 py-1.5 text-[10px] font-black uppercase tracking-widest ${s.status === st
-                      ? (st === 'included' ? 'bg-emerald-600 text-white' : st === 'onCall' ? 'bg-amber-500 text-white' : 'bg-slate-500 text-white')
-                      : 'bg-white text-slate-500'}`}>
-                    {st === 'onCall' ? 'On call' : st === 'included' ? 'Incl.' : 'Excl.'}
-                  </button>
-                ))}
+              <div className="mt-4 grid gap-4 sm:grid-cols-[auto_1fr]">
+                <div>
+                  <L>Marked as</L>
+                  <div className="flex overflow-hidden rounded-lg border border-slate-300">
+                    {([
+                      ['blank', '—'], ['included', 'Incl.'], ['onCall', 'On call'], ['excluded', 'Excl.'],
+                    ] as [SnowServiceStatus, string][]).map(([st, text]) => (
+                      <button key={st} type="button" disabled={!canEdit}
+                        onClick={() => patch(d => { d.services[i].status = st; })}
+                        title={st === 'blank' ? 'No box ticked — nothing stated about this service' : undefined}
+                        className={`min-h-[44px] px-3.5 text-[11px] font-black uppercase tracking-widest ${s.status === st
+                          ? (st === 'included' ? 'bg-emerald-600 text-white'
+                            : st === 'onCall' ? 'bg-amber-500 text-white'
+                            : st === 'excluded' ? 'bg-slate-600 text-white' : 'bg-slate-800 text-white')
+                          : 'bg-white text-slate-500 hover:bg-slate-50'}`}>
+                        {text}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <Field label="Scope / notes">
+                  <input disabled={!canEdit} className={inputCls} defaultValue={s.notes}
+                    onBlur={e => patch(d => { d.services[i].notes = e.target.value; })} />
+                </Field>
               </div>
-              <input disabled={!canEdit} className={inputCls} defaultValue={s.notes} placeholder="scope / notes"
-                onBlur={e => patch(d => { d.services[i].notes = e.target.value; })} />
               {canEdit && s.custom && (
                 <button type="button" onClick={() => patch(d => { d.services.splice(i, 1); })}
-                  className="text-slate-400 hover:text-rose-600"><Trash2 className="w-4 h-4" /></button>
+                  className="mt-3 inline-flex min-h-[36px] items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-slate-400 hover:text-rose-600">
+                  <Trash2 className="h-4 w-4" /> remove row
+                </button>
               )}
-              {!s.custom && <span />}
             </div>
           ))}
         </div>
         {canEdit && (
           <button type="button"
             onClick={() => patch(d => {
-              d.services.push({ key: `custom-${Date.now()}`, label: 'New service', detail: '', status: 'excluded', notes: '', custom: true });
+              d.services.push({ key: `custom-${Date.now()}`, label: 'New service', detail: '', status: 'blank', notes: '', custom: true });
             })}
-            className="text-[11px] font-black uppercase tracking-widest text-sky-700 inline-flex items-center gap-1">
-            <Plus className="w-3 h-3" /> add service row
+            className="inline-flex min-h-[44px] items-center gap-1.5 text-xs font-black uppercase tracking-widest text-sky-700">
+            <Plus className="h-4 w-4" /> add service row
           </button>
         )}
+        <p className="text-[12px] text-slate-500">
+          <b>—</b> leaves every box blank, which is how a new contract starts: nothing is stated about
+          a service until someone states it.
+        </p>
       </Section>
 
       {/* 4 · PRICING */}
       <Section id="pricing">
-        <div className="flex flex-wrap items-center gap-3">
+        <div>
           <L>Client selects</L>
-          {(['A', 'B'] as const).map(o => (
-            <button key={o} type="button" disabled={!canEdit}
-              onClick={() => patch(d => { d.pricing.selectedOption = d.pricing.selectedOption === o ? null : o; })}
-              className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest border ${c.pricing.selectedOption === o
-                ? 'bg-sky-700 text-white border-sky-800' : 'bg-white text-slate-600 border-slate-300'}`}>
-              Option {o}
-            </button>
-          ))}
+          <div className="flex flex-wrap gap-2.5">
+            {(['A', 'B'] as const).map(o => (
+              <button key={o} type="button" disabled={!canEdit}
+                onClick={() => patch(d => { d.pricing.selectedOption = d.pricing.selectedOption === o ? null : o; })}
+                className={`min-h-[44px] rounded-lg border px-4 text-xs font-black uppercase tracking-widest ${c.pricing.selectedOption === o
+                  ? 'border-sky-800 bg-sky-700 text-white' : 'border-slate-300 bg-white text-slate-600'}`}>
+                Option {o}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* OPTION A */}
-        <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-          <label className="flex items-center gap-2 text-sm font-black text-slate-800">
-            <input type="checkbox" checked={c.pricing.optionA.enabled} disabled={!canEdit}
+        <div className="space-y-4 rounded-lg border border-slate-200 p-3.5">
+          <label className="flex min-h-[40px] items-center gap-2.5 text-[15px] font-black text-slate-800">
+            <input type="checkbox" className="h-5 w-5" checked={c.pricing.optionA.enabled} disabled={!canEdit}
               onChange={e => patch(d => { d.pricing.optionA.enabled = e.target.checked; })} />
             Option A — Seasonal Contract
           </label>
           {c.pricing.optionA.enabled && (
-            <div className="grid gap-3 sm:grid-cols-3">
-              <label className="block"><L>Total contract price</L>
-                <input type="number" step="0.01" disabled={!canEdit} className={inputCls}
-                  defaultValue={c.pricing.optionA.totalPrice || ''}
+            <div className="grid gap-5 sm:grid-cols-3">
+              <Field label="Total contract price">
+                <input type="number" step="0.01" inputMode="decimal" disabled={!canEdit} className={inputCls}
+                  defaultValue={c.pricing.optionA.totalPrice || ''} placeholder="leave blank for a ruled line"
                   onBlur={e => patch(d => { d.pricing.optionA.totalPrice = Number(e.target.value) || 0; })} />
-              </label>
+              </Field>
               <div><L>6 instalments of</L>
-                <div className="px-2 py-1.5 text-sm font-mono font-black text-slate-700 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="min-h-[44px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[15px] font-black text-slate-700">
                   ${c.pricing.optionA.instalmentAmount.toFixed(2)}
                 </div>
               </div>
               <div><L>Prepay total (5% off)</L>
-                <div className="px-2 py-1.5 text-sm font-mono font-black text-emerald-700 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="min-h-[44px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[15px] font-black text-emerald-700">
                   ${c.pricing.optionA.prepayTotal.toFixed(2)}
                 </div>
               </div>
-              <label className="flex items-center gap-2 text-xs font-bold text-slate-600 sm:col-span-2">
-                <input type="checkbox" checked={c.pricing.optionA.prepayDiscountEnabled} disabled={!canEdit}
+              <label className="flex min-h-[40px] items-center gap-2.5 text-[14px] font-bold text-slate-700 sm:col-span-2">
+                <input type="checkbox" className="h-5 w-5" checked={c.pricing.optionA.prepayDiscountEnabled} disabled={!canEdit}
                   onChange={e => patch(d => { d.pricing.optionA.prepayDiscountEnabled = e.target.checked; })} />
-                offer the pre-season discount
+                Offer the pre-season discount
               </label>
-              <label className="block"><L>Prepay deadline</L>
+              <Field label="Prepay deadline">
                 <input type="date" disabled={!canEdit} className={inputCls} defaultValue={c.pricing.optionA.prepayDeadline}
                   onBlur={e => patch(d => { d.pricing.optionA.prepayDeadline = e.target.value; })} />
-              </label>
+              </Field>
             </div>
           )}
         </div>
 
         {/* OPTION B */}
-        <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-          <label className="flex items-center gap-2 text-sm font-black text-slate-800">
-            <input type="checkbox" checked={c.pricing.optionB.enabled} disabled={!canEdit}
+        <div className="space-y-4 rounded-lg border border-slate-200 p-3.5">
+          <label className="flex min-h-[40px] items-center gap-2.5 text-[15px] font-black text-slate-800">
+            <input type="checkbox" className="h-5 w-5" checked={c.pricing.optionB.enabled} disabled={!canEdit}
               onChange={e => patch(d => { d.pricing.optionB.enabled = e.target.checked; })} />
             Option B — Per-Service Rates
           </label>
           {c.pricing.optionB.enabled && (
             <>
-              {c.pricing.optionB.lines.map((l, i) => (
-                <div key={i} className="flex gap-2 items-center">
-                  <input disabled={!canEdit} className={inputCls} defaultValue={l.label}
-                    onBlur={e => patch(d => { d.pricing.optionB.lines[i].label = e.target.value; })} />
-                  <input type="number" step="0.01" disabled={!canEdit} className={`${inputCls} w-28 text-right`}
-                    defaultValue={l.amount || ''}
-                    onBlur={e => patch(d => { d.pricing.optionB.lines[i].amount = Number(e.target.value) || 0; })} />
-                  {canEdit && (
-                    <button type="button" onClick={() => patch(d => { d.pricing.optionB.lines.splice(i, 1); })}
-                      className="text-slate-400 hover:text-rose-600"><Trash2 className="w-4 h-4" /></button>
-                  )}
-                </div>
-              ))}
-              <div className="flex items-center justify-between border-t border-slate-200 pt-2">
+              <div className="space-y-4">
+                {c.pricing.optionB.lines.map((l, i) => (
+                  <div key={i} className="grid gap-3 sm:grid-cols-[1fr_9rem_auto]">
+                    <Field label={i === 0 ? 'Rate line' : ''}>
+                      <input disabled={!canEdit} className={inputCls} defaultValue={l.label}
+                        onBlur={e => patch(d => { d.pricing.optionB.lines[i].label = e.target.value; })} />
+                    </Field>
+                    <Field label={i === 0 ? 'Amount' : ''}>
+                      <input type="number" step="0.01" inputMode="decimal" disabled={!canEdit}
+                        className={`${inputCls} text-right`} defaultValue={l.amount || ''} placeholder="—"
+                        onBlur={e => patch(d => { d.pricing.optionB.lines[i].amount = Number(e.target.value) || 0; })} />
+                    </Field>
+                    <div className="flex items-end">
+                      {canEdit && (
+                        <button type="button" onClick={() => patch(d => { d.pricing.optionB.lines.splice(i, 1); })}
+                          className="flex h-[44px] w-[44px] items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600">
+                          <Trash2 className="h-4.5 w-4.5" />
+                        </button>
+                      )}
+                    </div>
+                    {/* The tonnage allowance and any other qualifier that has to
+                        print beside the rate. */}
+                    <Field label="" span>
+                      <input disabled={!canEdit} className={inputCls} defaultValue={l.note || ''}
+                        placeholder="qualifier printed after the amount — e.g. includes up to ___ tons"
+                        onBlur={e => patch(d => { d.pricing.optionB.lines[i].note = e.target.value; })} />
+                    </Field>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
                 {canEdit && (
                   <button type="button"
                     onClick={() => patch(d => { d.pricing.optionB.lines.push({ label: 'New line', amount: 0 }); })}
-                    className="text-[11px] font-black uppercase tracking-widest text-sky-700 inline-flex items-center gap-1">
-                    <Plus className="w-3 h-3" /> add rate line
+                    className="inline-flex min-h-[44px] items-center gap-1.5 text-xs font-black uppercase tracking-widest text-sky-700">
+                    <Plus className="h-4 w-4" /> add rate line
                   </button>
                 )}
-                <span className="text-sm font-black text-slate-800">
+                <span className="text-[15px] font-black text-slate-800">
                   Total per visit ${c.pricing.optionB.totalPerVisit.toFixed(2)}
                 </span>
               </div>
@@ -363,35 +503,46 @@ export default function SnowContractEditor({
         </div>
 
         {/* ADD-ONS */}
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="block"><L>Sand $ / ton</L>
-            <input type="number" step="0.01" disabled={!canEdit} className={inputCls} defaultValue={c.pricing.addOns.sandPerTon}
+        <div className="grid gap-5 sm:grid-cols-2">
+          <Field label="Sand $ / ton">
+            <input type="number" step="0.01" inputMode="decimal" disabled={!canEdit} className={inputCls}
+              defaultValue={c.pricing.addOns.sandPerTon || ''}
               onBlur={e => patch(d => { d.pricing.addOns.sandPerTon = Number(e.target.value) || 0; })} />
-          </label>
-          <label className="block"><L>Sand loading fee</L>
-            <input type="number" step="0.01" disabled={!canEdit} className={inputCls} defaultValue={c.pricing.addOns.sandLoadingFee}
+          </Field>
+          <Field label="Sand loading fee">
+            <input type="number" step="0.01" inputMode="decimal" disabled={!canEdit} className={inputCls}
+              defaultValue={c.pricing.addOns.sandLoadingFee || ''}
               onBlur={e => patch(d => { d.pricing.addOns.sandLoadingFee = Number(e.target.value) || 0; })} />
-          </label>
-          <label className="block sm:col-span-2"><L>After-hours / emergency call-out</L>
+          </Field>
+          <Field label="After-hours / emergency call-out" span>
             <input disabled={!canEdit} className={inputCls} defaultValue={c.pricing.addOns.afterHours}
+              placeholder="leave blank for a ruled line to fill in"
               onBlur={e => patch(d => { d.pricing.addOns.afterHours = e.target.value; })} />
-          </label>
+          </Field>
+          <Field label="On-site snow relocation" span>
+            <textarea disabled={!canEdit} className={areaCls} defaultValue={c.pricing.addOns.relocation}
+              onBlur={e => patch(d => { d.pricing.addOns.relocation = e.target.value; })} />
+          </Field>
+          <Field label="Off-site haul-away" span>
+            <textarea disabled={!canEdit} className={areaCls} defaultValue={c.pricing.addOns.haulAway}
+              onBlur={e => patch(d => { d.pricing.addOns.haulAway = e.target.value; })} />
+          </Field>
         </div>
       </Section>
 
       {/* 5 · TRIGGER */}
       <Section id="trigger">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="block"><L>Trigger depth</L>
+        <div className="grid gap-5 sm:grid-cols-2">
+          <Field label="Trigger depth">
             <input disabled={!canEdit} className={inputCls} defaultValue={c.serviceTerms.triggerDepth}
               onBlur={e => patch(d => { d.serviceTerms.triggerDepth = e.target.value; })} />
-          </label>
+          </Field>
           <div><L>Priority tier</L>
-            <div className="flex rounded-lg overflow-hidden border border-slate-300 w-fit">
+            <div className="flex w-fit overflow-hidden rounded-lg border border-slate-300">
               {(['standard', 'priority'] as const).map(t => (
                 <button key={t} type="button" disabled={!canEdit}
                   onClick={() => patch(d => { d.serviceTerms.priorityTier = t; })}
-                  className={`px-3 py-1.5 text-[11px] font-black uppercase tracking-widest ${c.serviceTerms.priorityTier === t ? 'bg-sky-700 text-white' : 'bg-white text-slate-500'}`}>
+                  className={`min-h-[44px] px-5 text-[11px] font-black uppercase tracking-widest ${c.serviceTerms.priorityTier === t ? 'bg-sky-700 text-white' : 'bg-white text-slate-500'}`}>
                   {t}
                 </button>
               ))}
@@ -399,13 +550,13 @@ export default function SnowContractEditor({
           </div>
           {([['clearedBefore', 'Cleared before (a.m.)'], ['snowfallEndsBy', 'If snowfall ends by (a.m.)'],
             ['otherwiseWithinHours', 'Otherwise within (hours)']] as [keyof SnowContract['serviceTerms'], string][]).map(([k, label]) => (
-            <label key={k} className="block"><L>{label}</L>
+            <Field key={k} label={label}>
               <input disabled={!canEdit} className={inputCls} defaultValue={String(c.serviceTerms[k])}
                 onBlur={e => patch(d => { (d.serviceTerms as any)[k] = e.target.value; })} />
-            </label>
+            </Field>
           ))}
         </div>
-        <p className="text-[11px] text-slate-500">
+        <p className="text-[12px] text-slate-500">
           The bullets under this section are fixed contract terms and are not editable here.
         </p>
       </Section>
@@ -413,7 +564,7 @@ export default function SnowContractEditor({
       {/* FIXED-TEXT SECTIONS — removable, not editable. */}
       {(['payment', 'damage', 'indemnity', 'insurance', 'contact', 'acceptance'] as const).map(id => (
         <Section key={id} id={id}>
-          <p className="text-[11px] text-slate-500">
+          <p className="text-[13px] text-slate-500">
             Fixed contract text. It can be removed from this contract, but not reworded here —
             the wording is the same on every agreement.
           </p>
@@ -422,62 +573,75 @@ export default function SnowContractEditor({
     </div>
   );
 
+  const preview = (
+    <div className="lg:sticky lg:top-3">
+      <div className="mb-1.5 text-[10px] font-black uppercase tracking-widest text-slate-400">
+        Live preview — the same render the printed contract uses
+      </div>
+      <div ref={previewHostRef} className="overflow-auto rounded-xl bg-slate-200 p-3 lg:max-h-[84vh]">
+        <div style={{ height: docH * scale }}>
+          <div ref={sheetRef} className="bg-white shadow-lg"
+            style={{ width: PAPER_W, transform: `scale(${scale})`, transformOrigin: 'top left' }}>
+            <SnowContractDocument contract={c} mode="preview" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-3">
       {/* HEADER */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <button type="button" onClick={onBack} className="p-1.5 text-slate-500 hover:text-slate-900" aria-label="Back">
-            <ArrowLeft className="w-5 h-5" />
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex min-w-0 items-center gap-2">
+          <button type="button" onClick={onBack} className="p-2 text-slate-500 hover:text-slate-900" aria-label="Back">
+            <ArrowLeft className="h-5 w-5" />
           </button>
           <div className="min-w-0">
-            <div className="font-black text-slate-900 truncate">
+            <div className="truncate font-black text-slate-900">
               {c.client.businessName || 'Untitled contract'}
             </div>
             <div className="text-[11px] font-bold text-slate-400">
               {c.season} · {STATUS_LABEL[c.status]}
-              {saving === 'saving' && <span className="ml-2 inline-flex items-center gap-1 text-slate-500"><Loader2 className="w-3 h-3 animate-spin" /> saving…</span>}
-              {saving === 'saved' && <span className="ml-2 inline-flex items-center gap-1 text-emerald-600"><Check className="w-3 h-3" /> saved</span>}
+              {saving === 'saving' && <span className="ml-2 inline-flex items-center gap-1 text-slate-500"><Loader2 className="h-3 w-3 animate-spin" /> saving…</span>}
+              {saving === 'saved' && <span className="ml-2 inline-flex items-center gap-1 text-emerald-600"><Check className="h-3 w-3" /> saved</span>}
             </div>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex lg:hidden bg-slate-100 rounded-lg p-1">
+          {/* MOBILE: full-width tabs, thumb-sized. */}
+          <div className="flex rounded-lg bg-slate-100 p-1 lg:hidden">
             {(['form', 'preview'] as const).map(p => (
               <button key={p} type="button" onClick={() => setPane(p)}
-                className={`px-3 py-1.5 text-xs font-black rounded uppercase ${pane === p ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>
+                className={`min-h-[40px] rounded px-4 text-xs font-black uppercase ${pane === p ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500'}`}>
                 {p}
               </button>
             ))}
           </div>
           {canEdit && (
             <button type="button" onClick={onDuplicate}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-black uppercase tracking-widest border border-slate-300">
-              <Copy className="w-3.5 h-3.5" /> Duplicate for next season
+              className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-slate-300 px-3 text-xs font-black uppercase tracking-widest">
+              <Copy className="h-3.5 w-3.5" /> Duplicate for next season
             </button>
           )}
           <button type="button" onClick={onPrint}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-black uppercase tracking-widest bg-slate-800 text-white">
-            <Printer className="w-3.5 h-3.5" /> Print / PDF
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-slate-800 px-4 text-xs font-black uppercase tracking-widest text-white">
+            <Printer className="h-3.5 w-3.5" /> Print / PDF
           </button>
         </div>
       </div>
 
-      {/* TWO PANES */}
-      <div className="grid gap-3 lg:grid-cols-2">
+      {/* TWO PANES — a dragged split on desktop, tabbed full-width on mobile. */}
+      <div ref={splitHostRef} className="lg:grid lg:gap-0"
+        style={{ gridTemplateColumns: `${split}% 14px minmax(0,1fr)` }}>
         <div className={pane === 'form' ? '' : 'hidden lg:block'}>{form}</div>
-        <div className={`${pane === 'preview' ? '' : 'hidden lg:block'}`}>
-          <div className="sticky top-3">
-            <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
-              Live preview — the same render the printed contract uses
-            </div>
-            <div className="bg-slate-200 rounded-xl p-3 overflow-auto max-h-[80vh]">
-              <div className="bg-white shadow-lg mx-auto" style={{ width: '8.5in' , transform: 'scale(0.78)', transformOrigin: 'top center' }}>
-                <SnowContractDocument contract={c} mode="preview" />
-              </div>
-            </div>
-          </div>
+        <div
+          onPointerDown={() => { dragging.current = true; document.body.style.userSelect = 'none'; }}
+          className="hidden lg:flex lg:cursor-col-resize lg:items-center lg:justify-center"
+          role="separator" aria-orientation="vertical" aria-label="Resize form and preview">
+          <div className="h-16 w-1.5 rounded-full bg-slate-300 transition-colors hover:bg-sky-500" />
         </div>
+        <div className={pane === 'preview' ? '' : 'hidden lg:block'}>{preview}</div>
       </div>
 
       {measuring && (

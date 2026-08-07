@@ -115,7 +115,21 @@ export const areaLabel = (sqft: number): string =>
 // ── PRINTED PAGE GEOMETRY ──────────────────────────────────────────────────
 // Letter at 96dpi, less the @page margins the document sets. This is the
 // height one printed page can hold.
-export const PAGE_CONTENT_PX = (11 - 0.42 * 2) * 96;   // 975.36
+// SIDE margins are NOT @page margins — they are padding on .sheet, so they
+// survive a "Margins: None" setting in the print dialog and cannot be dropped.
+// Top/bottom must stay on @page: they have to repeat on every page, and
+// padding only applies to a fragment's first and last page.
+export const PAGE_MARGIN_IN = 0.42;
+export const PAGE_SIDE_IN = 0.5;
+export const PAGE_CONTENT_PX = (11 - PAGE_MARGIN_IN * 2) * 96;   // 975.36 — the paper
+export const PAGE_CONTENT_WIDTH_PX = (8.5 - PAGE_SIDE_IN * 2) * 96;   // 720
+// The running footer is a repeating <tfoot>: it takes this much off EVERY
+// page, not just the last one. Anything that budgets page space — above all
+// the map fit — has to work from PAGE_BUDGET_PX, not the raw paper height.
+// The print verification measures the rendered footer and fails if it has
+// outgrown this reserve, so the constant cannot silently go stale.
+export const FOOTER_RESERVE_PX = 18;
+export const PAGE_BUDGET_PX = PAGE_CONTENT_PX - FOOTER_RESERVE_PX;   // 957.36
 export const MAP_MAX_IN = 4.2;
 export const MAP_MIN_IN = Math.round((MAP_MAX_IN - 2.5) * 100) / 100;   // 1.7in — the cap on reduction
 
@@ -124,7 +138,7 @@ export const MAP_MIN_IN = Math.round((MAP_MAX_IN - 2.5) * 100) / 100;   // 1.7in
 // Shrinks from 4.2in and stops at the floor, so a page that genuinely cannot
 // fit overflows rather than squeezing the map into a strip.
 export function fitMapHeightIn(withoutMapPx: number): number {
-  const available = PAGE_CONTENT_PX - withoutMapPx;
+  const available = PAGE_BUDGET_PX - withoutMapPx;
   if (available >= MAP_MAX_IN * 96) return MAP_MAX_IN;
   // FLOOR, never round: rounding up by a hundredth of an inch is ~1px, and a
   // single pixel over the page budget spills the whole section onto page 2.

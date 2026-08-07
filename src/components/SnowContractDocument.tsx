@@ -10,20 +10,27 @@
 // reference's own — 8.2pt body rising to 8.6pt in print, #0d6cb5 blue, the
 // 1.5px section rule, 4.2in map box — not approximations of them.
 import { useLayoutEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { SnowContract } from '../types';
-import { SNOW_LOGO_DATA_URI } from '../assets/snowLogo';
-import { staticMapUrl, fitMapHeightIn, MAP_MAX_IN } from '../lib/snowContractMap';
+import { SNOW_LOGO_DATA_URI, SNOW_LOGO_DARK_DATA_URI } from '../assets/snowLogo';
+import { staticMapUrl, fitMapHeightIn, MAP_MAX_IN, PAGE_MARGIN_IN, PAGE_SIDE_IN, PAGE_BUDGET_PX, PAGE_CONTENT_PX } from '../lib/snowContractMap';
 import { GOOGLE_MAPS_API_KEY } from '../lib/googleMaps';
 import {
   DOC_TITLE, CONTRACTOR_FOOTER_NAME, CONTRACTOR_ADDRESS, OFFICE_PHONE, OFFICE_EMAIL,
   SERVICE_LINE, INTRO_LINE, SCOPE_INTRO, SERVICES_LEGEND_ON_CALL, SERVICES_LEGEND_EXCL,
   PRICING_INTRO, OPTION_A_SUB, OPTION_B_SUB, ADDONS_NOTE, OPTION_A_RATES_ON_REQUEST,
   TRIGGER_BULLETS, PAYMENT_BULLETS, PROPERTY_DAMAGE, INDEMNITY, INSURANCE,
-  CONTACT_NOTE, ACCEPTANCE_NOTE, SECTIONS, PAGE_BREAK_AFTER,
+  CONTACT_NOTE, ACCEPTANCE_NOTE, SECTIONS,
 } from '../lib/snowContractText';
 
 const money = (n: number) =>
   (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// An amount nobody has entered prints as a BLANK RULE to write on, not as
+// "$ 0.00". A contract that states a price of zero is a different document
+// from one with the price left open, and printing the first when you meant
+// the second is the expensive direction of that mistake.
+const Money = ({ v }: { v?: number | null }) => <F v={v ? money(v) : ''} />;
 
 const dateLong = (ymd: string) => {
   if (!ymd) return '';
@@ -40,15 +47,76 @@ const dateLong = (ymd: string) => {
 // onto a fourth page. Ten bullets at 1px each buys 10px — enough to restore the
 // three-page contract with headroom, and invisible at this size. Verified by
 // scripts/verify-snow-contract-print.tsx at both scope-text extremes.
+//
+// THE PRINT RULES ARE EMITTED TWICE, under @media print and under
+// .snowdoc-print. The print window renders this component to the SCREEN first
+// and only then calls print(); if that staging render uses the screen metrics
+// (8.2pt, a window-width sheet) the measured map fit computes against a
+// geometry that never prints. Emitting the same rules for the staging class
+// makes what the fit measures and what Chrome paginates the same layout.
+const PRINT_RULES = (p: string) => `
+${p} { font-size:8.6pt; }
+/* SIDE MARGINS AS PADDING — see snowContractMap.ts. @page carries top/bottom
+   only, so a dialog set to "Margins: None" cannot run the rules to the edge. */
+${p} .sheet { max-width:none; margin:0; padding:0 ${PAGE_SIDE_IN}in; }
+/* HARD REQUIREMENT: no section splits across a page. The row-level rules
+   matter as much as the section-level one — a section that genuinely cannot
+   fit will still break, and it must break BETWEEN rows, never through one. */
+${p} section, ${p} .opt, ${p} .keep,
+${p} .svc tr, ${p} .rate tr, ${p} .kv tr, ${p} .sig tr { page-break-inside:avoid; break-inside:avoid; }
+${p} h2 { page-break-after:avoid; break-after:avoid; }
+${p} li { page-break-inside:avoid; break-inside:avoid; }
+${p} .pb { page-break-after:always; break-after:page; }
+${p} .pagegrid.brk { page-break-before:always; break-before:page; }
+/* RUNNING FOOTER — see the .pagegrid note below. Chrome supports neither
+   @bottom-center nor repeating a position:fixed element (both were tried and
+   print once, on the last page and the first respectively); a <tfoot> is the
+   one mechanism it actually repeats. */
+${p} .foot { margin:0; padding:3px 0 0; }
+/* A <tfoot> sits directly UNDER its table's content, so a page group shorter
+   than a page would print its footer floating mid-page. Giving every group a
+   full page of height pushes the footer to the foot of the paper; content
+   stays top-aligned, and a group with more than a page of content simply
+   fragments and repeats the footer on each page as intended. */
+/* The FULL page height, not the content budget: the table carries its own
+   footer, so the tbody is left with exactly PAGE_BUDGET_PX. Sizing it to the
+   budget instead cost the tbody a second footer-height and fragmented the
+   last group onto an extra page. */
+${p} .pagegrid { height:${PAGE_CONTENT_PX - 1}px; }
+${p} .pagegrid > tbody > tr > td { vertical-align:top; }
+/* The first heading on a page needs no space above it — the page margin is
+   already that space. Seven pixels per group, reclaimed from nothing. */
+${p} .pagegrid > tbody > tr > td > section:first-child h2 { margin-top:0; }
+/* Signing gap trimmed from the reference's 44px. This is whitespace inside the
+   signature block, not type, and 36px is still a generous line to sign on —
+   preferred over shaving the reference's typography to win the same 8px. */
+${p} .sig td { padding-top:36px; }
+`;
+
 const DOC_CSS = `
 .snowdoc, .snowdoc * { box-sizing: border-box; }
+/* PRINT COLOUR IS NOT OPTIONAL. Chrome's print dialog ships with "Background
+   graphics" UNTICKED, and that drops every background colour and image while
+   keeping text colours — the blue band paints white, and the white title and
+   light logo vanish into it. This overrides that setting; the header does not
+   depend on the operator finding a checkbox. */
+.snowdoc, .snowdoc * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 .snowdoc { font-family: "DejaVu Sans", Arial, Helvetica, sans-serif; font-size: 8.2pt;
   color: #16232e; line-height: 1.32; }
 .snowdoc .sheet { background:#fff; max-width: 8.5in; margin: 0 auto; padding: 0.5in 0.55in 0.6in; }
 .snowdoc .band { background:#0d6cb5; color:#fff; padding:11px 16px; margin-bottom:10px;
   display:flex; align-items:center; justify-content:space-between; }
 .snowdoc .band .lock { display:flex; align-items:center; gap:13px; }
-.snowdoc .band .lock img.sn { height:38px; }
+/* TWO-LAYER MARK — the belt-and-braces half of the header fix. The DARK mark
+   is a plain <img>, so it always prints. Over it sits a layer carrying the
+   band colour and the light mark as BACKGROUNDS; when backgrounds render, that
+   layer hides the dark one and the header looks exactly as designed. If a
+   print path drops backgrounds anyway, the cover disappears with them and the
+   dark mark is left on the white band — legible either way, no JS, no query. */
+.snowdoc .band .mark { position:relative; display:block; width:38px; height:38px; flex:none; }
+.snowdoc .band .mark img.dk { display:block; width:100%; height:100%; object-fit:contain; }
+.snowdoc .band .mark .lt { position:absolute; inset:0;
+  background:#0d6cb5 url("${SNOW_LOGO_DATA_URI}") center/contain no-repeat; }
 .snowdoc .band .t { text-align:right; }
 .snowdoc .band .t .a { font-size:13.5pt; font-weight:bold; letter-spacing:.3px; }
 .snowdoc .band .t .b { font-size:7.5pt; opacity:.9; letter-spacing:1.3px; text-transform:uppercase; margin-top:2px; }
@@ -86,15 +154,28 @@ const DOC_CSS = `
 .snowdoc .mapwrap img { max-width:100%; max-height:100%; object-fit:contain; }
 .snowdoc .mapwrap .ph { color:#8fa3b4; font-size:8pt; }
 .snowdoc .pb { break-after:page; page-break-after:always; }
+/* THE PAGE GRID. A repeating <tfoot> is the only running-footer mechanism
+   Chrome honours — @bottom-center is unsupported and position:fixed prints
+   once — and it reserves its own height on every page, so nothing has to guess
+   at a bottom margin.
+   ONE TABLE PER PAGE GROUP, not one table for the document: a forced break
+   INSIDE a table cell is not honoured cleanly (it cost two spurious pages when
+   tried), so the group breaks live BETWEEN the tables where they are ordinary
+   block-level breaks. Layout scaffolding only — no borders, no padding, no
+   visual presence of its own. */
+.snowdoc .pagegrid { width:100%; border-collapse:collapse; }
+.snowdoc .pagegrid > tbody > tr > td, .snowdoc .pagegrid > tfoot > tr > td { padding:0; border:0; }
+
+/* Screen staging for the print window: the page box at true printed width, so
+   the measured fit runs against printed geometry. */
+.snowdoc-print { width:8.5in; margin:0 auto; background:#fff; }
+${PRINT_RULES('.snowdoc-print')}
+.snowdoc-print .foot { position:static; padding:3px 0 0; }
 
 @media print {
-  @page { size: Letter; margin: 0.42in 0.5in 0.42in 0.5in; }
-  .snowdoc { font-size:8.6pt; }
-  .snowdoc .sheet { max-width:none; margin:0; padding:0; }
-  /* HARD REQUIREMENT: no section splits across a page. */
-  .snowdoc section, .snowdoc .opt, .snowdoc .svc tr, .snowdoc .sig tr { page-break-inside:avoid; break-inside:avoid; }
-  .snowdoc h2 { page-break-after:avoid; }
-  .snowdoc .pb { page-break-after:always; }
+  @page { size: Letter; margin: ${PAGE_MARGIN_IN}in 0 ${PAGE_MARGIN_IN}in 0; }
+  .snowdoc-print { width:auto; margin:0; }
+${PRINT_RULES('.snowdoc')}
 }
 `;
 
@@ -126,10 +207,22 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
   useLayoutEffect(() => {
     const el = page1Ref.current;
     if (!el || !c.scope.showMap) { setMapIn(MAP_MAX_IN); return; }
-    // Height of everything on page 1 except the map box.
+    // FROM THE TOP OF THE SHEET, not the top of this wrapper: the header band
+    // is page 1's content too, and measuring only the wrapper under-counted it
+    // by the band's ~60px — which is how a map that "fit" still pushed Property
+    // Scope onto page 2.
+    const sheet = el.closest('.sheet') as HTMLElement | null;
+    const top = (sheet || el).getBoundingClientRect().top;
     const mapEl = el.querySelector('.mapwrap') as HTMLElement | null;
     const mapH = mapEl ? mapEl.getBoundingClientRect().height : 0;
-    const withoutMap = el.getBoundingClientRect().height - mapH;
+    // UNDO ANY CSS SCALE. The editor renders this preview inside a
+    // transform:scale() so a full page fits the pane, and getBoundingClientRect
+    // reports SCALED pixels — which are then compared against an unscaled page
+    // budget. Left uncorrected the preview thinks it has ~28% more room than
+    // the paper and fits a map that does not print, so the preview stops being
+    // the output. offsetWidth is layout pixels, so their ratio is the scale.
+    const scale = el.offsetWidth ? el.getBoundingClientRect().width / el.offsetWidth : 1;
+    const withoutMap = (el.getBoundingClientRect().bottom - top - mapH) / (scale || 1);
     // Same pure function the print verification exercises.
     const rounded = fitMapHeightIn(withoutMap);
     setMapIn(prev => (Math.abs(prev - rounded) > 0.02 ? rounded : prev));
@@ -140,9 +233,6 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
     const s = sec(id);
     return <h2><span className="n">{s.n}</span>{s.title}</h2>;
   };
-  const Break = ({ id }: { id: string }) =>
-    (PAGE_BREAK_AFTER as readonly string[]).includes(id) ? <div className="pb" /> : null;
-
   const Foot = () => (
     <div className="foot">
       <span>{CONTRACTOR_FOOTER_NAME} &nbsp;|&nbsp; {CONTRACTOR_ADDRESS}</span>
@@ -150,13 +240,30 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
     </div>
   );
 
+  // One page group = one table with its own repeating footer. `brk` forces the
+  // group to start a new page; the first group does not carry it.
+  const Page = ({ brk, children }: { brk?: boolean; children: ReactNode }) => (
+    <table className={`pagegrid${brk ? ' brk' : ''}`}>
+      {/* Declared before the body — that is the order <tfoot> requires; it
+          still renders at the foot of every page the group occupies. */}
+      <tfoot><tr><td><Foot /></td></tr></tfoot>
+      <tbody><tr><td>{children}</td></tr></tbody>
+    </table>
+  );
+
   return (
-    <div className={`snowdoc${mode === 'preview' ? ' snowdoc-preview' : ''}`}>
+    <div className={`snowdoc${mode === 'preview' ? ' snowdoc-preview' : ' snowdoc-print'}`}>
       <style>{DOC_CSS}</style>
       <div className="sheet">
+       <Page>
         {/* HEADER BAND */}
         <div className="band">
-          <div className="lock"><img className="sn" src={SNOW_LOGO_DATA_URI} alt="Marco's Snow" /></div>
+          <div className="lock">
+            <span className="mark">
+              <img className="dk" src={SNOW_LOGO_DARK_DATA_URI} alt="Marco's Snow" />
+              <span className="lt" aria-hidden="true" />
+            </span>
+          </div>
           <div className="t">
             <div className="a">{DOC_TITLE}</div>
             <div className="b">
@@ -228,7 +335,9 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
             </section>
           )}
         </div>
-        <Break id="scope" />
+        </Page>
+
+        <Page brk>
 
         {/* 3 · SERVICES */}
         {show('services') && (
@@ -270,22 +379,23 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
                 <div className="sub">{OPTION_A_SUB}</div>
                 <table className="rate"><tbody>
                   <tr><td style={{ width: '34%' }}>Total Contract Price</td>
-                    <td>$ <F v={money(c.pricing.optionA.totalPrice)} /> + HST</td></tr>
+                    <td>$ <Money v={c.pricing.optionA.totalPrice} /> + HST</td></tr>
                   <tr><td style={{ width: '34%' }}>Billed In</td>
-                    <td><b>6 equal monthly instalments</b> of $ <F v={money(c.pricing.optionA.instalmentAmount)} /> + HST</td></tr>
+                    <td><b>6 equal monthly instalments</b> of $ <Money v={c.pricing.optionA.instalmentAmount} /> + HST</td></tr>
                   <tr><td style={{ width: '34%' }}>Instalment Schedule</td>
                     <td>1st of each month, November through April</td></tr>
                   {c.pricing.optionA.prepayDiscountEnabled && (
                     <tr><td style={{ width: '34%' }}>Pre-Season Discount</td>
                       <td><b>5% off</b> the total contract price if paid in full on or before{' '}
                         <F v={dateLong(c.pricing.optionA.prepayDeadline)} />. Discounted total: ${' '}
-                        <F v={money(c.pricing.optionA.prepayTotal)} /> + HST.</td></tr>
+                        <Money v={c.pricing.optionA.prepayTotal} /> + HST.</td></tr>
                   )}
-                  {/* PRICING VISIBILITY: the per-service rates behind a seasonal
-                      price are not printed. */}
-                  <tr><td style={{ width: '34%' }}>Per-Service Rates</td>
-                    <td className="small">{OPTION_A_RATES_ON_REQUEST}</td></tr>
                 </tbody></table>
+                {/* PRICING VISIBILITY: the per-service rates behind a seasonal
+                    price are not printed. This is a note about the option, not
+                    a rate line — as a table row it read as a priced item with
+                    the price missing. */}
+                <div className="small" style={{ marginTop: 5 }}>{OPTION_A_RATES_ON_REQUEST}</div>
               </div>
             )}
 
@@ -297,12 +407,12 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
                   {c.pricing.optionB.lines.map((l, i) => (
                     <tr key={i}>
                       <td style={{ width: '34%' }}>{l.label}</td>
-                      <td>$ <F v={money(l.amount)} />{l.note ? <> {l.note}</> : null}</td>
+                      <td>$ <Money v={l.amount} />{l.note ? <> {l.note}</> : null}</td>
                     </tr>
                   ))}
                   <tr style={{ background: '#eaf2f9' }}>
                     <td style={{ fontWeight: 'bold' }}>TOTAL PER VISIT</td>
-                    <td><b>$ <F v={money(c.pricing.optionB.totalPerVisit)} /> + HST</b> &nbsp;
+                    <td><b>$ <Money v={c.pricing.optionB.totalPerVisit} /> + HST</b> &nbsp;
                       <span className="small">— all services above, performed together after each event</span></td>
                   </tr>
                 </tbody></table>
@@ -310,12 +420,12 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
             )}
 
             {show('addons') && (
-              <div>
+              <div className="keep">
                 <p style={{ marginTop: 7 }}><b>Add-On Rates</b> <span className="small">{ADDONS_NOTE}</span></p>
                 <table className="rate"><tbody>
                   <tr><td style={{ width: '34%' }}>Additional Sand</td>
-                    <td>$ <F v={money(c.pricing.addOns.sandPerTon)} /> / ton &nbsp;+&nbsp; ${' '}
-                      <F v={money(c.pricing.addOns.sandLoadingFee)} /> loading &amp; hauling fee per application</td></tr>
+                    <td>$ <Money v={c.pricing.addOns.sandPerTon} /> / ton &nbsp;+&nbsp; ${' '}
+                      <Money v={c.pricing.addOns.sandLoadingFee} /> loading &amp; hauling fee per application</td></tr>
                   <tr><td>On-Site Snow Relocation</td><td>{c.pricing.addOns.relocation}</td></tr>
                   <tr><td>Off-Site Haul-Away</td><td>{c.pricing.addOns.haulAway}</td></tr>
                   <tr><td>After-Hours / Emergency Call-Out</td>
@@ -325,7 +435,9 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
             )}
           </section>
         )}
-        <Break id="pricing" />
+        </Page>
+
+        <Page brk>
 
         {/* 5 · SERVICE TRIGGER & RESPONSE */}
         {show('trigger') && (
@@ -408,7 +520,7 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
           </section>
         )}
 
-        <Foot />
+        </Page>
       </div>
     </div>
   );
