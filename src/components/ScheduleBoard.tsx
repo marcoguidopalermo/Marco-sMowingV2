@@ -7,7 +7,7 @@ import {
   TrendingUp, CreditCard as IdCard, Copy, ClipboardPaste, ShieldCheck,
   Moon, Lock, Link2, ArrowLeft, Plane, CalendarRange
 } from 'lucide-react';
-import { AppData, Crew, Employee, FleetItem, OverrideRecord, UserRole, JobberUser, MechanicTask, CapacityForecast, CapacityScope, CapacitySettings } from '../types';
+import { AppData, Crew, Employee, FleetItem, OverrideRecord, UserRole, JobberUser, MechanicTask, CapacityForecast, CapacityScope, CapacitySettings, HourlyEstimate } from '../types';
 import DispatchConfirmModal from './DispatchConfirmModal';
 import { logPerfActivity } from '../lib/perfAudit';
 import { DIVISIONS, CREW_NUMBERS, EOD_WARNING_HOUR, PERMISSION_DENIED } from '../constants';
@@ -91,6 +91,8 @@ interface ScheduleBoardProps {
   onRefreshCapacity: (scope: CapacityScope) => Promise<void>;
   canRefreshCapacity: boolean;
   onSaveCapacitySettings: (next: CapacitySettings) => Promise<void>;
+  hourlyEstimates: Record<string, HourlyEstimate>;
+  onSetHourlyEstimate: (visitId: string, bh: number | null, label?: string) => void | Promise<void>;
   isAdmin: boolean;
 }
 
@@ -138,6 +140,8 @@ export default function ScheduleBoard({
   onRefreshCapacity,
   canRefreshCapacity,
   onSaveCapacitySettings,
+  hourlyEstimates,
+  onSetHourlyEstimate,
   isAdmin,
 }: ScheduleBoardProps) {
   const [overrideModalCtx, setOverrideModalCtx] = useState<{
@@ -1222,6 +1226,8 @@ export default function ScheduleBoard({
             canRefresh={canRefreshCapacity}
             onSaveSettings={onSaveCapacitySettings}
             jobberUsers={jobberUsers}
+            hourlyEstimates={hourlyEstimates}
+            onSetHourlyEstimate={onSetHourlyEstimate}
             defaultTool="balance"
             variant="board"
           />

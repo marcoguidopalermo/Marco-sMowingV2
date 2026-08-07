@@ -25,7 +25,7 @@
 import type {
   AppData, Crew, Employee, MultiDayJob, CapacityForecast, CapacityForecastVisit,
   CapacitySettings, CapacityThresholds, HeadcountCeiling, AssigneeMapping,
-  JobberUser,
+  JobberUser, HourlyEstimate,
 } from '../types';
 import { remainingBHOf, creditedBHOf } from './multiDayResolution';
 import { addDaysToronto } from './dateUtils';
@@ -209,46 +209,51 @@ export interface ForwardSlice {
   estimateBasis?: EstimateBasis;
 }
 
-// ── ESTIMATING WORK THAT CARRIES NO [BH] TAG ───────────────────────────────
-// An [hourly] visit occupies crew time whether or not anyone tagged it. Left
-// at zero it makes a full week read as open, which is the more dangerous
-// error — so it is ESTIMATED and then flagged everywhere it appears. The
-// estimate never masquerades as a measured number.
+// ── WORK THAT CARRIES NO [BH] TAG ──────────────────────────────────────────
+// [HOURLY] visits are real work with no tagged number, and every one is
+// different — a duration-derived or defaulted figure would be fiction dressed
+// as data. So capacity ASKS rather than guesses: an hourly visit contributes
+// NOTHING until someone estimates it, and until then the week says so out
+// loud, because a week that looks 40% booked while hiding two unestimated
+// hourly jobs is worse than one that admits it is incomplete.
 //
-// UNTAGGED visits are treated differently on purpose. A missing tag is a
-// fixable data-entry gap, not a category of work: where Jobber gives a real
-// duration we use it, but there is NO default fallback, because inventing a
-// number would paper over the very thing that should be corrected in Jobber.
-export type EstimateBasis = 'duration' | 'default' | null;
+// UNTAGGED visits are a different thing entirely: a missing tag is a mistake
+// to fix in Jobber, not a job type. They stay at zero and are flagged as a
+// data error, never estimated.
+export type EstimateBasis = 'manual' | null;
 
 export interface SliceLoad {
   bh: number;              // BH counted for this slice
-  estimated: boolean;
+  estimated: boolean;      // a human's estimate, not a tagged figure
   basis: EstimateBasis;
+  needsEstimate: boolean;  // hourly, and nobody has put a number on it yet
 }
 
 export function loadForSlice(
   slice: ForwardSlice,
-  division: string,
-  settings: CapacitySettings | undefined,
+  estimates: Record<string, HourlyEstimate> | undefined,
+  _settings?: CapacitySettings,
 ): SliceLoad {
   if (!slice.isHourly && !slice.untagged) {
-    return { bh: slice.bh, estimated: false, basis: null };
-  }
-  const days = Math.max(1, slice.spanDays);
-  // Real scheduled time beats any default.
-  if (typeof slice.durationHours === 'number' && slice.durationHours > 0) {
-    return { bh: round1(slice.durationHours / days), estimated: true, basis: 'duration' };
+    return { bh: slice.bh, estimated: false, basis: null, needsEstimate: false };
   }
   if (slice.untagged) {
-    // No guess for a missing tag — see the note above.
-    return { bh: 0, estimated: false, basis: null };
+    return { bh: 0, estimated: false, basis: null, needsEstimate: false };
   }
-  const fallback = settings?.declared?.[division]?.hourlyDefaultBH;
-  if (typeof fallback === 'number' && Number.isFinite(fallback) && fallback > 0) {
-    return { bh: round1(fallback / days), estimated: true, basis: 'default' };
+  // A real [BH] tag always beats an estimate — handled above, since a tagged
+  // visit is never isHourly. A stale estimate on a now-tagged visit is simply
+  // never consulted.
+  const est = estimates?.[slice.visitId];
+  if (est && Number.isFinite(est.bh) && est.bh > 0) {
+    // Spread across the days the visit occupies, like any other BH.
+    return {
+      bh: round1(est.bh / Math.max(1, slice.spanDays)),
+      estimated: true,
+      basis: 'manual',
+      needsEstimate: false,
+    };
   }
-  return { bh: 0, estimated: false, basis: null };
+  return { bh: 0, estimated: false, basis: null, needsEstimate: true };
 }
 
 // Merges the scope snapshots (newest wins per visit), then expands each visit
@@ -504,8 +509,10 @@ export interface BookingCell {
   estBH: number;
   estCount: number;
   // How the estimates in this cell were arrived at.
-  estFromDuration: number;
-  estFromDefault: number;
+  // Hourly jobs in this week that nobody has estimated yet. Their BH is
+  // UNKNOWN, so the cell says so rather than implying zero.
+  unestimatedHourly: number;
+  unestimatedJobs: ForwardSlice[];
   // What the percentage is actually computed from: bh + estBH.
   totalBH: number;
   capacity: number | null;
@@ -552,6 +559,7 @@ export interface BookingModel {
 
 export interface BookingInput {
   snapshots: CapacityForecast[];
+  hourlyEstimates?: Record<string, HourlyEstimate>;
   schedules: Record<string, Crew[]>;
   multiDayJobs: Record<string, MultiDayJob> | undefined;
   settings: CapacitySettings | undefined;
@@ -561,6 +569,7 @@ export interface BookingInput {
 
 export function buildBookingModel(input: BookingInput): BookingModel {
   const { snapshots, schedules, multiDayJobs, settings, today } = input;
+  const estimates = input.hourlyEstimates;
   const thresholds = thresholdsOrDefault(settings);
   const weeks = buildWeeks(today, input.weeks ?? 4);
   const weekIndex = new Map<string, number>();
@@ -580,8 +589,8 @@ export function buildBookingModel(input: BookingInput): BookingModel {
       bh: 0,
       estBH: 0,
       estCount: 0,
-      estFromDuration: 0,
-      estFromDefault: 0,
+      unestimatedHourly: 0,
+      unestimatedJobs: [],
       totalBH: 0,
       capacity: null,
       pct: null,
@@ -618,15 +627,19 @@ export function buildBookingModel(input: BookingInput): BookingModel {
       const cell = cells[wi];
       // Hourly work carries no tag, so its load is ESTIMATED here — counted
       // toward the week, tracked apart from measured BH.
-      const load = loadForSlice(slice, division, settings);
+      const load = loadForSlice(slice, estimates, settings);
       const amount = load.estimated ? load.bh / targets.length : share;
       if (load.estimated) {
         cell.estBH = round1(cell.estBH + amount);
         cell.estCount++;
-        if (load.basis === 'duration') cell.estFromDuration = round1(cell.estFromDuration + amount);
-        else cell.estFromDefault = round1(cell.estFromDefault + amount);
       } else {
         cell.bh = round1(cell.bh + amount);
+      }
+      if (load.needsEstimate) {
+        cell.unestimatedHourly++;
+        if (!cell.unestimatedJobs.some(j => j.visitId === slice.visitId)) {
+          cell.unestimatedJobs.push(slice);
+        }
       }
       cell.totalBH = round1(cell.bh + cell.estBH);
       // Record WHERE this came from, and by which route.
@@ -759,6 +772,7 @@ export interface BalanceModel {
 
 export interface BalanceInput {
   snapshots: CapacityForecast[];
+  hourlyEstimates?: Record<string, HourlyEstimate>;
   appData: AppData;
   multiDayJobs: Record<string, MultiDayJob> | undefined;
   settings: CapacitySettings | undefined;
@@ -838,9 +852,8 @@ export function buildBalanceModel(input: BalanceInput): BalanceModel {
       continue;
     }
     for (const key of keys) {
-      const division = crewIdentity.get(key)?.division || '';
       // Hourly work occupies this crew's day whether or not it carries a tag.
-      const load = loadForSlice(slice, division, settings);
+      const load = loadForSlice(slice, input.hourlyEstimates, settings);
       const share = load.bh / keys.length;
       if (!cellBH.has(key)) { cellBH.set(key, new Map()); cellJobs.set(key, new Map()); }
       const byD = cellBH.get(key)!;

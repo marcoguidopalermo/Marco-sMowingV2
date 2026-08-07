@@ -11,7 +11,7 @@
 // Reads the SAME forward snapshots as the other tools. No new pull.
 import { useMemo, useState } from 'react';
 import { Search, X, Clock, CalendarRange } from 'lucide-react';
-import type { CapacityForecast, JobberUser, MultiDayJob, CapacitySettings } from '../types';
+import type { CapacityForecast, JobberUser, MultiDayJob, CapacitySettings, HourlyEstimate } from '../types';
 import {
   forwardSlices, mergeSlices, mondayOf, buildWeeks, longDate, dayLabel, loadForSlice,
   type ForwardSlice,
@@ -23,13 +23,14 @@ const bh = (n: number) => (Math.round(n * 10) / 10).toLocaleString();
 type Preset = 'this' | 'next' | 'four' | 'custom';
 
 export default function BookingLookup({
-  snapshots, multiDayJobs, jobberUsers, settings, today,
+  snapshots, multiDayJobs, jobberUsers, settings, today, hourlyEstimates,
 }: {
   snapshots: CapacityForecast[];
   multiDayJobs: Record<string, MultiDayJob> | undefined;
   jobberUsers: JobberUser[];
   settings: CapacitySettings | undefined;
   today: string;
+  hourlyEstimates?: Record<string, HourlyEstimate>;
 }) {
   const slices = useMemo(
     () => forwardSlices(snapshots, multiDayJobs, today),
@@ -86,7 +87,7 @@ export default function BookingLookup({
       const share = s.assigneeIds.filter(a => picked.includes(a)).length / Math.max(1, s.assigneeIds.length);
       // Hourly work carries no tag; show its estimate here too so this
       // reconciles with Booking rather than quietly disagreeing.
-      const load = loadForSlice(s, '', settings);
+      const load = loadForSlice(s, hourlyEstimates, settings);
       const amount = (load.estimated ? load.bh : s.bh) * share;
       total += amount;
       if (load.estimated) estimated += amount;
@@ -99,7 +100,7 @@ export default function BookingLookup({
       .map(w => ({ week: w, bh: byWeek.get(w.start) || 0 }))
       .filter(w => w.bh > 0 || (w.week.start >= mondayOf(range.from) && w.week.start <= range.to));
     return { inRange, total, estimated, byDay, weeks };
-  }, [picked, slices, range, settings]);
+  }, [picked, slices, range, settings, hourlyEstimates]);
 
   const pickedLabels = assignees.filter(a => picked.includes(a.id)).map(a => a.label);
 

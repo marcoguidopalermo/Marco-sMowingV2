@@ -1071,6 +1071,26 @@ export interface BonusPayoutRecord {
   audit: BonusPayoutAudit[];                // append-only
 }
 
+// ── HOURLY ESTIMATES. An [hourly] visit carries no [BH] tag, and every one
+// is different — a duration-derived or defaulted figure would be fiction
+// dressed as data. So capacity ASKS instead of guessing: the job is listed
+// unestimated until someone puts a number on it. Keyed by Jobber visit id so
+// an estimate survives every re-sync of the forward snapshot.
+export interface HourlyEstimate {
+  visitId: string;
+  bh: number;
+  // Kept for the record so the list stays readable if the visit later drops
+  // out of the pull window.
+  label?: string;
+  by: string;
+  byName: string;
+  at: number;
+}
+
+export interface HourlyEstimateRecord {
+  estimates: Record<string, HourlyEstimate>;
+}
+
 // ══ CAPACITY CALENDAR ═════════════════════════════════════════════════════
 // Forward view of SCHEDULED, UNCOMPLETED work. Read-only: these types feed
 // a display + admin settings values only. They never touch performance, pay,
@@ -1091,11 +1111,6 @@ export interface DeclaredCapacity {
   crews?: number | null;
   peoplePerCrew?: number | null;
   bhPerPerson?: number | null;
-  // FALLBACK estimate for an [hourly] visit with no scheduled duration.
-  // Hourly work occupies crew time whether or not it carries a [BH] tag;
-  // counting it as zero makes a full week read as open, which is the more
-  // dangerous error. Used only when Jobber gives no duration.
-  hourlyDefaultBH?: number | null;
   placeholder?: boolean;
 }
 

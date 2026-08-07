@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import type {
   AppData, AppSettings, CapacityForecast, CapacityScope, CapacitySettings, Employee,
-  JobberUser,
+  JobberUser, HourlyEstimate,
 } from '../types';
 import CapacitySettingsPanel from './CapacitySettingsPanel';
 import AssigneeMappingPanel from './AssigneeMappingPanel';
@@ -48,6 +48,8 @@ interface Props {
   // Jobber user list (id → name), so the mapping editor reads as
   // "#1 (SOUTH)" rather than a base64 id.
   jobberUsers?: JobberUser[];
+  hourlyEstimates?: Record<string, HourlyEstimate>;
+  onSetHourlyEstimate?: (visitId: string, bh: number | null, label?: string) => void | Promise<void>;
 }
 
 // ── Band styling. The two reds are deliberately opposite in WEIGHT as well as
@@ -174,6 +176,13 @@ function BookingWeekCell({ cell, week, active, onClick }: {
           includes estimated hourly work
         </div>
       )}
+      {/* A week hiding unestimated hourly jobs is INCOMPLETE, not light —
+          say so on the cell rather than letting 40% pass for the truth. */}
+      {cell.unestimatedHourly > 0 && (
+        <div className={`text-[9px] font-black mt-0.5 ${s.text}`}>
+          + {cell.unestimatedHourly} hourly, not estimated
+        </div>
+      )}
       {cell.untaggedCount > 0 && (
         <div className={`text-[9px] font-bold mt-0.5 opacity-80 ${s.text}`}>
           {cell.untaggedCount} untagged — load unknown, NOT counted
@@ -214,9 +223,7 @@ function JobList({ jobs }: { jobs: ForwardSlice[] }) {
               )}
               {j.estimated && (
                 <span className="text-[9px] font-black uppercase tracking-widest bg-slate-100 text-slate-700 border border-slate-300 px-1.5 py-0.5 rounded">
-                  estimated — {j.estimateBasis === 'duration'
-                    ? `${j.durationHours}h scheduled in Jobber`
-                    : 'division default (no duration on the visit)'}
+                  estimated by hand
                 </span>
               )}
               {j.untagged && (
@@ -243,9 +250,64 @@ function JobList({ jobs }: { jobs: ForwardSlice[] }) {
   );
 }
 
+// One unestimated hourly job, with the input right next to it.
+function HourlyEstimateRow({ job, onSet, canEdit }: {
+  job: ForwardSlice;
+  onSet?: (visitId: string, bh: number | null, label?: string) => void | Promise<void>;
+  canEdit: boolean;
+}) {
+  const [value, setValue] = useState('');
+  const label = `${job.client || 'No client'} — ${job.desc}`;
+  const commit = () => {
+    const v = Number(value);
+    if (!onSet || !Number.isFinite(v) || v <= 0) return;
+    onSet(job.visitId, v, label);
+    setValue('');
+  };
+  return (
+    <div className="py-2 flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className="text-sm font-bold text-slate-800 truncate">{job.client || 'No client name'}</div>
+        <div className="text-xs text-slate-500 truncate">{job.desc}{job.jobNumber ? ` · #${job.jobNumber}` : ''}</div>
+        <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+          <span className="text-[10px] font-bold text-slate-500">
+            {job.multiDay ? `${longDate(job.startDate)} → ${longDate(job.endDate)}` : longDate(job.startDate)}
+          </span>
+          <span className="text-[10px] text-slate-400">{job.assigneeNames.join(', ') || 'no assignee'}</span>
+          <span className="text-[9px] font-black uppercase tracking-widest bg-sky-50 text-sky-700 border border-sky-200 px-1.5 rounded inline-flex items-center gap-0.5">
+            <Clock className="w-2.5 h-2.5" /> hourly
+          </span>
+          {/* Jobber's scheduled window, as CONTEXT for the person deciding —
+              never used as the estimate itself. */}
+          {typeof job.durationHours === 'number' && (
+            <span className="text-[10px] text-slate-400">scheduled {job.durationHours}h in Jobber</span>
+          )}
+        </div>
+      </div>
+      {canEdit && (
+        <div className="flex items-center gap-1 shrink-0">
+          <input
+            type="number" min="0" step="0.5" inputMode="decimal"
+            value={value}
+            onChange={e => setValue(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') commit(); }}
+            placeholder="BH"
+            className="w-20 border border-amber-400 rounded-lg p-1.5 text-right font-mono font-bold text-sm"
+          />
+          <button type="button" onClick={commit}
+            className="px-2 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest bg-slate-800 text-white">
+            Set
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CapacityCalendar({
   appData, forecasts, isAdmin, currentUserEmployee, onRefresh, canRefresh,
   onSaveSettings, defaultTool = 'booking', variant = 'page', jobberUsers = [],
+  hourlyEstimates = {}, onSetHourlyEstimate,
 }: Props) {
   const today = formatTodayInToronto();
   const snapshots = useMemo(
@@ -295,19 +357,21 @@ export default function CapacityCalendar({
 
   const booking = useMemo(() => buildBookingModel({
     snapshots,
+    hourlyEstimates,
     schedules: appData.schedules || {},
     multiDayJobs: appData.multiDayJobs,
     settings,
     today,
-  }), [snapshots, appData.schedules, appData.multiDayJobs, settings, today]);
+  }), [snapshots, appData.schedules, appData.multiDayJobs, settings, today, hourlyEstimates]);
 
   const balance = useMemo(() => buildBalanceModel({
     snapshots,
+    hourlyEstimates,
     appData,
     multiDayJobs: appData.multiDayJobs,
     settings,
     today,
-  }), [snapshots, appData, settings, today]);
+  }), [snapshots, appData, settings, today, hourlyEstimates]);
 
   // The mapping editor's data — every slot, its forward BH, where its work
   // lands and why. Built from the DRAFT settings while the editor is open so
@@ -647,6 +711,74 @@ export default function CapacityCalendar({
             )}
           </div>
 
+          {/* THE ASK. Every hourly job with no number yet, by name, with the
+              input right there. */}
+          {(() => {
+            const pending = new Map<string, ForwardSlice>();
+            for (const row of [...visibleRows, ...(booking.unattributed ? [booking.unattributed] : [])]) {
+              for (const cell of row.cells) {
+                for (const j of cell.unestimatedJobs) if (!pending.has(j.visitId)) pending.set(j.visitId, j);
+              }
+            }
+            const jobs = [...pending.values()].sort((a, b) => a.startDate.localeCompare(b.startDate));
+            if (jobs.length === 0) return null;
+            return (
+              <div className="bg-white rounded-2xl border-2 border-amber-300 shadow-sm p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600" />
+                  <h4 className="text-sm font-black text-slate-900">
+                    {jobs.length} hourly job{jobs.length === 1 ? '' : 's'} need a BH estimate
+                  </h4>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  [hourly] jobs carry no BH tag and every one is different, so nothing is guessed
+                  for them. Until you put a number on a job it counts as <strong>zero</strong>, and
+                  its week says so. Estimates stick to the visit and survive re-syncs.
+                </p>
+                <div className="divide-y divide-slate-100">
+                  {jobs.map(j => (
+                    <HourlyEstimateRow
+                      key={j.visitId}
+                      job={j}
+                      onSet={onSetHourlyEstimate}
+                      canEdit={!!onSetHourlyEstimate}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Estimates already entered — editable and clearable. */}
+          {(() => {
+            const done = Object.values(hourlyEstimates);
+            if (done.length === 0 || !onSetHourlyEstimate) return null;
+            return (
+              <details className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
+                <summary className="cursor-pointer text-sm font-black text-slate-800">
+                  {done.length} hourly estimate{done.length === 1 ? '' : 's'} entered
+                </summary>
+                <div className="divide-y divide-slate-100 mt-2">
+                  {done.map(e => (
+                    <div key={e.visitId} className="py-1.5 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-bold text-slate-800 truncate">{e.label || e.visitId.slice(0, 18)}</div>
+                        <div className="text-[10px] text-slate-400">
+                          by {e.byName} · {new Date(e.at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-mono font-black text-slate-700">{bh(e.bh)} BH</span>
+                        <button type="button" onClick={() => onSetHourlyEstimate(e.visitId, null)}
+                          className="text-[10px] font-black uppercase tracking-widest text-slate-500 underline">clear</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            );
+          })()}
+
           {drillCell && (
             <div className="bg-white rounded-2xl border-2 border-slate-800 shadow-lg p-4 space-y-3">
               <div className="flex items-start justify-between gap-3">
@@ -687,6 +819,7 @@ export default function CapacityCalendar({
           jobberUsers={jobberUsers}
           settings={settings}
           today={today}
+          hourlyEstimates={hourlyEstimates}
         />
       )}
 

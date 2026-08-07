@@ -128,13 +128,9 @@ export const DEFAULT_HEADCOUNT_CEILINGS: HeadcountCeiling[] = [
 // booked BH with no bar and no percentage, and its basis line reads "not set".
 export const DEFAULT_CAPACITY_SETTINGS: CapacitySettings = {
   declared: {
-    // hourlyDefaultBH is seeded with a FLAGGED value rather than left empty:
-    // excluding hourly work entirely is an active error (a full week reads
-    // open), so a flagged estimate beats a known-wrong zero until Marco sets
-    // the real figure.
-    'Large Projects': { crews: null, peoplePerCrew: null, bhPerPerson: null, hourlyDefaultBH: 4, placeholder: true },
-    'Small Projects': { crews: null, peoplePerCrew: null, bhPerPerson: null, hourlyDefaultBH: 4, placeholder: true },
-    'Lawn Division': { crews: null, peoplePerCrew: null, bhPerPerson: null, hourlyDefaultBH: 2, placeholder: true },
+    'Large Projects': { crews: null, peoplePerCrew: null, bhPerPerson: null, placeholder: true },
+    'Small Projects': { crews: null, peoplePerCrew: null, bhPerPerson: null, placeholder: true },
+    'Lawn Division': { crews: null, peoplePerCrew: null, bhPerPerson: null, placeholder: true },
   },
   headcountCeilings: DEFAULT_HEADCOUNT_CEILINGS,
   thresholds: DEFAULT_CAPACITY_THRESHOLDS,

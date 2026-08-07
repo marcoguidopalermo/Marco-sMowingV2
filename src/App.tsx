@@ -25,7 +25,7 @@ import {
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, JobberBhConflict, MonthlySummary,
   RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, RoleTaskInstance,
   ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry,
-  CapacityForecast, BonusPayoutRecord
+  CapacityForecast, BonusPayoutRecord, HourlyEstimate
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
@@ -163,6 +163,9 @@ export default function App() {
   // subcollection. Held outside appData — this is a payout record with an
   // audit trail, and it must not ride along on every appData write.
   const [bonusPayouts, setBonusPayouts] = useState<Record<string, BonusPayoutRecord>>({});
+  // Per-visit hourly BH estimates, keyed by Jobber visit id so they survive
+  // every re-sync of the forward snapshot. Own document, off appData.
+  const [hourlyEstimates, setHourlyEstimates] = useState<Record<string, HourlyEstimate>>({});
 
   // Real signed-in identity. These are pinned to the Firebase auth
   // user and never change at the View As layer. The
@@ -1132,6 +1135,17 @@ export default function App() {
         setBonusPayouts(map);
       },
       err => { console.error('bonusPayouts listen error:', err); },
+    );
+  }, [user]);
+
+  // Hourly capacity estimates — one document, live.
+  useEffect(() => {
+    if (!user) return;
+    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'capacityEstimates', 'hourly');
+    return onSnapshot(
+      ref,
+      snap => setHourlyEstimates(((snap.data() as { estimates?: Record<string, HourlyEstimate> } | undefined)?.estimates) || {}),
+      err => { console.error('capacityEstimates listen error:', err); },
     );
   }, [user]);
 
@@ -2585,6 +2599,25 @@ export default function App() {
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bonusPayouts', args.ym), clean);
     } catch (err: any) {
       showToastMsg(`Could not save amount: ${err?.message || String(err)}`);
+    }
+  };
+
+  // Set or clear one hourly visit's BH estimate. CAPACITY ONLY — this writes
+  // its own document and touches nothing the performance sync reads, so an
+  // estimate can never change who gets credited for work.
+  const setHourlyEstimate = async (visitId: string, bhValue: number | null, label?: string) => {
+    if (!isManager) { showToastMsg(PERMISSION_DENIED); return; }
+    const next = { ...hourlyEstimates };
+    if (bhValue === null || !(bhValue > 0)) delete next[visitId];
+    else next[visitId] = {
+      visitId, bh: bhValue, label,
+      by: displayEmail, byName: displayName, at: Date.now(),
+    };
+    try {
+      const clean = JSON.parse(JSON.stringify({ estimates: next }, (_k, v) => (v === undefined ? null : v)));
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'capacityEstimates', 'hourly'), clean);
+    } catch (err: any) {
+      showToastMsg(`Could not save estimate: ${err?.message || String(err)}`);
     }
   };
 
@@ -5598,6 +5631,8 @@ export default function App() {
           canRefreshCapacity={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
           onSaveCapacitySettings={saveCapacitySettings}
           jobberUsers={jobberUsers}
+          hourlyEstimates={hourlyEstimates}
+          onSetHourlyEstimate={setHourlyEstimate}
         />
       ) : currentView === 'contracting' ? (
         <ContractingMaster
@@ -5696,6 +5731,8 @@ export default function App() {
           onRefreshCapacity={refreshCapacityForecast}
           canRefreshCapacity={!isViewingAs && can('canTriggerJobberSync', effectiveRole)}
           onSaveCapacitySettings={saveCapacitySettings}
+          hourlyEstimates={hourlyEstimates}
+          onSetHourlyEstimate={setHourlyEstimate}
           isAdmin={isAdmin}
         />
       )}

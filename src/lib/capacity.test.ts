@@ -138,97 +138,93 @@ test('CAPACITY IS NEVER READ FROM THE SCHEDULE — rostering more people changes
   assert.equal(capOf(heavy), 100, 'the roster must not move declared capacity');
 });
 
-console.log('\nHourly work is estimated, not ignored');
-const HOURLY_SETTINGS = {
-  declared: {
-    'Large Projects': { peoplePerCrew: 4, bhPerPerson: 25, hourlyDefaultBH: 4 },
-  },
-};
+console.log('\nHourly work is PROMPTED, never guessed');
+const est = (visitId: string, bhVal: number) => ({
+  [visitId]: { visitId, bh: bhVal, by: 'a', byName: 'A', at: 1 },
+});
 const sliceOf = (v: Partial<CapacityForecastVisit>) =>
   forwardSlices([forecast([visit(v)])], {}, TODAY)[0];
 
-test('an hourly visit with a Jobber duration uses that duration', () => {
-  const s2 = sliceOf({ visitId: 'h1', bh: 0, isHourly: true, durationHours: 6 });
-  const load = loadForSlice(s2, 'Large Projects', HOURLY_SETTINGS);
-  assert.equal(load.bh, 6);
-  assert.equal(load.estimated, true);
-  assert.equal(load.basis, 'duration');
-});
-test('without a duration it falls back to the division default', () => {
-  const s2 = sliceOf({ visitId: 'h2', bh: 0, isHourly: true });
-  const load = loadForSlice(s2, 'Large Projects', HOURLY_SETTINGS);
-  assert.equal(load.bh, 4);
-  assert.equal(load.basis, 'default');
-});
-test('a tagged visit is never estimated', () => {
-  const s2 = sliceOf({ visitId: 'h3', bh: 12 });
-  const load = loadForSlice(s2, 'Large Projects', HOURLY_SETTINGS);
-  assert.equal(load.bh, 12);
-  assert.equal(load.estimated, false);
-  assert.equal(load.basis, null);
-});
-test('UNTAGGED uses a real duration but gets NO default guess', () => {
-  const withDur = loadForSlice(sliceOf({ visitId: 'u1', bh: 0, untagged: true, durationHours: 3 }), 'Large Projects', HOURLY_SETTINGS);
-  assert.equal(withDur.bh, 3);
-  assert.equal(withDur.basis, 'duration');
-  const without = loadForSlice(sliceOf({ visitId: 'u2', bh: 0, untagged: true }), 'Large Projects', HOURLY_SETTINGS);
-  assert.equal(without.bh, 0, 'a missing tag is a data gap, not a category of work');
-  assert.equal(without.estimated, false);
-});
-test('no default set → hourly contributes nothing rather than a made-up number', () => {
-  const load = loadForSlice(sliceOf({ visitId: 'h4', bh: 0, isHourly: true }), 'Large Projects', { declared: {} });
+test('an unestimated hourly visit counts ZERO and asks to be estimated', () => {
+  const load = loadForSlice(sliceOf({ visitId: 'h1', bh: 0, isHourly: true }), {});
   assert.equal(load.bh, 0);
   assert.equal(load.estimated, false);
+  assert.equal(load.needsEstimate, true, 'it goes on the list rather than being guessed');
 });
-test('the week keeps booked and estimated SEPARATE, and the % includes both', () => {
+test('a Jobber duration is NOT used as an estimate', () => {
+  const load = loadForSlice(sliceOf({ visitId: 'h2', bh: 0, isHourly: true, durationHours: 6 }), {});
+  assert.equal(load.bh, 0, 'every hourly job is different — duration is context, not an answer');
+  assert.equal(load.needsEstimate, true);
+});
+test('once estimated it counts, flagged as an estimate', () => {
+  const load = loadForSlice(sliceOf({ visitId: 'h3', bh: 0, isHourly: true }), est('h3', 12));
+  assert.equal(load.bh, 12);
+  assert.equal(load.estimated, true);
+  assert.equal(load.basis, 'manual');
+  assert.equal(load.needsEstimate, false);
+});
+test('a multi-day hourly estimate spreads over the days it occupies', () => {
+  const s2 = sliceOf({ visitId: 'h4', bh: 0, isHourly: true, startDate: '2026-08-06', endDate: '2026-08-07' });
+  assert.equal(loadForSlice(s2, est('h4', 10)).bh, 5);
+});
+test('a real [BH] TAG WINS — a stale estimate on a tagged visit is ignored', () => {
+  const tagged = sliceOf({ visitId: 'h5', bh: 30 });   // no longer hourly
+  const load = loadForSlice(tagged, est('h5', 99));
+  assert.equal(load.bh, 30);
+  assert.equal(load.estimated, false);
+});
+test('UNTAGGED stays a data error — zero, never estimated, never prompted', () => {
+  const load = loadForSlice(sliceOf({ visitId: 'u1', bh: 0, untagged: true, durationHours: 3 }), est('u1', 8));
+  assert.equal(load.bh, 0);
+  assert.equal(load.estimated, false);
+  assert.equal(load.needsEstimate, false, 'a mistake to fix in Jobber, not a job to price');
+});
+test('the week keeps booked and estimated separate, and counts what is missing', () => {
+  const visits = [
+    visit({ visitId: 'p1', bh: 42 }),
+    visit({ visitId: 'p2', bh: 0, isHourly: true }),
+    visit({ visitId: 'p3', bh: 0, isHourly: true }),
+  ];
+  const bare = buildBookingModel({
+    snapshots: [forecast(visits)], schedules: SCHEDULES, multiDayJobs: {},
+    settings: DECLARED, today: TODAY,
+  }).rows.find(r => r.division === 'Large Projects')!.cells[0];
+  assert.equal(bare.bh, 42);
+  assert.equal(bare.estBH, 0);
+  assert.equal(bare.unestimatedHourly, 2, 'the week admits it is incomplete');
+  assert.equal(bare.unestimatedJobs.length, 2, 'and names the jobs to estimate');
+
+  const withOne = buildBookingModel({
+    snapshots: [forecast(visits)], schedules: SCHEDULES, multiDayJobs: {},
+    settings: DECLARED, today: TODAY, hourlyEstimates: est('p2', 12),
+  }).rows.find(r => r.division === 'Large Projects')!.cells[0];
+  assert.equal(withOne.bh, 42, 'measured BH stays measured');
+  assert.equal(withOne.estBH, 12);
+  assert.equal(withOne.totalBH, 54);
+  assert.equal(withOne.pct, 54, 'the estimate counts toward the percentage');
+  assert.equal(withOne.unestimatedHourly, 1, 'one still outstanding');
+});
+test('booked-out-to includes an estimated hourly week', () => {
+  const far = '2026-08-13';
   const m = buildBookingModel({
-    snapshots: [forecast([
-      visit({ visitId: 'p1', bh: 42 }),
-      visit({ visitId: 'p2', bh: 0, isHourly: true, durationHours: 6 }),
-      visit({ visitId: 'p3', bh: 0, isHourly: true, durationHours: 6 }),
-    ])],
-    schedules: SCHEDULES, multiDayJobs: {}, settings: HOURLY_SETTINGS, today: TODAY,
+    snapshots: [forecast([visit({ visitId: 'h6', bh: 0, isHourly: true, startDate: far, endDate: far })])],
+    schedules: SCHEDULES, multiDayJobs: {},
+    settings: { declared: { 'Large Projects': {} } }, today: TODAY,
+    hourlyEstimates: est('h6', 8),
+  });
+  assert.equal(m.rows.find(r => r.division === 'Large Projects')!.bookedOutWeek, '2026-08-10');
+});
+test('an estimate is keyed to the VISIT, so a re-sync cannot lose it', () => {
+  // Same visit id, a fresh snapshot with a later generatedAt — the estimate
+  // is looked up by id and is unaffected.
+  const resynced = { ...forecast([visit({ visitId: 'h7', bh: 0, isHourly: true })]), generatedAt: 999999 };
+  const m = buildBookingModel({
+    snapshots: [resynced], schedules: SCHEDULES, multiDayJobs: {},
+    settings: DECLARED, today: TODAY, hourlyEstimates: est('h7', 9),
   });
   const c = m.rows.find(r => r.division === 'Large Projects')!.cells[0];
-  assert.equal(c.bh, 42, 'measured BH stays measured');
-  assert.equal(c.estBH, 12, 'two 6-hour hourly visits');
-  assert.equal(c.totalBH, 54);
-  assert.equal(c.estCount, 2);
-  assert.equal(c.estFromDuration, 12);
-  assert.equal(c.pct, 54, '54 of 100 declared — the estimate is included');
-});
-test('booked-out-to counts a week that is only hourly work', () => {
-  const m = buildBookingModel({
-    snapshots: [forecast([
-      visit({ visitId: 'h5', bh: 0, isHourly: true, durationHours: 8, startDate: '2026-08-13', endDate: '2026-08-13' }),
-    ])],
-    schedules: SCHEDULES, multiDayJobs: {},
-    settings: { declared: { 'Large Projects': { hourlyDefaultBH: 4 } } }, today: TODAY,
-  });
-  const row = m.rows.find(r => r.division === 'Large Projects')!;
-  // No declared capacity here, so "meaningful" is any load — including the
-  // estimate. An hourly job next Thursday means next Thursday is booked.
-  assert.equal(row.bookedOutWeek, '2026-08-10');
-});
-
-console.log('\nAssignee → division (Tool 1 needs no crew mapping)');
-test('a route slot resolves to its division', () => {
-  const idx = assigneeDivisionIndex(SCHEDULES);
-  assert.equal(idx.get(PROJ_SLOT), 'Large Projects');
-  assert.equal(idx.get(LAWN_SLOT), 'Lawn Division');
-});
-test('a slot that MOVES between crews inside one division still resolves', () => {
-  // The exact failure the crew-level model tripped on: same slot, two crews.
-  const sched: Record<string, Crew[]> = {
-    '2026-08-03': [crew('Large Projects', 1, [PROJ_SLOT], ['e1'])],
-    '2026-08-04': [crew('Large Projects', 2, [PROJ_SLOT], ['e2'])],
-  };
-  assert.equal(assigneeDivisionIndex(sched).get(PROJ_SLOT), 'Large Projects');
-});
-test('division is decided by MODE, so one odd day cannot reassign a route', () => {
-  const sched: Record<string, Crew[]> = { ...fullWeek([crew('Lawn Division', 1, [LAWN_SLOT], ['e3'])]) };
-  sched['2026-08-08'] = [crew('Large Projects', 3, [LAWN_SLOT], ['e1'])];  // one stray day
-  assert.equal(assigneeDivisionIndex(sched).get(LAWN_SLOT), 'Lawn Division');
+  assert.equal(c.estBH, 9);
+  assert.equal(c.unestimatedHourly, 0);
 });
 
 console.log('\nExplicit assignee mapping');

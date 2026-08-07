@@ -6,7 +6,7 @@
 // received to the right module.
 import { useState } from 'react';
 import { Calculator, Snowflake, Sprout, CalendarRange } from 'lucide-react';
-import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, AppData, CapacityForecast, CapacityScope, CapacitySettings, Employee, JobberUser } from '../types';
+import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, AppData, CapacityForecast, CapacityScope, CapacitySettings, Employee, JobberUser, HourlyEstimate } from '../types';
 import { SnowConfig } from '../lib/snowPricing';
 import { LawnConfig } from '../lib/lawnPricing';
 import ProjectMaster from './ProjectMaster';
@@ -49,6 +49,8 @@ interface Props {
   canRefreshCapacity: boolean;
   onSaveCapacitySettings: (next: CapacitySettings) => Promise<void>;
   jobberUsers: JobberUser[];
+  hourlyEstimates: Record<string, HourlyEstimate>;
+  onSetHourlyEstimate: (visitId: string, bh: number | null, label?: string) => void | Promise<void>;
 }
 
 type ModuleKey = 'project' | 'snow' | 'lawn' | 'capacity';
@@ -66,7 +68,7 @@ export default function SalesMaster(props: Props) {
     isSuperAdmin, snowConfigs, snowActiveVersion, snowActiveConfig, onSaveSnowConfig, onRevertSnowConfig,
     lawnQuotes, onSaveLawnQuote, onDeleteLawnQuote,
     lawnConfigs, lawnActiveVersion, lawnActiveConfig, onSaveLawnConfig, onRevertLawnConfig,
-    appData, capacityForecasts, currentUserEmployee, onRefreshCapacity, canRefreshCapacity, onSaveCapacitySettings, jobberUsers,
+    appData, capacityForecasts, currentUserEmployee, onRefreshCapacity, canRefreshCapacity, onSaveCapacitySettings, jobberUsers, hourlyEstimates, onSetHourlyEstimate,
   } = props;
   const [module, setModule] = useState<ModuleKey>('project');
 
@@ -141,6 +143,8 @@ export default function SalesMaster(props: Props) {
             canRefresh={canRefreshCapacity}
             onSaveSettings={onSaveCapacitySettings}
             jobberUsers={jobberUsers}
+            hourlyEstimates={hourlyEstimates}
+            onSetHourlyEstimate={onSetHourlyEstimate}
             defaultTool="booking"
           />
         )}
