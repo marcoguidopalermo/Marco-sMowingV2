@@ -1,6 +1,6 @@
 import type { LawnConfig } from './lib/lawnPricing';
 
-export type UserRole = 'admin' | 'manager' | 'foreman' | 'worker' | 'mechanic' | 'contractor' | 'property_manager';
+export type UserRole = 'admin' | 'manager' | 'foreman' | 'worker' | 'mechanic' | 'contractor' | 'property_manager' | 'marketing';
 
 export type ManagedDivision = 'lawn' | 'small' | 'large' | 'all';
 
@@ -2040,6 +2040,72 @@ export interface MonthlySummary {
   tierTable?: BonusTier[];
 }
 
+// ── MarketingMaster (v1) ───────────────────────────────────────────────
+// Three flat, marketing-namespaced subcollections. Deliberately NOT in the
+// main appData doc — the content calendar, the shot list and the link board
+// all grow without bound. No platform split anywhere: content is cross-posted,
+// so a "platform" field would be structure nobody asked for.
+//
+// v1 hooks that are intentionally NOT built: analytics / platform metrics,
+// auto-publishing, media file storage (links only — no bytes), crew-facing
+// shot requests, notifications.
+
+export type MarketingContentStatus = 'idea' | 'planned' | 'scheduled' | 'posted';
+
+// One planned piece of content on the monthly calendar.
+// Own subcollection marketingContent/{id}.
+export interface MarketingContentItem {
+  id: string;
+  title: string;
+  // YYYY-MM-DD. The single scheduling field — dragging a chip to another day
+  // or editing the date field are the same write.
+  date: string;
+  status: MarketingContentStatus;
+  notes?: string;
+  // Attached reference links, held as MarketingLink ids. THE source of truth
+  // for attachment — a MarketingLink never points back at an item, so a link
+  // is attached in exactly one place and can't drift.
+  links: string[];
+  createdBy?: { email: string; name: string };
+  createdAt?: number;
+  updatedBy?: { email: string; name: string };
+  updatedAt?: number;
+}
+
+export type MarketingShotStatus = 'needed' | 'captured';
+
+// A shot still to be captured. A working list, not a workflow — there is no
+// assignee, no approval and no notification in v1 by design.
+// Own subcollection marketingShots/{id}.
+export interface MarketingShot {
+  id: string;
+  description: string;
+  // Free-text job / client reference ("Riverside Dr — new patio"). Optional,
+  // and deliberately NOT a foreign key: marketing shouldn't need the job
+  // roster to jot down a shot.
+  reference?: string;
+  targetDate?: string; // YYYY-MM-DD
+  status: MarketingShotStatus;
+  notes?: string;
+  capturedAt?: number;
+  createdBy?: { email: string; name: string };
+  createdAt?: number;
+  updatedBy?: { email: string; name: string };
+  updatedAt?: number;
+}
+
+// A saved reference link (Instagram video, article, anything). Paste-and-save
+// is the whole interaction; the title is derived from the URL and stays
+// editable. Own subcollection marketingLinks/{id}.
+export interface MarketingLink {
+  id: string;
+  url: string;
+  title: string;
+  note?: string;
+  addedBy: { email: string; name: string };
+  addedAt: number;
+}
+
 export interface AppData {
   schedules: Record<string, Crew[]>;
   employees: Employee[];
@@ -2143,6 +2209,11 @@ export interface AppData {
   contractingPersonalItems?: Record<string, ContractingPersonalItem>;
   // Property management (v2) — full hierarchy off the main doc.
   contractingPropertyDocs?: Record<string, ContractingProperty>;
+  // ── MarketingMaster — namespaced subcollections, overlaid live. Never in
+  // the main doc (all three grow). Read-only mirrors for the UI.
+  marketingContent?: Record<string, MarketingContentItem>;
+  marketingShots?: Record<string, MarketingShot>;
+  marketingLinks?: Record<string, MarketingLink>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of

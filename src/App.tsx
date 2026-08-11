@@ -13,7 +13,7 @@ import {
   Target, Award, CalendarDays, FileSignature, Map, CheckSquare, Info, Sparkles, Loader2,
   MessageSquareText, Leaf, Download, LogOut, ShieldCheck, UserPlus, Megaphone, Lock,
   Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown, Hammer, Calculator,
-  ChevronUp, Layers, Eye, MoreHorizontal, Sliders, Home
+  ChevronUp, Layers, Eye, MoreHorizontal, Sliders, Home, Camera
 } from 'lucide-react';
 
 import {
@@ -25,7 +25,8 @@ import {
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, JobberBhConflict, MonthlySummary,
   RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, RoleTaskInstance,
   ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry,
-  CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract
+  CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract,
+  MarketingContentItem, MarketingShot, MarketingLink
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
@@ -64,6 +65,7 @@ import TaskDetailModal from './components/TaskDetailModal';
 import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
+import MarketingMaster from './components/MarketingMaster';
 import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, reportIsDeletable, planPhaseMerge, isContractingWorker } from './lib/contracting';
 import type { ContractingProperty, ContractingSupplier } from './types';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabel, payDateLabel } from './lib/payPeriods';
@@ -135,6 +137,16 @@ import { getRequiredInspectionType, getUnitReadiness } from './lib/inspectionUti
 import { sortFleetGrouped, fleetItemLabel, isFleetOutOfService } from './lib/fleetUtils';
 
 const SUPER_ADMIN_EMAIL = 'marcoguidopalermo@gmail.com';
+// MarketingMaster access by NAME. The marketing surface is role-gated to the
+// 'marketing' systemRole (see ROLE_PERMISSIONS.marketing), which sees nothing
+// else in the app. Marco and James also need it — James holds the marketing
+// duties — but they're admins, and granting canViewMarketing to the ADMIN role
+// would hand it to every other admin too. So the two of them are named here.
+// Lowercase; compared against the normalized EFFECTIVE identity email.
+const MARKETING_EMAILS = new Set([
+  'marcoguidopalermo@gmail.com', // Marco
+  'sales@marcosmowing.com',      // James Serediuk
+]);
 const normalizeEmail = (e: string | null | undefined): string => (e || '').trim().toLowerCase();
 
 export default function App() {
@@ -245,6 +257,10 @@ export default function App() {
   const subLawnQuotesRef = useRef<Record<string, LawnQuote>>({});
   const subLawnRateConfigsRef = useRef<Record<string, LawnRateConfigVersion>>({});
   const subRoleTaskInstancesRef = useRef<Record<string, RoleTaskInstance>>({});
+  // MarketingMaster — three namespaced subcollections, overlaid like the rest.
+  const subMarketingContentRef = useRef<Record<string, MarketingContentItem>>({});
+  const subMarketingShotsRef = useRef<Record<string, MarketingShot>>({});
+  const subMarketingLinksRef = useRef<Record<string, MarketingLink>>({});
   // ContractingMaster (Palermo's) — namespaced subcollections, own tenant.
   const subContractingProjectsRef = useRef<Record<string, ContractingProject>>({});
   const subContractingTimeEntriesRef = useRef<Record<string, ContractingTimeEntry>>({});
@@ -500,6 +516,19 @@ export default function App() {
   // manager flag (Tony). Regular contractors (Kris) only view + clock + WO/shop.
   const canManageContracting = isAdmin || !!currentUserEmployee?.contractingManager;
 
+  // MarketingMaster access = the marketing ROLE (whose only permission this is)
+  // OR the two named people (Marco, James). The email grant is evaluated
+  // against the EFFECTIVE identity, so "View As → James" keeps the surface and
+  // "View As → anyone else" drops it. The plain role switcher (a role with no
+  // identity swap) also drops it, so previewing a role previews it honestly.
+  const canViewMarketing =
+    canAccessView('marketing', effectiveRole) ||
+    (MARKETING_EMAILS.has(currentEmail) && (!isViewingAs || isImpersonatingIdentity));
+  // canAccessView() is role-only and can't see the email grant above, so every
+  // generic view-permission check goes through this instead.
+  const viewAllowed = (v: AppView): boolean =>
+    v === 'marketing' ? canViewMarketing : canAccessView(v, effectiveRole);
+
   // Real CrewMaster employees an admin can impersonate — sourced from
   // appData.employees (the actual personnel roster), NOT Jobber users.
   // Includes EVERY role (workers, foremen, managers, mechanics). Mechanics
@@ -753,16 +782,16 @@ export default function App() {
     if (!user || loading || !dataLoaded) return;
     if (!initialLandingRedirectDone.current && effectiveRole) {
       const target = defaultLandingView(effectiveRole);
-      if (currentView !== target && canAccessView(target, effectiveRole)) {
+      if (currentView !== target && viewAllowed(target)) {
         setCurrentView(target);
       }
       initialLandingRedirectDone.current = true;
       return;
     }
-    if (!canAccessView(currentView as AppView, effectiveRole)) {
+    if (!viewAllowed(currentView as AppView)) {
       setCurrentView(firstAccessibleView(effectiveRole));
     }
-  }, [currentView, effectiveRole, loading, user, dataLoaded]);
+  }, [currentView, effectiveRole, loading, user, dataLoaded, canViewMarketing]);
 
   // Pay-chunk safety net. Runs whenever timeEntries / employees /
   // mechanicPayChunks change in state. For each open chunk, calls
@@ -968,6 +997,10 @@ export default function App() {
           contractingShoppingList: subContractingShoppingListRef.current,
           contractingPersonalItems: subContractingPersonalItemsRef.current,
           contractingPropertyDocs: subContractingPropertyDocsRef.current,
+          // MarketingMaster — overlaid from namespaced subcollections.
+          marketingContent: subMarketingContentRef.current,
+          marketingShots: subMarketingShotsRef.current,
+          marketingLinks: subMarketingLinksRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -1354,7 +1387,11 @@ export default function App() {
     const c6 = mk('contractingShoppingList', subContractingShoppingListRef, 'contractingShoppingList');
     const c7 = mk('contractingPersonalItems', subContractingPersonalItemsRef, 'contractingPersonalItems');
     const c8 = mk('contractingPropertyDocs', subContractingPropertyDocsRef, 'contractingPropertyDocs');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); };
+    // MarketingMaster — namespaced subcollections (all three grow).
+    const m1 = mk('marketingContent', subMarketingContentRef, 'marketingContent');
+    const m2 = mk('marketingShots', subMarketingShotsRef, 'marketingShots');
+    const m3 = mk('marketingLinks', subMarketingLinksRef, 'marketingLinks');
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); };
   }, [user]);
 
   useEffect(() => {
@@ -1492,7 +1529,7 @@ export default function App() {
   // Tap-through from a notification (url like "/#contracting") → switch view.
   const handleNotifNavigate = (url: string) => {
     const h = (url.split('#')[1] || '').trim();
-    if (h && canAccessView(h as AppView, effectiveRole)) setCurrentView(h as AppView);
+    if (h && viewAllowed(h as AppView)) setCurrentView(h as AppView);
   };
   const getEmpName = (id: string) => appData.employees.find(e => e.id === id)?.name || 'Unknown';
 
@@ -2834,6 +2871,76 @@ export default function App() {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
     await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), roleMasterGenerationEnabled: enabled } });
     showToastMsg(enabled ? 'Duty generation ON.' : 'Duty generation OFF.');
+  };
+
+  // ── MarketingMaster handlers ───────────────────────────────────────────
+  // Writes ONLY to the three marketing-namespaced subcollections — never the
+  // appData doc, never any other surface. One gate for all six: whoever can
+  // see the module can edit it (it IS the marketing user's whole app, and for
+  // Marco/James it's their own working board). No approvals in v1.
+  const marketingUser = { email: displayEmail, name: displayName };
+  const saveMarketingContent = async (item: MarketingContentItem) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    const existing = appData.marketingContent?.[item.id];
+    const now = Date.now();
+    const rec: MarketingContentItem = {
+      ...item,
+      links: item.links || [],
+      createdBy: existing?.createdBy || item.createdBy || marketingUser,
+      createdAt: existing?.createdAt || item.createdAt || now,
+      updatedBy: marketingUser,
+      updatedAt: now,
+    };
+    await setDoc(doc(roleColl('marketingContent'), item.id), cleanRM(rec));
+  };
+  const deleteMarketingContent = async (id: string) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    await deleteDoc(doc(roleColl('marketingContent'), id));
+    showToastMsg('Content removed.');
+  };
+  const saveMarketingShot = async (shot: MarketingShot) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    const existing = appData.marketingShots?.[shot.id];
+    const now = Date.now();
+    const rec: MarketingShot = {
+      ...shot,
+      createdBy: existing?.createdBy || shot.createdBy || marketingUser,
+      createdAt: existing?.createdAt || shot.createdAt || now,
+      updatedBy: marketingUser,
+      updatedAt: now,
+    };
+    await setDoc(doc(roleColl('marketingShots'), shot.id), cleanRM(rec));
+  };
+  const deleteMarketingShot = async (id: string) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    await deleteDoc(doc(roleColl('marketingShots'), id));
+    showToastMsg('Shot removed.');
+  };
+  const saveMarketingLink = async (link: MarketingLink) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    const existing = appData.marketingLinks?.[link.id];
+    const rec: MarketingLink = {
+      ...link,
+      addedBy: existing?.addedBy || link.addedBy || marketingUser,
+      addedAt: existing?.addedAt || link.addedAt || Date.now(),
+    };
+    await setDoc(doc(roleColl('marketingLinks'), link.id), cleanRM(rec));
+  };
+  // Deleting a link also detaches it from any content item holding its id —
+  // the item is the only place attachment is stored, so this is the one place
+  // that has to clean up after itself.
+  const deleteMarketingLink = async (id: string) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    await deleteDoc(doc(roleColl('marketingLinks'), id));
+    const holders = Object.values(appData.marketingContent || {}).filter(i => (i.links || []).includes(id));
+    for (const item of holders) {
+      await setDoc(
+        doc(roleColl('marketingContent'), item.id),
+        cleanRM({ links: item.links.filter(x => x !== id), updatedBy: marketingUser, updatedAt: Date.now() }),
+        { merge: true } as any,
+      );
+    }
+    showToastMsg('Link removed.');
   };
 
   // ── ContractingMaster (Palermo's) handlers ─────────────────────────────
@@ -5042,12 +5149,16 @@ export default function App() {
               <NotificationCenter userEmail={displayEmail} isAdmin={isAdmin} onNavigate={handleNotifNavigate} showToast={showToastMsg} employees={appData.employees || []} />
             </div>
           </div>
-          <TimeMasterWidget
-            appData={appData}
-            userEmail={displayEmail}
-            userName={displayName}
-            syncToCloud={syncToCloud}
-          />
+          {/* Clock widget is chrome for everyone EXCEPT marketing — that role
+              has canClockInOut false and sees the marketing surface only. */}
+          {effectiveRole !== 'marketing' && (
+            <TimeMasterWidget
+              appData={appData}
+              userEmail={displayEmail}
+              userName={displayName}
+              syncToCloud={syncToCloud}
+            />
+          )}
           <div className="flex flex-col bg-gray-200 rounded-lg p-1 mt-1 gap-1">
             {canAccessView('schedule', effectiveRole) && (
               <button onClick={() => setCurrentView('schedule')} className={`flex items-center justify-between px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'schedule' ? 'bg-white shadow-sm text-green-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}><span className="flex items-center gap-2"><CalendarDays className="w-4 h-4" /> Schedule</span></button>
@@ -5121,6 +5232,13 @@ export default function App() {
             {canAccessView('salesmaster', effectiveRole) && (
               <button onClick={() => setCurrentView('salesmaster')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'salesmaster' ? 'bg-white shadow-sm text-slate-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}>
                 <Calculator className="w-4 h-4" /> SalesMaster
+              </button>
+            )}
+            {/* MarketingMaster — its own nav entry for Marco/James. For a
+                marketing-role user this is the ONLY button in this group. */}
+            {canViewMarketing && (
+              <button onClick={() => setCurrentView('marketing')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'marketing' ? 'bg-white shadow-sm text-fuchsia-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}>
+                <Camera className="w-4 h-4" /> MarketingMaster
               </button>
             )}
             {canAccessView('schedule', effectiveRole) && canEditSchedule && (
@@ -5456,7 +5574,25 @@ export default function App() {
           </div>
         </div>
 
-      {currentView === 'mechanic' ? renderMechanicBoard() : currentView === 'performance' ? renderPerformanceBoard() : currentView === 'mymechanic' ? (
+      {/* MarketingMaster sits at the HEAD of the chain and also fires on
+          `effectiveRole === 'marketing'` regardless of currentView. The role
+          has no other accessible view, so this closes the transient window
+          before the landing redirect lands where the default view would
+          otherwise render the schedule board for a beat. */}
+      {(currentView === 'marketing' || effectiveRole === 'marketing') ? (
+        <MarketingMaster
+          content={appData.marketingContent || {}}
+          shots={appData.marketingShots || {}}
+          links={appData.marketingLinks || {}}
+          currentUser={{ email: displayEmail, name: displayName }}
+          onSaveContent={saveMarketingContent}
+          onDeleteContent={deleteMarketingContent}
+          onSaveShot={saveMarketingShot}
+          onDeleteShot={deleteMarketingShot}
+          onSaveLink={saveMarketingLink}
+          onDeleteLink={deleteMarketingLink}
+        />
+      ) : currentView === 'mechanic' ? renderMechanicBoard() : currentView === 'performance' ? renderPerformanceBoard() : currentView === 'mymechanic' ? (
         <>
           {/* Mobile-only clock-in bar — the desktop sidebar widget is hidden
               below md, leaving phone users with no path to Clock In/Out. Mount
@@ -5906,6 +6042,12 @@ export default function App() {
               isActive: currentView === 'contracting',
               onClick: () => setCurrentView('contracting'),
               visible: canAccessView('contracting', effectiveRole) },
+            // MarketingMaster — the marketing role's only destination, and a
+            // normal entry for Marco/James.
+            { key: 'marketing', label: 'Marketing', Icon: Camera, badge: 0,
+              isActive: currentView === 'marketing',
+              onClick: () => setCurrentView('marketing'),
+              visible: canViewMarketing },
           ];
           // Highest-traffic destinations per role fill the first slots; the
           // rest fold into a "More" sheet so the bar never exceeds 5 slots.
@@ -5921,6 +6063,7 @@ export default function App() {
             mechanic: ['mymechanic', 'mechanic'],
             contractor: ['contracting'],
             property_manager: ['contracting'],
+            marketing: ['marketing'],
           };
           const vis = items.filter(i => i.visible);
           const order = PRIORITY[effectiveRole] || [];

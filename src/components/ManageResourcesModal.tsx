@@ -324,6 +324,7 @@ export default function ManageResourcesModal({
                   : sysRole === 'manager' ? 'bg-emerald-100 text-emerald-700 border-emerald-300'
                   : sysRole === 'foreman' ? 'bg-blue-100 text-blue-700 border-blue-300'
                   : sysRole === 'mechanic' ? 'bg-amber-100 text-amber-700 border-amber-300'
+                  : sysRole === 'marketing' ? 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-300'
                   : 'bg-slate-100 text-slate-700 border-slate-300';
                 const isTestUser = !!emp.isTestUser;
                 return (
@@ -483,6 +484,7 @@ export default function ManageResourcesModal({
                           <option value="mechanic">Mechanic</option>
                           <option value="contractor">Contractor (Palermo's)</option>
                           <option value="property_manager">Property Manager (Palermo's)</option>
+                          <option value="marketing">Marketing</option>
                         </select>
                       </div>
                       <div className="w-44">

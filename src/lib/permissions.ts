@@ -66,6 +66,7 @@ export const ROLE_PERMISSIONS = {
     canViewDashboard: true,
     canViewContracting: true,
     canManageContracting: true,
+    canViewMarketing: false,
   },
   manager: {
     canViewSchedule: true,
@@ -134,6 +135,7 @@ export const ROLE_PERMISSIONS = {
     canViewDashboard: true,
     canViewContracting: false,
     canManageContracting: false,
+    canViewMarketing: false,
   },
   foreman: {
     canViewSchedule: true,
@@ -200,6 +202,7 @@ export const ROLE_PERMISSIONS = {
     canViewDashboard: false,
     canViewContracting: false,
     canManageContracting: false,
+    canViewMarketing: false,
   },
   worker: {
     canViewSchedule: true,
@@ -266,6 +269,7 @@ export const ROLE_PERMISSIONS = {
     canViewDashboard: false,
     canViewContracting: false,
     canManageContracting: false,
+    canViewMarketing: false,
   },
   mechanic: {
     canViewSchedule: false,
@@ -337,6 +341,7 @@ export const ROLE_PERMISSIONS = {
     canViewDashboard: false,
     canViewContracting: false,
     canManageContracting: false,
+    canViewMarketing: false,
   },
   contractor: {
     canViewSchedule: false,
@@ -406,6 +411,7 @@ export const ROLE_PERMISSIONS = {
     canViewDashboard: false,
     canViewContracting: true,
     canManageContracting: false,
+    canViewMarketing: false,
   },
   // Property Manager (Linda) — properties/units/tenancies + work orders +
   // Material only. No contracting billing, no Marco's-side access, no clock.
@@ -474,6 +480,79 @@ export const ROLE_PERMISSIONS = {
     canViewDashboard: false,
     canViewContracting: true,
     canManageContracting: false,
+    canViewMarketing: false,
+  },
+  // Marketing — the marketing surface and NOTHING else. Every other
+  // permission is false on purpose: no schedule, no performance, no
+  // financials, no divisions, no crews, no clock, no bulletins, no
+  // RoleMaster. `canViewMarketing` is the only true in this block, and
+  // MarketingMaster is the only view canAccessView will grant.
+  marketing: {
+    canViewSchedule: false,
+    canCreateCrews: false,
+    canEditAnyCrew: false,
+    canEditOwnCrew: false,
+    canDispatchAnyCrew: false,
+    canDispatchOwnCrew: false,
+    canDeleteCrews: false,
+    canOverrideWarnings: false,
+    canCopyDay: false,
+    canCloseOutCrew: false,
+    canCloseOutOwnCrew: false,
+    canViewMechanicMaster: false,
+    canCreateRepairs: false,
+    canEditRepairs: false,
+    canCompleteRepairs: false,
+    canDeleteRepairs: false,
+    canDeleteMechanicTask: false,
+    canDeleteRepairLog: false,
+    canDeleteInspectionLog: false,
+    canAddTaskNotes: false,
+    canDeleteAnyTaskNote: false,
+    canViewPerformance: false,
+    canEditAnyPerformance: false,
+    canEditOwnPerformance: false,
+    canApprovePerformance: false,
+    canAddUnscheduledCrew: false,
+    canAddDeductions: false,
+    canAddDeductionsOwnCrew: false,
+    canViewAdvancedReports: false,
+    canViewAllTimeMaster: false,
+    canViewOwnTimeMaster: false,
+    canEditAnyTimeEntry: false,
+    canExportTimeCSV: false,
+    canClockInOut: false,
+    canPostBulletins: false,
+    canDeleteBulletins: false,
+    canViewBulletins: false,
+    canUseAIInsight: false,
+    canViewManageResources: false,
+    canEditPersonnel: false,
+    canEditFleet: false,
+    canDeleteFleet: false,
+    canEditInventory: false,
+    canEditAppSettings: false,
+    canSubmitInspections: false,
+    canViewInspectionLog: false,
+    canViewAllInspections: false,
+    canPrintInspections: false,
+    canManageJobberIntegration: false,
+    canTriggerJobberSync: false,
+    canViewOwnCrewLive: false,
+    canMarkMultiDayCompletion: false,
+    canOverrideJobType: false,
+    canViewMultiDayHistory: false,
+    canViewPerfActivityLog: false,
+    canViewTaskMaster: false,
+    canCreateTasks: false,
+    canViewRoleMaster: false,
+    canManageRoleMaster: false,
+    canViewSalesMaster: false,
+    canApproveTimeOff: false,
+    canViewDashboard: false,
+    canViewContracting: false,
+    canManageContracting: false,
+    canViewMarketing: true,
   },
 } as const;
 
@@ -529,9 +608,9 @@ export function resolveRole(employee: Employee | null | undefined): UserRole {
   return employee.systemRole || 'worker';
 }
 
-export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'dashboard' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster' | 'rolemaster' | 'salesmaster' | 'contracting';
+export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'dashboard' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster' | 'rolemaster' | 'salesmaster' | 'contracting' | 'marketing';
 
-export const APP_VIEW_ORDER: AppView[] = ['schedule', 'mechanic', 'mymechanic', 'performance', 'dashboard', 'mycrew', 'timemaster', 'bulletins', 'taskmaster', 'rolemaster', 'salesmaster', 'contracting'];
+export const APP_VIEW_ORDER: AppView[] = ['schedule', 'mechanic', 'mymechanic', 'performance', 'dashboard', 'mycrew', 'timemaster', 'bulletins', 'taskmaster', 'rolemaster', 'salesmaster', 'contracting', 'marketing'];
 
 export function canAccessView(view: AppView, role: UserRole | null | undefined): boolean {
   switch (view) {
@@ -557,6 +636,12 @@ export function canAccessView(view: AppView, role: UserRole | null | undefined):
     case 'rolemaster': return can('canViewRoleMaster', role);
     case 'salesmaster': return can('canViewSalesMaster', role);
     case 'contracting': return can('canViewContracting', role);
+    // MarketingMaster. ROLE-wise this is the marketing role only —
+    // canViewMarketing is false for every other role INCLUDING admin, because
+    // access for Marco and James is granted by name (MARKETING_EMAILS in
+    // App.tsx), not by role. App.tsx ORs that email grant on top of this;
+    // see `marketingViewAllowed` there.
+    case 'marketing': return can('canViewMarketing', role);
   }
 }
 
@@ -578,6 +663,10 @@ export function defaultLandingView(role: UserRole | null | undefined): AppView {
     case 'property_manager':
       // Linda lands on the Palermo's portal (property management surface).
       return 'contracting';
+    case 'marketing':
+      // MarketingMaster IS their whole app — they land on it and there is
+      // nothing else to navigate to.
+      return 'marketing';
     default:
       return 'schedule';
   }
