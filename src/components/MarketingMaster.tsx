@@ -12,7 +12,7 @@
 import { useMemo, useRef, useState } from 'react';
 import {
   CalendarDays, Camera, Link2, ChevronLeft, ChevronRight, Plus, X, Trash2,
-  ExternalLink, Check, List, LayoutGrid, Paperclip, Pencil,
+  ExternalLink, Check, Paperclip, Pencil, Megaphone,
 } from 'lucide-react';
 import type {
   MarketingContentItem, MarketingContentStatus, MarketingLink, MarketingShot,
@@ -30,8 +30,6 @@ interface Props {
   onSaveLink: (link: MarketingLink) => void;
   onDeleteLink: (id: string) => void;
 }
-
-type Tab = 'calendar' | 'shots' | 'links';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
@@ -124,8 +122,6 @@ export default function MarketingMaster({
   onSaveShot, onDeleteShot,
   onSaveLink, onDeleteLink,
 }: Props) {
-  const [tab, setTab] = useState<Tab>('calendar');
-
   // `links` is normalized on the way in so every consumer below can treat it
   // as an array — a doc written before the field existed (or one whose empty
   // array round-tripped as null) must not crash the calendar.
@@ -140,58 +136,32 @@ export default function MarketingMaster({
     [links],
   );
 
-  const TABS: { key: Tab; label: string; Icon: typeof CalendarDays; count: number }[] = [
-    { key: 'calendar', label: 'Calendar', Icon: CalendarDays, count: contentList.length },
-    { key: 'shots', label: 'Shots', Icon: Camera, count: Object.values(shots).filter(s => s.status !== 'captured').length },
-    { key: 'links', label: 'Links', Icon: Link2, count: linkList.length },
-  ];
-
   return (
     <div className="flex-1 overflow-y-auto bg-gray-100">
-      {/* Header + tabs. Sticky so the tab row survives a long scroll on a phone. */}
-      <div className="sticky top-0 z-20 bg-white border-b border-gray-200 shadow-sm">
-        <div className="px-4 pt-4 pb-2 flex items-center gap-2">
-          <div className="bg-fuchsia-100 p-1.5 rounded-lg"><Camera className="w-5 h-5 text-fuchsia-700" /></div>
-          <h1 className="text-lg md:text-xl font-black uppercase tracking-widest text-slate-800">MarketingMaster</h1>
+      <div className="px-3 md:px-5 py-3 md:py-4 max-w-[1700px] mx-auto space-y-4">
+        <div className="flex items-center gap-2">
+          <div className="bg-fuchsia-100 p-1.5 rounded-lg"><Megaphone className="w-5 h-5 text-fuchsia-700" /></div>
+          <h1 className="text-lg md:text-xl font-black uppercase tracking-widest text-slate-800">Marketing</h1>
         </div>
-        <div className="flex px-2 gap-1 overflow-x-auto">
-          {TABS.map(({ key, label, Icon, count }) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`shrink-0 flex items-center gap-2 px-4 min-h-[44px] text-xs font-black uppercase tracking-widest border-b-2 transition-colors ${
-                tab === key
-                  ? 'border-fuchsia-600 text-fuchsia-700'
-                  : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <Icon className="w-4 h-4" /> {label}
-              {count > 0 && (
-                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${tab === key ? 'bg-fuchsia-100 text-fuchsia-700' : 'bg-slate-100 text-slate-500'}`}>
-                  {count}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
 
-      <div className="p-3 md:p-5">
-        {tab === 'calendar' && (
-          <CalendarTab
-            items={contentList}
-            links={links}
-            currentUser={currentUser}
-            onSave={onSaveContent}
-            onDelete={onDeleteContent}
-            onSaveLink={onSaveLink}
-          />
-        )}
-        {tab === 'shots' && (
-          <ShotsTab shots={shots} currentUser={currentUser} onSave={onSaveShot} onDelete={onDeleteShot} />
-        )}
-        {tab === 'links' && (
-          <LinksTab
+        {/* (a) CONTENT CALENDAR — the anchor. Widest, first, and on a wide
+            screen it carries its scan-list in a column beside the grid; below
+            xl that column drops underneath. */}
+        <CalendarSection
+          items={contentList}
+          links={links}
+          currentUser={currentUser}
+          onSave={onSaveContent}
+          onDelete={onDeleteContent}
+          onSaveLink={onSaveLink}
+        />
+
+        {/* (b) SHOTS and (c) LINKS — compact panels side by side on desktop,
+            stacked in that order on a phone. No tabs, no navigation: the
+            whole surface is this one scroll. */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+          <ShotsPanel shots={shots} onSave={onSaveShot} onDelete={onDeleteShot} />
+          <LinksPanel
             links={linkList}
             items={contentList}
             currentUser={currentUser}
@@ -199,15 +169,41 @@ export default function MarketingMaster({
             onDeleteLink={onDeleteLink}
             onSaveContent={onSaveContent}
           />
-        )}
+        </div>
       </div>
     </div>
   );
 }
 
+// A section shell: heading strip + body. Keeps the three sections visually
+// parallel so the page reads as one screen rather than three pasted modules.
+function Panel({
+  title, Icon, count, action, children,
+}: {
+  title: string;
+  Icon: typeof CalendarDays;
+  count?: number;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-2 flex-wrap">
+        <Icon className="w-4 h-4 text-fuchsia-600 shrink-0" />
+        <h2 className="text-xs font-black uppercase tracking-widest text-slate-700">{title}</h2>
+        {count !== undefined && count > 0 && (
+          <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">{count}</span>
+        )}
+        {action && <div className="w-full sm:w-auto sm:ml-auto flex items-center gap-2 flex-wrap">{action}</div>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
 /* ══════════════════════ CALENDAR ══════════════════════════════════════ */
 
-function CalendarTab({
+function CalendarSection({
   items, links, currentUser, onSave, onDelete, onSaveLink,
 }: {
   items: MarketingContentItem[];
@@ -220,7 +216,6 @@ function CalendarTab({
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth()); // 0-11
-  const [mode, setMode] = useState<'grid' | 'list'>('grid');
   const [editing, setEditing] = useState<MarketingContentItem | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
 
@@ -267,42 +262,36 @@ function CalendarTab({
   };
 
   return (
-    <div className="space-y-3">
-      {/* Month stepper + view toggle */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center bg-white border border-gray-300 rounded-lg shadow-sm overflow-hidden">
-          <button onClick={() => step(-1)} aria-label="Previous month" className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronLeft className="w-5 h-5" /></button>
-          <div className="px-3 text-sm font-black uppercase tracking-widest text-slate-700 whitespace-nowrap">{MONTHS[month]} {year}</div>
-          <button onClick={() => step(1)} aria-label="Next month" className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronRight className="w-5 h-5" /></button>
-        </div>
-        <button
-          onClick={() => { setYear(today.getFullYear()); setMonth(today.getMonth()); }}
-          className="min-h-[44px] px-3 bg-white border border-gray-300 rounded-lg text-xs font-black uppercase tracking-widest text-slate-600 hover:bg-slate-50 shadow-sm"
-        >
-          Today
-        </button>
-        <div className="flex items-center bg-white border border-gray-300 rounded-lg shadow-sm overflow-hidden ml-auto">
-          {(['grid', 'list'] as const).map(m => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`min-h-[44px] px-3 flex items-center gap-1.5 text-xs font-black uppercase tracking-widest ${mode === m ? 'bg-fuchsia-600 text-white' : 'text-slate-500 hover:bg-slate-50'}`}
-            >
-              {m === 'grid' ? <LayoutGrid className="w-4 h-4" /> : <List className="w-4 h-4" />}
-              {m === 'grid' ? 'Calendar' : 'List'}
-            </button>
-          ))}
-        </div>
-        <button
-          onClick={() => setEditing(blank(ymd(today)))}
-          className="min-h-[44px] px-4 bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded-lg text-xs font-black uppercase tracking-widest shadow flex items-center gap-2"
-        >
-          <Plus className="w-4 h-4" /> New
-        </button>
-      </div>
-
-      {mode === 'grid' ? (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <Panel
+      title="Content calendar"
+      Icon={CalendarDays}
+      count={monthItems.length}
+      action={(
+        <>
+          <div className="flex items-center border border-gray-300 rounded-lg overflow-hidden">
+            <button onClick={() => step(-1)} aria-label="Previous month" className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronLeft className="w-5 h-5" /></button>
+            <div className="px-2 text-xs font-black uppercase tracking-widest text-slate-700 whitespace-nowrap">{MONTHS[month].slice(0, 3)} {year}</div>
+            <button onClick={() => step(1)} aria-label="Next month" className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-500 hover:bg-slate-50"><ChevronRight className="w-5 h-5" /></button>
+          </div>
+          <button
+            onClick={() => { setYear(today.getFullYear()); setMonth(today.getMonth()); }}
+            className="min-h-[40px] px-3 border border-gray-300 rounded-lg text-[11px] font-black uppercase tracking-widest text-slate-600 hover:bg-slate-50"
+          >
+            Today
+          </button>
+          <button
+            onClick={() => setEditing(blank(ymd(today)))}
+            className="min-h-[40px] px-3 bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded-lg text-[11px] font-black uppercase tracking-widest shadow flex items-center gap-1.5"
+          >
+            <Plus className="w-4 h-4" /> New
+          </button>
+        </>
+      )}
+    >
+      {/* Grid + scan-list. Side by side from xl; below that the list drops
+          under the grid. Both are live at once — no toggle to discover. */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0 overflow-x-auto border-b xl:border-b-0 xl:border-r border-gray-200">
           <div className="grid grid-cols-7 border-b border-gray-200 bg-slate-50">
             {WEEKDAYS.map(w => (
               <div key={w} className="py-2 text-center text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400">
@@ -349,8 +338,10 @@ function CalendarTab({
             })}
           </div>
         </div>
-      ) : (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm divide-y divide-slate-100">
+
+        {/* Scan list — the same month, top to bottom, for anyone who'd rather
+            read than look. Scrolls in its own column on a wide screen. */}
+        <div className="min-w-0 xl:max-h-[640px] xl:overflow-y-auto divide-y divide-slate-100">
           {monthItems.length === 0 && (
             <div className="p-8 text-center text-sm text-slate-400 font-bold">Nothing planned for {MONTHS[month]}.</div>
           )}
@@ -368,12 +359,13 @@ function CalendarTab({
                   {item.links.length > 0 && ` · ${item.links.length} link${item.links.length === 1 ? '' : 's'}`}
                 </span>
                 {item.notes && <span className="block text-xs text-slate-500 mt-0.5 line-clamp-2">{item.notes}</span>}
+                <Byline created={item.createdBy} createdAt={item.createdAt} updated={item.updatedBy} updatedAt={item.updatedAt} />
               </span>
               <Pencil className="w-4 h-4 text-slate-300 shrink-0 mt-1" />
             </button>
           ))}
         </div>
-      )}
+      </div>
 
       {editing && (
         <ContentEditor
@@ -387,7 +379,7 @@ function CalendarTab({
           onSaveLink={onSaveLink}
         />
       )}
-    </div>
+    </Panel>
   );
 }
 
@@ -547,11 +539,10 @@ function ContentEditor({
 
 /* ══════════════════════ SHOTS ═════════════════════════════════════════ */
 
-function ShotsTab({
-  shots, currentUser, onSave, onDelete,
+function ShotsPanel({
+  shots, onSave, onDelete,
 }: {
   shots: Record<string, MarketingShot>;
-  currentUser: { email: string; name: string };
   onSave: (s: MarketingShot) => void;
   onDelete: (id: string) => void;
 }) {
@@ -575,13 +566,9 @@ function ShotsTab({
   const add = () => {
     const description = desc.trim();
     if (!description) return;
-    onSave({
-      id: newId('ms'),
-      description,
-      status: 'needed',
-      createdBy: currentUser,
-      createdAt: Date.now(),
-    });
+    // createdBy / createdAt are stamped by the save handler from the
+    // signed-in identity — never from anything the panel could get wrong.
+    onSave({ id: newId('ms'), description, status: 'needed' });
     setDesc('');
     addRef.current?.focus();
   };
@@ -593,8 +580,9 @@ function ShotsTab({
   );
 
   return (
-    <div className="space-y-3">
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 flex gap-2">
+    <Panel title="Shots to follow up" Icon={Camera} count={needed.length}>
+      {/* Two taps: the field is already on screen — type, then Add (or Enter). */}
+      <div className="p-3 border-b border-slate-100 flex gap-2">
         <input
           ref={addRef}
           value={desc}
@@ -612,7 +600,7 @@ function ShotsTab({
         </button>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm divide-y divide-slate-100">
+      <div className="divide-y divide-slate-100">
         {needed.length === 0 && (
           <div className="p-8 text-center text-sm text-slate-400 font-bold">No shots on the list.</div>
         )}
@@ -622,17 +610,17 @@ function ShotsTab({
       </div>
 
       {captured.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="border-t border-slate-200 bg-slate-50/60">
           <button
             onClick={() => setShowCaptured(o => !o)}
-            className="w-full px-4 min-h-[52px] flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-400 hover:bg-slate-50"
+            className="w-full px-4 min-h-[52px] flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-400 hover:bg-slate-100"
           >
             <Check className="w-4 h-4" /> Captured
-            <span className="bg-slate-100 text-slate-500 rounded-full px-2 py-0.5 text-[10px]">{captured.length}</span>
+            <span className="bg-slate-200 text-slate-500 rounded-full px-2 py-0.5 text-[10px]">{captured.length}</span>
             <ChevronRight className={`w-4 h-4 ml-auto transition-transform ${showCaptured ? 'rotate-90' : ''}`} />
           </button>
           {showCaptured && (
-            <div className="divide-y divide-slate-100 border-t border-slate-100">
+            <div className="divide-y divide-slate-100 border-t border-slate-200 bg-white">
               {captured.map(s => (
                 <ShotRow key={s.id} shot={s} open={openId === s.id} onToggleOpen={() => setOpenId(openId === s.id ? null : s.id)} onCheck={() => toggle(s)} onSave={onSave} onDelete={onDelete} />
               ))}
@@ -640,7 +628,7 @@ function ShotsTab({
           )}
         </div>
       )}
-    </div>
+    </Panel>
   );
 }
 
@@ -683,6 +671,7 @@ function ShotRow({
               {[shot.reference, shot.targetDate ? prettyDate(shot.targetDate) : null].filter(Boolean).join(' · ')}
             </span>
           )}
+          <Byline created={shot.createdBy} createdAt={shot.createdAt} updated={shot.updatedBy} updatedAt={shot.updatedAt} />
         </button>
         <button onClick={openRow} aria-label="Edit shot" className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-300 hover:text-slate-600">
           <Pencil className="w-4 h-4" />
@@ -752,7 +741,7 @@ function ShotRow({
 
 /* ══════════════════════ LINKS ═════════════════════════════════════════ */
 
-function LinksTab({
+function LinksPanel({
   links, items, currentUser, onSaveLink, onDeleteLink, onSaveContent,
 }: {
   links: MarketingLink[];
@@ -808,8 +797,10 @@ function LinksTab({
   const guessed = url.trim() ? titleFromUrl(url) : '';
 
   return (
-    <div className="space-y-3">
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 space-y-2">
+    <Panel title="Reference links" Icon={Link2} count={links.length}>
+      {/* Paste-and-save is the whole interaction. The note field is optional
+          and only there for when the derived title isn't good enough. */}
+      <div className="p-3 border-b border-slate-100 space-y-2">
         <div className="flex gap-2">
           <input
             ref={urlRef}
@@ -838,15 +829,15 @@ function LinksTab({
       </div>
 
       {links.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center text-sm text-slate-400 font-bold">
+        <div className="p-8 text-center text-sm text-slate-400 font-bold">
           Nothing saved yet. Paste a link above.
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        <div className="p-3 grid grid-cols-1 xl:grid-cols-2 gap-3 max-h-[560px] overflow-y-auto">
           {links.map(l => {
             const attached = attachedTo.get(l.id);
             return (
-              <div key={l.id} className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 flex flex-col gap-2">
+              <div key={l.id} className="bg-white rounded-xl border border-gray-200 p-3 flex flex-col gap-2">
                 <div className="flex items-start gap-2">
                   {editingId === l.id ? (
                     <input
@@ -907,11 +898,32 @@ function LinksTab({
           })}
         </div>
       )}
-    </div>
+    </Panel>
   );
 }
 
 /* ══════════════════════ shared bits ═══════════════════════════════════ */
+
+// Who touched this, and when. Every marketing user signs in as themselves
+// (named Personnel accounts, never a shared login), so these stamps are
+// attributable the same way the rest of the app's are.
+function Byline({
+  created, createdAt, updated, updatedAt,
+}: {
+  created?: { email: string; name: string };
+  createdAt?: number;
+  updated?: { email: string; name: string };
+  updatedAt?: number;
+}) {
+  if (!created?.name && !updated?.name) return null;
+  const edited = updated?.name && updatedAt && createdAt && updatedAt - createdAt > 60_000;
+  return (
+    <span className="block text-[10px] font-bold text-slate-400 mt-1">
+      {created?.name && `Added by ${created.name}${createdAt > 1_577_836_800_000 ? ` · ${new Date(createdAt).toLocaleDateString()}` : ''}`}
+      {edited && ` · edited by ${updated!.name}`}
+    </span>
+  );
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (

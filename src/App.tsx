@@ -13,7 +13,7 @@ import {
   Target, Award, CalendarDays, FileSignature, Map, CheckSquare, Info, Sparkles, Loader2,
   MessageSquareText, Leaf, Download, LogOut, ShieldCheck, UserPlus, Megaphone, Lock,
   Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown, Hammer, Calculator,
-  ChevronUp, Layers, Eye, MoreHorizontal, Sliders, Home, Camera
+  ChevronUp, Layers, Eye, MoreHorizontal, Sliders, Home
 } from 'lucide-react';
 
 import {
@@ -5234,11 +5234,11 @@ export default function App() {
                 <Calculator className="w-4 h-4" /> SalesMaster
               </button>
             )}
-            {/* MarketingMaster — its own nav entry for Marco/James. For a
+            {/* Marketing — its own nav entry for Marco/James. For a
                 marketing-role user this is the ONLY button in this group. */}
             {canViewMarketing && (
               <button onClick={() => setCurrentView('marketing')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'marketing' ? 'bg-white shadow-sm text-fuchsia-700' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}>
-                <Camera className="w-4 h-4" /> MarketingMaster
+                <Megaphone className="w-4 h-4" /> Marketing
               </button>
             )}
             {canAccessView('schedule', effectiveRole) && canEditSchedule && (
@@ -6042,9 +6042,9 @@ export default function App() {
               isActive: currentView === 'contracting',
               onClick: () => setCurrentView('contracting'),
               visible: canAccessView('contracting', effectiveRole) },
-            // MarketingMaster — the marketing role's only destination, and a
+            // Marketing — the marketing role's only destination, and a
             // normal entry for Marco/James.
-            { key: 'marketing', label: 'Marketing', Icon: Camera, badge: 0,
+            { key: 'marketing', label: 'Marketing', Icon: Megaphone, badge: 0,
               isActive: currentView === 'marketing',
               onClick: () => setCurrentView('marketing'),
               visible: canViewMarketing },
