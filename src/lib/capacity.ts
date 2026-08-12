@@ -25,7 +25,7 @@
 import type {
   AppData, Crew, Employee, MultiDayJob, CapacityForecast, CapacityForecastVisit,
   CapacitySettings, CapacityThresholds, HeadcountCeiling, AssigneeMapping,
-  JobberUser, HourlyEstimate,
+  JobberUser, HourlyEstimate, CapacityScope,
 } from '../types';
 import { remainingBHOf, creditedBHOf } from './multiDayResolution';
 import { addDaysToronto } from './dateUtils';
@@ -107,7 +107,25 @@ export function capacityOrDefault(c: CapacitySettings | undefined): CapacitySett
     declared: { ...DEFAULT_CAPACITY_SETTINGS.declared, ...(c?.declared || {}) },
     headcountCeilings: ceilings,
     thresholds: thresholdsOrDefault(c),
+    // Carried through UNCHANGED. Both settings editors build their save
+    // payload from this function's output, so any current-shape field missing
+    // here is silently dropped the next time an admin touches an unrelated
+    // number. autoRefresh must survive a threshold edit; so must assigneeMap,
+    // which was being wiped on every save because it wasn't listed here.
+    autoRefresh: { ...(c?.autoRefresh || {}) },
+    ...(c?.assigneeMap ? { assigneeMap: c.assigneeMap } : {}),
   };
+}
+
+// Scheduled auto-refresh for one scope. DEFAULTS TO OFF — an absent flag, an
+// absent settings block and an explicit false all mean "don't spend a daily
+// Jobber pull on this". Mirrored by autoRefreshEnabled() in
+// functions/src/jobber/capacityForecast.ts; keep the two in step.
+export function autoRefreshEnabled(
+  c: CapacitySettings | undefined,
+  scope: CapacityScope,
+): boolean {
+  return c?.autoRefresh?.[scope] === true;
 }
 
 export interface DeclaredBasis {

@@ -1256,6 +1256,13 @@ export interface CapacitySettings {
   // Tool 2 — weekly ceiling by crew headcount, ascending.
   headcountCeilings?: HeadcountCeiling[];
   thresholds?: CapacityThresholds;
+  // Scheduled auto-refresh, per scope, independently. ABSENT = OFF: the
+  // forecast is still beta, and a scheduled pull spends from the same Jobber
+  // query budget the performance sync draws on — not worth spending daily on
+  // a view nobody has opened yet. The scheduled function reads this and skips
+  // the scope entirely (no Jobber call at all) when it isn't true; the manual
+  // Refresh button is unaffected either way.
+  autoRefresh?: Partial<Record<CapacityScope, boolean>>;
 }
 
 // ── The forecast snapshot written by the jobberSyncCapacity function.

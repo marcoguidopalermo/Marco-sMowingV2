@@ -24,7 +24,7 @@ import AssigneeMappingPanel from './AssigneeMappingPanel';
 import BookingLookup from './BookingLookup';
 import {
   buildBookingModel, buildBalanceModel, capacityOrDefault, mergeSlices, BAND_META, assigneeInventory,
-  longDate, dayLabel, UNATTRIBUTED,
+  longDate, dayLabel, UNATTRIBUTED, autoRefreshEnabled,
   type CapacityBand, type BookingCell, type BookingRow, type CapacityWeek,
   type ForwardSlice, type BalanceCrewRow,
 } from '../lib/capacity';
@@ -345,6 +345,20 @@ export default function CapacityCalendar({
   const [showSettings, setShowSettings] = useState(false);
   const [draft, setDraft] = useState<AppSettings>(appData.settings || {});
   const [saving, setSaving] = useState(false);
+  // Cadence blurb, driven by the live toggles — the old copy hard-coded
+  // "twice a day (projects) and each morning (lawn)", which would be a lie the
+  // moment either scope was switched off.
+  const autoScopeNote = (() => {
+    const on = (['projects', 'lawn'] as CapacityScope[])
+      .filter(sc => autoRefreshEnabled(appData.settings?.capacity, sc));
+    if (on.length === 2) return 'Both scopes refresh automatically once each morning.';
+    if (on.length === 1) {
+      const off = on[0] === 'projects' ? 'lawn' : 'projects';
+      return `${on[0] === 'projects' ? 'Projects' : 'Lawn'} refreshes automatically once each morning; ${off} does not — it only updates when you press Refresh.`;
+    }
+    return 'Automatic refresh is OFF for both scopes — these numbers only change when you press Refresh.';
+  })();
+
   const openSettings = () => { setDraft(appData.settings || {}); setShowSettings(true); };
   const saveSettings = async () => {
     if (!onSaveSettings || saving) return;
@@ -510,18 +524,22 @@ export default function CapacityCalendar({
 
         {tool === 'booking' && <Legend />}
 
-        {/* LAST UPDATED, prominently. Capacity is now pulled twice a day for
-            projects and once for lawn, so a number read mid-call has to say
-            how old it is — and say it loudly once it's stale. */}
+        {/* LAST UPDATED, prominently — and WHY it is that old. A snapshot with
+            auto-refresh off will keep ageing until someone presses Refresh, so
+            the chip says so outright rather than leaving a stale number
+            looking live. Over ~24h it escalates to amber either way. */}
         <div className="border-t border-slate-100 pt-2 space-y-1.5">
           <div className="flex flex-wrap items-center gap-2">
             {(['projects', 'lawn'] as CapacityScope[]).map(sc => {
               const f = forecasts[sc];
               const label = sc === 'projects' ? 'Projects' : 'Lawn';
+              const auto = autoRefreshEnabled(appData.settings?.capacity, sc);
               if (!f) {
                 return (
                   <span key={sc} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-amber-300 bg-amber-50 text-[11px] font-black text-amber-800">
+                    <AlertTriangle className="w-3 h-3" />
                     {label}: never pulled
+                    <span className="uppercase tracking-widest">— press Refresh</span>
                   </span>
                 );
               }
@@ -541,6 +559,11 @@ export default function CapacityCalendar({
                   })}
                   <span className={stale ? 'font-bold' : 'font-bold text-slate-400'}>· {ageLabel}</span>
                   {stale && <span className="uppercase tracking-widest">— over a day old, refresh before quoting</span>}
+                  {!auto && (
+                    <span className="uppercase tracking-widest font-black text-slate-500 border-l border-slate-300 pl-1.5 ml-0.5">
+                      auto-refresh off — press Refresh for current data
+                    </span>
+                  )}
                 </span>
               );
             })}
@@ -549,8 +572,8 @@ export default function CapacityCalendar({
             <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" />
             <p>
               Reflects work <strong>scheduled in Jobber</strong> — won-but-unscheduled work doesn&apos;t
-              appear, so an empty week may not be truly open. Pulled automatically twice a day
-              (projects) and each morning (lawn); use Refresh for anything booked since.
+              appear, so an empty week may not be truly open.{' '}
+              {autoScopeNote}{' '}Refresh pulls fresh data on demand at any time.
             </p>
           </div>
         </div>
@@ -582,7 +605,7 @@ export default function CapacityCalendar({
           <HelpCircle className="w-6 h-6 text-slate-300 mx-auto" />
           <p className="text-sm font-bold text-slate-700">No forecast pulled yet.</p>
           <p className="text-xs text-slate-500">
-            The forward pull runs on its own schedule.{canRefresh ? ' Hit Refresh to pull it now.' : ' Check back shortly.'}
+            {autoScopeNote}{canRefresh ? ' Hit Refresh to pull it now.' : ' Ask an admin to Refresh.'}
           </p>
         </div>
       )}

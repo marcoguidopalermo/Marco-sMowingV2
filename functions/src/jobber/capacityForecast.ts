@@ -777,6 +777,67 @@ export async function runCapacityForecast(
   return snapshot;
 }
 
+/**
+ * Is scheduled auto-refresh switched on for this scope?
+ *
+ * DEFAULTS TO FALSE. An absent flag, an absent capacity block, an unreadable
+ * appData document and an explicit false all mean "skip". The read failure
+ * case matters: if we cannot prove the toggle is on, we do NOT pull. Failing
+ * open here would spend the Jobber budget the performance sync depends on,
+ * which is the exact thing this switch exists to protect.
+ *
+ * Mirrored by autoRefreshEnabled() in src/lib/capacity.ts.
+ * @param {ForecastScope} scope Which half of the business to check.
+ * @return {Promise<boolean>} True only when explicitly enabled.
+ */
+async function autoRefreshEnabled(scope: ForecastScope): Promise<boolean> {
+  try {
+    const snap = await db.doc(APP_DATA_DOC).get();
+    const data = (snap.data() || {}) as {
+      settings?: {capacity?: {autoRefresh?: Record<string, boolean>}};
+    };
+    return data.settings?.capacity?.autoRefresh?.[scope] === true;
+  } catch (e) {
+    logger.warn("Could not read the capacity auto-refresh setting — " +
+      "treating it as OFF and skipping the pull", {
+      scope,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return false;
+  }
+}
+
+/**
+ * Shared body for both scheduled entry points.
+ *
+ * The toggle is checked BEFORE runCapacityForecast, which is what makes OFF
+ * mean "no Jobber call at all" rather than "a pull whose result is discarded".
+ * runCapacityForecast's very first act is getValidAccessToken(), which can
+ * hit Jobber's token endpoint even when the query itself never runs — so the
+ * gate has to sit out here, above it.
+ * @param {ForecastScope} scope Which half of the business to refresh.
+ * @return {Promise<void>} Resolves once the run is done or skipped.
+ */
+async function runScheduledCapacity(scope: ForecastScope): Promise<void> {
+  if (!await autoRefreshEnabled(scope)) {
+    logger.info("Capacity auto-refresh is OFF — skipping, no Jobber call", {
+      scope,
+      hint: "Enable in the capacity view's Settings panel.",
+    });
+    return;
+  }
+  try {
+    await runCapacityForecast(scope, "scheduled");
+  } catch (e) {
+    // Never let the forecast's failure surface as a function crash loop —
+    // it is a read-only convenience view. Log and move on.
+    logger.error("Scheduled capacity forecast failed", {
+      scope,
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
 export const jobberSyncCapacity = onCall(
   {
     region: REGION,
@@ -794,38 +855,22 @@ export const jobberSyncCapacity = onCall(
   },
 );
 
-// PROJECTS: TWICE DAILY. Dropped from twice-hourly because the manual
-// Refresh button covers "I need it now", and every scheduled pull competes
-// with the performance sync for the same Jobber query budget — the earlier
-// throttle failures came from frequency multiplied by query cost. Early
-// morning (after overnight scheduling) and just after lunch, both offset
-// from the sync's :00/:15/:30/:45 slots.
-export const jobberSyncCapacityScheduled = onSchedule(
-  {
-    region: REGION,
-    schedule: "33 6,13 * * *",
-    timeZone: TIMEZONE,
-    secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET],
-    timeoutSeconds: 540,
-  },
-  async () => {
-    try {
-      await runCapacityForecast("projects", "scheduled");
-    } catch (e) {
-      // Never let the forecast's failure surface as a function crash loop —
-      // it is a read-only convenience view. Log and move on.
-      logger.error("Scheduled capacity forecast failed", {
-        scope: "projects",
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
-  },
-);
+// Both scopes: ONCE DAILY, early morning, staggered, and both finished before
+// the working day starts. Projects dropped its second (13:33) pull when the
+// auto-refresh toggle landed — once a day is the stated cadence, and the
+// manual Refresh button covers "I need it now" far more cheaply than a
+// standing afternoon pull nobody asked for.
+//
+// The stagger is deliberate: lawn at :18 and projects at :33 never overlap,
+// so the two never contend for the shared Jobber query budget at the same
+// moment. Both also sit off the performance sync's :00/:15/:30/:45 slots.
+//
+// NEITHER fires unless its scope's auto-refresh toggle is ON. The schedule
+// still ticks — Cloud Scheduler invokes the function — but the function
+// returns before touching Jobber. See runScheduledCapacity.
 
-// LAWN: ONCE DAILY, early morning. It is the densest visit stream in the
-// business and the slowest-moving picture — a recurring route booked weeks
-// out doesn't change hour to hour, and the manual Refresh covers the case
-// where it has.
+// LAWN: 06:18. The densest visit stream in the business and the slowest-moving
+// picture — a recurring route booked weeks out doesn't change hour to hour.
 export const jobberSyncCapacityLawnScheduled = onSchedule(
   {
     region: REGION,
@@ -835,13 +880,21 @@ export const jobberSyncCapacityLawnScheduled = onSchedule(
     timeoutSeconds: 540,
   },
   async () => {
-    try {
-      await runCapacityForecast("lawn", "scheduled");
-    } catch (e) {
-      logger.error("Scheduled capacity forecast failed", {
-        scope: "lawn",
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
+    await runScheduledCapacity("lawn");
+  },
+);
+
+// PROJECTS: 06:33, after the overnight scheduling has settled and 15 minutes
+// behind lawn.
+export const jobberSyncCapacityScheduled = onSchedule(
+  {
+    region: REGION,
+    schedule: "33 6 * * *",
+    timeZone: TIMEZONE,
+    secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET],
+    timeoutSeconds: 540,
+  },
+  async () => {
+    await runScheduledCapacity("projects");
   },
 );

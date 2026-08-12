@@ -9,6 +9,8 @@
 //   2. HEADCOUNT CEILINGS               → the Schedule Balance overbooking
 //      check. Weekly BH a crew of N can deliver, non-linear by design.
 //   3. COLOUR THRESHOLDS                → shared by both.
+//   4. AUTO-REFRESH per scope           → whether the scheduled Jobber pull
+//      runs at all. OFF by default; see CapacitySettings.autoRefresh.
 //
 // ONE editor, two hosts: Manage Resources → App Settings (saved with the rest
 // of that modal) and the capacity view's own settings panel (saves itself).
@@ -16,7 +18,15 @@ import type { Dispatch, SetStateAction } from 'react';
 import { Plus, X } from 'lucide-react';
 import type { AppSettings, HeadcountCeiling } from '../types';
 import { DIVISIONS, DEFAULT_CAPACITY_THRESHOLDS, DEFAULT_HEADCOUNT_CEILINGS } from '../constants';
-import { capacityOrDefault, thresholdsOrDefault, declaredFor } from '../lib/capacity';
+import { capacityOrDefault, thresholdsOrDefault, declaredFor, autoRefreshEnabled } from '../lib/capacity';
+import type { CapacityScope } from '../types';
+
+// The two scopes, with the schedule each keeps when it is switched on. Times
+// mirror functions/src/jobber/capacityForecast.ts — keep them in step.
+const SCOPE_ROWS: { scope: CapacityScope; label: string; when: string }[] = [
+  { scope: 'projects', label: 'Projects', when: '6:33 am' },
+  { scope: 'lawn', label: 'Lawn', when: '6:18 am' },
+];
 
 export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }: {
   settings: AppSettings;
@@ -249,6 +259,49 @@ export default function CapacitySettingsPanel({ settings, setSettings, isAdmin }
             className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-800"
           >Reset thresholds to 70 / 90 / 110</button>
         )}
+      </div>
+
+      {/* 4 — AUTO-REFRESH */}
+      <div className="border-t border-slate-100 pt-4 space-y-2">
+        <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block">
+          Automatic refresh
+        </label>
+        <p className="text-xs text-slate-500">
+          Off by default. Each scheduled pull spends from the same Jobber query budget the
+          performance sync runs on, so it isn&apos;t worth a daily pull until this view is in
+          real use. While a scope is off <strong>no scheduled Jobber call is made for it at
+          all</strong> — the view simply shows how old its last snapshot is.
+          {' '}<strong>Refresh works either way.</strong>
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {SCOPE_ROWS.map(({ scope, label, when }) => {
+            const on = autoRefreshEnabled(cap, scope);
+            return (
+              <label
+                key={scope}
+                className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer ${
+                  on ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-slate-50'
+                } ${isAdmin ? '' : 'opacity-60 cursor-not-allowed'}`}
+              >
+                <input
+                  type="checkbox"
+                  disabled={!isAdmin}
+                  checked={on}
+                  onChange={e => write({
+                    autoRefresh: { ...(cap.autoRefresh || {}), [scope]: e.target.checked },
+                  })}
+                  className="w-4 h-4 accent-emerald-600"
+                />
+                <span className="min-w-0">
+                  <span className="block text-xs font-black uppercase tracking-widest text-slate-700">{label}</span>
+                  <span className="block text-[10px] font-bold text-slate-400">
+                    {on ? `on — pulls once daily, ${when}` : 'off — manual Refresh only'}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

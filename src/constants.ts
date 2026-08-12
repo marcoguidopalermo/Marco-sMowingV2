@@ -134,6 +134,8 @@ export const DEFAULT_CAPACITY_SETTINGS: CapacitySettings = {
   },
   headcountCeilings: DEFAULT_HEADCOUNT_CEILINGS,
   thresholds: DEFAULT_CAPACITY_THRESHOLDS,
+  // OFF until Marco turns it on. See CapacitySettings.autoRefresh.
+  autoRefresh: { projects: false, lawn: false },
 };
 
 export const EOD_WARNING_HOUR = 22;

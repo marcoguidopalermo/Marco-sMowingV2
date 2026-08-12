@@ -5,6 +5,7 @@ import {
   buildWeeks, mondayOf, bandFor, thresholdsOrDefault, ceilingFor, declaredFor,
   assigneeDivisionIndex, buildBookingModel, buildBalanceModel, mergeSlices,
   forwardSlices, loadForSlice, assigneeInventory, scheduleDivisionIndex,
+  capacityOrDefault, autoRefreshEnabled,
 } from './capacity';
 import type { AppData, CapacityForecast, CapacityForecastVisit, Crew, Employee, MultiDayJob } from '../types';
 
@@ -581,6 +582,40 @@ test('the two scope snapshots merge, newest winning per visit', () => {
     settings: DECLARED, today: TODAY,
   });
   assert.equal(cellOf(m, 'Large Projects', '2026-08-03').bh, 40);
+});
+
+// ── Auto-refresh toggle ────────────────────────────────────────────────────
+// The scheduled Jobber pull is gated on this, so "absent means OFF" is a
+// budget guarantee, not a display default.
+test('autoRefresh defaults to OFF for both scopes', () => {
+  assert.equal(autoRefreshEnabled(undefined, 'projects'), false);
+  assert.equal(autoRefreshEnabled(undefined, 'lawn'), false);
+  assert.equal(autoRefreshEnabled({}, 'projects'), false);
+  assert.equal(autoRefreshEnabled({ autoRefresh: {} }, 'lawn'), false);
+});
+
+test('autoRefresh is per-scope and independent', () => {
+  const s = { autoRefresh: { projects: true, lawn: false } };
+  assert.equal(autoRefreshEnabled(s, 'projects'), true);
+  assert.equal(autoRefreshEnabled(s, 'lawn'), false);
+});
+
+test('only an explicit true enables it', () => {
+  // Anything truthy-but-not-true (a legacy string, a 1) must NOT spend a pull.
+  assert.equal(autoRefreshEnabled({ autoRefresh: { projects: 'yes' } } as never, 'projects'), false);
+  assert.equal(autoRefreshEnabled({ autoRefresh: { projects: 1 } } as never, 'projects'), false);
+});
+
+// Both settings editors build their save payload from capacityOrDefault's
+// output, so a field it drops is silently wiped on the next unrelated edit.
+test('capacityOrDefault carries autoRefresh through a threshold edit', () => {
+  const round = capacityOrDefault({ autoRefresh: { projects: true }, thresholds: { underPct: 1, lightPct: 2, healthyPct: 3 } });
+  assert.equal(autoRefreshEnabled(round, 'projects'), true);
+});
+
+test('capacityOrDefault no longer drops assigneeMap', () => {
+  const round = capacityOrDefault({ assigneeMap: { slot1: { division: 'Small Projects' } } });
+  assert.deepEqual(round.assigneeMap, { slot1: { division: 'Small Projects' } });
 });
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
