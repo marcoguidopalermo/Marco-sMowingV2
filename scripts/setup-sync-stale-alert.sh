@@ -24,8 +24,9 @@
 # line. Outside operating hours the job doesn't run, so there is nothing to
 # evaluate and nothing to suppress. DST is handled by Cloud Scheduler.
 #
-# NOTE: these gcloud invocations were written without a local gcloud install
-# to test against. Read them before running; flag names may need adjusting.
+# IDEMPOTENT: re-running this script converges the metric and the policy to the
+# definitions below. It creates them if absent and updates them in place if
+# present, so it is safe to run repeatedly while iterating.
 #
 # Usage:  bash scripts/setup-sync-stale-alert.sh
 set -euo pipefail
@@ -37,17 +38,33 @@ OLD_POLICY_ID="5342079805094293590"
 CHANNEL="projects/${PROJECT}/notificationChannels/11717820778982685290"
 
 # ---------------------------------------------------------------------------
-# Step 1 — create the log-based metric.
+# Step 1 — create (or update) the log-based metric.
 #
 # Do this BEFORE deploying syncHealth.ts. Log-based metrics are not
 # retroactive: they only count log entries written after the metric exists.
+#
+# `create` fails if the metric already exists, so branch on a describe. Do NOT
+# delete-and-recreate to get a clean slate: that discards the metric's history
+# and starts the counter from empty again.
 # ---------------------------------------------------------------------------
-gcloud logging metrics create "${METRIC}" \
-  --project="${PROJECT}" \
-  --description="Counts stall reports from jobberSyncStaleCheck. Emitted only during operating hours (06:00-23:45 America/Toronto)." \
-  --log-filter='resource.type="cloud_run_revision"
+METRIC_DESCRIPTION="Counts stall reports from jobberSyncStaleCheck. Emitted only during operating hours (06:00-23:45 America/Toronto)."
+METRIC_FILTER='resource.type="cloud_run_revision"
 resource.labels.service_name="jobbersyncstalecheck"
 jsonPayload.message="Jobber performance sync stalled"'
+
+if gcloud logging metrics describe "${METRIC}" --project="${PROJECT}" >/dev/null 2>&1; then
+  echo "Metric ${METRIC} exists — updating in place."
+  gcloud logging metrics update "${METRIC}" \
+    --project="${PROJECT}" \
+    --description="${METRIC_DESCRIPTION}" \
+    --log-filter="${METRIC_FILTER}"
+else
+  echo "Metric ${METRIC} not found — creating."
+  gcloud logging metrics create "${METRIC}" \
+    --project="${PROJECT}" \
+    --description="${METRIC_DESCRIPTION}" \
+    --log-filter="${METRIC_FILTER}"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 2 — deploy the watchdog, then confirm the metric sees traffic.
@@ -60,12 +77,39 @@ jsonPayload.message="Jobber performance sync stalled"'
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Step 3 — create the replacement policy.
+# Step 3 — create (or update) the replacement policy.
 #
-# evaluationMissingData is set to INACTIVE on purpose. This metric has no data
-# at all while the sync is healthy, and the default missing-data behaviour
-# would treat that silence as a reason to fire — reintroducing exactly the
-# false positive this change removes.
+# ON evaluationMissingData AND duration
+# ------------------------------------
+# An earlier revision of this file set evaluationMissingData to INACTIVE
+# alongside duration "0s". The API rejects that combination outright:
+#
+#   INVALID_ARGUMENT: Field
+#   alert_policy.conditions[0].condition_threshold.evaluation_missing_data
+#   had an invalid value of "EVALUATION_MISSING_DATA_INACTIVE": Conditions
+#   setting evaluation_missing_data must have a non-zero duration.
+#
+# The field is now omitted, and duration stays "0s". Two reasons that is the
+# right resolution rather than raising the duration:
+#
+#  1. evaluationMissingData is DOCUMENTED AS IGNORED when duration is zero, so
+#     it was inert even before the API started rejecting it. Removing it
+#     changes no behaviour. The comment it carried was also wrong: the default
+#     (EVALUATION_MISSING_DATA_UNSPECIFIED) is "open incidents stay open, new
+#     incidents aren't opened", so silence cannot fire this policy. That is
+#     exactly the property we wanted; we get it by default.
+#
+#  2. Raising the duration to satisfy the field would BREAK the alert. A
+#     non-zero retest window requires the threshold to be violated across the
+#     whole window, and this metric is deliberately sparse: the watchdog runs
+#     :12/:27/:42/:57, so a sustained stall produces one point every 15
+#     minutes against a 300s alignment period — two of every three aligned
+#     windows are empty. The gaps would clear the pending state before any
+#     retest window elapsed and the policy would never fire at all.
+#
+# So: duration "0s" and no evaluationMissingData. One stall report opens an
+# incident, which is the intended semantics — the watchdog has already applied
+# the 60-minute threshold before it logs anything.
 # ---------------------------------------------------------------------------
 POLICY_FILE="$(mktemp)"
 trap 'rm -f "${POLICY_FILE}"' EXIT
@@ -94,8 +138,7 @@ cat > "${POLICY_FILE}" <<JSON
         "comparison": "COMPARISON_GT",
         "thresholdValue": 0,
         "duration": "0s",
-        "trigger": { "count": 1 },
-        "evaluationMissingData": "EVALUATION_MISSING_DATA_INACTIVE"
+        "trigger": { "count": 1 }
       }
     }
   ],
@@ -104,9 +147,29 @@ cat > "${POLICY_FILE}" <<JSON
 }
 JSON
 
-gcloud alpha monitoring policies create \
-  --project="${PROJECT}" \
-  --policy-from-file="${POLICY_FILE}"
+# Look the policy up by display name. `policies create` does not dedupe, so
+# without this a second run would leave two identical policies both paging the
+# same channel — and the duplicate is easy to miss because the console groups
+# them under the same name.
+POLICY_DISPLAY_NAME="Jobber performance sync stalled (operating hours)"
+EXISTING_POLICY="$(
+  gcloud alpha monitoring policies list \
+    --project="${PROJECT}" \
+    --filter="displayName=\"${POLICY_DISPLAY_NAME}\"" \
+    --format="value(name)" | head -n 1
+)"
+
+if [[ -n "${EXISTING_POLICY}" ]]; then
+  echo "Policy already exists (${EXISTING_POLICY##*/}) — replacing its definition."
+  gcloud alpha monitoring policies update "${EXISTING_POLICY}" \
+    --project="${PROJECT}" \
+    --policy-from-file="${POLICY_FILE}"
+else
+  echo "Policy not found — creating."
+  gcloud alpha monitoring policies create \
+    --project="${PROJECT}" \
+    --policy-from-file="${POLICY_FILE}"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 4 — retire the old 24/7 absence policy.
@@ -121,5 +184,16 @@ gcloud alpha monitoring policies create \
 # The old jobber_perf_sync_complete log metric can stay; it is still a useful
 # signal to graph even with no policy attached to it.
 # ---------------------------------------------------------------------------
-echo "Created metric ${METRIC} and the replacement policy."
-echo "Old policy ${OLD_POLICY_ID} is still active — retire it manually (step 4)."
+echo
+echo "Metric ${METRIC} and policy \"${POLICY_DISPLAY_NAME}\" are in place."
+echo
+echo "Verify the policy is evaluating (expect state=OK, not 'no data'):"
+echo "  gcloud alpha monitoring policies list --project=${PROJECT} \\"
+echo "    --filter='displayName=\"${POLICY_DISPLAY_NAME}\"' \\"
+echo "    --format='yaml(name,enabled,conditions)'"
+echo
+if gcloud alpha monitoring policies describe "${OLD_POLICY_ID}" --project="${PROJECT}" >/dev/null 2>&1; then
+  echo "Old policy ${OLD_POLICY_ID} is STILL ACTIVE — retire it manually (step 4)."
+else
+  echo "Old policy ${OLD_POLICY_ID} is already gone."
+fi
