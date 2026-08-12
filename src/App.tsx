@@ -26,7 +26,8 @@ import {
   RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, RoleTaskInstance,
   ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry,
   CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract,
-  MarketingContentItem, MarketingShot, MarketingLink
+  MarketingContentItem, MarketingShot, MarketingLink,
+  MarketingFeedbackEntry, MarketingClipThread, MarketingClipStatus
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
@@ -65,7 +66,7 @@ import TaskDetailModal from './components/TaskDetailModal';
 import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
-import MarketingMaster from './components/MarketingMaster';
+import MarketingMaster, { clipKey } from './components/MarketingMaster';
 import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, reportIsDeletable, planPhaseMerge, isContractingWorker } from './lib/contracting';
 import type { ContractingProperty, ContractingSupplier } from './types';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabel, payDateLabel } from './lib/payPeriods';
@@ -257,10 +258,12 @@ export default function App() {
   const subLawnQuotesRef = useRef<Record<string, LawnQuote>>({});
   const subLawnRateConfigsRef = useRef<Record<string, LawnRateConfigVersion>>({});
   const subRoleTaskInstancesRef = useRef<Record<string, RoleTaskInstance>>({});
-  // MarketingMaster — three namespaced subcollections, overlaid like the rest.
+  // MarketingMaster — five namespaced subcollections, overlaid like the rest.
   const subMarketingContentRef = useRef<Record<string, MarketingContentItem>>({});
   const subMarketingShotsRef = useRef<Record<string, MarketingShot>>({});
   const subMarketingLinksRef = useRef<Record<string, MarketingLink>>({});
+  const subMarketingFeedbackRef = useRef<Record<string, MarketingFeedbackEntry>>({});
+  const subMarketingClipsRef = useRef<Record<string, MarketingClipThread>>({});
   // ContractingMaster (Palermo's) — namespaced subcollections, own tenant.
   const subContractingProjectsRef = useRef<Record<string, ContractingProject>>({});
   const subContractingTimeEntriesRef = useRef<Record<string, ContractingTimeEntry>>({});
@@ -1001,6 +1004,8 @@ export default function App() {
           marketingContent: subMarketingContentRef.current,
           marketingShots: subMarketingShotsRef.current,
           marketingLinks: subMarketingLinksRef.current,
+          marketingFeedback: subMarketingFeedbackRef.current,
+          marketingClips: subMarketingClipsRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -1387,11 +1392,13 @@ export default function App() {
     const c6 = mk('contractingShoppingList', subContractingShoppingListRef, 'contractingShoppingList');
     const c7 = mk('contractingPersonalItems', subContractingPersonalItemsRef, 'contractingPersonalItems');
     const c8 = mk('contractingPropertyDocs', subContractingPropertyDocsRef, 'contractingPropertyDocs');
-    // MarketingMaster — namespaced subcollections (all three grow).
+    // MarketingMaster — namespaced subcollections (all five grow).
     const m1 = mk('marketingContent', subMarketingContentRef, 'marketingContent');
     const m2 = mk('marketingShots', subMarketingShotsRef, 'marketingShots');
     const m3 = mk('marketingLinks', subMarketingLinksRef, 'marketingLinks');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); };
+    const m4 = mk('marketingFeedback', subMarketingFeedbackRef, 'marketingFeedback');
+    const m5 = mk('marketingClips', subMarketingClipsRef, 'marketingClips');
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); };
   }, [user]);
 
   useEffect(() => {
@@ -2941,6 +2948,68 @@ export default function App() {
       );
     }
     showToastMsg('Link removed.');
+  };
+
+  // Clip feedback. Two writes, because status belongs to the CLIP and the
+  // words belong to the MESSAGE — see the type comments in types.ts.
+  const saveMarketingFeedback = async (entry: MarketingFeedbackEntry) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    const clip = clipKey(entry.clip);
+    if (!clip || !(entry.text || '').trim()) return;
+    const existing = appData.marketingFeedback?.[entry.id];
+    const now = Date.now();
+    const rec: MarketingFeedbackEntry = {
+      ...entry,
+      clip,
+      text: entry.text.trim(),
+      createdBy: existing?.createdBy || entry.createdBy || marketingUser,
+      createdAt: existing?.createdAt || entry.createdAt || now,
+    };
+    await setDoc(doc(roleColl('marketingFeedback'), entry.id), cleanRM(rec));
+
+    // The thread doc is created on first message and REOPENED by any new one.
+    // Without the reopen, feedback written after the marketer marked a clip
+    // addressed would land straight in the collapsed section and never be
+    // seen — which is the one way this board could quietly lose a note.
+    const thread = appData.marketingClips?.[clip];
+    if (!thread || thread.status === 'addressed') {
+      await setDoc(
+        doc(roleColl('marketingClips'), clip),
+        cleanRM({
+          ...(thread || { id: clip }),
+          id: clip,
+          status: 'open' as MarketingClipStatus,
+          updatedBy: marketingUser,
+          updatedAt: now,
+        }),
+      );
+    }
+  };
+  // Removing the last message on a clip takes the thread doc with it, so an
+  // empty thread can't sit in the list with a status and no content.
+  const deleteMarketingFeedback = async (id: string) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    const entry = appData.marketingFeedback?.[id];
+    await deleteDoc(doc(roleColl('marketingFeedback'), id));
+    if (entry?.clip) {
+      const siblings = Object.values(appData.marketingFeedback || {})
+        .filter(e => e.clip === entry.clip && e.id !== id);
+      if (siblings.length === 0) {
+        await deleteDoc(doc(roleColl('marketingClips'), entry.clip));
+      }
+    }
+    showToastMsg('Feedback removed.');
+  };
+  // Status and the optional Drive link. Same gate as everything else here:
+  // whoever can see Marketing can mark a clip addressed or reopen it.
+  const saveMarketingClip = async (thread: MarketingClipThread) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    const clip = clipKey(thread.id);
+    if (!clip) return;
+    await setDoc(
+      doc(roleColl('marketingClips'), clip),
+      cleanRM({ ...thread, id: clip, updatedBy: marketingUser, updatedAt: Date.now() }),
+    );
   };
 
   // ── ContractingMaster (Palermo's) handlers ─────────────────────────────
@@ -5591,6 +5660,11 @@ export default function App() {
           onDeleteShot={deleteMarketingShot}
           onSaveLink={saveMarketingLink}
           onDeleteLink={deleteMarketingLink}
+          feedback={appData.marketingFeedback || {}}
+          clips={appData.marketingClips || {}}
+          onSaveFeedback={saveMarketingFeedback}
+          onDeleteFeedback={deleteMarketingFeedback}
+          onSaveClip={saveMarketingClip}
         />
       ) : currentView === 'mechanic' ? renderMechanicBoard() : currentView === 'performance' ? renderPerformanceBoard() : currentView === 'mymechanic' ? (
         <>

@@ -2040,13 +2040,14 @@ export interface MonthlySummary {
   tierTable?: BonusTier[];
 }
 
-// ── MarketingMaster (v1) ───────────────────────────────────────────────
-// Three flat, marketing-namespaced subcollections. Deliberately NOT in the
-// main appData doc — the content calendar, the shot list and the link board
-// all grow without bound. No platform split anywhere: content is cross-posted,
-// so a "platform" field would be structure nobody asked for.
+// ── MarketingMaster ────────────────────────────────────────────────────
+// Five flat, marketing-namespaced subcollections. Deliberately NOT in the
+// main appData doc — the content calendar, the shot list, the link board and
+// the clip feedback log all grow without bound. No platform split anywhere:
+// content is cross-posted, so a "platform" field would be structure nobody
+// asked for.
 //
-// v1 hooks that are intentionally NOT built: analytics / platform metrics,
+// Hooks that are intentionally NOT built: analytics / platform metrics,
 // auto-publishing, media file storage (links only — no bytes), crew-facing
 // shot requests, notifications.
 
@@ -2104,6 +2105,49 @@ export interface MarketingLink {
   note?: string;
   addedBy: { email: string; name: string };
   addedAt: number;
+}
+
+// ── Clip feedback ──────────────────────────────────────────────────────
+// The marketer drops numbered footage in Google Drive (#0058); Marco reviews
+// it THERE and writes feedback HERE. The app stores the words, never the
+// bytes — there is no upload path and no file field by design.
+//
+// Split across two subcollections on purpose:
+//   • marketingFeedback/{id}   — one doc per message. Append-only in spirit;
+//     threading is derived by grouping on `clip`, so there is no parent id to
+//     keep in sync and a reply is just another row.
+//   • marketingClips/{clipKey} — one doc per clip, holding the state that
+//     belongs to the CLIP rather than to any one message: status and the
+//     optional Drive link. Keyed by the normalized clip number, so a reply on
+//     #0058 always resolves to the same doc without a lookup.
+//
+// Storing status on the clip rather than denormalizing it onto every message
+// is what stops "open" and "addressed" from drifting apart mid-thread.
+
+export type MarketingClipStatus = 'open' | 'addressed';
+
+// One message in a clip's thread. `clip` is the NORMALIZED key (see clipKey
+// in MarketingMaster) — "#0058", "0058" and "58" all land on "58", so the
+// thread survives however the number was typed.
+export interface MarketingFeedbackEntry {
+  id: string;
+  clip: string;
+  text: string;
+  createdBy?: { email: string; name: string };
+  createdAt?: number;
+}
+
+// Per-clip state. `id` IS the normalized clip key and doubles as the doc id.
+export interface MarketingClipThread {
+  id: string;
+  status: MarketingClipStatus;
+  // Optional Drive link for the clip. Not required — the numbering is the key,
+  // and a thread with no link is the normal case.
+  url?: string;
+  // Stamped whenever status or url changes, so "who marked this addressed"
+  // is answerable without walking the message history.
+  updatedBy?: { email: string; name: string };
+  updatedAt?: number;
 }
 
 export interface AppData {
@@ -2214,6 +2258,8 @@ export interface AppData {
   marketingContent?: Record<string, MarketingContentItem>;
   marketingShots?: Record<string, MarketingShot>;
   marketingLinks?: Record<string, MarketingLink>;
+  marketingFeedback?: Record<string, MarketingFeedbackEntry>;
+  marketingClips?: Record<string, MarketingClipThread>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of

@@ -1,4 +1,5 @@
-// MarketingMaster (v1) — one module, three tabs: CALENDAR · SHOTS · LINKS.
+// MarketingMaster — one module, one scroll: CALENDAR · SHOTS · LINKS ·
+// CLIP FEEDBACK. No tabs, no navigation.
 //
 // Built for a marketer who is just starting, so it stays deliberately thin:
 //   • Calendar — a month of planned content. No platform split (everything is
@@ -6,22 +7,28 @@
 //   • Shots — a working checklist of shots still to capture. No assignment,
 //     no approvals, no notifications.
 //   • Links — a board of saved references. Paste a URL, hit save, done.
+//   • Clip feedback — review notes against a Drive clip number, threaded per
+//     clip. The footage stays in Drive; only the words live here.
 //
 // Nothing here reads or writes any other surface: no crews, no schedule, no
-// performance, no pay. The three subcollections are the whole data footprint.
+// performance, no pay. The five subcollections are the whole data footprint.
 import { useMemo, useRef, useState } from 'react';
 import {
   CalendarDays, Camera, Link2, ChevronLeft, ChevronRight, Plus, X, Trash2,
-  ExternalLink, Check, Paperclip, Pencil, Megaphone,
+  ExternalLink, Check, Paperclip, Pencil, Megaphone, MessageSquare, Search,
+  RotateCcw, CornerDownRight,
 } from 'lucide-react';
 import type {
-  MarketingContentItem, MarketingContentStatus, MarketingLink, MarketingShot,
+  MarketingClipStatus, MarketingClipThread, MarketingContentItem,
+  MarketingContentStatus, MarketingFeedbackEntry, MarketingLink, MarketingShot,
 } from '../types';
 
 interface Props {
   content: Record<string, MarketingContentItem>;
   shots: Record<string, MarketingShot>;
   links: Record<string, MarketingLink>;
+  feedback: Record<string, MarketingFeedbackEntry>;
+  clips: Record<string, MarketingClipThread>;
   currentUser: { email: string; name: string };
   onSaveContent: (item: MarketingContentItem) => void;
   onDeleteContent: (id: string) => void;
@@ -29,6 +36,9 @@ interface Props {
   onDeleteShot: (id: string) => void;
   onSaveLink: (link: MarketingLink) => void;
   onDeleteLink: (id: string) => void;
+  onSaveFeedback: (entry: MarketingFeedbackEntry) => void;
+  onDeleteFeedback: (id: string) => void;
+  onSaveClip: (thread: MarketingClipThread) => void;
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -116,11 +126,46 @@ function hostOf(raw: string): string {
   return u ? u.hostname.replace(/^www\./, '') : raw;
 }
 
+// ── clip numbers ───────────────────────────────────────────────────────
+// Footage is numbered in Drive as #0058. People type that four different
+// ways, and every one of them has to land on the same thread — otherwise the
+// conversation silently forks and half the feedback goes missing.
+//
+// "#0058", "0058", " 58 ", "#58" → "58". Leading zeros are presentation, not
+// identity, so they're stripped from the key and re-applied on display.
+// Non-numeric clip names (a "0058B" alt take) are kept verbatim, uppercased.
+// The result doubles as a Firestore doc id, so anything outside [A-Z0-9_-] is
+// dropped rather than risking an invalid path.
+export function clipKey(raw: string): string {
+  const v = (raw || '').trim().replace(/^#+/, '').trim().toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, '');
+  if (!v) return '';
+  if (/^\d+$/.test(v)) return String(parseInt(v, 10));
+  return v;
+}
+
+// Key → what the user sees. Pure numbers get padded back to the 4-digit house
+// style (#0058); anything else is shown as typed.
+export function clipLabel(key: string): string {
+  if (!key) return '';
+  return /^\d+$/.test(key) ? `#${key.padStart(4, '0')}` : `#${key}`;
+}
+
+function prettyStamp(ms?: number): string {
+  if (!ms) return '';
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+}
+
 export default function MarketingMaster({
-  content, shots, links, currentUser,
+  content, shots, links, feedback, clips, currentUser,
   onSaveContent, onDeleteContent,
   onSaveShot, onDeleteShot,
   onSaveLink, onDeleteLink,
+  onSaveFeedback, onDeleteFeedback, onSaveClip,
 }: Props) {
   // `links` is normalized on the way in so every consumer below can treat it
   // as an array — a doc written before the field existed (or one whose empty
@@ -170,6 +215,16 @@ export default function MarketingMaster({
             onSaveContent={onSaveContent}
           />
         </div>
+
+        {/* (d) CLIP FEEDBACK — full width, last. The footage lives in Drive;
+            this holds only the conversation about it, keyed by clip number. */}
+        <FeedbackPanel
+          feedback={feedback}
+          clips={clips}
+          onSaveFeedback={onSaveFeedback}
+          onDeleteFeedback={onDeleteFeedback}
+          onSaveClip={onSaveClip}
+        />
       </div>
     </div>
   );
@@ -899,6 +954,380 @@ function LinksPanel({
         </div>
       )}
     </Panel>
+  );
+}
+
+/* ══════════════════════ CLIP FEEDBACK ═════════════════════════════════ */
+
+// Marco reviews the numbered footage in Drive and writes here. Threading is
+// DERIVED, not stored: every entry carries a normalized clip key and grouping
+// on it is what turns rows into conversations. Nothing points at a parent, so
+// there is no thread pointer to corrupt and a reply is just another row.
+function FeedbackPanel({
+  feedback, clips, onSaveFeedback, onDeleteFeedback, onSaveClip,
+}: {
+  feedback: Record<string, MarketingFeedbackEntry>;
+  clips: Record<string, MarketingClipThread>;
+  onSaveFeedback: (e: MarketingFeedbackEntry) => void;
+  onDeleteFeedback: (id: string) => void;
+  onSaveClip: (t: MarketingClipThread) => void;
+}) {
+  const [newClip, setNewClip] = useState('');
+  const [newText, setNewText] = useState('');
+  const [query, setQuery] = useState('');
+  const [replyFor, setReplyFor] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState('');
+  const [linkFor, setLinkFor] = useState<string | null>(null);
+  const [linkDraft, setLinkDraft] = useState('');
+  const [showAddressed, setShowAddressed] = useState(false);
+  const clipRef = useRef<HTMLInputElement>(null);
+
+  // Threads are built from ENTRIES, so a clip doc left behind by a delete race
+  // can never show up as an empty thread.
+  const threads = useMemo(() => {
+    const byClip = new Map<string, MarketingFeedbackEntry[]>();
+    for (const e of Object.values(feedback)) {
+      const k = clipKey(e.clip || '');
+      if (!k) continue;
+      const list = byClip.get(k);
+      if (list) list.push(e); else byClip.set(k, [e]);
+    }
+    const out = [...byClip.entries()].map(([clip, entries]) => {
+      // Within a thread, oldest first — it's a conversation, and a
+      // back-and-forth read bottom-up is not a conversation.
+      const ordered = [...entries].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      const latest = ordered.reduce((m, e) => Math.max(m, e.createdAt || 0), 0);
+      const thread = clips[clip];
+      return {
+        clip,
+        entries: ordered,
+        latest,
+        status: (thread?.status === 'addressed' ? 'addressed' : 'open') as MarketingClipStatus,
+        url: thread?.url || '',
+        thread,
+      };
+    });
+    // Threads themselves are newest-first, by most recent activity.
+    return out.sort((a, b) => b.latest - a.latest);
+  }, [feedback, clips]);
+
+  // Filter on the PADDED label so "58", "0058" and "005" all find #0058.
+  const filtered = useMemo(() => {
+    const q = query.trim().replace(/^#+/, '').toUpperCase();
+    if (!q) return threads;
+    return threads.filter(t => clipLabel(t.clip).slice(1).includes(q) || t.clip.includes(q));
+  }, [threads, query]);
+
+  const open = filtered.filter(t => t.status === 'open');
+  const addressed = filtered.filter(t => t.status === 'addressed');
+
+  const add = () => {
+    const clip = clipKey(newClip);
+    const text = newText.trim();
+    if (!clip || !text) return;
+    // createdBy / createdAt are stamped by the save handler from the
+    // signed-in identity — never from anything this panel could get wrong.
+    onSaveFeedback({ id: newId('mf'), clip, text });
+    setNewClip('');
+    setNewText('');
+    clipRef.current?.focus();
+  };
+
+  const reply = (clip: string) => {
+    const text = replyText.trim();
+    if (!text) return;
+    onSaveFeedback({ id: newId('mf'), clip, text });
+    setReplyText('');
+    setReplyFor(null);
+  };
+
+  // Status and url live on the same doc, so every write sends both — passing
+  // one without the other would blank the other field.
+  const setStatus = (t: typeof threads[number], status: MarketingClipStatus) =>
+    onSaveClip({ id: t.clip, status, url: t.url || undefined });
+
+  const saveLink = (t: typeof threads[number]) => {
+    const url = linkDraft.trim();
+    onSaveClip({ id: t.clip, status: t.status, url: url ? normalizeUrl(url) : undefined });
+    setLinkFor(null);
+    setLinkDraft('');
+  };
+
+  return (
+    <Panel
+      title="Clip feedback"
+      Icon={MessageSquare}
+      count={open.length}
+      action={(
+        <div className="relative w-full sm:w-56">
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Find a clip…"
+            aria-label="Search feedback by clip number"
+            className="w-full border border-gray-300 rounded-lg pl-8 pr-8 py-2 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery('')}
+              aria-label="Clear search"
+              className="absolute right-1 top-1/2 -translate-y-1/2 min-w-[28px] min-h-[28px] inline-flex items-center justify-center text-slate-300 hover:text-slate-600"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+    >
+      {/* Add: clip number + the note. The number field is deliberately narrow
+          and the note is a real textarea — feedback is prose, not a label. */}
+      <div className="p-3 border-b border-slate-100 space-y-2 bg-slate-50/60">
+        <div className="flex gap-2">
+          <input
+            ref={clipRef}
+            value={newClip}
+            onChange={e => setNewClip(e.target.value)}
+            placeholder="#0058"
+            aria-label="Clip number"
+            className="w-28 shrink-0 border border-gray-300 rounded-lg p-3 text-sm font-black text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400"
+          />
+          <span className="self-center text-[11px] font-bold uppercase tracking-widest text-slate-400 hidden sm:block">
+            {clipKey(newClip) ? `→ ${clipLabel(clipKey(newClip))}` : 'with or without the #'}
+          </span>
+        </div>
+        <textarea
+          value={newText}
+          onChange={e => setNewText(e.target.value)}
+          placeholder="What needs changing on this clip…"
+          rows={3}
+          aria-label="Feedback"
+          className="w-full border border-gray-300 rounded-lg p-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400 resize-y min-h-[84px]"
+        />
+        <div className="flex justify-end">
+          <button
+            onClick={add}
+            disabled={!clipKey(newClip) || !newText.trim()}
+            className="min-h-[44px] px-4 bg-fuchsia-600 hover:bg-fuchsia-700 disabled:opacity-40 text-white rounded-lg text-xs font-black uppercase tracking-widest shadow inline-flex items-center gap-1.5"
+          >
+            <Plus className="w-4 h-4" /> Add feedback
+          </button>
+        </div>
+      </div>
+
+      <div className="divide-y divide-slate-100">
+        {open.length === 0 && (
+          <div className="p-8 text-center text-sm text-slate-400 font-bold">
+            {query ? `Nothing open matching "${query}".` : 'No open clip feedback.'}
+          </div>
+        )}
+        {open.map(t => (
+          <ClipThread
+            key={t.clip}
+            t={t}
+            replying={replyFor === t.clip}
+            replyText={replyText}
+            onReplyText={setReplyText}
+            onStartReply={() => { setReplyFor(t.clip); setReplyText(''); }}
+            onCancelReply={() => { setReplyFor(null); setReplyText(''); }}
+            onReply={() => reply(t.clip)}
+            editingLink={linkFor === t.clip}
+            linkDraft={linkDraft}
+            onLinkDraft={setLinkDraft}
+            onStartLink={() => { setLinkFor(t.clip); setLinkDraft(t.url); }}
+            onCancelLink={() => { setLinkFor(null); setLinkDraft(''); }}
+            onSaveLink={() => saveLink(t)}
+            onStatus={s => setStatus(t, s)}
+            onDeleteEntry={onDeleteFeedback}
+          />
+        ))}
+      </div>
+
+      {addressed.length > 0 && (
+        <div className="border-t border-slate-200 bg-slate-50/60">
+          <button
+            onClick={() => setShowAddressed(o => !o)}
+            className="w-full px-4 min-h-[52px] flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-400 hover:bg-slate-100"
+          >
+            <Check className="w-4 h-4" /> Addressed
+            <span className="bg-slate-200 text-slate-500 rounded-full px-2 py-0.5 text-[10px]">{addressed.length}</span>
+            <ChevronRight className={`w-4 h-4 ml-auto transition-transform ${showAddressed ? 'rotate-90' : ''}`} />
+          </button>
+          {showAddressed && (
+            <div className="divide-y divide-slate-100 border-t border-slate-200 bg-white">
+              {addressed.map(t => (
+                <ClipThread
+                  key={t.clip}
+                  t={t}
+                  replying={replyFor === t.clip}
+                  replyText={replyText}
+                  onReplyText={setReplyText}
+                  onStartReply={() => { setReplyFor(t.clip); setReplyText(''); }}
+                  onCancelReply={() => { setReplyFor(null); setReplyText(''); }}
+                  onReply={() => reply(t.clip)}
+                  editingLink={linkFor === t.clip}
+                  linkDraft={linkDraft}
+                  onLinkDraft={setLinkDraft}
+                  onStartLink={() => { setLinkFor(t.clip); setLinkDraft(t.url); }}
+                  onCancelLink={() => { setLinkFor(null); setLinkDraft(''); }}
+                  onSaveLink={() => saveLink(t)}
+                  onStatus={s => setStatus(t, s)}
+                  onDeleteEntry={onDeleteFeedback}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ClipThread({
+  t, replying, replyText, onReplyText, onStartReply, onCancelReply, onReply,
+  editingLink, linkDraft, onLinkDraft, onStartLink, onCancelLink, onSaveLink,
+  onStatus, onDeleteEntry,
+}: {
+  t: {
+    clip: string;
+    entries: MarketingFeedbackEntry[];
+    status: MarketingClipStatus;
+    url: string;
+  };
+  replying: boolean;
+  replyText: string;
+  onReplyText: (v: string) => void;
+  onStartReply: () => void;
+  onCancelReply: () => void;
+  onReply: () => void;
+  editingLink: boolean;
+  linkDraft: string;
+  onLinkDraft: (v: string) => void;
+  onStartLink: () => void;
+  onCancelLink: () => void;
+  onSaveLink: () => void;
+  onStatus: (s: MarketingClipStatus) => void;
+  onDeleteEntry: (id: string) => void;
+}) {
+  const done = t.status === 'addressed';
+  return (
+    <div className={done ? 'opacity-60' : ''}>
+      <div className="px-3 py-3">
+        {/* Clip header — the number is the identity, so it leads. */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-black tracking-widest text-slate-800">{clipLabel(t.clip)}</span>
+          <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border ${
+            done
+              ? 'bg-lime-100 text-lime-800 border-lime-300'
+              : 'bg-amber-100 text-amber-800 border-amber-300'
+          }`}
+          >
+            {done ? 'Addressed' : 'Open'}
+          </span>
+          <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">
+            {t.entries.length}
+          </span>
+          {t.url && (
+            <a
+              href={t.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-[11px] font-bold text-fuchsia-700 hover:underline"
+            >
+              <ExternalLink className="w-3 h-3" /> {hostOf(t.url)}
+            </a>
+          )}
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              onClick={onStartLink}
+              aria-label={t.url ? 'Edit clip link' : 'Add clip link'}
+              className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-300 hover:text-fuchsia-600"
+            >
+              <Paperclip className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => onStatus(done ? 'open' : 'addressed')}
+              className={`min-h-[40px] px-3 rounded-lg text-[11px] font-black uppercase tracking-widest inline-flex items-center gap-1.5 ${
+                done
+                  ? 'text-slate-500 hover:bg-slate-100'
+                  : 'bg-lime-600 hover:bg-lime-700 text-white shadow'
+              }`}
+            >
+              {done ? <><RotateCcw className="w-3.5 h-3.5" /> Reopen</> : <><Check className="w-3.5 h-3.5" /> Mark addressed</>}
+            </button>
+          </div>
+        </div>
+
+        {editingLink && (
+          <div className="mt-2 flex gap-2">
+            <input
+              value={linkDraft}
+              onChange={e => onLinkDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') onSaveLink(); }}
+              placeholder="Drive link for this clip (optional)"
+              className="flex-1 min-w-0 border border-gray-300 rounded-lg p-2.5 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400"
+            />
+            <button onClick={onSaveLink} className="min-h-[40px] px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-[11px] font-black uppercase tracking-widest">Save</button>
+            <button onClick={onCancelLink} aria-label="Cancel" className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-400 hover:text-slate-700">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* The conversation, oldest first. */}
+        <div className="mt-2 space-y-2">
+          {t.entries.map(e => (
+            <div key={e.id} className="flex items-start gap-2 group">
+              <div className="flex-1 min-w-0 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                <p className="text-sm font-bold text-slate-800 whitespace-pre-wrap break-words">{e.text}</p>
+                <span className="block text-[10px] font-bold uppercase tracking-widest text-slate-400 mt-1">
+                  {e.createdBy?.name || 'Unknown'}
+                  {e.createdAt ? ` · ${prettyStamp(e.createdAt)}` : ''}
+                </span>
+              </div>
+              <button
+                onClick={() => onDeleteEntry(e.id)}
+                aria-label="Delete feedback"
+                className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-200 hover:text-rose-600 shrink-0"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Reply — same clip, so it joins this thread rather than starting one. */}
+        {replying ? (
+          <div className="mt-2 space-y-2">
+            <textarea
+              value={replyText}
+              onChange={e => onReplyText(e.target.value)}
+              placeholder={`Reply on ${clipLabel(t.clip)}…`}
+              rows={3}
+              autoFocus
+              className="w-full border border-gray-300 rounded-lg p-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400 resize-y min-h-[76px]"
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={onCancelReply} className="min-h-[40px] px-3 text-slate-500 hover:bg-slate-100 rounded-lg text-[11px] font-black uppercase tracking-widest">Cancel</button>
+              <button
+                onClick={onReply}
+                disabled={!replyText.trim()}
+                className="min-h-[40px] px-4 bg-fuchsia-600 hover:bg-fuchsia-700 disabled:opacity-40 text-white rounded-lg text-[11px] font-black uppercase tracking-widest shadow"
+              >
+                Reply
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={onStartReply}
+            className="mt-2 min-h-[40px] px-2 inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-slate-400 hover:text-fuchsia-700"
+          >
+            <CornerDownRight className="w-3.5 h-3.5" /> Reply
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
