@@ -23,6 +23,9 @@ const normalizeEmail = (value: unknown): string => {
 // Firestore rules block their reads, so this runs the check server-side.
 // It returns ONLY a boolean for the single email asked — the allowlist
 // itself and every other email on it are never returned to the caller.
+// Deliberately NO minInstances. This fires a handful of times a year, when
+// someone signs up. A cold start here costs one person a few seconds; paying
+// ~$8/month to keep an instance warm for that is not worth it.
 export const checkEmailAuthorized = onCall(
   {region: REGION},
   async (request): Promise<{authorized: boolean}> => {

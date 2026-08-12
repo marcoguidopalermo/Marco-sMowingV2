@@ -30,6 +30,9 @@ export {
   jobberSyncPerformance,
   jobberSyncPerformanceScheduled,
 } from "./jobber/syncPerformance.js";
+// Staleness watchdog for the performance sync. Runs only inside operating
+// hours so the expected overnight gap can't be read as a stall.
+export {jobberSyncStaleCheck} from "./jobber/syncHealth.js";
 // Forward capacity forecast — read-only snapshot of scheduled, uncompleted
 // work. Independent of the performance sync (own schedule, own document).
 export {

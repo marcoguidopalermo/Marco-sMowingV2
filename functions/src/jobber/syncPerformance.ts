@@ -2946,11 +2946,15 @@ async function runPerformanceSync(args: {
   return summary;
 }
 
+// minInstances: 1 keeps one warm instance so a manual sync doesn't eat a cold
+// start. Cold starts here were aborting the call with a bare "internal" error
+// on the first request after each redeploy.
 export const jobberSyncPerformance = onCall(
   {
     region: REGION,
     secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET],
     timeoutSeconds: 540,
+    minInstances: 1,
   },
   async (request) => {
     if (!request.auth) {
