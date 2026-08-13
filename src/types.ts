@@ -2070,6 +2070,19 @@ export interface MarketingContentItem {
   date: string;
   status: MarketingContentStatus;
   notes?: string;
+  // Set when this entry was created by scheduling a post-queue clip. Holds the
+  // NORMALIZED clip key — the same key the feedback thread and the queue row
+  // are keyed by — so the entry links back to the conversation without storing
+  // a message id or a queue-row id.
+  //
+  // This one field IS the whole queue ↔ calendar linkage, and it points one
+  // way. The queue row stores nothing about scheduling: it finds its entry by
+  // matching this key, the way feedback finds a thread. That is what makes
+  // `date` below the SINGLE scheduled date — reschedule from the queue and
+  // reschedule from the calendar are the same write to the same field, so the
+  // two sides cannot disagree, and deleting the entry from the calendar
+  // silently returns the queue row to undated with no id left to clean up.
+  clip?: string;
   // Attached reference links, held as MarketingLink ids. THE source of truth
   // for attachment — a MarketingLink never points back at an item, so a link
   // is attached in exactly one place and can't drift.
@@ -2186,6 +2199,12 @@ export interface MarketingClipThread {
 // because saveMarketingClip writes the clip doc whole (callers build a fresh
 // {id,status,url}), so queue fields living there would be blanked the next
 // time someone marked the clip addressed.
+//
+// A queued clip can be SCHEDULED onto the content calendar, and that adds no
+// field here on purpose: the calendar entry carries the clip key (see
+// MarketingContentItem.clip) and owns the date. Scheduling does NOT remove the
+// row — the queue stays the one view of what's ready and what's committed, and
+// marking POSTED is the only thing that clears it.
 export type MarketingPostQueueStatus = 'queued' | 'posted';
 
 export interface MarketingPostQueueEntry {

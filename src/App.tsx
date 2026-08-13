@@ -2907,10 +2907,14 @@ export default function App() {
     };
     await setDoc(doc(roleColl('marketingContent'), item.id), cleanRM(rec));
   };
+  // Also the UNSCHEDULE path for a post-queue clip: the calendar entry owns the
+  // date, so deleting it is the whole of unscheduling — the queue row carries
+  // no id or date of its own and simply reads as undated once this is gone.
+  // Hence the neutral wording, which is true from either side.
   const deleteMarketingContent = async (id: string) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
     await deleteDoc(doc(roleColl('marketingContent'), id));
-    showToastMsg('Content removed.');
+    showToastMsg('Calendar entry removed.');
   };
   const saveMarketingShot = async (shot: MarketingShot) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }

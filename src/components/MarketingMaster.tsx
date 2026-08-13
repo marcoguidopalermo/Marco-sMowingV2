@@ -91,6 +91,13 @@ function prettyDate(date: string): string {
   return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+// "Aug 22" — for chips where the weekday is noise and the width is scarce.
+function shortDate(date: string): string {
+  const d = new Date(`${date}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return date;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 function newId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -255,12 +262,17 @@ export default function MarketingMaster({
         />
 
         {/* (f) POST QUEUE — last, because it is the end of the pipeline: a
-            clip only lands here once its feedback is done. */}
+            clip only lands here once its feedback is done. It reaches back UP
+            to the calendar: scheduling a queued clip writes a calendar entry,
+            which is why the panel takes the content list and its writers. */}
         <PostQueuePanel
           postQueue={postQueue}
           feedback={feedback}
+          content={contentList}
           onSave={onSavePostQueue}
           onDelete={onDeletePostQueue}
+          onSaveContent={onSaveContent}
+          onDeleteContent={onDeleteContent}
         />
       </div>
     </div>
@@ -437,25 +449,41 @@ function CalendarSection({
           {monthItems.length === 0 && (
             <div className="p-8 text-center text-sm text-slate-400 font-bold">Nothing planned for {MONTHS[month]}.</div>
           )}
-          {monthItems.map(item => (
-            <button
-              key={item.id}
-              onClick={() => setEditing(item)}
-              className="w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-slate-50 min-h-[56px]"
-            >
-              <span className={`mt-1.5 w-2.5 h-2.5 rounded-full shrink-0 ${STATUS_DOT[item.status]}`} />
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-bold text-slate-800 truncate">{item.title || 'Untitled'}</span>
-                <span className="block text-[11px] font-bold uppercase tracking-widest text-slate-400">
-                  {prettyDate(item.date)} · {item.status}
-                  {item.links.length > 0 && ` · ${item.links.length} link${item.links.length === 1 ? '' : 's'}`}
-                </span>
-                {item.notes && <span className="block text-xs text-slate-500 mt-0.5 line-clamp-2">{item.notes}</span>}
-                <Byline created={item.createdBy} createdAt={item.createdAt} updated={item.updatedBy} updatedAt={item.updatedAt} />
-              </span>
-              <Pencil className="w-4 h-4 text-slate-300 shrink-0 mt-1" />
-            </button>
-          ))}
+          {monthItems.map(item => {
+            const clip = clipKey(item.clip || '');
+            return (
+              <div key={item.id} className="flex items-start hover:bg-slate-50">
+                <button
+                  onClick={() => setEditing(item)}
+                  className="min-w-0 flex-1 text-left pl-4 pr-1 py-3 flex items-start gap-3 min-h-[56px]"
+                >
+                  <span className={`mt-1.5 w-2.5 h-2.5 rounded-full shrink-0 ${STATUS_DOT[item.status]}`} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-bold text-slate-800 truncate">{item.title || 'Untitled'}</span>
+                    <span className="block text-[11px] font-bold uppercase tracking-widest text-slate-400">
+                      {prettyDate(item.date)} · {item.status}
+                      {item.links.length > 0 && ` · ${item.links.length} link${item.links.length === 1 ? '' : 's'}`}
+                    </span>
+                    {item.notes && <span className="block text-xs text-slate-500 mt-0.5 line-clamp-2">{item.notes}</span>}
+                    <Byline created={item.createdBy} createdAt={item.createdAt} updated={item.updatedBy} updatedAt={item.updatedAt} />
+                  </span>
+                </button>
+                {/* Straight back to the clip's feedback thread when this entry
+                    was scheduled from the post queue. Outside the row button so
+                    it stays a real link, not a nested (invalid) button. */}
+                {clip && (
+                  <a
+                    href={`#clip-${clip}`}
+                    title={`Feedback thread for ${clipLabel(clip)}`}
+                    className="mt-3 shrink-0 inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200 rounded-full px-2 py-1 hover:bg-fuchsia-100"
+                  >
+                    <MessageSquare className="w-3 h-3" /> {clipLabel(clip)}
+                  </a>
+                )}
+                <Pencil className="w-4 h-4 text-slate-300 shrink-0 mt-4 mx-3" />
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -517,6 +545,26 @@ function ContentEditor({
   return (
     <Sheet title={isNew ? 'New content' : 'Edit content'} onClose={onClose}>
       <div className="space-y-4">
+        {/* Scheduled from the post queue. The clip key is the whole link: it
+            reaches the review conversation, and it is how the queue row finds
+            this entry's date. Closing the sheet first so the jump lands on a
+            visible thread. */}
+        {clipKey(draft.clip || '') && (
+          <div className="rounded-lg border border-fuchsia-200 bg-fuchsia-50 px-3 py-2.5">
+            <a
+              href={`#clip-${clipKey(draft.clip!)}`}
+              onClick={onClose}
+              className="inline-flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-fuchsia-700 hover:underline"
+            >
+              <MessageSquare className="w-4 h-4" /> {clipLabel(clipKey(draft.clip!))} · feedback thread
+            </a>
+            <p className="text-[11px] font-bold text-fuchsia-700/70 mt-1">
+              Scheduled from the post queue. The date here is the one the queue shows;
+              deleting this entry returns the clip to the queue undated.
+            </p>
+          </div>
+        )}
+
         <Field label="Title">
           <input
             autoFocus
@@ -1751,17 +1799,29 @@ function TodoPanel({
 // so the feedback thread is reachable by that key alone — nothing is copied
 // out of the thread and no pointer into it is stored, which is what makes
 // queueing (and un-queueing) unable to orphan the conversation.
+//
+// A row can also be SCHEDULED, which writes a calendar entry for the clip. The
+// row does NOT leave the queue on scheduling: the queue is the single view of
+// what is ready and what is committed, so a scheduled clip stays put with its
+// date shown, and marking POSTED is the one thing that clears it. The row
+// stores no date of its own — the calendar entry owns it, and this panel reads
+// it back through the clip key.
 function PostQueuePanel({
-  postQueue, feedback, onSave, onDelete,
+  postQueue, feedback, content, onSave, onDelete, onSaveContent, onDeleteContent,
 }: {
   postQueue: Record<string, MarketingPostQueueEntry>;
   feedback: Record<string, MarketingFeedbackEntry>;
+  content: MarketingContentItem[];
   onSave: (e: MarketingPostQueueEntry) => void;
   onDelete: (id: string) => void;
+  onSaveContent: (i: MarketingContentItem) => void;
+  onDeleteContent: (id: string) => void;
 }) {
   const [showPosted, setShowPosted] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState('');
+  const [schedFor, setSchedFor] = useState<string | null>(null);
+  const [dateDraft, setDateDraft] = useState('');
 
   // Message count per clip — grouped on the clip key exactly as FeedbackPanel
   // does it, so the number shown here is the same thread.
@@ -1774,6 +1834,25 @@ function PostQueuePanel({
     }
     return m;
   }, [feedback]);
+
+  // clip key → its calendar entry. DERIVED by matching MarketingContentItem
+  // .clip, exactly the way a feedback thread is derived by grouping on the
+  // same key — no pointer is stored on the queue row, so nothing here can
+  // dangle. Delete the entry on the calendar and the row simply reads as
+  // undated again; re-send a clip to the queue and it finds its entry back.
+  const scheduledByClip = useMemo(() => {
+    const m = new Map<string, MarketingContentItem>();
+    for (const i of content) {
+      const k = clipKey(i.clip || '');
+      if (!k) continue;
+      const prev = m.get(k);
+      // Two entries for one clip is only reachable by two people scheduling
+      // the same clip at once; take the earliest date so every device picks
+      // the same one rather than whichever happened to be first in the map.
+      if (!prev || (i.date || '').localeCompare(prev.date || '') < 0) m.set(k, i);
+    }
+    return m;
+  }, [content]);
 
   const all = useMemo(() => Object.values(postQueue), [postQueue]);
   // Sorted by (order, queuedAt): the tiebreak keeps the list stable if two
@@ -1808,9 +1887,69 @@ function PostQueuePanel({
     setNoteDraft('');
   };
 
+  const closeSched = () => { setSchedFor(null); setDateDraft(''); };
+
+  // Open the date picker on the row. Pre-filled with the date it already has,
+  // so "reschedule" starts from where it is rather than from today.
+  const openSched = (e: MarketingPostQueueEntry) => {
+    setEditingId(null);
+    setNoteDraft('');
+    setSchedFor(e.id);
+    setDateDraft(scheduledByClip.get(e.id)?.date || ymd(new Date()));
+  };
+
+  // Schedule / reschedule. ONE write either way, and always to the calendar
+  // entry's `date` — the queue has no date field to fall out of step with it.
+  const saveSched = (e: MarketingPostQueueEntry) => {
+    const date = dateDraft;
+    if (!date) return;
+    const entry = scheduledByClip.get(e.id);
+    if (entry) {
+      if (entry.date !== date) onSaveContent({ ...entry, date });
+    } else {
+      onSaveContent({
+        id: newId('mc'),
+        // Title from the clip: its number, plus the posting note when there is
+        // one. Written ONCE, at creation — the calendar entry's title stays
+        // editable there, and a later note edit must not overwrite it.
+        title: [clipLabel(e.id), (e.note || '').trim()].filter(Boolean).join(' — '),
+        date,
+        status: 'scheduled',
+        links: [],
+        // The back-link to the clip, and the only thing tying the two sides
+        // together.
+        clip: e.id,
+      });
+    }
+    closeSched();
+  };
+
+  // Unschedule = delete the calendar entry, which is the same act as deleting
+  // it on the calendar. Nothing else to undo: with no stored date and no
+  // stored id, the row is undated again the moment the entry is gone. The
+  // clip, its feedback thread and its place in the queue are untouched.
+  const unschedule = (e: MarketingPostQueueEntry) => {
+    const entry = scheduledByClip.get(e.id);
+    if (entry) onDeleteContent(entry.id);
+    closeSched();
+  };
+
+  // Marking posted is what clears a clip from the queue. It carries the
+  // calendar entry with it — a clip that has gone out reading "scheduled" on
+  // the calendar is exactly the kind of disagreement the single date field
+  // exists to prevent. Requeueing puts the entry back to scheduled.
+  const setPosted = (e: MarketingPostQueueEntry, posted: boolean) => {
+    if (schedFor === e.id) closeSched();
+    onSave({ ...e, status: posted ? 'posted' : 'queued' });
+    const entry = scheduledByClip.get(e.id);
+    const want: MarketingContentStatus = posted ? 'posted' : 'scheduled';
+    if (entry && entry.status !== want) onSaveContent({ ...entry, status: want });
+  };
+
   const row = (e: MarketingPostQueueEntry, idx: number | null) => {
     const done = e.status === 'posted';
     const count = countByClip.get(e.id) || 0;
+    const sched = scheduledByClip.get(e.id);
     return (
       <div key={e.id} className={`px-3 py-2.5 ${done ? 'opacity-55' : ''}`}>
         <div className="flex items-center gap-2 flex-wrap">
@@ -1852,9 +1991,38 @@ function PostQueuePanel({
             <MessageSquare className="w-3 h-3" /> Thread
             {count > 0 && <span className="text-fuchsia-500">{count}</span>}
           </a>
+          {/* Scheduled or not — the row says which, in place, rather than
+              leaving a committed clip looking the same as an undated one. Both
+              states open the same date picker below. A POSTED row shows the
+              date it went out as a plain chip: scheduling something that has
+              already gone out is not a thing, and its calendar entry has
+              followed it to `posted`. */}
+          {sched ? (
+            done ? (
+              <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-slate-500 bg-slate-100 border border-slate-300 rounded-full px-2 py-1">
+                <CalendarDays className="w-3 h-3" /> {shortDate(sched.date)}
+              </span>
+            ) : (
+              <button
+                onClick={() => openSched(e)}
+                title={`On the content calendar for ${prettyDate(sched.date)} — tap to change`}
+                className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-amber-800 bg-amber-100 border border-amber-300 rounded-full px-2 py-1 hover:bg-amber-200"
+              >
+                <CalendarDays className="w-3 h-3" /> Scheduled {shortDate(sched.date)}
+              </button>
+            )
+          ) : !done && (
+            <button
+              onClick={() => openSched(e)}
+              title="Put this clip on the content calendar"
+              className="min-h-[36px] px-2.5 rounded-lg border border-slate-200 text-slate-500 hover:text-fuchsia-700 hover:bg-fuchsia-50 text-[10px] font-black uppercase tracking-widest inline-flex items-center gap-1.5"
+            >
+              <CalendarDays className="w-3.5 h-3.5" /> Schedule
+            </button>
+          )}
           <div className="ml-auto flex items-center gap-1 shrink-0">
             <button
-              onClick={() => onSave({ ...e, status: done ? 'queued' : 'posted' })}
+              onClick={() => setPosted(e, !done)}
               className={`min-h-[40px] px-3 rounded-lg text-[11px] font-black uppercase tracking-widest inline-flex items-center gap-1.5 ${
                 done ? 'text-slate-500 hover:bg-slate-100' : 'bg-sky-600 hover:bg-sky-700 text-white shadow'
               }`}
@@ -1871,6 +2039,49 @@ function PostQueuePanel({
             </button>
           </div>
         </div>
+
+        {/* Pick a date. Scheduling and rescheduling are the same control and
+            the same write; Unschedule is only offered once there's an entry
+            to remove. */}
+        {schedFor === e.id && (
+          <div className="mt-2 flex gap-2 flex-wrap items-center">
+            <input
+              type="date"
+              autoFocus
+              value={dateDraft}
+              onChange={ev => setDateDraft(ev.target.value)}
+              onKeyDown={ev => {
+                if (ev.key === 'Enter') saveSched(e);
+                if (ev.key === 'Escape') closeSched();
+              }}
+              aria-label={`Date for ${clipLabel(e.id)}`}
+              className="min-w-0 border border-gray-300 rounded-lg p-2.5 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400"
+            />
+            <button
+              onClick={() => saveSched(e)}
+              disabled={!dateDraft}
+              className="min-h-[40px] px-3 bg-fuchsia-600 hover:bg-fuchsia-700 disabled:opacity-40 text-white rounded-lg text-[11px] font-black uppercase tracking-widest"
+            >
+              {sched ? 'Reschedule' : 'Schedule'}
+            </button>
+            {sched && (
+              <button
+                onClick={() => unschedule(e)}
+                title="Remove the calendar entry — this clip stays in the queue, undated"
+                className="min-h-[40px] px-3 text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg text-[11px] font-black uppercase tracking-widest"
+              >
+                Unschedule
+              </button>
+            )}
+            <button
+              onClick={closeSched}
+              aria-label="Cancel"
+              className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-400 hover:text-slate-700"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
         {/* The posting note — short, and separate from the review thread. */}
         {editingId === e.id ? (
@@ -1897,7 +2108,7 @@ function PostQueuePanel({
           </div>
         ) : (
           <button
-            onClick={() => { setEditingId(e.id); setNoteDraft(e.note || ''); }}
+            onClick={() => { closeSched(); setEditingId(e.id); setNoteDraft(e.note || ''); }}
             className="mt-1 block text-left w-full min-h-[32px]"
           >
             <span className={`text-sm ${e.note ? 'text-slate-700 font-bold' : 'text-slate-300 italic font-bold'}`}>
