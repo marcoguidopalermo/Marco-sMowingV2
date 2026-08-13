@@ -28,7 +28,7 @@ import {
   CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract,
   MarketingContentItem, MarketingShot, MarketingLink,
   MarketingFeedbackEntry, MarketingClipThread, MarketingClipStatus,
-  MarketingPostQueueEntry
+  MarketingPostQueueEntry, MarketingTodo
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
@@ -266,6 +266,7 @@ export default function App() {
   const subMarketingFeedbackRef = useRef<Record<string, MarketingFeedbackEntry>>({});
   const subMarketingClipsRef = useRef<Record<string, MarketingClipThread>>({});
   const subMarketingPostQueueRef = useRef<Record<string, MarketingPostQueueEntry>>({});
+  const subMarketingTodosRef = useRef<Record<string, MarketingTodo>>({});
   // ContractingMaster (Palermo's) — namespaced subcollections, own tenant.
   const subContractingProjectsRef = useRef<Record<string, ContractingProject>>({});
   const subContractingTimeEntriesRef = useRef<Record<string, ContractingTimeEntry>>({});
@@ -1009,6 +1010,7 @@ export default function App() {
           marketingFeedback: subMarketingFeedbackRef.current,
           marketingClips: subMarketingClipsRef.current,
           marketingPostQueue: subMarketingPostQueueRef.current,
+          marketingTodos: subMarketingTodosRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -1402,7 +1404,8 @@ export default function App() {
     const m4 = mk('marketingFeedback', subMarketingFeedbackRef, 'marketingFeedback');
     const m5 = mk('marketingClips', subMarketingClipsRef, 'marketingClips');
     const m6 = mk('marketingPostQueue', subMarketingPostQueueRef, 'marketingPostQueue');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); };
+    const m7 = mk('marketingTodos', subMarketingTodosRef, 'marketingTodos');
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); };
   }, [user]);
 
   useEffect(() => {
@@ -3049,6 +3052,37 @@ export default function App() {
     // subcollection keyed by the same clip number and is untouched.
     await deleteDoc(doc(roleColl('marketingPostQueue'), clip));
     showToastMsg('Removed from the post queue.');
+  };
+
+  // Shared marketing to-do. Same single gate as the rest of the module: no
+  // per-item ownership, so anyone who can see the board can edit or delete
+  // anything on it. addedBy/addedAt are stamped once, from the signed-in
+  // identity, and survive every later edit by anyone else.
+  const saveMarketingTodo = async (todo: MarketingTodo) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    const text = (todo.text || '').trim();
+    if (!text) return;
+    const existing = appData.marketingTodos?.[todo.id];
+    const now = Date.now();
+    const done = !!todo.done;
+    const rec: MarketingTodo = {
+      ...todo,
+      text,
+      priority: todo.priority === 'high' ? 'high' : 'normal',
+      dueDate: todo.dueDate || undefined,
+      done,
+      // Cleared on un-tick so a re-opened item can't show a stale
+      // completion time in the Done section.
+      doneAt: done ? (existing?.doneAt || todo.doneAt || now) : undefined,
+      addedBy: existing?.addedBy || todo.addedBy || marketingUser,
+      addedAt: existing?.addedAt || todo.addedAt || now,
+    };
+    await setDoc(doc(roleColl('marketingTodos'), todo.id), cleanRM(rec));
+  };
+  const deleteMarketingTodo = async (id: string) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    await deleteDoc(doc(roleColl('marketingTodos'), id));
+    showToastMsg('To-do removed.');
   };
 
   // ── ContractingMaster (Palermo's) handlers ─────────────────────────────
@@ -5722,6 +5756,9 @@ export default function App() {
           postQueue={appData.marketingPostQueue || {}}
           onSavePostQueue={saveMarketingPostQueue}
           onDeletePostQueue={deleteMarketingPostQueue}
+          todos={appData.marketingTodos || {}}
+          onSaveTodo={saveMarketingTodo}
+          onDeleteTodo={deleteMarketingTodo}
         />
       ) : currentView === 'mechanic' ? renderMechanicBoard() : currentView === 'performance' ? renderPerformanceBoard() : currentView === 'mymechanic' ? (
         <>

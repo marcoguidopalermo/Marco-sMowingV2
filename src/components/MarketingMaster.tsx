@@ -1,9 +1,11 @@
-// MarketingMaster — one module, one scroll: CALENDAR · SHOT QUEUE · LINKS ·
-// CLIP FEEDBACK · POST QUEUE. No tabs, no navigation.
+// MarketingMaster — one module, one scroll: CALENDAR · TO-DO · SHOT QUEUE ·
+// LINKS · CLIP FEEDBACK · POST QUEUE. No tabs, no navigation.
 //
 // Built for a marketer who is just starting, so it stays deliberately thin:
 //   • Calendar — a month of planned content. No platform split (everything is
 //     cross-posted), no approval chain, no recurrence.
+//   • To-do — ONE shared list for everyone with marketing access. Two-state
+//     priority, optional due date, no owner and no per-item permissions.
 //   • Shot queue — work that still needs filming. Fed by hand and by promoting
 //     a reference link ("make something like this"). ONE list, not two: the
 //     old "shots to follow up" IS this queue (see MarketingShot in types.ts).
@@ -24,12 +26,12 @@ import { useMemo, useRef, useState } from 'react';
 import {
   CalendarDays, Camera, Link2, ChevronLeft, ChevronRight, Plus, X, Trash2,
   ExternalLink, Check, Paperclip, Pencil, Megaphone, MessageSquare, Search,
-  RotateCcw, CornerDownRight, Send, ArrowUp, ArrowDown,
+  RotateCcw, CornerDownRight, Send, ArrowUp, ArrowDown, ListChecks, Flag,
 } from 'lucide-react';
 import type {
   MarketingClipStatus, MarketingClipThread, MarketingContentItem,
   MarketingContentStatus, MarketingFeedbackEntry, MarketingLink, MarketingShot,
-  MarketingPostQueueEntry,
+  MarketingPostQueueEntry, MarketingTodo, MarketingTodoPriority,
 } from '../types';
 
 interface Props {
@@ -51,6 +53,9 @@ interface Props {
   onSaveClip: (thread: MarketingClipThread) => void;
   onSavePostQueue: (entry: MarketingPostQueueEntry) => void;
   onDeletePostQueue: (id: string) => void;
+  todos: Record<string, MarketingTodo>;
+  onSaveTodo: (todo: MarketingTodo) => void;
+  onDeleteTodo: (id: string) => void;
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -179,6 +184,7 @@ export default function MarketingMaster({
   onSaveLink, onDeleteLink,
   onSaveFeedback, onDeleteFeedback, onSaveClip,
   onSavePostQueue, onDeletePostQueue,
+  todos, onSaveTodo, onDeleteTodo,
 }: Props) {
   // `links` is normalized on the way in so every consumer below can treat it
   // as an array — a doc written before the field existed (or one whose empty
@@ -214,7 +220,12 @@ export default function MarketingMaster({
           onSaveLink={onSaveLink}
         />
 
-        {/* (b) SHOT QUEUE and (c) LINKS — compact panels side by side on
+        {/* (b) TO-DO — one shared list, directly under the calendar: it is
+            the "what do I actually need to do" of this board, so it sits
+            above the pipeline panels rather than beside them. */}
+        <TodoPanel todos={todos} onSave={onSaveTodo} onDelete={onDeleteTodo} />
+
+        {/* (c) SHOT QUEUE and (d) LINKS — compact panels side by side on
             desktop, stacked in that order on a phone. Adjacent on purpose:
             promoting a link to the shot queue moves it one panel left. */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
@@ -231,7 +242,7 @@ export default function MarketingMaster({
           />
         </div>
 
-        {/* (d) CLIP FEEDBACK — full width. The footage lives in Drive; this
+        {/* (e) CLIP FEEDBACK — full width. The footage lives in Drive; this
             holds only the conversation about it, keyed by clip number. */}
         <FeedbackPanel
           feedback={feedback}
@@ -243,7 +254,7 @@ export default function MarketingMaster({
           onSavePostQueue={onSavePostQueue}
         />
 
-        {/* (e) POST QUEUE — last, because it is the end of the pipeline: a
+        {/* (f) POST QUEUE — last, because it is the end of the pipeline: a
             clip only lands here once its feedback is done. */}
         <PostQueuePanel
           postQueue={postQueue}
@@ -1476,6 +1487,261 @@ function ClipThread({
         )}
       </div>
     </div>
+  );
+}
+
+/* ══════════════════════ SHARED TO-DO ══════════════════════════════════ */
+
+// One shared list. No owner, no assignee, no per-item permission — anyone on
+// the board can add, edit, tick and delete anything, which is what "shared
+// working list" actually means. addedBy is a byline, not an access check.
+function TodoPanel({
+  todos, onSave, onDelete,
+}: {
+  todos: Record<string, MarketingTodo>;
+  onSave: (t: MarketingTodo) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [text, setText] = useState('');
+  const [priority, setPriority] = useState<MarketingTodoPriority>('normal');
+  const [showDone, setShowDone] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<MarketingTodo | null>(null);
+  const addRef = useRef<HTMLInputElement>(null);
+
+  // Local calendar day, so "overdue" matches the user's date rather than UTC.
+  const today = ymd(new Date());
+
+  const all = useMemo(() => Object.values(todos), [todos]);
+
+  // Sort: high priority first, then dated ascending, then undated in the
+  // order they were entered. Dated always outranks undated WITHIN a priority
+  // band — a normal-priority item with a date never jumps a high-priority one.
+  const openItems = useMemo(() => {
+    const rank = (t: MarketingTodo) => (t.priority === 'high' ? 0 : 1);
+    return all.filter(t => !t.done).sort((a, b) => {
+      const r = rank(a) - rank(b);
+      if (r) return r;
+      const ad = a.dueDate || '';
+      const bd = b.dueDate || '';
+      if (ad && bd) return ad.localeCompare(bd) || (a.addedAt || 0) - (b.addedAt || 0);
+      if (ad) return -1;
+      if (bd) return 1;
+      return (a.addedAt || 0) - (b.addedAt || 0);
+    });
+  }, [all]);
+
+  const doneItems = useMemo(
+    () => all.filter(t => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)),
+    [all],
+  );
+
+  const highOpen = openItems.filter(t => t.priority === 'high').length;
+
+  // Two taps: type, then Add (or Enter). Priority is an optional tap in
+  // between and stays sticky for the next item, which is what you want when
+  // adding several urgent things in a row.
+  const add = () => {
+    const clean = text.trim();
+    if (!clean) return;
+    onSave({ id: newId('mt'), text: clean, priority, done: false });
+    setText('');
+    addRef.current?.focus();
+  };
+
+  const toggleDone = (t: MarketingTodo) => onSave({ ...t, done: !t.done });
+  const togglePriority = (t: MarketingTodo) =>
+    onSave({ ...t, priority: t.priority === 'high' ? 'normal' : 'high' });
+
+  const saveEdit = () => {
+    if (!draft) return;
+    if (!draft.text.trim()) return;
+    onSave({ ...draft, text: draft.text.trim(), dueDate: draft.dueDate || undefined });
+    setEditingId(null);
+    setDraft(null);
+  };
+
+  const row = (t: MarketingTodo) => {
+    const high = t.priority === 'high';
+    // Quiet amber, and only for items still open — a finished item being
+    // "late" is noise, not information.
+    const overdue = !t.done && !!t.dueDate && t.dueDate < today;
+    const editing = editingId === t.id;
+    return (
+      <div key={t.id} className={t.done ? 'opacity-55' : ''}>
+        <div className="flex items-start gap-2 px-3 py-2">
+          <button
+            onClick={() => toggleDone(t)}
+            aria-label={t.done ? 'Mark as not done' : 'Mark as done'}
+            className={`min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg ${t.done ? 'text-lime-600 hover:bg-lime-50' : 'text-slate-300 hover:text-lime-600 hover:bg-slate-50'}`}
+          >
+            <span className={`w-6 h-6 rounded-md border-2 flex items-center justify-center ${t.done ? 'bg-lime-500 border-lime-500 text-white' : 'border-slate-300'}`}>
+              {t.done && <Check className="w-4 h-4" />}
+            </span>
+          </button>
+
+          <div className="min-w-0 flex-1 py-1">
+            {editing && draft ? (
+              <div className="space-y-2">
+                <input
+                  autoFocus
+                  value={draft.text}
+                  onChange={e => setDraft({ ...draft, text: e.target.value })}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') saveEdit();
+                    if (e.key === 'Escape') { setEditingId(null); setDraft(null); }
+                  }}
+                  className="w-full border border-gray-300 rounded-lg p-2.5 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400"
+                />
+                <div className="flex items-center gap-2 flex-wrap">
+                  <input
+                    type="date"
+                    value={draft.dueDate || ''}
+                    onChange={e => setDraft({ ...draft, dueDate: e.target.value })}
+                    className="border border-gray-300 rounded-lg p-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400"
+                  />
+                  {draft.dueDate && (
+                    <button
+                      onClick={() => setDraft({ ...draft, dueDate: undefined })}
+                      className="min-h-[36px] px-2 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-100 rounded-lg"
+                    >
+                      Clear date
+                    </button>
+                  )}
+                  <button onClick={saveEdit} className="ml-auto min-h-[36px] px-3 bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded-lg text-[10px] font-black uppercase tracking-widest shadow">Save</button>
+                  <button
+                    onClick={() => { setEditingId(null); setDraft(null); }}
+                    className="min-h-[36px] px-2 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:bg-slate-100 rounded-lg"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => { setEditingId(t.id); setDraft(t); }} className="block w-full text-left">
+                <span className={`block text-sm font-bold text-slate-800 break-words ${t.done ? 'line-through' : ''}`}>
+                  {t.text}
+                </span>
+                <span className="flex items-center gap-2 flex-wrap mt-1">
+                  {high && !t.done && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200">
+                      <Flag className="w-3 h-3" /> High
+                    </span>
+                  )}
+                  {t.dueDate && (
+                    <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-full border ${
+                      overdue
+                        ? 'bg-amber-50 text-amber-700 border-amber-200'
+                        : 'bg-slate-50 text-slate-500 border-slate-200'
+                    }`}
+                    >
+                      <CalendarDays className="w-3 h-3" />
+                      {prettyDate(t.dueDate)}{overdue ? ' · overdue' : ''}
+                    </span>
+                  )}
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                    {t.addedBy?.name || 'Someone'}
+                    {t.addedAt ? ` · ${prettyStamp(t.addedAt)}` : ''}
+                  </span>
+                </span>
+              </button>
+            )}
+          </div>
+
+          {!editing && (
+            <div className="flex items-center shrink-0">
+              {/* Priority is a toggle, not a menu — two states means a tap. */}
+              <button
+                onClick={() => togglePriority(t)}
+                aria-label={high ? 'Set normal priority' : 'Set high priority'}
+                aria-pressed={high}
+                title={high ? 'High priority — tap for normal' : 'Normal priority — tap for high'}
+                className={`min-w-[40px] min-h-[40px] inline-flex items-center justify-center rounded-lg ${high ? 'text-rose-600 hover:bg-rose-50' : 'text-slate-300 hover:text-rose-500 hover:bg-slate-50'}`}
+              >
+                <Flag className={`w-4 h-4 ${high ? 'fill-rose-500' : ''}`} />
+              </button>
+              <button
+                onClick={() => onDelete(t.id)}
+                aria-label="Delete to-do"
+                className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-300 hover:text-rose-600"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <Panel
+      title="To-do"
+      Icon={ListChecks}
+      count={openItems.length}
+      action={highOpen > 0 ? (
+        <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-full border bg-rose-50 text-rose-700 border-rose-200">
+          <Flag className="w-3 h-3" /> {highOpen} high
+        </span>
+      ) : undefined}
+    >
+      {/* Add row: text, an optional priority tap, save. Nothing else. */}
+      <div className="p-3 border-b border-slate-100 flex gap-2">
+        <input
+          ref={addRef}
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') add(); }}
+          placeholder="Something to do…"
+          className="flex-1 min-w-0 border border-gray-300 rounded-lg p-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400"
+        />
+        <button
+          onClick={() => setPriority(p => (p === 'high' ? 'normal' : 'high'))}
+          aria-pressed={priority === 'high'}
+          aria-label={priority === 'high' ? 'New item: high priority' : 'New item: normal priority'}
+          title={priority === 'high' ? 'New items go in as HIGH — tap for normal' : 'Tap to add as high priority'}
+          className={`min-w-[44px] min-h-[44px] shrink-0 inline-flex items-center justify-center rounded-lg border ${
+            priority === 'high'
+              ? 'bg-rose-50 text-rose-600 border-rose-200'
+              : 'text-slate-300 border-gray-300 hover:text-rose-500'
+          }`}
+        >
+          <Flag className={`w-4 h-4 ${priority === 'high' ? 'fill-rose-500' : ''}`} />
+        </button>
+        <button
+          onClick={add}
+          disabled={!text.trim()}
+          className="min-h-[44px] px-4 bg-fuchsia-600 hover:bg-fuchsia-700 disabled:opacity-40 text-white rounded-lg text-xs font-black uppercase tracking-widest shadow inline-flex items-center gap-1.5"
+        >
+          <Plus className="w-4 h-4" /> Add
+        </button>
+      </div>
+
+      <div className="divide-y divide-slate-100">
+        {openItems.length === 0 && (
+          <div className="p-8 text-center text-sm text-slate-400 font-bold">Nothing on the list.</div>
+        )}
+        {openItems.map(row)}
+      </div>
+
+      {doneItems.length > 0 && (
+        <div className="border-t border-slate-200 bg-slate-50/60">
+          <button
+            onClick={() => setShowDone(o => !o)}
+            className="w-full px-4 min-h-[52px] flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-400 hover:bg-slate-100"
+          >
+            <Check className="w-4 h-4" /> Done
+            <span className="bg-slate-200 text-slate-500 rounded-full px-2 py-0.5 text-[10px]">{doneItems.length}</span>
+            <ChevronRight className={`w-4 h-4 ml-auto transition-transform ${showDone ? 'rotate-90' : ''}`} />
+          </button>
+          {showDone && (
+            <div className="divide-y divide-slate-100 border-t border-slate-200 bg-white">
+              {doneItems.map(row)}
+            </div>
+          )}
+        </div>
+      )}
+    </Panel>
   );
 }
 

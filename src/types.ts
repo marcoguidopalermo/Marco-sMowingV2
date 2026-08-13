@@ -2205,6 +2205,34 @@ export interface MarketingPostQueueEntry {
   postedAt?: number;
 }
 
+// ── Shared to-do ───────────────────────────────────────────────────────
+// ONE list for everyone with marketing access — not per-user. There is no
+// owner, no assignee and no per-item permission: anyone who can see the board
+// can add, edit, tick and delete anything on it. addedBy is a byline so the
+// list reads as a conversation between the two or three people using it, NOT
+// an access control field.
+//
+// Priority is deliberately two-state. A three-tier scheme invites arguing
+// about the middle tier; high/normal is the actual decision being made.
+// Own subcollection marketingTodos/{id}.
+export type MarketingTodoPriority = 'high' | 'normal';
+
+export interface MarketingTodo {
+  id: string;
+  text: string;
+  priority: MarketingTodoPriority;
+  // YYYY-MM-DD. Optional — most items never get one. A date in the past
+  // flags the row amber; it never blocks, hides or escalates anything.
+  dueDate?: string;
+  done: boolean;
+  // Stamped when done flips true and CLEARED when it flips back, so a
+  // re-opened item can't keep a stale completion time. Sorts the collapsed
+  // Done section newest-first.
+  doneAt?: number;
+  addedBy?: { email: string; name: string };
+  addedAt?: number;
+}
+
 export interface AppData {
   schedules: Record<string, Crew[]>;
   employees: Employee[];
@@ -2316,6 +2344,7 @@ export interface AppData {
   marketingFeedback?: Record<string, MarketingFeedbackEntry>;
   marketingClips?: Record<string, MarketingClipThread>;
   marketingPostQueue?: Record<string, MarketingPostQueueEntry>;
+  marketingTodos?: Record<string, MarketingTodo>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of
