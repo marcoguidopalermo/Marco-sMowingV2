@@ -2082,8 +2082,13 @@ export interface MarketingContentItem {
 
 export type MarketingShotStatus = 'needed' | 'captured';
 
-// A shot still to be captured. A working list, not a workflow — there is no
-// assignee, no approval and no notification in v1 by design.
+// A shot still to be captured — THE shot queue. "Shots to follow up" and the
+// shot queue are one list, not two: both are "work that needs filming", and
+// this shape already carried every field a queue needs (description, target
+// date, needed/captured with a dim-and-collapse section). Two lists with the
+// same schema and the same semantics would only drift, so a reference link
+// promoted to the queue becomes a MarketingShot like any other — it just
+// carries sourceLinkId as well.
 // Own subcollection marketingShots/{id}.
 export interface MarketingShot {
   id: string;
@@ -2092,6 +2097,13 @@ export interface MarketingShot {
   // and deliberately NOT a foreign key: marketing shouldn't need the job
   // roster to jot down a shot.
   reference?: string;
+  // Set when the shot was promoted from a saved reference link ("make
+  // something like this"). Holds a MarketingLink id. The LINK IS NOT DELETED
+  // on promotion — it keeps its title, note and byline on the links board and
+  // gains an "in shot queue" badge, so the reference and its history survive
+  // the move instead of being consumed by it. A dangling id (link later
+  // deleted) degrades to no chip — never a crash.
+  sourceLinkId?: string;
   targetDate?: string; // YYYY-MM-DD
   status: MarketingShotStatus;
   notes?: string;
@@ -2155,6 +2167,42 @@ export interface MarketingClipThread {
   // is answerable without walking the message history.
   updatedBy?: { email: string; name: string };
   updatedAt?: number;
+}
+
+// ── Post queue ─────────────────────────────────────────────────────────
+// Clips that have been reviewed and are ready to go out, in the order they
+// should be posted. Fed from the clip-feedback section ("Send to post queue"),
+// so an entry is always ABOUT a clip.
+//
+// The doc id IS the normalized clip key — the same key marketingFeedback rows
+// group on. That is what keeps history attached: the feedback thread is not
+// copied, referenced by message id, or moved. It is found the way it always
+// is, by grouping messages on the clip key, so queueing a clip cannot orphan
+// its conversation and un-queueing cannot strand it. Keying by clip also makes
+// "send to post queue" idempotent — the same clip twice updates one row rather
+// than duplicating it.
+//
+// Kept in its OWN subcollection rather than as fields on MarketingClipThread
+// because saveMarketingClip writes the clip doc whole (callers build a fresh
+// {id,status,url}), so queue fields living there would be blanked the next
+// time someone marked the clip addressed.
+export type MarketingPostQueueStatus = 'queued' | 'posted';
+
+export interface MarketingPostQueueEntry {
+  // The normalized clip key, doubling as the doc id.
+  id: string;
+  // Short "why / what" note for the poster. Independent of the feedback
+  // thread — the thread is the review conversation, this is the posting note.
+  note?: string;
+  // Ascending sort key. Gaps and ties are tolerated: the panel sorts by
+  // (order, queuedAt) and renumbers on any move, so a tie can never make the
+  // list order look random.
+  order: number;
+  status: MarketingPostQueueStatus;
+  queuedBy?: { email: string; name: string };
+  queuedAt?: number;
+  postedBy?: { email: string; name: string };
+  postedAt?: number;
 }
 
 export interface AppData {
@@ -2267,6 +2315,7 @@ export interface AppData {
   marketingLinks?: Record<string, MarketingLink>;
   marketingFeedback?: Record<string, MarketingFeedbackEntry>;
   marketingClips?: Record<string, MarketingClipThread>;
+  marketingPostQueue?: Record<string, MarketingPostQueueEntry>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of

@@ -27,7 +27,8 @@ import {
   ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry,
   CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract,
   MarketingContentItem, MarketingShot, MarketingLink,
-  MarketingFeedbackEntry, MarketingClipThread, MarketingClipStatus
+  MarketingFeedbackEntry, MarketingClipThread, MarketingClipStatus,
+  MarketingPostQueueEntry
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
@@ -264,6 +265,7 @@ export default function App() {
   const subMarketingLinksRef = useRef<Record<string, MarketingLink>>({});
   const subMarketingFeedbackRef = useRef<Record<string, MarketingFeedbackEntry>>({});
   const subMarketingClipsRef = useRef<Record<string, MarketingClipThread>>({});
+  const subMarketingPostQueueRef = useRef<Record<string, MarketingPostQueueEntry>>({});
   // ContractingMaster (Palermo's) — namespaced subcollections, own tenant.
   const subContractingProjectsRef = useRef<Record<string, ContractingProject>>({});
   const subContractingTimeEntriesRef = useRef<Record<string, ContractingTimeEntry>>({});
@@ -1006,6 +1008,7 @@ export default function App() {
           marketingLinks: subMarketingLinksRef.current,
           marketingFeedback: subMarketingFeedbackRef.current,
           marketingClips: subMarketingClipsRef.current,
+          marketingPostQueue: subMarketingPostQueueRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -1398,7 +1401,8 @@ export default function App() {
     const m3 = mk('marketingLinks', subMarketingLinksRef, 'marketingLinks');
     const m4 = mk('marketingFeedback', subMarketingFeedbackRef, 'marketingFeedback');
     const m5 = mk('marketingClips', subMarketingClipsRef, 'marketingClips');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); };
+    const m6 = mk('marketingPostQueue', subMarketingPostQueueRef, 'marketingPostQueue');
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); };
   }, [user]);
 
   useEffect(() => {
@@ -3010,6 +3014,41 @@ export default function App() {
       doc(roleColl('marketingClips'), clip),
       cleanRM({ ...thread, id: clip, updatedBy: marketingUser, updatedAt: Date.now() }),
     );
+  };
+
+  // Post queue. The doc id is the normalized clip key, so re-sending a clip
+  // updates its row instead of adding a second one, and the feedback thread
+  // stays reachable by that same key without storing a pointer to it.
+  const saveMarketingPostQueue = async (entry: MarketingPostQueueEntry) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    const clip = clipKey(entry.id);
+    if (!clip) return;
+    const existing = appData.marketingPostQueue?.[clip];
+    const now = Date.now();
+    const posted = entry.status === 'posted';
+    const rec: MarketingPostQueueEntry = {
+      ...entry,
+      id: clip,
+      // queuedBy/At are stamped ONCE, on the write that created the row —
+      // marking posted or reordering must not rewrite who queued it.
+      queuedBy: existing?.queuedBy || entry.queuedBy || marketingUser,
+      queuedAt: existing?.queuedAt || entry.queuedAt || now,
+      // postedBy/At come from the signed-in identity here, never from the
+      // panel, and are CLEARED on un-post so a restored row can't keep a
+      // stale "posted by" stamp.
+      postedBy: posted ? (existing?.postedBy || marketingUser) : undefined,
+      postedAt: posted ? (existing?.postedAt || now) : undefined,
+    };
+    await setDoc(doc(roleColl('marketingPostQueue'), clip), cleanRM(rec));
+  };
+  const deleteMarketingPostQueue = async (id: string) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    const clip = clipKey(id);
+    if (!clip) return;
+    // Only the queue row goes. The clip's feedback thread is a separate
+    // subcollection keyed by the same clip number and is untouched.
+    await deleteDoc(doc(roleColl('marketingPostQueue'), clip));
+    showToastMsg('Removed from the post queue.');
   };
 
   // ── ContractingMaster (Palermo's) handlers ─────────────────────────────
@@ -5680,6 +5719,9 @@ export default function App() {
           onSaveFeedback={saveMarketingFeedback}
           onDeleteFeedback={deleteMarketingFeedback}
           onSaveClip={saveMarketingClip}
+          postQueue={appData.marketingPostQueue || {}}
+          onSavePostQueue={saveMarketingPostQueue}
+          onDeletePostQueue={deleteMarketingPostQueue}
         />
       ) : currentView === 'mechanic' ? renderMechanicBoard() : currentView === 'performance' ? renderPerformanceBoard() : currentView === 'mymechanic' ? (
         <>

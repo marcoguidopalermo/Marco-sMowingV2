@@ -1,26 +1,35 @@
-// MarketingMaster — one module, one scroll: CALENDAR · SHOTS · LINKS ·
-// CLIP FEEDBACK. No tabs, no navigation.
+// MarketingMaster — one module, one scroll: CALENDAR · SHOT QUEUE · LINKS ·
+// CLIP FEEDBACK · POST QUEUE. No tabs, no navigation.
 //
 // Built for a marketer who is just starting, so it stays deliberately thin:
 //   • Calendar — a month of planned content. No platform split (everything is
 //     cross-posted), no approval chain, no recurrence.
-//   • Shots — a working checklist of shots still to capture. No assignment,
-//     no approvals, no notifications.
-//   • Links — a board of saved references. Paste a URL, hit save, done.
+//   • Shot queue — work that still needs filming. Fed by hand and by promoting
+//     a reference link ("make something like this"). ONE list, not two: the
+//     old "shots to follow up" IS this queue (see MarketingShot in types.ts).
+//   • Links — a board of saved references. Paste a URL, hit save, done. A link
+//     can be sent to the shot queue and STAYS here, badged.
 //   • Clip feedback — review notes against a Drive clip number, threaded per
 //     clip. The footage stays in Drive; only the words live here.
+//   • Post queue — reviewed clips in the order they go out. Fed from clip
+//     feedback; each row is keyed by the clip number, so its thread is always
+//     one click away and can never be orphaned.
+//
+// The two queues read top-to-bottom as the actual pipeline:
+//   link → shot queue → (filmed) → clip feedback → post queue → posted.
 //
 // Nothing here reads or writes any other surface: no crews, no schedule, no
-// performance, no pay. The five subcollections are the whole data footprint.
+// performance, no pay. The six subcollections are the whole data footprint.
 import { useMemo, useRef, useState } from 'react';
 import {
   CalendarDays, Camera, Link2, ChevronLeft, ChevronRight, Plus, X, Trash2,
   ExternalLink, Check, Paperclip, Pencil, Megaphone, MessageSquare, Search,
-  RotateCcw, CornerDownRight,
+  RotateCcw, CornerDownRight, Send, ArrowUp, ArrowDown,
 } from 'lucide-react';
 import type {
   MarketingClipStatus, MarketingClipThread, MarketingContentItem,
   MarketingContentStatus, MarketingFeedbackEntry, MarketingLink, MarketingShot,
+  MarketingPostQueueEntry,
 } from '../types';
 
 interface Props {
@@ -29,6 +38,7 @@ interface Props {
   links: Record<string, MarketingLink>;
   feedback: Record<string, MarketingFeedbackEntry>;
   clips: Record<string, MarketingClipThread>;
+  postQueue: Record<string, MarketingPostQueueEntry>;
   currentUser: { email: string; name: string };
   onSaveContent: (item: MarketingContentItem) => void;
   onDeleteContent: (id: string) => void;
@@ -39,6 +49,8 @@ interface Props {
   onSaveFeedback: (entry: MarketingFeedbackEntry) => void;
   onDeleteFeedback: (id: string) => void;
   onSaveClip: (thread: MarketingClipThread) => void;
+  onSavePostQueue: (entry: MarketingPostQueueEntry) => void;
+  onDeletePostQueue: (id: string) => void;
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -161,11 +173,12 @@ function prettyStamp(ms?: number): string {
 }
 
 export default function MarketingMaster({
-  content, shots, links, feedback, clips, currentUser,
+  content, shots, links, feedback, clips, postQueue, currentUser,
   onSaveContent, onDeleteContent,
   onSaveShot, onDeleteShot,
   onSaveLink, onDeleteLink,
   onSaveFeedback, onDeleteFeedback, onSaveClip,
+  onSavePostQueue, onDeletePostQueue,
 }: Props) {
   // `links` is normalized on the way in so every consumer below can treat it
   // as an array — a doc written before the field existed (or one whose empty
@@ -201,29 +214,42 @@ export default function MarketingMaster({
           onSaveLink={onSaveLink}
         />
 
-        {/* (b) SHOTS and (c) LINKS — compact panels side by side on desktop,
-            stacked in that order on a phone. No tabs, no navigation: the
-            whole surface is this one scroll. */}
+        {/* (b) SHOT QUEUE and (c) LINKS — compact panels side by side on
+            desktop, stacked in that order on a phone. Adjacent on purpose:
+            promoting a link to the shot queue moves it one panel left. */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-          <ShotsPanel shots={shots} onSave={onSaveShot} onDelete={onDeleteShot} />
+          <ShotsPanel shots={shots} links={links} onSave={onSaveShot} onDelete={onDeleteShot} />
           <LinksPanel
             links={linkList}
             items={contentList}
+            shots={shots}
             currentUser={currentUser}
             onSaveLink={onSaveLink}
             onDeleteLink={onDeleteLink}
             onSaveContent={onSaveContent}
+            onSaveShot={onSaveShot}
           />
         </div>
 
-        {/* (d) CLIP FEEDBACK — full width, last. The footage lives in Drive;
-            this holds only the conversation about it, keyed by clip number. */}
+        {/* (d) CLIP FEEDBACK — full width. The footage lives in Drive; this
+            holds only the conversation about it, keyed by clip number. */}
         <FeedbackPanel
           feedback={feedback}
           clips={clips}
+          postQueue={postQueue}
           onSaveFeedback={onSaveFeedback}
           onDeleteFeedback={onDeleteFeedback}
           onSaveClip={onSaveClip}
+          onSavePostQueue={onSavePostQueue}
+        />
+
+        {/* (e) POST QUEUE — last, because it is the end of the pipeline: a
+            clip only lands here once its feedback is done. */}
+        <PostQueuePanel
+          postQueue={postQueue}
+          feedback={feedback}
+          onSave={onSavePostQueue}
+          onDelete={onDeletePostQueue}
         />
       </div>
     </div>
@@ -594,10 +620,14 @@ function ContentEditor({
 
 /* ══════════════════════ SHOTS ═════════════════════════════════════════ */
 
+// THE shot queue. Deliberately still one list: an item typed straight in and
+// an item promoted from a reference link are the same kind of work (something
+// that needs filming), so they share a panel, a status and a subcollection.
 function ShotsPanel({
-  shots, onSave, onDelete,
+  shots, links, onSave, onDelete,
 }: {
   shots: Record<string, MarketingShot>;
+  links: Record<string, MarketingLink>;
   onSave: (s: MarketingShot) => void;
   onDelete: (id: string) => void;
 }) {
@@ -635,7 +665,7 @@ function ShotsPanel({
   );
 
   return (
-    <Panel title="Shots to follow up" Icon={Camera} count={needed.length}>
+    <Panel title="Shot queue" Icon={Camera} count={needed.length}>
       {/* Two taps: the field is already on screen — type, then Add (or Enter). */}
       <div className="p-3 border-b border-slate-100 flex gap-2">
         <input
@@ -660,7 +690,7 @@ function ShotsPanel({
           <div className="p-8 text-center text-sm text-slate-400 font-bold">No shots on the list.</div>
         )}
         {needed.map(s => (
-          <ShotRow key={s.id} shot={s} open={openId === s.id} onToggleOpen={() => setOpenId(openId === s.id ? null : s.id)} onCheck={() => toggle(s)} onSave={onSave} onDelete={onDelete} />
+          <ShotRow key={s.id} shot={s} sourceLink={s.sourceLinkId ? links[s.sourceLinkId] : undefined} open={openId === s.id} onToggleOpen={() => setOpenId(openId === s.id ? null : s.id)} onCheck={() => toggle(s)} onSave={onSave} onDelete={onDelete} />
         ))}
       </div>
 
@@ -677,7 +707,7 @@ function ShotsPanel({
           {showCaptured && (
             <div className="divide-y divide-slate-100 border-t border-slate-200 bg-white">
               {captured.map(s => (
-                <ShotRow key={s.id} shot={s} open={openId === s.id} onToggleOpen={() => setOpenId(openId === s.id ? null : s.id)} onCheck={() => toggle(s)} onSave={onSave} onDelete={onDelete} />
+                <ShotRow key={s.id} shot={s} sourceLink={s.sourceLinkId ? links[s.sourceLinkId] : undefined} open={openId === s.id} onToggleOpen={() => setOpenId(openId === s.id ? null : s.id)} onCheck={() => toggle(s)} onSave={onSave} onDelete={onDelete} />
               ))}
             </div>
           )}
@@ -688,9 +718,13 @@ function ShotsPanel({
 }
 
 function ShotRow({
-  shot, open, onToggleOpen, onCheck, onSave, onDelete,
+  shot, sourceLink, open, onToggleOpen, onCheck, onSave, onDelete,
 }: {
   shot: MarketingShot;
+  // Resolved from shot.sourceLinkId. Undefined when the shot was typed in by
+  // hand OR when the originating link has since been deleted — both render as
+  // simply no chip, which is why a dangling id is harmless.
+  sourceLink?: MarketingLink;
   open: boolean;
   onToggleOpen: () => void;
   onCheck: () => void;
@@ -728,6 +762,21 @@ function ShotRow({
           )}
           <Byline created={shot.createdBy} createdAt={shot.createdAt} updated={shot.updatedBy} updatedAt={shot.updatedAt} />
         </button>
+        {/* Source reference, when this shot came from the links board. Outside
+            the row's open/edit button so it stays a real link, not a nested
+            (invalid) button-inside-button. */}
+        {sourceLink && (
+          <a
+            href={sourceLink.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            title={sourceLink.title || sourceLink.url}
+            className="shrink-0 inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200 rounded-full px-2 py-1 hover:bg-fuchsia-100"
+          >
+            <Link2 className="w-3 h-3" /> Ref
+          </a>
+        )}
         <button onClick={openRow} aria-label="Edit shot" className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-300 hover:text-slate-600">
           <Pencil className="w-4 h-4" />
         </button>
@@ -797,14 +846,16 @@ function ShotRow({
 /* ══════════════════════ LINKS ═════════════════════════════════════════ */
 
 function LinksPanel({
-  links, items, currentUser, onSaveLink, onDeleteLink, onSaveContent,
+  links, items, shots, currentUser, onSaveLink, onDeleteLink, onSaveContent, onSaveShot,
 }: {
   links: MarketingLink[];
   items: MarketingContentItem[];
+  shots: Record<string, MarketingShot>;
   currentUser: { email: string; name: string };
   onSaveLink: (l: MarketingLink) => void;
   onDeleteLink: (id: string) => void;
   onSaveContent: (i: MarketingContentItem) => void;
+  onSaveShot: (s: MarketingShot) => void;
 }) {
   const [url, setUrl] = useState('');
   const [note, setNote] = useState('');
@@ -820,6 +871,23 @@ function LinksPanel({
     return map;
   }, [items]);
 
+  // Reverse map: link id → the shot(s) it was promoted into. Derived from the
+  // shots, the same way attachment is derived from the items — a link never
+  // stores a pointer to a shot, so there is nothing to keep in sync.
+  const shotFor = useMemo(() => {
+    const map = new Map<string, MarketingShot>();
+    for (const s of Object.values(shots)) {
+      if (!s.sourceLinkId) continue;
+      // A still-needed shot wins over a captured one, so re-promoting a link
+      // whose earlier shot is already filmed is still offered.
+      const prev = map.get(s.sourceLinkId);
+      if (!prev || (prev.status === 'captured' && s.status !== 'captured')) {
+        map.set(s.sourceLinkId, s);
+      }
+    }
+    return map;
+  }, [shots]);
+
   const save = () => {
     const clean = normalizeUrl(url);
     if (!clean) return;
@@ -834,6 +902,20 @@ function LinksPanel({
     setUrl('');
     setNote('');
     urlRef.current?.focus();
+  };
+
+  // Promote a reference to the shot queue. The LINK IS KEPT — this is a
+  // "make something like this" pointer, not a move that consumes the source,
+  // so the link's title, note and byline stay on the board and it gains a
+  // badge. The shot seeds its description from the link's note (the human
+  // sentence) and falls back to the derived title.
+  const toShotQueue = (l: MarketingLink) => {
+    onSaveShot({
+      id: newId('ms'),
+      description: (l.note || '').trim() || l.title || hostOf(l.url),
+      sourceLinkId: l.id,
+      status: 'needed',
+    });
   };
 
   // Attach / detach from here writes the ITEM (the source of truth), removing
@@ -891,6 +973,8 @@ function LinksPanel({
         <div className="p-3 grid grid-cols-1 xl:grid-cols-2 gap-3 max-h-[560px] overflow-y-auto">
           {links.map(l => {
             const attached = attachedTo.get(l.id);
+            const queuedShot = shotFor.get(l.id);
+            const queuedNeeded = queuedShot?.status !== 'captured';
             return (
               <div key={l.id} className="bg-white rounded-xl border border-gray-200 p-3 flex flex-col gap-2">
                 <div className="flex items-start gap-2">
@@ -929,6 +1013,27 @@ function LinksPanel({
                 <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
                   {hostOf(l.url)} · {l.addedBy?.name || 'Someone'} · {new Date(l.addedAt).toLocaleDateString()}
                 </div>
+                {/* Promote to the shot queue, or say it's already there. The
+                    link is never removed by this — see toShotQueue. */}
+                {queuedShot ? (
+                  <div className={`inline-flex items-center gap-1.5 self-start text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-full border ${
+                    queuedNeeded
+                      ? 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200'
+                      : 'bg-lime-50 text-lime-700 border-lime-200'
+                  }`}
+                  >
+                    <Camera className="w-3 h-3" />
+                    {queuedNeeded ? 'In shot queue' : 'Shot captured'}
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => toShotQueue(l)}
+                    title="Add a shot to the queue that references this link"
+                    className="inline-flex items-center gap-1.5 self-start min-h-[36px] px-2.5 rounded-lg border border-fuchsia-200 text-fuchsia-700 hover:bg-fuchsia-50 text-[10px] font-black uppercase tracking-widest"
+                  >
+                    <Camera className="w-3.5 h-3.5" /> To shot queue
+                  </button>
+                )}
                 <div className="flex items-center gap-2 mt-auto pt-1">
                   <select
                     value={attached?.id || ''}
@@ -964,13 +1069,15 @@ function LinksPanel({
 // on it is what turns rows into conversations. Nothing points at a parent, so
 // there is no thread pointer to corrupt and a reply is just another row.
 function FeedbackPanel({
-  feedback, clips, onSaveFeedback, onDeleteFeedback, onSaveClip,
+  feedback, clips, postQueue, onSaveFeedback, onDeleteFeedback, onSaveClip, onSavePostQueue,
 }: {
   feedback: Record<string, MarketingFeedbackEntry>;
   clips: Record<string, MarketingClipThread>;
+  postQueue: Record<string, MarketingPostQueueEntry>;
   onSaveFeedback: (e: MarketingFeedbackEntry) => void;
   onDeleteFeedback: (id: string) => void;
   onSaveClip: (t: MarketingClipThread) => void;
+  onSavePostQueue: (e: MarketingPostQueueEntry) => void;
 }) {
   const [newClip, setNewClip] = useState('');
   const [newText, setNewText] = useState('');
@@ -1051,6 +1158,21 @@ function FeedbackPanel({
     onSaveClip({ id: t.clip, status: t.status, url: url ? normalizeUrl(url) : undefined });
     setLinkFor(null);
     setLinkDraft('');
+  };
+
+  // Send a reviewed clip to the post queue. Keyed by clip, so this is
+  // idempotent — a second press updates the existing row rather than adding a
+  // duplicate. New rows land at the BACK of the queue (max order + 10), which
+  // is what "ready to go out" means when order is deliberate.
+  const sendToPostQueue = (clip: string) => {
+    const existing = postQueue[clip];
+    // Already waiting to go out — nothing to do. An ALREADY-POSTED clip is
+    // allowed through: that re-queues it (a re-post), and the save handler
+    // clears the stale postedBy/postedAt on the way.
+    if (existing && existing.status !== 'posted') return;
+    const maxOrder = Object.values(postQueue)
+      .reduce((m, e) => Math.max(m, e.order || 0), 0);
+    onSavePostQueue({ ...(existing || {}), id: clip, order: maxOrder + 10, status: 'queued' });
   };
 
   return (
@@ -1139,6 +1261,8 @@ function FeedbackPanel({
             onSaveLink={() => saveLink(t)}
             onStatus={s => setStatus(t, s)}
             onDeleteEntry={onDeleteFeedback}
+            queued={postQueue[t.clip]?.status === 'queued'}
+            onSendToPostQueue={() => sendToPostQueue(t.clip)}
           />
         ))}
       </div>
@@ -1173,6 +1297,8 @@ function FeedbackPanel({
                   onSaveLink={() => saveLink(t)}
                   onStatus={s => setStatus(t, s)}
                   onDeleteEntry={onDeleteFeedback}
+                  queued={postQueue[t.clip]?.status === 'queued'}
+                  onSendToPostQueue={() => sendToPostQueue(t.clip)}
                 />
               ))}
             </div>
@@ -1186,7 +1312,7 @@ function FeedbackPanel({
 function ClipThread({
   t, replying, replyText, onReplyText, onStartReply, onCancelReply, onReply,
   editingLink, linkDraft, onLinkDraft, onStartLink, onCancelLink, onSaveLink,
-  onStatus, onDeleteEntry,
+  onStatus, onDeleteEntry, queued, onSendToPostQueue,
 }: {
   t: {
     clip: string;
@@ -1194,6 +1320,10 @@ function ClipThread({
     status: MarketingClipStatus;
     url: string;
   };
+  // Already on the post queue. The action becomes a static badge rather than
+  // disappearing, so "is this queued?" is answerable from the thread itself.
+  queued: boolean;
+  onSendToPostQueue: () => void;
   replying: boolean;
   replyText: string;
   onReplyText: (v: string) => void;
@@ -1211,7 +1341,9 @@ function ClipThread({
 }) {
   const done = t.status === 'addressed';
   return (
-    <div className={done ? 'opacity-60' : ''}>
+    // Anchor target for the post queue's "Thread" link. scroll-mt keeps the
+    // clip header clear of the sticky app header after the jump.
+    <div id={`clip-${t.clip}`} className={`scroll-mt-24 ${done ? 'opacity-60' : ''}`}>
       <div className="px-3 py-3">
         {/* Clip header — the number is the identity, so it leads. */}
         <div className="flex items-center gap-2 flex-wrap">
@@ -1238,6 +1370,22 @@ function ClipThread({
             </a>
           )}
           <div className="ml-auto flex items-center gap-1">
+            {queued ? (
+              <span
+                title="This clip is on the post queue"
+                className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-full border bg-sky-50 text-sky-700 border-sky-200"
+              >
+                <Send className="w-3 h-3" /> Queued
+              </span>
+            ) : (
+              <button
+                onClick={onSendToPostQueue}
+                title="Reviewed and ready — add this clip to the post queue"
+                className="min-h-[40px] px-3 rounded-lg border border-sky-200 text-sky-700 hover:bg-sky-50 text-[11px] font-black uppercase tracking-widest inline-flex items-center gap-1.5"
+              >
+                <Send className="w-3.5 h-3.5" /> Post queue
+              </button>
+            )}
             <button
               onClick={onStartLink}
               aria-label={t.url ? 'Edit clip link' : 'Add clip link'}
@@ -1328,6 +1476,208 @@ function ClipThread({
         )}
       </div>
     </div>
+  );
+}
+
+/* ══════════════════════ POST QUEUE ════════════════════════════════════ */
+
+// Reviewed clips, in the order they go out. Every row is keyed by clip number,
+// so the feedback thread is reachable by that key alone — nothing is copied
+// out of the thread and no pointer into it is stored, which is what makes
+// queueing (and un-queueing) unable to orphan the conversation.
+function PostQueuePanel({
+  postQueue, feedback, onSave, onDelete,
+}: {
+  postQueue: Record<string, MarketingPostQueueEntry>;
+  feedback: Record<string, MarketingFeedbackEntry>;
+  onSave: (e: MarketingPostQueueEntry) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [showPosted, setShowPosted] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState('');
+
+  // Message count per clip — grouped on the clip key exactly as FeedbackPanel
+  // does it, so the number shown here is the same thread.
+  const countByClip = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const e of Object.values(feedback)) {
+      const k = clipKey(e.clip || '');
+      if (!k) continue;
+      m.set(k, (m.get(k) || 0) + 1);
+    }
+    return m;
+  }, [feedback]);
+
+  const all = useMemo(() => Object.values(postQueue), [postQueue]);
+  // Sorted by (order, queuedAt): the tiebreak keeps the list stable if two
+  // rows ever share an order, rather than letting object order decide.
+  const queued = useMemo(
+    () => all.filter(e => e.status !== 'posted')
+      .sort((a, b) => (a.order || 0) - (b.order || 0) || (a.queuedAt || 0) - (b.queuedAt || 0)),
+    [all],
+  );
+  const posted = useMemo(
+    () => all.filter(e => e.status === 'posted').sort((a, b) => (b.postedAt || 0) - (a.postedAt || 0)),
+    [all],
+  );
+
+  // Reorder by renumbering the WHOLE queued list from the reordered array
+  // (10, 20, 30…). Swapping two order values would preserve any pre-existing
+  // ties or gaps; renumbering removes them, and only changed rows are written.
+  const move = (idx: number, dir: -1 | 1) => {
+    const j = idx + dir;
+    if (j < 0 || j >= queued.length) return;
+    const next = [...queued];
+    [next[idx], next[j]] = [next[j], next[idx]];
+    next.forEach((e, i) => {
+      const order = (i + 1) * 10;
+      if (e.order !== order) onSave({ ...e, order });
+    });
+  };
+
+  const saveNote = (e: MarketingPostQueueEntry) => {
+    onSave({ ...e, note: noteDraft.trim() || undefined });
+    setEditingId(null);
+    setNoteDraft('');
+  };
+
+  const row = (e: MarketingPostQueueEntry, idx: number | null) => {
+    const done = e.status === 'posted';
+    const count = countByClip.get(e.id) || 0;
+    return (
+      <div key={e.id} className={`px-3 py-2.5 ${done ? 'opacity-55' : ''}`}>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Order controls — up/down rather than drag: this board is used on
+              a phone, where a 44px target beats a drag handle. */}
+          {!done && idx !== null && (
+            <div className="flex flex-col shrink-0">
+              <button
+                onClick={() => move(idx, -1)}
+                disabled={idx === 0}
+                aria-label={`Move ${clipLabel(e.id)} earlier`}
+                className="min-w-[36px] h-[26px] inline-flex items-center justify-center rounded-t-md border border-slate-200 text-slate-400 hover:text-sky-700 hover:bg-sky-50 disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                <ArrowUp className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => move(idx, 1)}
+                disabled={idx === queued.length - 1}
+                aria-label={`Move ${clipLabel(e.id)} later`}
+                className="min-w-[36px] h-[26px] inline-flex items-center justify-center rounded-b-md border border-t-0 border-slate-200 text-slate-400 hover:text-sky-700 hover:bg-sky-50 disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                <ArrowDown className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+          {!done && idx !== null && (
+            <span className="text-[10px] font-black text-slate-300 w-4 shrink-0 text-right">{idx + 1}</span>
+          )}
+          <span className={`text-sm font-black tracking-widest text-slate-800 ${done ? 'line-through' : ''}`}>
+            {clipLabel(e.id)}
+          </span>
+          {/* Back to the thread. Same page, so this is an anchor — the thread
+              is never duplicated here. */}
+          <a
+            href={`#clip-${e.id}`}
+            title="Jump to this clip's feedback thread"
+            className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200 rounded-full px-2 py-1 hover:bg-fuchsia-100"
+          >
+            <MessageSquare className="w-3 h-3" /> Thread
+            {count > 0 && <span className="text-fuchsia-500">{count}</span>}
+          </a>
+          <div className="ml-auto flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => onSave({ ...e, status: done ? 'queued' : 'posted' })}
+              className={`min-h-[40px] px-3 rounded-lg text-[11px] font-black uppercase tracking-widest inline-flex items-center gap-1.5 ${
+                done ? 'text-slate-500 hover:bg-slate-100' : 'bg-sky-600 hover:bg-sky-700 text-white shadow'
+              }`}
+            >
+              {done ? <><RotateCcw className="w-3.5 h-3.5" /> Requeue</> : <><Check className="w-3.5 h-3.5" /> Mark posted</>}
+            </button>
+            <button
+              onClick={() => onDelete(e.id)}
+              aria-label="Remove from post queue"
+              title="Remove from the queue — the clip's feedback thread is kept"
+              className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-300 hover:text-rose-600"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* The posting note — short, and separate from the review thread. */}
+        {editingId === e.id ? (
+          <div className="mt-2 flex gap-2">
+            <input
+              autoFocus
+              value={noteDraft}
+              onChange={ev => setNoteDraft(ev.target.value)}
+              onKeyDown={ev => {
+                if (ev.key === 'Enter') saveNote(e);
+                if (ev.key === 'Escape') { setEditingId(null); setNoteDraft(''); }
+              }}
+              placeholder="Caption angle, hashtag, where it goes…"
+              className="flex-1 min-w-0 border border-gray-300 rounded-lg p-2.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-sky-400"
+            />
+            <button onClick={() => saveNote(e)} className="min-h-[40px] px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-[11px] font-black uppercase tracking-widest">Save</button>
+            <button
+              onClick={() => { setEditingId(null); setNoteDraft(''); }}
+              aria-label="Cancel"
+              className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-400 hover:text-slate-700"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => { setEditingId(e.id); setNoteDraft(e.note || ''); }}
+            className="mt-1 block text-left w-full min-h-[32px]"
+          >
+            <span className={`text-sm ${e.note ? 'text-slate-700 font-bold' : 'text-slate-300 italic font-bold'}`}>
+              {e.note || 'Add a note…'}
+            </span>
+          </button>
+        )}
+
+        <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mt-1">
+          Queued by {e.queuedBy?.name || 'Someone'}
+          {e.queuedAt ? ` · ${prettyStamp(e.queuedAt)}` : ''}
+          {done && e.postedAt ? ` · posted ${prettyStamp(e.postedAt)}${e.postedBy?.name ? ` by ${e.postedBy.name}` : ''}` : ''}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <Panel title="Post queue" Icon={Send} count={queued.length}>
+      <div className="divide-y divide-slate-100">
+        {queued.length === 0 && (
+          <div className="p-8 text-center text-sm text-slate-400 font-bold">
+            Nothing queued. Send a reviewed clip here from Clip feedback.
+          </div>
+        )}
+        {queued.map((e, i) => row(e, i))}
+      </div>
+
+      {posted.length > 0 && (
+        <div className="border-t border-slate-200 bg-slate-50/60">
+          <button
+            onClick={() => setShowPosted(o => !o)}
+            className="w-full px-4 min-h-[52px] flex items-center gap-2 text-xs font-black uppercase tracking-widest text-slate-400 hover:bg-slate-100"
+          >
+            <Check className="w-4 h-4" /> Posted
+            <span className="bg-slate-200 text-slate-500 rounded-full px-2 py-0.5 text-[10px]">{posted.length}</span>
+            <ChevronRight className={`w-4 h-4 ml-auto transition-transform ${showPosted ? 'rotate-90' : ''}`} />
+          </button>
+          {showPosted && (
+            <div className="divide-y divide-slate-100 border-t border-slate-200 bg-white">
+              {posted.map(e => row(e, null))}
+            </div>
+          )}
+        </div>
+      )}
+    </Panel>
   );
 }
 
