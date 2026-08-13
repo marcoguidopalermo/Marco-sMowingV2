@@ -3618,15 +3618,30 @@ export default function App() {
   // employee's awayDates / the partialTimeOff map for THIS employee.
   const findEmployeeForRequest = (r: TimeOffRequest): Employee | null => {
     const list = appData.employees || [];
-    return list.find(e => e.id === r.employeeId)
-      || list.find(e => normalizeEmail(e.linkedUserEmail) === normalizeEmail(r.employeeEmail))
-      || null;
+    const byId = list.find(e => e.id === r.employeeId);
+    if (byId) return byId;
+    // Email fallback ONLY when the request carries a real address.
+    // normalizeEmail('') === normalizeEmail(undefined) === '', so an
+    // unguarded compare lets a blank employeeEmail match the first
+    // employee who ALSO has no linkedUserEmail — silently applying one
+    // person's approved time off to someone else's awayDates (and
+    // pulling THEM off their crews). Same guard shape as
+    // realCurrentUserEmployee (App.tsx:460). No match → null, which
+    // makes approval abort with a visible toast instead of guessing.
+    const email = normalizeEmail(r.employeeEmail);
+    if (!email) return null;
+    return list.find(e => normalizeEmail(e.linkedUserEmail) === email) || null;
   };
 
   const submitTimeOffRequest = (data: RequestTimeOffSubmit) => {
     const me = (displayEmail || '').trim().toLowerCase();
     // Re-resolve employee on submit so the latest linkage is used.
-    const myEmp = (appData.employees || []).find(e => normalizeEmail(e.linkedUserEmail) === me) || currentUserEmployee;
+    // Guarded for the same reason as findEmployeeForRequest: with a blank
+    // displayEmail the compare would match the first employee lacking a
+    // linkedUserEmail and stamp THEIR id/name onto this request.
+    const myEmp = (me
+      ? (appData.employees || []).find(e => normalizeEmail(e.linkedUserEmail) === me)
+      : null) || currentUserEmployee;
     if (!myEmp) { showToastMsg('Your sign-in is not linked to an Employee record. Ask an admin to link it.'); return; }
     if (editingTimeOffId) {
       const existing = (appData.timeOffRequests || {})[editingTimeOffId];
