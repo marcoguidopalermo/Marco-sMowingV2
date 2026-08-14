@@ -2158,16 +2158,38 @@ export interface MarketingLink {
 
 export type MarketingClipStatus = 'open' | 'addressed';
 
-// One message in a clip's thread. `clip` is the NORMALIZED key (see clipKey
-// in MarketingMaster) — "#0058", "0058" and "58" all land on "58", so the
-// thread survives however the number was typed.
+// One message on ONE subject — the shared comment shape for all three
+// commentable surfaces (clip feedback, reference links, to-dos). Threads are
+// derived by grouping on the subject, so there is no parent id to keep in sync
+// and a reply is just another row.
+//
+// Back-compat is the whole reason this interface grew rather than being
+// replaced: every message written before subjects existed carries `clip` and
+// neither subject field, and commentSubject() in MarketingComments reads that
+// as {subjectType:'clip', subjectId: clipKey(clip)}. Nothing on disk is
+// migrated, rewritten or backfilled — the old docs simply keep working.
+export type MarketingFeedbackSubjectType = 'clip' | 'link' | 'todo';
+
 export interface MarketingFeedbackEntry {
   id: string;
-  clip: string;
+  // What this message is about. Absent on pre-subject docs, which are clip
+  // messages by definition.
+  subjectType?: MarketingFeedbackSubjectType;
+  // The subject's id: a normalized clip key, a MarketingLink id, or a
+  // MarketingTodo id.
+  subjectId?: string;
+  // The NORMALIZED clip key (see clipKey) — "#0058", "0058" and "58" all land
+  // on "58", so the thread survives however the number was typed. Still
+  // written for clip messages so their shape on disk is unchanged; absent on
+  // link and to-do comments.
+  clip?: string;
   text: string;
   createdBy?: { email: string; name: string };
   createdAt?: number;
 }
+
+// Readable alias — this is a comment on anything, not just clip feedback.
+export type MarketingComment = MarketingFeedbackEntry;
 
 // Per-clip state. `id` IS the normalized clip key and doubles as the doc id.
 export interface MarketingClipThread {

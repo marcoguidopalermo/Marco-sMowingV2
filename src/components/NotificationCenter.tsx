@@ -12,13 +12,16 @@ const norm = (e: string) => (e || '').trim().toLowerCase();
 const K = (email: string) => encodeURIComponent(norm(email));
 const PUB = (name: string) => collection(db, 'artifacts', appId, 'public', 'data', name);
 
-export type NCategory = 'announcements' | 'repairs' | 'workorders' | 'leases' | 'fleet' | 'policies' | 'storage';
+export type NCategory = 'announcements' | 'repairs' | 'workorders' | 'leases' | 'fleet' | 'policies' | 'storage' | 'marketing';
 export const NOTIF_CATEGORIES: { key: NCategory; label: string; dormant?: boolean; audience?: string }[] = [
   { key: 'announcements', label: 'Announcements' },
   { key: 'repairs', label: 'Repairs' },
   { key: 'workorders', label: 'Work Orders' },
   { key: 'leases', label: 'Leases / Move-outs' },
   { key: 'fleet', label: 'Fleet documents' },
+  // Its own category so the marketing board can be muted on its own — it is
+  // chatty by nature (comments) and only concerns the people working it.
+  { key: 'marketing', label: 'Marketing', audience: 'Marketing board' },
   { key: 'storage', label: 'Storage (super admin)', audience: 'Super admin only' },
   { key: 'policies', label: 'Policy sign-off', dormant: true },
 ];
@@ -26,7 +29,7 @@ interface CentreItem { id: string; category: NCategory; title: string; body: str
 interface Prefs { master?: boolean; categories?: Partial<Record<NCategory, boolean>> }
 
 const ago = (ms: number) => { const s = (Date.now() - ms) / 1000; if (s < 60) return 'now'; if (s < 3600) return `${Math.floor(s / 60)}m`; if (s < 86400) return `${Math.floor(s / 3600)}h`; return `${Math.floor(s / 86400)}d`; };
-const CHIP: Record<NCategory, string> = { announcements: '#B7950B', repairs: '#C0392B', workorders: '#2E4053', leases: '#8E44AD', fleet: '#E67E22', policies: '#7F8C8D', storage: '#34495E' };
+const CHIP: Record<NCategory, string> = { announcements: '#B7950B', repairs: '#C0392B', workorders: '#2E4053', leases: '#8E44AD', fleet: '#E67E22', policies: '#7F8C8D', storage: '#34495E', marketing: '#A93A8C' };
 
 export default function NotificationCenter({ userEmail, isAdmin, onNavigate, showToast, employees = [] }: { userEmail: string; isAdmin: boolean; onNavigate: (url: string) => void; showToast: (m: string) => void; employees?: any[] }) {
   const [open, setOpen] = useState(false);
@@ -178,6 +181,9 @@ const AUDIENCE_TYPES: { key: string; cat: NCategory; label: string; mode: 'overr
   { key: 'repairs_extra', cat: 'repairs', label: 'Repair · assigned', mode: 'extra', structural: 'Assigned mechanic(s)' },
   { key: 'leases', cat: 'leases', label: 'Lease / move-out', mode: 'override' },
   { key: 'fleet', cat: 'fleet', label: 'Fleet doc expiry', mode: 'override' },
+  // Marketing recipients are structural — everyone with marketing access,
+  // minus whoever caused the event. This only ADDS anyone else who wants in.
+  { key: 'marketing_extra', cat: 'marketing', label: 'Marketing activity', mode: 'extra', structural: 'Marketing board (never the author)' },
 ];
 
 function AudienceEditor({ spec, onChange, structural, employees }:
@@ -342,6 +348,18 @@ function NotificationDashboard({ showToast, employees }: { showToast: (m: string
               <div className="mt-1.5 pl-2 border-l-2 border-slate-200 flex flex-col gap-1">
                 <label className="text-[10px] font-bold text-slate-600 flex items-center justify-between">Created → managers<input type="checkbox" checked={subToggles.workorders_created !== false} onChange={e => setSub('workorders_created', e.target.checked)} /></label>
                 <label className="text-[10px] font-bold text-slate-600 flex items-center justify-between">Assigned → assignee<input type="checkbox" checked={subToggles.workorders_assigned !== false} onChange={e => setSub('workorders_assigned', e.target.checked)} /></label>
+              </div>
+            )}
+            {/* Marketing sub-types. "All to-dos" is the only opt-IN switch on
+                this board: new to-dos notify on HIGH PRIORITY only unless it is
+                turned on, because a ping for every routine task is how a
+                channel gets muted. */}
+            {c.key === 'marketing' && !c.dormant && (
+              <div className="mt-1.5 pl-2 border-l-2 border-slate-200 flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-slate-600 flex items-center justify-between">Comments (clips · links · to-dos)<input type="checkbox" checked={subToggles.marketing_comment !== false} onChange={e => setSub('marketing_comment', e.target.checked)} /></label>
+                <label className="text-[10px] font-bold text-slate-600 flex items-center justify-between">Clip sent to post queue<input type="checkbox" checked={subToggles.marketing_postqueue !== false} onChange={e => setSub('marketing_postqueue', e.target.checked)} /></label>
+                <label className="text-[10px] font-bold text-slate-600 flex items-center justify-between">New to-do<input type="checkbox" checked={subToggles.marketing_todo !== false} onChange={e => setSub('marketing_todo', e.target.checked)} /></label>
+                <label className="text-[10px] font-bold text-slate-500 flex items-center justify-between pl-2" title="Off = high-priority to-dos only (recommended)">↳ include normal priority<input type="checkbox" disabled={subToggles.marketing_todo === false} checked={subToggles.marketing_todo_all === true} onChange={e => setSub('marketing_todo_all', e.target.checked)} /></label>
               </div>
             )}
             {!c.dormant && AUDIENCE_TYPES.filter(t => t.cat === c.key).map(t => (

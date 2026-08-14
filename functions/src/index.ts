@@ -23,6 +23,11 @@ export {
   pushRepairAssigned,
   sendTestNotification,
   onWorkOrderWrite,
+  // Marketing: comments (clips, links, to-dos), post-queue additions and
+  // high-priority to-dos — same send layer, gates and quiet hours as the rest.
+  onMarketingCommentWrite,
+  onMarketingPostQueueWrite,
+  onMarketingTodoWrite,
 } from "./notifications.js";
 export {jobberOAuthStart, jobberOAuthCallback} from "./jobber/oauth.js";
 export {jobberSyncUsers} from "./jobber/syncUsers.js";

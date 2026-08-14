@@ -67,7 +67,8 @@ import TaskDetailModal from './components/TaskDetailModal';
 import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
-import MarketingMaster, { clipKey } from './components/MarketingMaster';
+import MarketingMaster from './components/MarketingMaster';
+import { clipKey, commentSubject } from './components/MarketingComments';
 import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, reportIsDeletable, planPhaseMerge, isContractingWorker } from './lib/contracting';
 import type { ContractingProperty, ContractingSupplier } from './types';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabel, payDateLabel } from './lib/payPeriods';
@@ -1541,9 +1542,28 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
   // Tap-through from a notification (url like "/#contracting") → switch view.
+  // A url may also carry an element anchor after the view ("/#marketing/clip-58",
+  // "/#marketing/todo-mt-123"), which opens the page ON the item that was
+  // notified about rather than at the top of a long board. The element only
+  // exists once the view has rendered AND its subcollection overlay has
+  // arrived, so the jump retries briefly rather than firing once and missing.
   const handleNotifNavigate = (url: string) => {
-    const h = (url.split('#')[1] || '').trim();
-    if (h && viewAllowed(h as AppView)) setCurrentView(h as AppView);
+    const raw = (url.split('#')[1] || '').trim();
+    const [view, ...rest] = raw.split('/');
+    const anchor = rest.join('/');
+    if (!view || !viewAllowed(view as AppView)) return;
+    setCurrentView(view as AppView);
+    if (!anchor) return;
+    let tries = 0;
+    const jump = () => {
+      const el = document.getElementById(anchor);
+      if (!el) { if (tries++ < 20) setTimeout(jump, 150); return; }
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // A two-second ring, so the eye lands on the right row on a busy page.
+      el.classList.add('ring-2', 'ring-fuchsia-400', 'rounded-lg');
+      setTimeout(() => el.classList.remove('ring-2', 'ring-fuchsia-400', 'rounded-lg'), 2000);
+    };
+    setTimeout(jump, 80);
   };
   const getEmpName = (id: string) => appData.employees.find(e => e.id === id)?.name || 'Unknown';
 
@@ -2961,27 +2981,36 @@ export default function App() {
     showToastMsg('Link removed.');
   };
 
-  // Clip feedback. Two writes, because status belongs to the CLIP and the
-  // words belong to the MESSAGE — see the type comments in types.ts.
-  const saveMarketingFeedback = async (entry: MarketingFeedbackEntry) => {
+  // Comments — clip feedback, link comments and to-do replies, all one write
+  // path into marketingFeedback. A message carries its SUBJECT; clip messages
+  // additionally keep writing `clip`, so a doc written today is shaped exactly
+  // like one written before subjects existed and nothing had to be migrated.
+  //
+  // Clip subjects still take a SECOND write, because status belongs to the CLIP
+  // and the words belong to the MESSAGE — see the type comments in types.ts.
+  const saveMarketingComment = async (entry: MarketingFeedbackEntry) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
-    const clip = clipKey(entry.clip);
-    if (!clip || !(entry.text || '').trim()) return;
+    const s = commentSubject(entry);
+    if (!s.subjectId || !(entry.text || '').trim()) return;
     const existing = appData.marketingFeedback?.[entry.id];
     const now = Date.now();
     const rec: MarketingFeedbackEntry = {
       ...entry,
-      clip,
+      subjectType: s.subjectType,
+      subjectId: s.subjectId,
+      clip: s.subjectType === 'clip' ? s.subjectId : undefined,
       text: entry.text.trim(),
       createdBy: existing?.createdBy || entry.createdBy || marketingUser,
       createdAt: existing?.createdAt || entry.createdAt || now,
     };
     await setDoc(doc(roleColl('marketingFeedback'), entry.id), cleanRM(rec));
+    if (s.subjectType !== 'clip') return;
 
     // The thread doc is created on first message and REOPENED by any new one.
     // Without the reopen, feedback written after the marketer marked a clip
     // addressed would land straight in the collapsed section and never be
     // seen — which is the one way this board could quietly lose a note.
+    const clip = s.subjectId;
     const thread = appData.marketingClips?.[clip];
     if (!thread || thread.status === 'addressed') {
       await setDoc(
@@ -2997,19 +3026,23 @@ export default function App() {
     }
   };
   // Removing the last message on a clip takes the thread doc with it, so an
-  // empty thread can't sit in the list with a status and no content.
-  const deleteMarketingFeedback = async (id: string) => {
+  // empty thread can't sit in the list with a status and no content. Link and
+  // to-do subjects have no such doc — deleting their last comment simply
+  // leaves the item with no discussion.
+  const deleteMarketingComment = async (id: string) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
     const entry = appData.marketingFeedback?.[id];
     await deleteDoc(doc(roleColl('marketingFeedback'), id));
-    if (entry?.clip) {
+    const s = entry ? commentSubject(entry) : null;
+    if (s?.subjectType === 'clip' && s.subjectId) {
       const siblings = Object.values(appData.marketingFeedback || {})
-        .filter(e => e.clip === entry.clip && e.id !== id);
+        .filter(e => e.id !== id && commentSubject(e).subjectId === s.subjectId
+          && commentSubject(e).subjectType === 'clip');
       if (siblings.length === 0) {
-        await deleteDoc(doc(roleColl('marketingClips'), entry.clip));
+        await deleteDoc(doc(roleColl('marketingClips'), s.subjectId));
       }
     }
-    showToastMsg('Feedback removed.');
+    showToastMsg('Comment removed.');
   };
   // Status and the optional Drive link. Same gate as everything else here:
   // whoever can see Marketing can mark a clip addressed or reopen it.
@@ -5752,10 +5785,10 @@ export default function App() {
           onDeleteShot={deleteMarketingShot}
           onSaveLink={saveMarketingLink}
           onDeleteLink={deleteMarketingLink}
-          feedback={appData.marketingFeedback || {}}
+          comments={appData.marketingFeedback || {}}
           clips={appData.marketingClips || {}}
-          onSaveFeedback={saveMarketingFeedback}
-          onDeleteFeedback={deleteMarketingFeedback}
+          onSaveComment={saveMarketingComment}
+          onDeleteComment={deleteMarketingComment}
           onSaveClip={saveMarketingClip}
           postQueue={appData.marketingPostQueue || {}}
           onSavePostQueue={saveMarketingPostQueue}

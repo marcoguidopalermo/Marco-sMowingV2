@@ -21,7 +21,7 @@ const LOG_CAP = 500;
 
 export type Category =
   | "announcements" | "repairs" | "workorders" | "leases" | "fleet" | "policies"
-  | "storage";
+  | "storage" | "marketing";
 
 // Global kill switches + per-trigger sub-toggles. Defaults: all ON except the
 // dormant policy sign-off. Enforced SERVER-SIDE here.
@@ -367,6 +367,7 @@ const TEST_SAMPLES: Record<Category, {title: string; body: string; url: string}>
   fleet: {title: "🚚 Registration expiring in 30 days", body: "Sample fleet unit.", url: "/#mechanic"},
   policies: {title: "📝 Policy sign-off", body: "Sample policy acknowledgement.", url: "/"},
   storage: {title: "⚠️ Storage warning", body: "Sample — main data document nearing its size limit.", url: "/"},
+  marketing: {title: "💬 Sample commented on clip #0058", body: "Sample — trim the intro, the drone shot is the hook.", url: "/#marketing"},
 };
 export const sendTestNotification = onCall({region: REGION}, async (req) => {
   const email = normEmail(req.auth?.token?.email);
@@ -431,6 +432,161 @@ export const onWorkOrderWrite = onDocumentWritten(
       }
     } catch (e) {
       logger.warn("onWorkOrderWrite notif failed (isolated)", {error: String(e)});
+    }
+  },
+);
+
+// ═══════════════════════ MARKETING TRIGGERS ════════════════════════════════
+// The marketing board is worked by two or three people, so every type here
+// notifies THE OTHERS and never the person who caused the event — a push about
+// your own comment is noise, and noise is how a channel gets muted.
+//
+// All three go through sendNotification like everything else: the "marketing"
+// kill switch, each person's category preference, quiet hours and the held-push
+// catch-up all apply without a line of special-casing. Each trigger is wrapped
+// so a notification failure can never fail the write that caused it, and each
+// takes a dedupe marker so an at-least-once trigger retry can't ping twice.
+
+// Marketing access is the marketing systemRole plus two people BY NAME —
+// mirrors MARKETING_EMAILS in App.tsx, where Marco and James hold the marketing
+// duties but are admins (canViewMarketing is false for the admin role).
+const MARKETING_BY_NAME = ["marcoguidopalermo@gmail.com", "sales@marcosmowing.com"];
+async function marketingUserEmails(): Promise<string[]> {
+  const emps = await loadEmployees();
+  const out = new Set<string>(MARKETING_BY_NAME);
+  for (const e of emps) {
+    if ((e.systemRole || "") === "marketing") { const em = empEmail(e); if (em) out.add(em); }
+  }
+  return [...out];
+}
+// Everyone on the board except the actor, plus any admin-configured extras.
+async function marketingRecipients(actor: unknown): Promise<string[]> {
+  const cfg = await loadConfig();
+  const extra = await resolveSpec(cfg.audiences?.marketing_extra);
+  const me = normEmail(actor);
+  const all = [...new Set([...(await marketingUserEmails()), ...extra])];
+  return all.filter((e) => e && e !== me);
+}
+
+// Mirror of commentSubject() in src/components/MarketingComments.tsx: a message
+// with no subject fields is a clip message keyed by `clip`, which is what every
+// message written before subjects existed looks like.
+function subjectOf(c: any): {type: string; id: string} {
+  const t = ["clip", "link", "todo"].includes(c?.subjectType) ? String(c.subjectType) : "clip";
+  const id = String((t === "clip" ? (c?.subjectId || c?.clip) : c?.subjectId) || "");
+  return {type: t, id};
+}
+const snip = (v: unknown, n: number): string => {
+  const s = String(v || "").replace(/\s+/g, " ").trim();
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+};
+// What the comment is about, in words, plus the on-page anchor to open on tap.
+async function describeSubject(c: any): Promise<{label: string; anchor: string}> {
+  const {type, id} = subjectOf(c);
+  if (!id) return {label: "", anchor: ""};
+  if (type === "clip") {
+    return {label: `clip ${/^\d+$/.test(id) ? `#${id.padStart(4, "0")}` : `#${id}`}`, anchor: `clip-${id}`};
+  }
+  if (type === "link") {
+    const d = (await db.doc(`${PUB}/marketingLinks/${id}`).get()).data() as any;
+    return {label: d?.title ? `"${snip(d.title, 40)}"` : "a reference link", anchor: `link-${id}`};
+  }
+  const d = (await db.doc(`${PUB}/marketingTodos/${id}`).get()).data() as any;
+  return {label: d?.text ? `"${snip(d.text, 40)}"` : "a to-do", anchor: `todo-${id}`};
+}
+
+// (a) NEW COMMENT — on a clip thread, a reference link or a to-do. The main
+// one: a comment nobody sees is a conversation that doesn't happen. Fires on
+// CREATE only; an edit or a delete is not an event worth a buzz.
+export const onMarketingCommentWrite = onDocumentWritten(
+  {region: REGION, document: `${PUB}/marketingFeedback/{id}`},
+  async (event) => {
+    try {
+      const before = event.data?.before.data() as any;
+      const after = event.data?.after.data() as any;
+      if (before || !after) return;
+      const marker = `mktcomment-${event.params.id}`;
+      if (await alreadySent(marker)) return;
+      await markSent(marker);
+      const recips = await marketingRecipients(after.createdBy?.email);
+      if (!recips.length) return;
+      const {label, anchor} = await describeSubject(after);
+      const who = after.createdBy?.name || "Someone";
+      await sendNotification(recips, "marketing", {
+        title: `💬 ${who} commented${label ? ` on ${label}` : ""}`,
+        body: snip(after.text, 140),
+        url: `/#marketing${anchor ? `/${anchor}` : ""}`,
+      }, "marketing_comment");
+    } catch (e) {
+      logger.warn("onMarketingCommentWrite notif failed (isolated)", {error: String(e)});
+    }
+  },
+);
+
+// (b) CLIP SENT TO THE POST QUEUE — the marketer's cue that something is
+// approved and ready to schedule. Fires when a row is created, and when an
+// already-posted clip is re-queued for a re-post. A reorder, a note edit or
+// marking something posted is not an event.
+export const onMarketingPostQueueWrite = onDocumentWritten(
+  {region: REGION, document: `${PUB}/marketingPostQueue/{clip}`},
+  async (event) => {
+    try {
+      const before = event.data?.before.data() as any;
+      const after = event.data?.after.data() as any;
+      if (!after || after.status === "posted") return;
+      if (before && before.status !== "posted") return;   // already waiting to go out
+      const clip = String(event.params.clip);
+      // The marker carries the queue position, which is rewritten on every
+      // (re-)queue — so a trigger retry is suppressed but a genuine re-queue
+      // later still gets through.
+      const marker = `mktqueue-${clip}-${before ? "re" : "new"}-${after.order || 0}`;
+      if (await alreadySent(marker)) return;
+      await markSent(marker);
+      const recips = await marketingRecipients(after.queuedBy?.email);
+      if (!recips.length) return;
+      const label = /^\d+$/.test(clip) ? `#${clip.padStart(4, "0")}` : `#${clip}`;
+      const who = after.queuedBy?.name || "Someone";
+      await sendNotification(recips, "marketing", {
+        title: `📤 Clip ${label} is ready to post`,
+        body: `${who} sent it to the post queue${after.note ? ` · ${snip(after.note, 100)}` : ""}`,
+        url: `/#marketing/pq-${clip}`,
+      }, "marketing_postqueue");
+    } catch (e) {
+      logger.warn("onMarketingPostQueueWrite notif failed (isolated)", {error: String(e)});
+    }
+  },
+);
+
+// (c) NEW TO-DO — HIGH PRIORITY ONLY by default. Every routine task pinging
+// everyone is how a channel gets muted, and the list is on screen anyway; a
+// high-priority item is the one that shouldn't wait to be noticed. The
+// marketing_todo_all sub-toggle opts IN to normal-priority items for anyone who
+// disagrees; marketing_todo mutes the type entirely.
+export const onMarketingTodoWrite = onDocumentWritten(
+  {region: REGION, document: `${PUB}/marketingTodos/{id}`},
+  async (event) => {
+    try {
+      const before = event.data?.before.data() as any;
+      const after = event.data?.after.data() as any;
+      if (before || !after) return;                       // creates only
+      const high = after.priority === "high";
+      if (!high) {
+        const cfg = await loadConfig();
+        if (cfg.subToggles?.marketing_todo_all !== true) return;
+      }
+      const marker = `mkttodo-${event.params.id}`;
+      if (await alreadySent(marker)) return;
+      await markSent(marker);
+      const recips = await marketingRecipients(after.addedBy?.email);
+      if (!recips.length) return;
+      const who = after.addedBy?.name || "Someone";
+      await sendNotification(recips, "marketing", {
+        title: `${high ? "🚩" : "✅"} ${who} added a${high ? " high-priority" : ""} to-do`,
+        body: snip(after.text, 140),
+        url: `/#marketing/todo-${event.params.id}`,
+      }, "marketing_todo");
+    } catch (e) {
+      logger.warn("onMarketingTodoWrite notif failed (isolated)", {error: String(e)});
     }
   },
 );

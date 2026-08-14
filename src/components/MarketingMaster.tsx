@@ -13,6 +13,10 @@
 //     can be sent to the shot queue and STAYS here, badged.
 //   • Clip feedback — review notes against a Drive clip number, threaded per
 //     clip. The footage stays in Drive; only the words live here.
+//
+// All THREE commentable surfaces here — clip feedback, reference links and
+// to-dos — run on the one thread component in MarketingComments.tsx, over one
+// subject shape and one collection. See that file for why.
 //   • Post queue — reviewed clips in the order they go out. Fed from clip
 //     feedback; each row is keyed by the clip number, so its thread is always
 //     one click away and can never be orphaned.
@@ -26,19 +30,26 @@ import { useMemo, useRef, useState } from 'react';
 import {
   CalendarDays, Camera, Link2, ChevronLeft, ChevronRight, Plus, X, Trash2,
   ExternalLink, Check, Paperclip, Pencil, Megaphone, MessageSquare, Search,
-  RotateCcw, CornerDownRight, Send, ArrowUp, ArrowDown, ListChecks, Flag,
+  RotateCcw, Send, ArrowUp, ArrowDown, ListChecks, Flag,
 } from 'lucide-react';
 import type {
   MarketingClipStatus, MarketingClipThread, MarketingContentItem,
   MarketingContentStatus, MarketingFeedbackEntry, MarketingLink, MarketingShot,
   MarketingPostQueueEntry, MarketingTodo, MarketingTodoPriority,
 } from '../types';
+import {
+  CommentCount, CommentThread, clipKey, clipLabel, groupComments,
+  newComment, newId, prettyStamp, subjectKey,
+} from './MarketingComments';
+import type { MarketingSubject } from './MarketingComments';
 
 interface Props {
   content: Record<string, MarketingContentItem>;
   shots: Record<string, MarketingShot>;
   links: Record<string, MarketingLink>;
-  feedback: Record<string, MarketingFeedbackEntry>;
+  // Every comment on the page, whatever it is about — clips, links and to-dos
+  // share one collection and one component. Threads are derived by subject.
+  comments: Record<string, MarketingFeedbackEntry>;
   clips: Record<string, MarketingClipThread>;
   postQueue: Record<string, MarketingPostQueueEntry>;
   currentUser: { email: string; name: string };
@@ -48,8 +59,8 @@ interface Props {
   onDeleteShot: (id: string) => void;
   onSaveLink: (link: MarketingLink) => void;
   onDeleteLink: (id: string) => void;
-  onSaveFeedback: (entry: MarketingFeedbackEntry) => void;
-  onDeleteFeedback: (id: string) => void;
+  onSaveComment: (entry: MarketingFeedbackEntry) => void;
+  onDeleteComment: (id: string) => void;
   onSaveClip: (thread: MarketingClipThread) => void;
   onSavePostQueue: (entry: MarketingPostQueueEntry) => void;
   onDeletePostQueue: (id: string) => void;
@@ -96,10 +107,6 @@ function shortDate(date: string): string {
   const d = new Date(`${date}T12:00:00`);
   if (Number.isNaN(d.getTime())) return date;
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-function newId(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
 // Best-effort URL normalize. A pasted "instagram.com/reel/xyz" is a URL as far
@@ -150,46 +157,12 @@ function hostOf(raw: string): string {
   return u ? u.hostname.replace(/^www\./, '') : raw;
 }
 
-// ── clip numbers ───────────────────────────────────────────────────────
-// Footage is numbered in Drive as #0058. People type that four different
-// ways, and every one of them has to land on the same thread — otherwise the
-// conversation silently forks and half the feedback goes missing.
-//
-// "#0058", "0058", " 58 ", "#58" → "58". Leading zeros are presentation, not
-// identity, so they're stripped from the key and re-applied on display.
-// Non-numeric clip names (a "0058B" alt take) are kept verbatim, uppercased.
-// The result doubles as a Firestore doc id, so anything outside [A-Z0-9_-] is
-// dropped rather than risking an invalid path.
-export function clipKey(raw: string): string {
-  const v = (raw || '').trim().replace(/^#+/, '').trim().toUpperCase()
-    .replace(/[^A-Z0-9_-]/g, '');
-  if (!v) return '';
-  if (/^\d+$/.test(v)) return String(parseInt(v, 10));
-  return v;
-}
-
-// Key → what the user sees. Pure numbers get padded back to the 4-digit house
-// style (#0058); anything else is shown as typed.
-export function clipLabel(key: string): string {
-  if (!key) return '';
-  return /^\d+$/.test(key) ? `#${key.padStart(4, '0')}` : `#${key}`;
-}
-
-function prettyStamp(ms?: number): string {
-  if (!ms) return '';
-  const d = new Date(ms);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  });
-}
-
 export default function MarketingMaster({
-  content, shots, links, feedback, clips, postQueue, currentUser,
+  content, shots, links, comments, clips, postQueue, currentUser,
   onSaveContent, onDeleteContent,
   onSaveShot, onDeleteShot,
   onSaveLink, onDeleteLink,
-  onSaveFeedback, onDeleteFeedback, onSaveClip,
+  onSaveComment, onDeleteComment, onSaveClip,
   onSavePostQueue, onDeletePostQueue,
   todos, onSaveTodo, onDeleteTodo,
 }: Props) {
@@ -206,6 +179,12 @@ export default function MarketingMaster({
     () => Object.values(links).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)),
     [links],
   );
+
+  // ONE grouping for the whole page: every comment, keyed by its subject. All
+  // three commentable panels read their threads out of this map, so there is a
+  // single traversal and a single definition of "which thread is this in".
+  const threads = useMemo(() => groupComments(comments), [comments]);
+  const addComment = (s: MarketingSubject, text: string) => onSaveComment(newComment(s, text));
 
   return (
     <div className="flex-1 overflow-y-auto bg-gray-100">
@@ -230,7 +209,14 @@ export default function MarketingMaster({
         {/* (b) TO-DO — one shared list, directly under the calendar: it is
             the "what do I actually need to do" of this board, so it sits
             above the pipeline panels rather than beside them. */}
-        <TodoPanel todos={todos} onSave={onSaveTodo} onDelete={onDeleteTodo} />
+        <TodoPanel
+          todos={todos}
+          threads={threads}
+          onSave={onSaveTodo}
+          onDelete={onDeleteTodo}
+          onAddComment={addComment}
+          onDeleteComment={onDeleteComment}
+        />
 
         {/* (c) SHOT QUEUE and (d) LINKS — compact panels side by side on
             desktop, stacked in that order on a phone. Adjacent on purpose:
@@ -241,22 +227,25 @@ export default function MarketingMaster({
             links={linkList}
             items={contentList}
             shots={shots}
+            threads={threads}
             currentUser={currentUser}
             onSaveLink={onSaveLink}
             onDeleteLink={onDeleteLink}
             onSaveContent={onSaveContent}
             onSaveShot={onSaveShot}
+            onAddComment={addComment}
+            onDeleteComment={onDeleteComment}
           />
         </div>
 
         {/* (e) CLIP FEEDBACK — full width. The footage lives in Drive; this
             holds only the conversation about it, keyed by clip number. */}
         <FeedbackPanel
-          feedback={feedback}
+          threads={threads}
           clips={clips}
           postQueue={postQueue}
-          onSaveFeedback={onSaveFeedback}
-          onDeleteFeedback={onDeleteFeedback}
+          onAddComment={addComment}
+          onDeleteComment={onDeleteComment}
           onSaveClip={onSaveClip}
           onSavePostQueue={onSavePostQueue}
         />
@@ -267,7 +256,7 @@ export default function MarketingMaster({
             which is why the panel takes the content list and its writers. */}
         <PostQueuePanel
           postQueue={postQueue}
-          feedback={feedback}
+          threads={threads}
           content={contentList}
           onSave={onSavePostQueue}
           onDelete={onDeletePostQueue}
@@ -905,21 +894,27 @@ function ShotRow({
 /* ══════════════════════ LINKS ═════════════════════════════════════════ */
 
 function LinksPanel({
-  links, items, shots, currentUser, onSaveLink, onDeleteLink, onSaveContent, onSaveShot,
+  links, items, shots, threads, currentUser, onSaveLink, onDeleteLink, onSaveContent,
+  onSaveShot, onAddComment, onDeleteComment,
 }: {
   links: MarketingLink[];
   items: MarketingContentItem[];
   shots: Record<string, MarketingShot>;
+  threads: Map<string, MarketingFeedbackEntry[]>;
   currentUser: { email: string; name: string };
   onSaveLink: (l: MarketingLink) => void;
   onDeleteLink: (id: string) => void;
   onSaveContent: (i: MarketingContentItem) => void;
   onSaveShot: (s: MarketingShot) => void;
+  onAddComment: (s: MarketingSubject, text: string) => void;
+  onDeleteComment: (id: string) => void;
 }) {
   const [url, setUrl] = useState('');
   const [note, setNote] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
+  // Which card's discussion is open — one at a time, as on the to-do list.
+  const [openThread, setOpenThread] = useState<string | null>(null);
   const urlRef = useRef<HTMLInputElement>(null);
 
   // Reverse map: link id → the content item it's attached to. Attachment is
@@ -1034,8 +1029,12 @@ function LinksPanel({
             const attached = attachedTo.get(l.id);
             const queuedShot = shotFor.get(l.id);
             const queuedNeeded = queuedShot?.status !== 'captured';
+            const subject: MarketingSubject = { subjectType: 'link', subjectId: l.id };
+            const entries = threads.get(subjectKey(subject)) || [];
+            const threadOpen = openThread === l.id;
             return (
-              <div key={l.id} className="bg-white rounded-xl border border-gray-200 p-3 flex flex-col gap-2">
+              // Anchor target for a comment notification tap-through.
+              <div key={l.id} id={`link-${l.id}`} className="scroll-mt-24 bg-white rounded-xl border border-gray-200 p-3 flex flex-col gap-2">
                 <div className="flex items-start gap-2">
                   {editingId === l.id ? (
                     <input
@@ -1104,6 +1103,20 @@ function LinksPanel({
                       <option key={i.id} value={i.id}>{prettyDate(i.date)} — {i.title || 'Untitled'}</option>
                     ))}
                   </select>
+                  {/* Discuss this reference. A card has an action bar already,
+                      so unlike a to-do row the way in is always visible; the
+                      count appears once there is something to count. */}
+                  <button
+                    onClick={() => setOpenThread(threadOpen ? null : l.id)}
+                    aria-label={threadOpen ? 'Hide comments' : 'Comments'}
+                    title={entries.length ? `${entries.length} comment${entries.length === 1 ? '' : 's'}` : 'Add a comment'}
+                    className={`min-w-[40px] min-h-[40px] inline-flex items-center justify-center gap-1 rounded-lg shrink-0 text-[10px] font-black ${
+                      threadOpen ? 'text-fuchsia-700 bg-fuchsia-50' : 'text-slate-300 hover:text-fuchsia-700'
+                    }`}
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    {entries.length > 0 && entries.length}
+                  </button>
                   <button
                     onClick={() => onDeleteLink(l.id)}
                     aria-label="Delete link"
@@ -1112,6 +1125,21 @@ function LinksPanel({
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
+
+                {/* The same thread component as the clip feedback and to-do
+                    surfaces, on a link subject. */}
+                {threadOpen && (
+                  <div className="border-t border-slate-100 pt-2">
+                    <CommentThread
+                      entries={entries}
+                      onAdd={text => onAddComment(subject, text)}
+                      onDelete={onDeleteComment}
+                      composer="always"
+                      placeholder={`Comment on "${l.title || hostOf(l.url)}"`}
+                      replyLabel="Comment"
+                    />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -1128,54 +1156,46 @@ function LinksPanel({
 // on it is what turns rows into conversations. Nothing points at a parent, so
 // there is no thread pointer to corrupt and a reply is just another row.
 function FeedbackPanel({
-  feedback, clips, postQueue, onSaveFeedback, onDeleteFeedback, onSaveClip, onSavePostQueue,
+  threads: allThreads, clips, postQueue, onAddComment, onDeleteComment, onSaveClip, onSavePostQueue,
 }: {
-  feedback: Record<string, MarketingFeedbackEntry>;
+  threads: Map<string, MarketingFeedbackEntry[]>;
   clips: Record<string, MarketingClipThread>;
   postQueue: Record<string, MarketingPostQueueEntry>;
-  onSaveFeedback: (e: MarketingFeedbackEntry) => void;
-  onDeleteFeedback: (id: string) => void;
+  onAddComment: (s: MarketingSubject, text: string) => void;
+  onDeleteComment: (id: string) => void;
   onSaveClip: (t: MarketingClipThread) => void;
   onSavePostQueue: (e: MarketingPostQueueEntry) => void;
 }) {
   const [newClip, setNewClip] = useState('');
   const [newText, setNewText] = useState('');
   const [query, setQuery] = useState('');
-  const [replyFor, setReplyFor] = useState<string | null>(null);
-  const [replyText, setReplyText] = useState('');
   const [linkFor, setLinkFor] = useState<string | null>(null);
   const [linkDraft, setLinkDraft] = useState('');
   const [showAddressed, setShowAddressed] = useState(false);
   const clipRef = useRef<HTMLInputElement>(null);
 
-  // Threads are built from ENTRIES, so a clip doc left behind by a delete race
-  // can never show up as an empty thread.
+  // Threads are built from MESSAGES (the page-wide grouping, filtered to the
+  // clip subjects), so a clip doc left behind by a delete race can never show
+  // up as an empty thread.
   const threads = useMemo(() => {
-    const byClip = new Map<string, MarketingFeedbackEntry[]>();
-    for (const e of Object.values(feedback)) {
-      const k = clipKey(e.clip || '');
-      if (!k) continue;
-      const list = byClip.get(k);
-      if (list) list.push(e); else byClip.set(k, [e]);
-    }
-    const out = [...byClip.entries()].map(([clip, entries]) => {
-      // Within a thread, oldest first — it's a conversation, and a
-      // back-and-forth read bottom-up is not a conversation.
-      const ordered = [...entries].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-      const latest = ordered.reduce((m, e) => Math.max(m, e.createdAt || 0), 0);
-      const thread = clips[clip];
-      return {
-        clip,
-        entries: ordered,
-        latest,
-        status: (thread?.status === 'addressed' ? 'addressed' : 'open') as MarketingClipStatus,
-        url: thread?.url || '',
-        thread,
-      };
-    });
+    const out = [...allThreads.entries()]
+      .filter(([k]) => k.startsWith('clip:'))
+      .map(([k, entries]) => {
+        const clip = k.slice('clip:'.length);
+        const latest = entries.reduce((m, e) => Math.max(m, e.createdAt || 0), 0);
+        const thread = clips[clip];
+        return {
+          clip,
+          entries,
+          latest,
+          status: (thread?.status === 'addressed' ? 'addressed' : 'open') as MarketingClipStatus,
+          url: thread?.url || '',
+          thread,
+        };
+      });
     // Threads themselves are newest-first, by most recent activity.
     return out.sort((a, b) => b.latest - a.latest);
-  }, [feedback, clips]);
+  }, [allThreads, clips]);
 
   // Filter on the PADDED label so "58", "0058" and "005" all find #0058.
   const filtered = useMemo(() => {
@@ -1193,18 +1213,10 @@ function FeedbackPanel({
     if (!clip || !text) return;
     // createdBy / createdAt are stamped by the save handler from the
     // signed-in identity — never from anything this panel could get wrong.
-    onSaveFeedback({ id: newId('mf'), clip, text });
+    onAddComment({ subjectType: 'clip', subjectId: clip }, text);
     setNewClip('');
     setNewText('');
     clipRef.current?.focus();
-  };
-
-  const reply = (clip: string) => {
-    const text = replyText.trim();
-    if (!text) return;
-    onSaveFeedback({ id: newId('mf'), clip, text });
-    setReplyText('');
-    setReplyFor(null);
   };
 
   // Status and url live on the same doc, so every write sends both — passing
@@ -1306,12 +1318,7 @@ function FeedbackPanel({
           <ClipThread
             key={t.clip}
             t={t}
-            replying={replyFor === t.clip}
-            replyText={replyText}
-            onReplyText={setReplyText}
-            onStartReply={() => { setReplyFor(t.clip); setReplyText(''); }}
-            onCancelReply={() => { setReplyFor(null); setReplyText(''); }}
-            onReply={() => reply(t.clip)}
+            onAddComment={onAddComment}
             editingLink={linkFor === t.clip}
             linkDraft={linkDraft}
             onLinkDraft={setLinkDraft}
@@ -1319,7 +1326,7 @@ function FeedbackPanel({
             onCancelLink={() => { setLinkFor(null); setLinkDraft(''); }}
             onSaveLink={() => saveLink(t)}
             onStatus={s => setStatus(t, s)}
-            onDeleteEntry={onDeleteFeedback}
+            onDeleteComment={onDeleteComment}
             queued={postQueue[t.clip]?.status === 'queued'}
             onSendToPostQueue={() => sendToPostQueue(t.clip)}
           />
@@ -1342,12 +1349,7 @@ function FeedbackPanel({
                 <ClipThread
                   key={t.clip}
                   t={t}
-                  replying={replyFor === t.clip}
-                  replyText={replyText}
-                  onReplyText={setReplyText}
-                  onStartReply={() => { setReplyFor(t.clip); setReplyText(''); }}
-                  onCancelReply={() => { setReplyFor(null); setReplyText(''); }}
-                  onReply={() => reply(t.clip)}
+                  onAddComment={onAddComment}
                   editingLink={linkFor === t.clip}
                   linkDraft={linkDraft}
                   onLinkDraft={setLinkDraft}
@@ -1355,7 +1357,7 @@ function FeedbackPanel({
                   onCancelLink={() => { setLinkFor(null); setLinkDraft(''); }}
                   onSaveLink={() => saveLink(t)}
                   onStatus={s => setStatus(t, s)}
-                  onDeleteEntry={onDeleteFeedback}
+                  onDeleteComment={onDeleteComment}
                   queued={postQueue[t.clip]?.status === 'queued'}
                   onSendToPostQueue={() => sendToPostQueue(t.clip)}
                 />
@@ -1369,9 +1371,9 @@ function FeedbackPanel({
 }
 
 function ClipThread({
-  t, replying, replyText, onReplyText, onStartReply, onCancelReply, onReply,
+  t, onAddComment, onDeleteComment,
   editingLink, linkDraft, onLinkDraft, onStartLink, onCancelLink, onSaveLink,
-  onStatus, onDeleteEntry, queued, onSendToPostQueue,
+  onStatus, queued, onSendToPostQueue,
 }: {
   t: {
     clip: string;
@@ -1383,12 +1385,7 @@ function ClipThread({
   // disappearing, so "is this queued?" is answerable from the thread itself.
   queued: boolean;
   onSendToPostQueue: () => void;
-  replying: boolean;
-  replyText: string;
-  onReplyText: (v: string) => void;
-  onStartReply: () => void;
-  onCancelReply: () => void;
-  onReply: () => void;
+  onAddComment: (s: MarketingSubject, text: string) => void;
   editingLink: boolean;
   linkDraft: string;
   onLinkDraft: (v: string) => void;
@@ -1396,7 +1393,7 @@ function ClipThread({
   onCancelLink: () => void;
   onSaveLink: () => void;
   onStatus: (s: MarketingClipStatus) => void;
-  onDeleteEntry: (id: string) => void;
+  onDeleteComment: (id: string) => void;
 }) {
   const done = t.status === 'addressed';
   return (
@@ -1481,58 +1478,17 @@ function ClipThread({
           </div>
         )}
 
-        {/* The conversation, oldest first. */}
-        <div className="mt-2 space-y-2">
-          {t.entries.map(e => (
-            <div key={e.id} className="flex items-start gap-2 group">
-              <div className="flex-1 min-w-0 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-                <p className="text-sm font-bold text-slate-800 whitespace-pre-wrap break-words">{e.text}</p>
-                <span className="block text-[10px] font-bold uppercase tracking-widest text-slate-400 mt-1">
-                  {e.createdBy?.name || 'Unknown'}
-                  {e.createdAt ? ` · ${prettyStamp(e.createdAt)}` : ''}
-                </span>
-              </div>
-              <button
-                onClick={() => onDeleteEntry(e.id)}
-                aria-label="Delete feedback"
-                className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-200 hover:text-rose-600 shrink-0"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          ))}
+        {/* The conversation — the SAME component the links board and the to-do
+            list use. A reply carries the clip subject, so it joins this thread
+            rather than starting one. */}
+        <div className="mt-2">
+          <CommentThread
+            entries={t.entries}
+            onAdd={text => onAddComment({ subjectType: 'clip', subjectId: t.clip }, text)}
+            onDelete={onDeleteComment}
+            placeholder={`Reply on ${clipLabel(t.clip)}…`}
+          />
         </div>
-
-        {/* Reply — same clip, so it joins this thread rather than starting one. */}
-        {replying ? (
-          <div className="mt-2 space-y-2">
-            <textarea
-              value={replyText}
-              onChange={e => onReplyText(e.target.value)}
-              placeholder={`Reply on ${clipLabel(t.clip)}…`}
-              rows={3}
-              autoFocus
-              className="w-full border border-gray-300 rounded-lg p-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400 resize-y min-h-[76px]"
-            />
-            <div className="flex justify-end gap-2">
-              <button onClick={onCancelReply} className="min-h-[40px] px-3 text-slate-500 hover:bg-slate-100 rounded-lg text-[11px] font-black uppercase tracking-widest">Cancel</button>
-              <button
-                onClick={onReply}
-                disabled={!replyText.trim()}
-                className="min-h-[40px] px-4 bg-fuchsia-600 hover:bg-fuchsia-700 disabled:opacity-40 text-white rounded-lg text-[11px] font-black uppercase tracking-widest shadow"
-              >
-                Reply
-              </button>
-            </div>
-          </div>
-        ) : (
-          <button
-            onClick={onStartReply}
-            className="mt-2 min-h-[40px] px-2 inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-slate-400 hover:text-fuchsia-700"
-          >
-            <CornerDownRight className="w-3.5 h-3.5" /> Reply
-          </button>
-        )}
       </div>
     </div>
   );
@@ -1544,17 +1500,23 @@ function ClipThread({
 // the board can add, edit, tick and delete anything, which is what "shared
 // working list" actually means. addedBy is a byline, not an access check.
 function TodoPanel({
-  todos, onSave, onDelete,
+  todos, threads, onSave, onDelete, onAddComment, onDeleteComment,
 }: {
   todos: Record<string, MarketingTodo>;
+  threads: Map<string, MarketingFeedbackEntry[]>;
   onSave: (t: MarketingTodo) => void;
   onDelete: (id: string) => void;
+  onAddComment: (s: MarketingSubject, text: string) => void;
+  onDeleteComment: (id: string) => void;
 }) {
   const [text, setText] = useState('');
   const [priority, setPriority] = useState<MarketingTodoPriority>('normal');
   const [showDone, setShowDone] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<MarketingTodo | null>(null);
+  // Which item's discussion is open. One at a time: the list is the point, and
+  // several expanded threads would bury it.
+  const [openThread, setOpenThread] = useState<string | null>(null);
   const addRef = useRef<HTMLInputElement>(null);
 
   // Local calendar day, so "overdue" matches the user's date rather than UTC.
@@ -1615,8 +1577,12 @@ function TodoPanel({
     // "late" is noise, not information.
     const overdue = !t.done && !!t.dueDate && t.dueDate < today;
     const editing = editingId === t.id;
+    const subject: MarketingSubject = { subjectType: 'todo', subjectId: t.id };
+    const entries = threads.get(subjectKey(subject)) || [];
+    const threadOpen = openThread === t.id;
     return (
-      <div key={t.id} className={t.done ? 'opacity-55' : ''}>
+      // Anchor target for a comment / new-item notification tap-through.
+      <div key={t.id} id={`todo-${t.id}`} className={`scroll-mt-24 ${t.done ? 'opacity-55' : ''}`}>
         <div className="flex items-start gap-2 px-3 py-2">
           <button
             onClick={() => toggleDone(t)}
@@ -1656,6 +1622,16 @@ function TodoPanel({
                       Clear date
                     </button>
                   )}
+                  {/* Where a FIRST comment starts. An item nobody has
+                      discussed shows nothing extra on the row itself, so the
+                      way in is the same tap that already opens the item; once
+                      there is a comment, the count chip on the row takes over. */}
+                  <button
+                    onClick={() => { setOpenThread(t.id); setEditingId(null); setDraft(null); }}
+                    className="min-h-[36px] px-2 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-fuchsia-700 hover:bg-fuchsia-50 rounded-lg inline-flex items-center gap-1"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" /> Comment
+                  </button>
                   <button onClick={saveEdit} className="ml-auto min-h-[36px] px-3 bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded-lg text-[10px] font-black uppercase tracking-widest shadow">Save</button>
                   <button
                     onClick={() => { setEditingId(null); setDraft(null); }}
@@ -1698,6 +1674,13 @@ function TodoPanel({
 
           {!editing && (
             <div className="flex items-center shrink-0">
+              {/* Comment count — nothing at all until someone has said
+                  something, so a quiet list stays quiet. */}
+              <CommentCount
+                n={entries.length}
+                open={threadOpen}
+                onClick={() => setOpenThread(threadOpen ? null : t.id)}
+              />
               {/* Priority is a toggle, not a menu — two states means a tap. */}
               <button
                 onClick={() => togglePriority(t)}
@@ -1718,6 +1701,22 @@ function TodoPanel({
             </div>
           )}
         </div>
+
+        {/* The discussion — the same thread component the clip feedback and
+            the links board use, on a to-do subject. Indented under the item so
+            it reads as belonging to it. */}
+        {threadOpen && (
+          <div className="px-3 pb-3 pl-[52px] bg-slate-50/60 border-t border-slate-100 pt-3">
+            <CommentThread
+              entries={entries}
+              onAdd={text => onAddComment(subject, text)}
+              onDelete={onDeleteComment}
+              composer="always"
+              placeholder={`Comment on "${t.text.slice(0, 40)}${t.text.length > 40 ? '…' : ''}"`}
+              replyLabel="Comment"
+            />
+          </div>
+        )}
       </div>
     );
   };
@@ -1807,10 +1806,10 @@ function TodoPanel({
 // stores no date of its own — the calendar entry owns it, and this panel reads
 // it back through the clip key.
 function PostQueuePanel({
-  postQueue, feedback, content, onSave, onDelete, onSaveContent, onDeleteContent,
+  postQueue, threads, content, onSave, onDelete, onSaveContent, onDeleteContent,
 }: {
   postQueue: Record<string, MarketingPostQueueEntry>;
-  feedback: Record<string, MarketingFeedbackEntry>;
+  threads: Map<string, MarketingFeedbackEntry[]>;
   content: MarketingContentItem[];
   onSave: (e: MarketingPostQueueEntry) => void;
   onDelete: (id: string) => void;
@@ -1823,17 +1822,10 @@ function PostQueuePanel({
   const [schedFor, setSchedFor] = useState<string | null>(null);
   const [dateDraft, setDateDraft] = useState('');
 
-  // Message count per clip — grouped on the clip key exactly as FeedbackPanel
-  // does it, so the number shown here is the same thread.
-  const countByClip = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const e of Object.values(feedback)) {
-      const k = clipKey(e.clip || '');
-      if (!k) continue;
-      m.set(k, (m.get(k) || 0) + 1);
-    }
-    return m;
-  }, [feedback]);
+  // Message count per clip, read out of the page-wide grouping — the same
+  // thread the feedback panel shows, counted once.
+  const countFor = (clip: string) =>
+    (threads.get(subjectKey({ subjectType: 'clip', subjectId: clip })) || []).length;
 
   // clip key → its calendar entry. DERIVED by matching MarketingContentItem
   // .clip, exactly the way a feedback thread is derived by grouping on the
@@ -1948,10 +1940,11 @@ function PostQueuePanel({
 
   const row = (e: MarketingPostQueueEntry, idx: number | null) => {
     const done = e.status === 'posted';
-    const count = countByClip.get(e.id) || 0;
+    const count = countFor(e.id);
     const sched = scheduledByClip.get(e.id);
     return (
-      <div key={e.id} className={`px-3 py-2.5 ${done ? 'opacity-55' : ''}`}>
+      // Anchor target for a "sent to the post queue" notification tap-through.
+      <div key={e.id} id={`pq-${e.id}`} className={`scroll-mt-24 px-3 py-2.5 ${done ? 'opacity-55' : ''}`}>
         <div className="flex items-center gap-2 flex-wrap">
           {/* Order controls — up/down rather than drag: this board is used on
               a phone, where a 44px target beats a drag handle. */}
