@@ -1025,6 +1025,17 @@ export type SnowServiceWindow = 'overnight' | 'daytime' | 'nonPriority';
 // lawn measuring tool, which has no purposes — see MeasureRing.
 export type SnowAreaPurpose = 'plow' | 'shovel' | 'storage' | 'hazard';
 
+// The banner photo's framing. Mirrors the reference's own pan/zoom model
+// (translate then scale, about the centre), with the offsets normalized.
+export interface SnowPhotoView {
+  zoom: number;      // 1 = the photo exactly covering the banner
+  x: number;         // pan, % of banner width  (+right)
+  y: number;         // pan, % of banner height (+down)
+  // false = cover (fill the banner, crop the overflow) — the default, and what
+  // a banner wants. true = contain, for a photo that must not be cropped.
+  fit?: boolean;
+}
+
 // One level's two prices. Both print for all three levels, side by side, so
 // the Client can see what each level costs before choosing.
 export interface SnowLevelPrice {
@@ -1070,6 +1081,15 @@ export interface SnowContract {
     shovelArea: string;
     showMap: boolean;
     sitePhoto?: string;           // Storage URL — the page-1 banner
+    // How that photo is FRAMED in the banner. A site photo is nearly always
+    // the wrong shape for a 3.7:1 strip, so cover-and-centre puts the horizon
+    // wherever the camera happened to be pointing; this is the choice of which
+    // band of the picture shows.
+    //
+    // x and y are PERCENTAGES OF THE BANNER, not pixels: the editor frames the
+    // photo in a box the width of the form column and it prints in a box the
+    // width of the page, and a pixel offset would mean two different crops.
+    sitePhotoView?: SnowPhotoView;
     mapImages: string[];          // 0–2 Storage URLs (fallback when unmeasured)
     measuredSqft?: number;
     measurement?: PropertyMeasurement;   // same shape SalesMaster stores

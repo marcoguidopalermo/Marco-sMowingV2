@@ -6,7 +6,7 @@
 // every keystroke, so a contract can't be saved with an instalment amount
 // that doesn't match its total.
 import type {
-  SnowContract, SnowContractStatus, SnowLevelPrice, SnowServiceLevel,
+  SnowContract, SnowContractStatus, SnowLevelPrice, SnowServiceLevel, SnowPhotoView,
 } from '../types';
 
 export const round2 = (n: number): number => Math.round((Number(n) || 0) * 100) / 100;
@@ -83,6 +83,60 @@ export const DEFAULT_SERVICE_TERMS = {
 } as const;
 
 export const DEFAULT_CGL = '5,000,000';
+
+// A freshly uploaded photo fills the banner, centred — the reference's own
+// starting point. Everything else is the user moving it.
+export const DEFAULT_PHOTO_VIEW = { zoom: 1, x: 0, y: 0, fit: false } as const;
+export const photoView = (c: SnowContract): SnowPhotoView =>
+  ({ ...DEFAULT_PHOTO_VIEW, ...(c.scope.sitePhotoView || {}) });
+
+// THE FRAMING STYLE, applied identically by the printed banner and by the
+// editor's framing box. One function, so what is framed is what prints.
+//
+// NOT THE REFERENCE'S ARITHMETIC, deliberately. The reference translates the
+// <img> element and clamps the drag against the photo's NATURAL size — but the
+// element is only as big as the banner (object-fit does the covering inside
+// it), so translating it by the natural overflow drags the element itself off
+// the frame and leaves empty background behind. Ported as written, the banner
+// printed blank. Panning here is object-position instead: it chooses which
+// part of a covering image shows, and a covering image cannot be positioned to
+// reveal background — the model makes the failure unrepresentable rather than
+// clamping against it.
+//
+// x and y are offsets from centre in the range ±50, where ±50 is the photo's
+// own edge. Zoom scales the whole frame about its centre.
+export const PHOTO_PAN_LIMIT = 50;
+export const PHOTO_ZOOM_MIN = 1;      // below 1 a cover image stops covering
+export const PHOTO_ZOOM_MAX = 4;
+
+export const photoStyle = (v: SnowPhotoView): {
+  objectFit: 'cover' | 'contain'; objectPosition: string; transform: string;
+} => ({
+  objectFit: v.fit ? 'contain' : 'cover',
+  objectPosition: `${50 + (Number(v.x) || 0)}% ${50 + (Number(v.y) || 0)}%`,
+  transform: `scale(${Number(v.zoom) || 1})`,
+});
+
+// How much of the photo is hidden outside the banner, in PIXELS of the drawn
+// image. A drag of n screen pixels moves the crop by n/slack of its range, so
+// a photo with no overflow on an axis simply does not pan on that axis — which
+// is the truth, not a restriction.
+export const photoSlackPx = (
+  box: { w: number; h: number },
+  nat: { w: number; h: number },
+): { x: number; y: number } => {
+  if (!box.w || !box.h || !nat.w || !nat.h) return { x: 0, y: 0 };
+  const cover = Math.max(box.w / nat.w, box.h / nat.h);
+  return { x: Math.max(0, nat.w * cover - box.w), y: Math.max(0, nat.h * cover - box.h) };
+};
+
+export const clampPhotoView = (v: SnowPhotoView): SnowPhotoView => {
+  const cl = (n: number) => Math.round(
+    Math.min(PHOTO_PAN_LIMIT, Math.max(-PHOTO_PAN_LIMIT, Number(n) || 0)) * 10,
+  ) / 10;
+  const zoom = Math.min(PHOTO_ZOOM_MAX, Math.max(PHOTO_ZOOM_MIN, Number(v.zoom) || 1));
+  return { zoom: Math.round(zoom * 100) / 100, x: cl(v.x), y: cl(v.y), fit: !!v.fit };
+};
 
 // Term runs November 1 to April 30 of the following year.
 export const termFor = (season: string): { start: string; end: string } => {

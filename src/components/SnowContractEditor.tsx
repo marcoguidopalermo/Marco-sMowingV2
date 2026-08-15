@@ -18,12 +18,13 @@ import type { ReactNode } from 'react';
 import {
   ArrowLeft, Check, ChevronDown, Loader2, Plus, Trash2, Printer, Copy, Ruler, Upload, X,
 } from 'lucide-react';
-import type { SnowContract, SnowContractStatus, PropertyMeasurement } from '../types';
+import type { SnowContract, SnowContractStatus, PropertyMeasurement, SnowPhotoView } from '../types';
 import SnowContractDocument from './SnowContractDocument';
 import PropertyMeasureTool from './PropertyMeasureTool';
 import {
   withDerived, STATUS_LABEL, DEFAULT_CGL, needsRequote, validUntilFrom,
   instalmentAmount, prepayTotal, calledInRate, selectedPrice,
+  photoView, photoStyle, photoSlackPx, clampPhotoView, DEFAULT_PHOTO_VIEW,
 } from '../lib/snowContracts';
 import { areaLabel } from '../lib/snowContractMap';
 import { SECTIONS, SERVICE_LEVELS } from '../lib/snowContractText';
@@ -61,6 +62,126 @@ const Field = ({ label, span, children }: { label: string; span?: boolean; child
 
 const SPLIT_KEY = 'snowContractSplitPct';
 const PAPER_W = 8.5 * 96;
+
+// ── THE PHOTO FRAME ────────────────────────────────────────────────────────
+// A site photo is almost never banner-shaped, so cover-and-centre crops
+// wherever the camera happened to be pointing — and a badly framed photo on
+// page 1 is worse than no photo. This is the reference's drag-and-zoom in
+// intent; the arithmetic is object-position rather than a translate, because a
+// translate can be dragged past the photo's own edge and leave the banner
+// empty. See photoStyle in snowContracts.ts.
+//
+// The printed banner FLEXES (it absorbs page 1's leftover height), so this box
+// matches its width-to-height ratio closely rather than exactly. Cover framing
+// is forgiving of that: the crop is expressed as a position within the photo,
+// not as a pixel offset, so it means the same thing in a banner of any size.
+const FRAME_RATIO = 720 / 190;
+
+function PhotoFrame({
+  src, view, disabled, onChange,
+}: {
+  src: string;
+  view: SnowPhotoView;
+  disabled: boolean;
+  onChange: (v: SnowPhotoView) => void;
+}) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  // Live during a drag; committed on release. Dragging writes one save, not
+  // one per pointer event.
+  const [live, setLive] = useState<SnowPhotoView | null>(null);
+  const drag = useRef<{ x: number; y: number; from: SnowPhotoView } | null>(null);
+  const v = live || view;
+
+  const boxOf = () => {
+    const r = boxRef.current?.getBoundingClientRect();
+    return { w: r?.width || 0, h: r?.height || 0 };
+  };
+  const natOf = () => ({
+    w: imgRef.current?.naturalWidth || 0,
+    h: imgRef.current?.naturalHeight || 0,
+  });
+  const commit = (next: SnowPhotoView) => {
+    setLive(null);
+    onChange(clampPhotoView(next));
+  };
+
+  const onDown = (e: React.PointerEvent) => {
+    if (disabled) return;
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    drag.current = { x: e.clientX, y: e.clientY, from: v };
+  };
+  const onMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const box = boxOf();
+    const slack = photoSlackPx(box, natOf());
+    if (!box.w || !box.h) return;
+    // Screen pixels → crop movement. The photo follows the pointer, so the
+    // crop moves the other way; a drag of the full overflow moves the crop
+    // its whole range. An axis with no overflow does not move at all.
+    const z = d.from.zoom || 1;
+    setLive(clampPhotoView({
+      ...d.from,
+      x: slack.x ? d.from.x - ((e.clientX - d.x) / z / slack.x) * 100 : d.from.x,
+      y: slack.y ? d.from.y - ((e.clientY - d.y) / z / slack.y) * 100 : d.from.y,
+    }));
+  };
+  const onUp = () => {
+    if (!drag.current) return;
+    drag.current = null;
+    if (live) commit(live);
+  };
+
+  const btn = 'min-h-[36px] rounded-lg border border-slate-300 bg-white px-2.5 text-[11px] '
+    + 'font-black uppercase tracking-widest text-slate-600 hover:border-sky-500 hover:text-sky-700 '
+    + 'disabled:opacity-40';
+
+  return (
+    <div className="space-y-2">
+      <div
+        ref={boxRef}
+        onPointerDown={onDown}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onPointerCancel={onUp}
+        style={{ aspectRatio: String(FRAME_RATIO) }}
+        className={`relative w-full overflow-hidden rounded-lg border border-slate-300 bg-slate-100 ${
+          disabled ? '' : 'cursor-grab active:cursor-grabbing'}`}
+      >
+        <img
+          ref={imgRef}
+          src={src}
+          alt="Site photo framing"
+          draggable={false}
+          onLoad={() => setLive(null)}
+          className="h-full w-full select-none"
+          style={{ ...photoStyle(v), transformOrigin: 'center' }}
+        />
+        {/* The printed banner is this shape. Saying so beats guessing. */}
+        <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-bold text-white">
+          page 1 banner
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[12px] text-slate-500">Drag to reposition</span>
+        <button type="button" disabled={disabled} className={btn}
+          onClick={() => commit({ ...v, zoom: v.zoom + 0.15 })}>Zoom +</button>
+        <button type="button" disabled={disabled} className={btn}
+          onClick={() => commit({ ...v, zoom: v.zoom - 0.15 })}>Zoom −</button>
+        <button type="button" disabled={disabled} className={btn}
+          onClick={() => commit({ zoom: 1, x: 0, y: 0, fit: !v.fit })}>
+          {v.fit ? 'Fill banner' : 'Show whole photo'}
+        </button>
+        <button type="button" disabled={disabled} className={btn}
+          onClick={() => commit({ ...DEFAULT_PHOTO_VIEW })}>Reset</button>
+        <span className="text-[11px] font-mono text-slate-400">
+          {Math.round(v.zoom * 100)}%
+        </span>
+      </div>
+    </div>
+  );
+}
 
 export default function SnowContractEditor({
   contract, onChange, onBack, onPrint, onDuplicate, onUploadMap, canEdit, saving, currentUser,
@@ -338,7 +459,7 @@ export default function SnowContractEditor({
               {c.scope.sitePhoto ? 'Replace site photo' : 'Upload site photo'}
             </button>
             {c.scope.sitePhoto && canEdit && (
-              <button type="button" onClick={() => patch(d => { d.scope.sitePhoto = undefined; })}
+              <button type="button" onClick={() => patch(d => { d.scope.sitePhoto = undefined; d.scope.sitePhotoView = undefined; })}
                 className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-slate-200 px-3 text-[12px] font-bold text-slate-500 hover:border-rose-200 hover:text-rose-600">
                 <X className="h-4 w-4" /> remove photo
               </button>
@@ -359,12 +480,30 @@ export default function SnowContractEditor({
                 setUploading(false);
                 if (url) {
                   patch(d => {
-                    if (target === 'photo') d.scope.sitePhoto = url;
-                    else d.scope.mapImages = [url];
+                    if (target === 'photo') {
+                      d.scope.sitePhoto = url;
+                      // A new photo starts centred and filling the banner. The
+                      // previous photo's crop describes a picture that is no
+                      // longer there.
+                      d.scope.sitePhotoView = { ...DEFAULT_PHOTO_VIEW };
+                    } else d.scope.mapImages = [url];
                   });
                 }
                 if (fileRef.current) fileRef.current.value = '';
               }} />
+            {/* FRAME THE PHOTO. Only once there is one — an empty banner has
+                nothing to frame, and the control would be furniture. */}
+            {c.scope.sitePhoto && (
+              <div className="w-full">
+                <L>Framing — this is the page 1 banner</L>
+                <PhotoFrame
+                  src={c.scope.sitePhoto}
+                  view={photoView(c)}
+                  disabled={!canEdit}
+                  onChange={v => patch(d => { d.scope.sitePhotoView = v; })}
+                />
+              </div>
+            )}
             {c.scope.measuredSqft != null && (
               <span className="w-full text-[12px] font-bold text-emerald-700">
                 {areaLabel(c.scope.measuredSqft)} of serviced area (plow + shovel) — the printed

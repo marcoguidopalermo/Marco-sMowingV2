@@ -126,6 +126,11 @@ export function fixture(kind) {
   c.pricing.selectedOption = 'A';
   c.pricing.optionAPayment = 'instalments';
   c.serviceTerms.serviceWindow = 'overnight';
+  // A photo, FRAMED: the crop is pinned to the TOP of the picture, so the Proves the
+  // banner shows the top band and nothing else. Proves the stored crop
+  // reaches the printed page rather than living only in the editor.
+  c.scope.sitePhoto = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPScxMjAwJyBoZWlnaHQ9JzkwMCc+PHJlY3QgeT0nMCcgd2lkdGg9JzEyMDAnIGhlaWdodD0nMzAwJyBmaWxsPScjZGZlNmVjJy8+PHJlY3QgeT0nMzAwJyB3aWR0aD0nMTIwMCcgaGVpZ2h0PSczMDAnIGZpbGw9JyNjZmQ4ZTAnLz48cmVjdCB5PSc2MDAnIHdpZHRoPScxMjAwJyBoZWlnaHQ9JzMwMCcgZmlsbD0nI2JmYzlkNCcvPjwvc3ZnPg==';
+  c.scope.sitePhotoView = { zoom: 1, x: 0, y: -50, fit: false };
   return withDerived(c);
 }
 `;
@@ -213,6 +218,10 @@ var i=new Image();i.onload=function(){
     // boundary, and break-inside:avoid moved it to page 2 where no geometry
     // measured on the staging layout could see it.
     mapRowInk: ink(9.0, 9.8, ${PAGE_SIDE_IN}, 8.5 - ${PAGE_SIDE_IN}),
+    // The site photo banner, sampled in its middle. The fixture pans a
+    // three-band image so that ONE known band fills the banner — if the
+    // stored framing were ignored, a different band would be here.
+    banner: at(4.25, 2.4),
   });
 };i.src='file://${png}';
 </script>`);
@@ -350,6 +359,21 @@ for (const kind of ['empty', 'full'] as const) {
   if (px.rightGutterInk) bad(`content runs into the right margin (inside ${PAGE_SIDE_IN}in)`);
   else ok(`right margin clear to ${PAGE_SIDE_IN}in`);
 
+  // The framed photo, read off the paper. 'empty' has no photo, so only the
+  // filled fixture can make this claim.
+  if (kind === 'full') {
+    // The fixture's photo is three flat bands and its crop is pinned to the
+    // TOP one, so the banner's centre pixel is a known colour. Any other value
+    // means the framing was ignored (a different band), or the photo did not
+    // print at all (the empty box's #fbfdfe).
+    const TOP_BAND = [223, 230, 236];
+    const [br, bg, bb] = px.banner;
+    const framed = TOP_BAND.every((c, i) => Math.abs(c - px.banner[i]) <= 6);
+    if (!framed) {
+      bad(`the site photo did not print with its stored framing — banner centre is `
+        + `rgb(${br},${bg},${bb}), expected the top band rgb(${TOP_BAND.join(',')})`);
+    } else ok(`site photo printed, cropped to the band it was framed on rgb(${br},${bg},${bb})`);
+  }
   if (!px.footerInk) bad('no running footer on page 1 — the footer is printing on the last page only');
   else ok('running footer present on page 1');
 }

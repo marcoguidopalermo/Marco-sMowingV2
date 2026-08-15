@@ -17,6 +17,7 @@ import {
   MAP_BOX_IN, PHOTO_MIN_IN,
 } from '../lib/snowContractMap';
 import { GOOGLE_MAPS_API_KEY } from '../lib/googleMaps';
+import { photoView, photoStyle } from '../lib/snowContracts';
 import {
   DOC_TITLE, CONTRACTOR_FOOTER_NAME, CONTRACTOR_ADDRESS, OFFICE_PHONE, OFFICE_EMAIL,
   SERVICE_LINE, CLIENT_INTRO, CLIENT_FIELD_LABELS, SCOPE_INTRO,
@@ -185,7 +186,10 @@ const DOC_CSS = `
 .snowdoc .photowrap { border:1px solid #cfdce7; background:#fbfdfe; position:relative;
   margin:0 0 11px; flex:1 1 auto; min-height:${PHOTO_MIN_IN}in; display:flex;
   align-items:center; justify-content:center; overflow:hidden; }
-.snowdoc .photowrap img { width:100%; height:100%; object-fit:cover; display:block; }
+/* The framing (object-fit, object-position, scale) is applied inline from the
+   contract by photoStyle — the same call the editor's framing box makes, so
+   the crop cannot mean one thing on screen and another on paper. */
+.snowdoc .photowrap img { width:100%; height:100%; transform-origin:center; display:block; }
 .snowdoc .photowrap .ph { color:#a8b8c6; font-size:8pt; letter-spacing:.6px; text-transform:uppercase; }
 .snowdoc .maphead { display:flex; align-items:baseline; justify-content:space-between;
   gap:14px; margin-top:9px; }
@@ -318,12 +322,19 @@ export default function SnowContractDocument({ contract: c, mode = 'preview' }: 
         </div>
 
         {/* SITE PHOTO — the flexible element on this page: it takes whatever
-            height the fixed parts above and below it leave. */}
-        <div className={`photowrap${c.scope.sitePhoto ? ' has' : ''}`}>
-          {c.scope.sitePhoto
-            ? <img src={c.scope.sitePhoto} alt="Site" />
-            : <span className="ph">{PHOTO_PLACEHOLDER}</span>}
-        </div>
+            height the fixed parts above and below it leave. The framing is the
+            one the editor set, applied by the same function, so what was
+            framed is what prints. */}
+        {(() => {
+          const view = photoView(c);
+          return (
+            <div className={`photowrap${c.scope.sitePhoto ? ' has' : ''}${view.fit ? ' fitmode' : ''}`}>
+              {c.scope.sitePhoto
+                ? <img src={c.scope.sitePhoto} alt="Site" style={photoStyle(view)} />
+                : <span className="ph">{PHOTO_PLACEHOLDER}</span>}
+            </div>
+          );
+        })()}
 
         <div>
           {/* 1 · CLIENT DETAILS */}

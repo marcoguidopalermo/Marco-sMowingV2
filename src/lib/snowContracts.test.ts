@@ -5,6 +5,7 @@ import {
   seasonFor, termFor, prepayDeadlineFor, validUntilFrom, instalmentAmount, prepayTotal,
   calledInRate, selectedPrice, withDerived, newContract, migrateContract, needsRequote,
   duplicateForNextSeason, headlinePrice, DEFAULT_CGL,
+  photoView, photoStyle, photoSlackPx, clampPhotoView,
 } from './snowContracts';
 
 let pass = 0, fail = 0;
@@ -101,6 +102,55 @@ test('withDerived rounds prices to the cent', () => {
   const c = fresh();
   c.pricing.levels[1].seasonal = 1200.005;
   assert.equal(withDerived(c).pricing.levels[1].seasonal, 1200.01);
+});
+
+console.log('\nSite photo framing');
+// A 4:3 photo in the 720×190 banner: the height overflows enormously, the
+// width exactly covers. That asymmetry is the whole reason panning exists.
+const BOX = { w: 720, h: 190 };
+const NAT = { w: 1200, h: 900 };
+test('a fresh contract has no stored framing, and reads as centred and filling', () => {
+  const c = fresh();
+  assert.equal(c.scope.sitePhotoView, undefined);
+  assert.deepEqual(photoView(c), { zoom: 1, x: 0, y: 0, fit: false });
+});
+test('the style is cover + a position within the photo, not an element offset', () => {
+  // The distinction matters: an element offset can be dragged off its frame,
+  // a position within a covering image cannot. See photoStyle.
+  assert.deepEqual(photoStyle({ zoom: 1, x: 0, y: 0 }), {
+    objectFit: 'cover', objectPosition: '50% 50%', transform: 'scale(1)',
+  });
+  assert.deepEqual(photoStyle({ zoom: 1.3, x: -12.5, y: 40, fit: false }), {
+    objectFit: 'cover', objectPosition: '37.5% 90%', transform: 'scale(1.3)',
+  });
+});
+test('“show whole photo” switches to contain', () => {
+  assert.equal(photoStyle({ zoom: 1, x: 0, y: 0, fit: true }).objectFit, 'contain');
+});
+test('a tall photo overflows the banner vertically, and that is what pans', () => {
+  // Cover scale = max(720/1200, 190/900) = 0.6 → drawn 720×540 in a 190-tall
+  // box: nothing hidden horizontally, 350px hidden vertically.
+  assert.deepEqual(photoSlackPx(BOX, NAT), { x: 0, y: 350 });
+});
+test('no photo measured yet means no slack, and no NaN in the style', () => {
+  assert.deepEqual(photoSlackPx({ w: 0, h: 0 }, NAT), { x: 0, y: 0 });
+  assert.equal(photoStyle({ zoom: NaN, x: NaN, y: 0 }).objectPosition, '50% 50%');
+});
+test('the crop cannot be positioned outside the photo — ±50 is its edge', () => {
+  assert.equal(clampPhotoView({ zoom: 1, x: 400, y: -999 }).x, 50);
+  assert.equal(clampPhotoView({ zoom: 1, x: 400, y: -999 }).y, -50);
+});
+test('zoom below 1 is refused: a shrunk cover image stops covering', () => {
+  assert.equal(clampPhotoView({ zoom: 0.2, x: 0, y: 0 }).zoom, 1);
+  assert.equal(clampPhotoView({ zoom: 99, x: 0, y: 0 }).zoom, 4);
+  assert.equal(clampPhotoView({ zoom: 1.23456, x: 0, y: 0 }).zoom, 1.23);
+});
+test('framing survives a renewal — same property, same photo, same crop', () => {
+  const src = fresh();
+  src.scope.sitePhoto = 'https://example/photo.jpg';
+  src.scope.sitePhotoView = { zoom: 1.4, x: 0, y: -22.5, fit: false };
+  const next = duplicateForNextSeason(src, { id: 'c2', createdBy: 'marco', now: NOW });
+  assert.deepEqual(next.scope.sitePhotoView, { zoom: 1.4, x: 0, y: -22.5, fit: false });
 });
 
 console.log('\nMigration from the pre-service-level shape');
