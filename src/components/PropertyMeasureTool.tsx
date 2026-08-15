@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Search, Plus, Minus, Trash2, MapPin, AlertTriangle, Check, Loader2, Pencil } from 'lucide-react';
 import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, M2_TO_SQFT, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM } from '../lib/googleMaps';
-import { PropertyMeasurement } from '../types';
+import { PropertyMeasurement, SnowAreaPurpose } from '../types';
+import { SNOW_AREAS, areaSpec } from '../lib/snowAreas';
 
 // Remember the last measured location PER USER — local only (no doc writes), so
 // a repeat session opens near where the estimator was working.
@@ -29,9 +30,17 @@ const ADD_COLOR = '#16a34a';   // added area (front/back yard)
 const SUB_COLOR = '#dc2626';   // subtracted area (driveway/pool/beds)
 const fmtSqft = (n: number) => `${Math.round(n).toLocaleString('en-US')} sq ft`;
 
+// A shape is either an ADDED or SUBTRACTED area (the lawn palette), and on a
+// snow contract it additionally carries WHAT it is. `purpose` is undefined for
+// every lawn measurement ever taken, and undefined means "serviced area",
+// which is exactly what an added ring has always meant.
 type Mode = 'add' | 'subtract';
-interface ShapeRef { id: string; poly: any; mode: Mode }
-interface ShapeView { id: string; mode: Mode; sqft: number }
+interface ShapeRef { id: string; poly: any; mode: Mode; purpose?: SnowAreaPurpose }
+interface ShapeView { id: string; mode: Mode; purpose?: SnowAreaPurpose; sqft: number }
+// A dropped point — hazards only. Never contributes area.
+interface MarkerRef { id: string; mk: any; purpose: SnowAreaPurpose }
+
+export type MeasurePalette = 'lawn' | 'snow';
 
 interface Props {
   onClose: () => void;
@@ -39,9 +48,27 @@ interface Props {
   currentUser: { email: string; name: string };
   initial?: PropertyMeasurement | null;   // saved measurement → re-render its outline
   initialAddress?: string;                 // optional client address seed
+  // 'lawn' (default) is add/subtract, unchanged. 'snow' swaps the toolbar for
+  // the four contract purposes and colours every shape by the same hexes the
+  // printed map and its legend use.
+  palette?: MeasurePalette;
 }
 
-export default function PropertyMeasureTool({ onClose, onUse, currentUser, initial, initialAddress }: Props) {
+export default function PropertyMeasureTool({
+  onClose, onUse, currentUser, initial, initialAddress, palette = 'lawn',
+}: Props) {
+  const snow = palette === 'snow';
+  // Which purpose the next drawn shape gets. Ignored by the lawn palette.
+  const [purpose, setPurpose] = useState<SnowAreaPurpose>('plow');
+  const purposeRef = useRef<SnowAreaPurpose>('plow');
+  const markersRef = useRef<MarkerRef[]>([]);
+  const [markerCount, setMarkerCount] = useState(0);
+  // "Tap to drop a hazard" armed. A ref as well as state because the map's
+  // click listener is registered once, on mount, and closes over the first
+  // render's values.
+  const [markerMode, setMarkerMode] = useState(false);
+  const markerModeRef = useRef(false);
+  const armMarkerMode = (on: boolean) => { markerModeRef.current = on; setMarkerMode(on); };
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [errCode, setErrCode] = useState<string | null>(null);   // real Google error, shown in the fallback
   const [placesOn, setPlacesOn] = useState(true);                // address search available?
@@ -61,18 +88,24 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
   // MVCArray of vertices we push to (getPath() is unreliable on a ring-less poly).
   const draftRef = useRef<{ poly: any; mode: Mode; path: any } | null>(null);
 
-  const styleFor = (mode: Mode) => ({
-    strokeColor: mode === 'add' ? ADD_COLOR : SUB_COLOR,
+  // ONE colour decision, shared by the drawing surface, the shape list and —
+  // through snowAreas.ts — the printed map and its legend. What you draw in
+  // blue prints in blue and reads "Plow area" in the legend.
+  const colorFor = (mode: Mode, p?: SnowAreaPurpose) =>
+    areaSpec(p)?.hex || (mode === 'add' ? ADD_COLOR : SUB_COLOR);
+
+  const styleFor = (mode: Mode, p?: SnowAreaPurpose) => ({
+    strokeColor: colorFor(mode, p),
     strokeWeight: 2.5, strokeOpacity: 0.95,
-    fillColor: mode === 'add' ? ADD_COLOR : SUB_COLOR,
+    fillColor: colorFor(mode, p),
     fillOpacity: mode === 'add' ? 0.22 : 0.38,
     editable: true, draggable: true, clickable: true,
     zIndex: mode === 'add' ? 1 : 2,
   });
-  const draftStyle = (mode: Mode) => ({
-    strokeColor: mode === 'add' ? ADD_COLOR : SUB_COLOR,
+  const draftStyle = (mode: Mode, p?: SnowAreaPurpose) => ({
+    strokeColor: colorFor(mode, p),
     strokeWeight: 2.5, strokeOpacity: 0.95,
-    fillColor: mode === 'add' ? ADD_COLOR : SUB_COLOR,
+    fillColor: colorFor(mode, p),
     fillOpacity: 0.15, editable: false, draggable: false, clickable: false,
     zIndex: 3,
   });
@@ -80,16 +113,16 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
   const recompute = () => {
     const g = gRef.current; if (!g) return;
     setShapes(shapesRef.current.map(s => ({
-      id: s.id, mode: s.mode,
+      id: s.id, mode: s.mode, purpose: s.purpose,
       sqft: g.maps.geometry.spherical.computeArea(s.poly.getPath()) * M2_TO_SQFT,
     })));
   };
 
-  const addShape = (poly: any, mode: Mode) => {
+  const addShape = (poly: any, mode: Mode, p?: SnowAreaPurpose) => {
     const g = gRef.current;
-    poly.setOptions(styleFor(mode));
+    poly.setOptions(styleFor(mode, p));
     const id = `shp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
-    shapesRef.current.push({ id, poly, mode });
+    shapesRef.current.push({ id, poly, mode, purpose: p });
     const path = poly.getPath();
     ['insert_at', 'set_at', 'remove_at'].forEach(ev => g.maps.event.addListener(path, ev, recompute));
     g.maps.event.addListener(poly, 'dragend', recompute);
@@ -100,18 +133,41 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
   // Tap the map to drop corners onto an in-progress google.maps.Polygon; tap
   // near the first corner (or the Finish button) to close it. On finish the
   // polygon becomes editable + draggable, exactly the specced UX.
-  const startDraw = (mode: Mode) => {
+  const startDraw = (mode: Mode, p?: SnowAreaPurpose) => {
     const g = gRef.current, map = mapRef.current; if (!g || !map) return;
     discardDraft();
+    if (p) { purposeRef.current = p; setPurpose(p); }
     // Build a ring-less polygon, then setPath(MVCArray) to establish ONE ring
     // we push vertices onto. (A Polygon constructed with an empty `paths` has
     // ZERO rings → getPath() is undefined and the first push throws.)
     const path = new g.maps.MVCArray();
-    const poly = new g.maps.Polygon({ ...draftStyle(mode), map });
+    const poly = new g.maps.Polygon({ ...draftStyle(mode, p), map });
     poly.setPath(path);
     draftRef.current = { poly, mode, path };
     setDraftCount(0);
     setDrawing(mode);
+  };
+
+  // ── HAZARD MARKERS ────────────────────────────────────────────────────────
+  // A hydrant or a bollard is a point, not an area. One tap drops one, and it
+  // never contributes square footage — see SnowAreaSpec.counts.
+  const dropMarker = (latLng: any) => {
+    const g = gRef.current, map = mapRef.current; if (!g || !map) return;
+    const spec = areaSpec('hazard')!;
+    const mk = new g.maps.Marker({
+      position: latLng, map, draggable: true,
+      icon: {
+        path: g.maps.SymbolPath.CIRCLE, scale: 7,
+        fillColor: spec.hex, fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2,
+      },
+    });
+    markersRef.current.push({ id: `mk-${Date.now().toString(36)}`, mk, purpose: 'hazard' });
+    setMarkerCount(markersRef.current.length);
+  };
+  const clearMarkers = () => {
+    markersRef.current.forEach(m => m.mk.setMap(null));
+    markersRef.current = [];
+    setMarkerCount(0);
   };
   const addVertex = (latLng: any) => {
     const g = gRef.current, draft = draftRef.current; if (!g || !draft) return;
@@ -143,7 +199,8 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
     draftRef.current = null;
     setDrawing(null);
     setDraftCount(0);
-    addShape(poly, mode);   // makes it editable + draggable, wires recompute
+    // makes it editable + draggable, wires recompute
+    addShape(poly, mode, snow ? purposeRef.current : undefined);
   };
   const cancelDraw = () => { discardDraft(); setDrawing(null); };
 
@@ -165,9 +222,17 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
     recompute();
   };
 
+  // SERVICED area only. A ring with no purpose is a lawn ring and counts, as
+  // it always has; a snow ring counts only if its purpose is serviced work —
+  // a snow pile location and a marked hydrant are not area being cleared, and
+  // counting them would inflate the figure the price is built on.
   const total = useMemo(() => {
     let add = 0, sub = 0;
-    for (const s of shapes) (s.mode === 'add' ? (add += s.sqft) : (sub += s.sqft));
+    for (const s of shapes) {
+      if (s.mode === 'subtract') { sub += s.sqft; continue; }
+      const spec = areaSpec(s.purpose);
+      if (!spec || spec.counts) add += s.sqft;
+    }
     return Math.max(0, add - sub);
   }, [shapes]);
   const addCount = shapes.filter(s => s.mode === 'add').length;
@@ -206,7 +271,13 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
       mapRef.current = map;
       // Manual drawing: every map tap drops a vertex onto the active draft
       // polygon (no DrawingManager). Ignored when not drawing.
-      g.maps.event.addListener(map, 'click', (e: any) => { if (draftRef.current && e?.latLng) addVertex(e.latLng); });
+      g.maps.event.addListener(map, 'click', (e: any) => {
+        if (!e?.latLng) return;
+        // Hazard mode with no shape started yet: one tap = one marker. Only
+        // reachable on the snow palette, where hazards are points.
+        if (!draftRef.current && markerModeRef.current) { dropMarker(e.latLng); return; }
+        if (draftRef.current) addVertex(e.latLng);
+      });
 
       // If the quote carries an address and there's no saved outline, geocode it
       // and pan to the property — async, so the map opens instantly and jumps
@@ -249,14 +320,28 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
       // Re-render a saved measurement's outline (the record of what was measured).
       if (initial) {
         const bounds = new g.maps.LatLngBounds();
-        const mk = (path: { lat: number; lng: number }[], mode: Mode) => {
+        const mk = (path: { lat: number; lng: number }[], mode: Mode, p?: SnowAreaPurpose) => {
           if (!path?.length) return;
           const poly = new g.maps.Polygon({ paths: path, map });
-          addShape(poly, mode);
+          addShape(poly, mode, p);
           path.forEach(pt => bounds.extend(pt));
         };
-        (initial.polygons || []).forEach(r => mk(r.path, 'add'));
-        (initial.exclusions || []).forEach(r => mk(r.path, 'subtract'));
+        (initial.polygons || []).forEach(r => mk(r.path, 'add', r.purpose));
+        (initial.exclusions || []).forEach(r => mk(r.path, 'subtract', r.purpose));
+        for (const m of initial.markers || []) {
+          const spec = areaSpec(m.purpose);
+          if (!spec || !m.at) continue;
+          const pin = new g.maps.Marker({
+            position: m.at, map, draggable: true,
+            icon: {
+              path: g.maps.SymbolPath.CIRCLE, scale: 7,
+              fillColor: spec.hex, fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2,
+            },
+          });
+          markersRef.current.push({ id: `mk-${Math.random().toString(36).slice(2, 7)}`, mk: pin, purpose: m.purpose });
+          bounds.extend(m.at);
+        }
+        setMarkerCount(markersRef.current.length);
         if (!bounds.isEmpty()) map.fitBounds(bounds);
       }
       setStatus('ready');
@@ -272,11 +357,19 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
   }, []);
 
   const buildMeasurement = (): PropertyMeasurement => {
-    const ringOf = (poly: any) => ({ path: poly.getPath().getArray().map((pt: any) => ({ lat: pt.lat(), lng: pt.lng() })) });
+    const ringOf = (s: ShapeRef) => ({
+      path: s.poly.getPath().getArray().map((pt: any) => ({ lat: pt.lat(), lng: pt.lng() })),
+      ...(s.purpose ? { purpose: s.purpose } : {}),
+    });
+    const markers = markersRef.current.map(m => ({
+      at: { lat: m.mk.getPosition().lat(), lng: m.mk.getPosition().lng() },
+      purpose: m.purpose,
+    }));
     return {
-      polygons: shapesRef.current.filter(s => s.mode === 'add').map(s => ringOf(s.poly)),
-      exclusions: shapesRef.current.filter(s => s.mode === 'subtract').map(s => ringOf(s.poly)),
+      polygons: shapesRef.current.filter(s => s.mode === 'add').map(ringOf),
+      exclusions: shapesRef.current.filter(s => s.mode === 'subtract').map(ringOf),
       totalSqft: Math.round(total),
+      ...(markers.length ? { markers } : {}),
       address,
       measuredAt: Date.now(),
       measuredBy: currentUser,
@@ -355,24 +448,59 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
                   </div>
                 </>
               ) : (
+                <>
                 <div className="pointer-events-auto flex gap-2 flex-wrap">
-                  <button onClick={() => startDraw('add')}
-                    className="min-h-[44px] px-3 rounded-xl text-white text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5"
-                    style={{ backgroundColor: ADD_COLOR }}>
-                    <Plus className="w-4 h-4" /> Add area
-                  </button>
-                  <button onClick={() => startDraw('subtract')}
-                    className="min-h-[44px] px-3 rounded-xl text-white text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5"
-                    style={{ backgroundColor: SUB_COLOR }}>
-                    <Minus className="w-4 h-4" /> Exclude
-                  </button>
-                  {shapes.length > 0 && (
-                    <button onClick={clearAll}
+                  {snow ? (
+                    <>
+                      {/* ONE BUTTON PER CONTRACT PURPOSE, in the printed
+                          legend's order and its colours. Hazard arms
+                          tap-to-drop instead of starting an outline. */}
+                      {SNOW_AREAS.map(a => (
+                        <button key={a.key}
+                          onClick={() => {
+                            if (a.marker) { armMarkerMode(!markerMode); return; }
+                            armMarkerMode(false);
+                            startDraw('add', a.key);
+                          }}
+                          className={`min-h-[44px] px-3 rounded-xl text-white text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5 ${
+                            a.marker && markerMode ? 'ring-2 ring-white' : ''}`}
+                          style={{ backgroundColor: a.hex }}>
+                          {a.marker ? <MapPin className="w-4 h-4" /> : <Plus className="w-4 h-4" />} {a.short}
+                        </button>
+                      ))}
+                      <button onClick={() => { armMarkerMode(false); startDraw('subtract'); }}
+                        className="min-h-[44px] px-3 rounded-xl text-white text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5"
+                        style={{ backgroundColor: SUB_COLOR }}>
+                        <Minus className="w-4 h-4" /> Exclude
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={() => startDraw('add')}
+                        className="min-h-[44px] px-3 rounded-xl text-white text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5"
+                        style={{ backgroundColor: ADD_COLOR }}>
+                        <Plus className="w-4 h-4" /> Add area
+                      </button>
+                      <button onClick={() => startDraw('subtract')}
+                        className="min-h-[44px] px-3 rounded-xl text-white text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5"
+                        style={{ backgroundColor: SUB_COLOR }}>
+                        <Minus className="w-4 h-4" /> Exclude
+                      </button>
+                    </>
+                  )}
+                  {(shapes.length > 0 || markerCount > 0) && (
+                    <button onClick={() => { clearAll(); clearMarkers(); }}
                       className="min-h-[44px] px-3 rounded-xl bg-white/95 text-slate-700 border border-slate-300 text-[12px] font-black uppercase tracking-widest shadow-lg inline-flex items-center gap-1.5">
                       <Trash2 className="w-4 h-4" /> Clear
                     </button>
                   )}
                 </div>
+                {markerMode && (
+                  <div className="pointer-events-auto bg-black/80 text-white text-[12px] font-bold rounded-lg px-3 py-1.5 inline-flex items-center gap-2">
+                    <MapPin className="w-3.5 h-3.5" /> Tap the map to mark a hazard · {markerCount} marked
+                  </div>
+                )}
+                </>
               )}
             </div>
           )}
@@ -380,23 +508,47 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
 
         {/* Bottom panel — shapes list, total, accuracy note, Use */}
         <div className="shrink-0 border-t border-slate-200 bg-white">
-          {shapes.length > 0 && (
+          {(shapes.length > 0 || markerCount > 0) && (
             <div className="max-h-32 overflow-y-auto px-3 py-2 space-y-1 border-b border-slate-100">
-              {shapes.map((s, i) => (
+              {shapes.map((s, i) => {
+                const spec = areaSpec(s.purpose);
+                const counts = s.mode === 'add' && (!spec || spec.counts);
+                return (
                 <div key={s.id} className="flex items-center gap-2 text-[13px]">
                   <button onClick={() => toggleMode(s.id)}
                     title="Toggle add / subtract"
                     className="w-7 h-7 shrink-0 rounded-md text-white inline-flex items-center justify-center font-black"
-                    style={{ backgroundColor: s.mode === 'add' ? ADD_COLOR : SUB_COLOR }}>
+                    style={{ backgroundColor: colorFor(s.mode, s.purpose) }}>
                     {s.mode === 'add' ? <Plus className="w-4 h-4" /> : <Minus className="w-4 h-4" />}
                   </button>
-                  <span className="font-bold text-slate-700">{s.mode === 'add' ? 'Area' : 'Exclusion'} {i + 1}</span>
-                  <span className="font-mono text-slate-500 ml-auto">{s.mode === 'add' ? '+' : '−'} {fmtSqft(s.sqft)}</span>
+                  <span className="font-bold text-slate-700">
+                    {spec ? spec.label : (s.mode === 'add' ? 'Area' : 'Exclusion')} {i + 1}
+                  </span>
+                  {/* A drawn area that does NOT count says so, rather than
+                      leaving the total looking wrong. */}
+                  <span className="font-mono text-slate-500 ml-auto">
+                    {counts ? `+ ${fmtSqft(s.sqft)}` : s.mode === 'subtract' ? `− ${fmtSqft(s.sqft)}` : 'not counted'}
+                  </span>
                   <button onClick={() => deleteShape(s.id)} aria-label="Delete shape" className="min-w-[36px] min-h-[36px] inline-flex items-center justify-center text-slate-400 hover:text-rose-600">
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
-              ))}
+                );
+              })}
+              {markerCount > 0 && (
+                <div className="flex items-center gap-2 text-[13px]">
+                  <span className="w-7 h-7 shrink-0 rounded-md text-white inline-flex items-center justify-center"
+                    style={{ backgroundColor: areaSpec('hazard')!.hex }}>
+                    <MapPin className="w-4 h-4" />
+                  </span>
+                  <span className="font-bold text-slate-700">Marked hazards</span>
+                  <span className="font-mono text-slate-500 ml-auto">{markerCount} point{markerCount === 1 ? '' : 's'}</span>
+                  <button onClick={clearMarkers} aria-label="Clear hazard markers"
+                    className="min-w-[36px] min-h-[36px] inline-flex items-center justify-center text-slate-400 hover:text-rose-600">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -411,7 +563,16 @@ export default function PropertyMeasureTool({ onClose, onUse, currentUser, initi
               </div>
               {address && <div className="text-[11px] text-slate-400 truncate flex items-center gap-1 mt-0.5"><MapPin className="w-3 h-3 shrink-0" /> {address}</div>}
             </div>
-            <button onClick={() => { if (total > 0) { rememberLocation(); onUse(buildMeasurement()); onClose(); } }} disabled={total <= 0}
+            {/* A snow contract can be worth saving with no counted area — a
+                property marked up for storage and hazards only is still a
+                drawing worth keeping — so anything drawn enables Use. */}
+            <button
+              onClick={() => {
+                if (total > 0 || shapes.length > 0 || markerCount > 0) {
+                  rememberLocation(); onUse(buildMeasurement()); onClose();
+                }
+              }}
+              disabled={total <= 0 && shapes.length === 0 && markerCount === 0}
               className="shrink-0 min-h-[48px] px-5 rounded-xl text-white text-xs font-black uppercase tracking-widest inline-flex items-center gap-1.5 disabled:opacity-40" style={{ backgroundColor: GREEN }}>
               <Check className="w-4 h-4" /> Use this measurement
             </button>

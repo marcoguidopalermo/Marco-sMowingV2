@@ -18,12 +18,15 @@ import type { ReactNode } from 'react';
 import {
   ArrowLeft, Check, ChevronDown, Loader2, Plus, Trash2, Printer, Copy, Ruler, Upload, X,
 } from 'lucide-react';
-import type { SnowContract, SnowContractStatus, SnowServiceStatus, PropertyMeasurement } from '../types';
+import type { SnowContract, SnowContractStatus, PropertyMeasurement } from '../types';
 import SnowContractDocument from './SnowContractDocument';
 import PropertyMeasureTool from './PropertyMeasureTool';
-import { withDerived, STATUS_LABEL } from '../lib/snowContracts';
+import {
+  withDerived, STATUS_LABEL, DEFAULT_CGL, needsRequote, validUntilFrom,
+  instalmentAmount, prepayTotal, calledInRate, selectedPrice,
+} from '../lib/snowContracts';
 import { areaLabel } from '../lib/snowContractMap';
-import { SECTIONS } from '../lib/snowContractText';
+import { SECTIONS, SERVICE_LEVELS } from '../lib/snowContractText';
 
 interface Props {
   contract: SnowContract;
@@ -67,7 +70,12 @@ export default function SnowContractEditor({
   const [uploading, setUploading] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const fileRef = useRef<HTMLInputElement>(null);
+  // ONE file input, two destinations — which one the last click was for.
+  const uploadTarget = useRef<'photo' | 'map'>('photo');
   const c = contract;
+  // Derived figures the FORM shows and the document does not print.
+  const sel = selectedPrice(c);
+  const calledIn = calledInRate(c);
 
   // ── DRAGGABLE SPLIT ──────────────────────────────────────────────────────
   // Remembered per browser: how much room the form deserves depends on the
@@ -139,7 +147,7 @@ export default function SnowContractEditor({
     return next;
   });
 
-  // Collapsible, because eleven sections open at once is a scroll problem, not
+  // Collapsible, because fourteen sections open at once is a scroll problem, not
   // a form. Open by default: a section you cannot see is a section you forget.
   const Section = ({ id, children }: { id: string; children: ReactNode }) => {
     const s = SECTIONS.find(x => x.id === id)!;
@@ -171,14 +179,9 @@ export default function SnowContractEditor({
   const measurementUsed = (m: PropertyMeasurement) => {
     patch(d => {
       d.scope.measurement = m;
+      // Serviced area only — plow and shovel. Storage and hazard areas are
+      // drawn for the map, not counted (see SnowAreaSpec.counts).
       d.scope.measuredSqft = m.totalSqft;
-      // Seeds the field; editable afterwards, so a re-measure doesn't clobber
-      // a hand-written override silently — it only fills a blank or a value
-      // that still matches the previous measurement.
-      const prev = c.scope.measuredSqft;
-      if (!d.scope.totalArea || (prev != null && d.scope.totalArea === areaLabel(prev))) {
-        d.scope.totalArea = areaLabel(m.totalSqft);
-      }
       if (m.address && !d.client.serviceAddress) d.client.serviceAddress = m.address;
     });
     setMeasuring(false);
@@ -204,8 +207,32 @@ export default function SnowContractEditor({
         </div>
       )}
 
-      {/* STATUS + TERM */}
-      <div className="grid gap-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-2 xl:grid-cols-4">
+      {/* A MIGRATED CONTRACT states neither of the two things the old shape
+          could not express. Say so at the top of the form rather than letting
+          a level-less contract print with nothing ticked. */}
+      {needsRequote(c) && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+          <div className="text-[13px] font-black uppercase tracking-wider text-amber-800">
+            Re-quote needed
+          </div>
+          <p className="mt-1 text-[13px] text-amber-900">
+            This contract was written before service levels existed. Its old services matrix
+            cannot be read as a level, so no level and no prices were carried over — choose a
+            level in Section 3 and enter the pricing in Section 4.
+          </p>
+          {c.legacyPricing && (
+            <p className="mt-1.5 text-[12px] font-bold text-amber-800">
+              Previously quoted: ${c.legacyPricing.seasonalTotal.toLocaleString('en-US')} seasonal
+              {c.legacyPricing.perVisitTotal ? ` · $${c.legacyPricing.perVisitTotal.toLocaleString('en-US')} per visit` : ''}
+              {' '}— for reference only, never printed.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* STATUS + THE HEADER BLOCK. Quote date and validity print above
+          Section 1 and are what Acceptance cross-references. */}
+      <div className="grid gap-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-2 xl:grid-cols-3">
         <Field label="Status">
           <select disabled={!canEdit} value={c.status} className={inputCls}
             onChange={e => patch(d => {
@@ -222,6 +249,22 @@ export default function SnowContractEditor({
           <input disabled={!canEdit} className={inputCls} defaultValue={c.season}
             onBlur={e => patch(d => { d.season = e.target.value; })} />
         </Field>
+        <Field label="Quote date">
+          <input type="date" disabled={!canEdit} className={inputCls} defaultValue={c.quoteDate}
+            onBlur={e => patch(d => {
+              d.quoteDate = e.target.value;
+              // Keep the two dates together unless the validity has been set
+              // by hand: a re-dated quote that keeps last month's expiry is a
+              // quote that was already dead when it was sent.
+              if (!d.validUntil || d.validUntil === validUntilFrom(c.quoteDate)) {
+                d.validUntil = validUntilFrom(e.target.value);
+              }
+            })} />
+        </Field>
+        <Field label="Valid until">
+          <input type="date" disabled={!canEdit} className={inputCls} defaultValue={c.validUntil}
+            onBlur={e => patch(d => { d.validUntil = e.target.value; })} />
+        </Field>
         <Field label="Term start">
           <input type="date" disabled={!canEdit} className={inputCls} defaultValue={c.term.start}
             onBlur={e => patch(d => { d.term.start = e.target.value; })} />
@@ -232,337 +275,279 @@ export default function SnowContractEditor({
         </Field>
       </div>
 
-      {/* 1 · CLIENT */}
+      {/* 1 · CLIENT DETAILS */}
       <Section id="client">
         <div className="grid gap-5 sm:grid-cols-2">
+          <Field label="Service address" span>
+            <input disabled={!canEdit} className={inputCls} defaultValue={c.client.serviceAddress}
+              onBlur={e => patch(d => { d.client.serviceAddress = e.target.value; })} />
+          </Field>
           {([
-            ['businessName', 'Client / Business'], ['siteContact', 'Site Contact'],
-            ['billingEmail', 'Billing Email'], ['phone', 'Phone'],
-          ] as [keyof SnowContract['client'], string][]).map(([k, label]) => (
+            ['businessName', 'Client / business name'],
+            ['siteContact', 'Site contact + phone'],
+            ['billingContact', 'Billing contact + phone'],
+            ['billingEmail', 'Billing email'],
+          ] as ['businessName' | 'siteContact' | 'billingContact' | 'billingEmail', string][]).map(([k, label]) => (
             <Field key={k} label={label}>
               <input disabled={!canEdit} className={inputCls} defaultValue={c.client[k]}
                 onBlur={e => patch(d => { d.client[k] = e.target.value; })} />
             </Field>
           ))}
-          <Field label="Service Address" span>
-            <input disabled={!canEdit} className={inputCls} defaultValue={c.client.serviceAddress}
-              onBlur={e => patch(d => { d.client.serviceAddress = e.target.value; })} />
+          <Field label="Billing address (if different)" span>
+            <input disabled={!canEdit} className={inputCls} defaultValue={c.client.billingAddress}
+              onBlur={e => patch(d => { d.client.billingAddress = e.target.value; })} />
           </Field>
         </div>
       </Section>
 
-      {/* 2 · SCOPE — every one of these is prose in practice, so every one is
-          a textarea. They were single-line inputs, which is why describing a
-          lot meant typing into a slot that scrolled sideways. */}
+      {/* 2 · PROPERTY SCOPE — two text fields and the map. Everything the old
+          six-row table described is now drawn on the map instead. */}
       <Section id="scope">
         <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="Total Serviced Area">
-            <input disabled={!canEdit} className={inputCls} defaultValue={String(c.scope.totalArea ?? '')}
-              onBlur={e => patch(d => { d.scope.totalArea = e.target.value; })} />
+          <Field label="Plow area">
+            <textarea disabled={!canEdit} className={areaCls} defaultValue={c.scope.plowArea}
+              placeholder="Main customer lot, rear dock, drive aisle"
+              onBlur={e => patch(d => { d.scope.plowArea = e.target.value; })} />
           </Field>
-          <Field label="Access Notes">
-            <input disabled={!canEdit} className={inputCls} defaultValue={String(c.scope.accessNotes ?? '')}
-              onBlur={e => patch(d => { d.scope.accessNotes = e.target.value; })} />
+          <Field label="Shovel area">
+            <textarea disabled={!canEdit} className={areaCls} defaultValue={c.scope.shovelArea}
+              placeholder="Front apron, accessible ramp, dock path"
+              onBlur={e => patch(d => { d.scope.shovelArea = e.target.value; })} />
           </Field>
-          {([
-            ['lotAreas', 'Lot / Driving Areas'], ['walkwaysEntrances', 'Walkways & Entrances'],
-            ['snowStorage', 'Snow Storage Locations'], ['markedHazards', 'Marked Hazards / Obstacles'],
-          ] as [keyof SnowContract['scope'], string][]).map(([k, label]) => (
-            <Field key={k} label={label}>
-              <textarea disabled={!canEdit} className={areaCls} defaultValue={String(c.scope[k] ?? '')}
-                onBlur={e => patch(d => { (d.scope as any)[k] = e.target.value; })} />
-            </Field>
-          ))}
         </div>
-        <Field label="Scope Description">
-          <textarea rows={8} disabled={!canEdit} className={`${inputCls} min-h-[180px] resize-y`}
-            defaultValue={c.scope.description}
-            onBlur={e => patch(d => { d.scope.description = e.target.value; })} />
-        </Field>
 
         <div className="space-y-3 border-t border-slate-100 pt-4">
           <label className="inline-flex min-h-[40px] cursor-pointer items-center gap-2.5 text-[14px] font-bold text-slate-700">
             <input type="checkbox" className="h-5 w-5" checked={!c.scope.showMap} disabled={!canEdit}
               onChange={e => patch(d => { d.scope.showMap = !e.target.checked; })} />
-            Description only — hide the site map
+            Hide the service area map
           </label>
-          {c.scope.showMap && (
-            <div className="flex flex-wrap items-center gap-2.5">
-              {/* THE SHARED MEASURING TOOL — the SalesMaster component, mounted
-                  as-is. No second measuring implementation. */}
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* THE SHARED MEASURING TOOL — the SalesMaster component, mounted
+                with the snow palette. No second drawing implementation. */}
+            {c.scope.showMap && (
               <button type="button" disabled={!canEdit} onClick={() => setMeasuring(true)}
                 className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-slate-800 px-4 text-xs font-black uppercase tracking-widest text-white disabled:opacity-50">
                 <Ruler className="h-4 w-4" />
-                {c.scope.measurement ? 'Re-measure area' : 'Measure area on satellite'}
+                {c.scope.measurement ? 'Re-draw service areas' : 'Draw service areas on satellite'}
               </button>
-              <button type="button" disabled={!canEdit || uploading} onClick={() => fileRef.current?.click()}
+            )}
+            <button type="button" disabled={!canEdit || uploading} onClick={() => { uploadTarget.current = 'photo'; fileRef.current?.click(); }}
+              className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-slate-300 px-4 text-xs font-black uppercase tracking-widest disabled:opacity-50">
+              {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {c.scope.sitePhoto ? 'Replace site photo' : 'Upload site photo'}
+            </button>
+            {c.scope.sitePhoto && canEdit && (
+              <button type="button" onClick={() => patch(d => { d.scope.sitePhoto = undefined; })}
+                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-slate-200 px-3 text-[12px] font-bold text-slate-500 hover:border-rose-200 hover:text-rose-600">
+                <X className="h-4 w-4" /> remove photo
+              </button>
+            )}
+            {c.scope.showMap && (
+              <button type="button" disabled={!canEdit || uploading} onClick={() => { uploadTarget.current = 'map'; fileRef.current?.click(); }}
                 className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-slate-300 px-4 text-xs font-black uppercase tracking-widest disabled:opacity-50">
-                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                Upload image
+                <Upload className="h-4 w-4" /> Map image (fallback)
               </button>
-              <input ref={fileRef} type="file" accept="image/*" className="hidden"
-                onChange={async e => {
-                  const f = e.target.files?.[0];
-                  if (!f) return;
-                  setUploading(true);
-                  const url = await onUploadMap(f);
-                  setUploading(false);
-                  if (url) patch(d => { d.scope.mapImages = [...(d.scope.mapImages || []), url].slice(0, 2); });
-                  if (fileRef.current) fileRef.current.value = '';
-                }} />
-              {(c.scope.mapImages || []).map((src, i) => (
-                <span key={i} className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-100 px-2.5 text-[12px] font-bold">
-                  image {i + 1}
-                  {canEdit && (
-                    <button type="button" onClick={() => patch(d => { d.scope.mapImages = d.scope.mapImages.filter((_, j) => j !== i); })}
-                      className="text-slate-400 hover:text-rose-600"><X className="h-4 w-4" /></button>
-                  )}
-                </span>
-              ))}
-              {c.scope.measuredSqft != null && (
-                <span className="w-full text-[12px] font-bold text-emerald-700">
-                  {areaLabel(c.scope.measuredSqft)} measured — the printed map draws from this outline
-                </span>
-              )}
-            </div>
-          )}
+            )}
+            <input ref={fileRef} type="file" accept="image/*" className="hidden"
+              onChange={async e => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                const target = uploadTarget.current;
+                setUploading(true);
+                const url = await onUploadMap(f);
+                setUploading(false);
+                if (url) {
+                  patch(d => {
+                    if (target === 'photo') d.scope.sitePhoto = url;
+                    else d.scope.mapImages = [url];
+                  });
+                }
+                if (fileRef.current) fileRef.current.value = '';
+              }} />
+            {c.scope.measuredSqft != null && (
+              <span className="w-full text-[12px] font-bold text-emerald-700">
+                {areaLabel(c.scope.measuredSqft)} of serviced area (plow + shovel) — the printed
+                map and legend draw from this outline
+              </span>
+            )}
+          </div>
         </div>
       </Section>
 
-      {/* 3 · SERVICES — stacked per row rather than crammed onto one line, and
-          BLANK is a real, selectable state, not the absence of a click. */}
+      {/* 3 · SERVICE LEVEL */}
       <Section id="services">
-        <div className="space-y-4">
-          {c.services.map((s, i) => (
-            <div key={s.key} className="rounded-lg border border-slate-200 p-3.5">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Service">
-                  <input disabled={!canEdit} className={`${inputCls} font-bold`} defaultValue={s.label}
-                    onBlur={e => patch(d => { d.services[i].label = e.target.value; })} />
-                </Field>
-                <Field label="Detail">
-                  <input disabled={!canEdit} className={inputCls} defaultValue={s.detail} placeholder="lot and driving areas"
-                    onBlur={e => patch(d => { d.services[i].detail = e.target.value; })} />
-                </Field>
-              </div>
-              <div className="mt-4 grid gap-4 sm:grid-cols-[auto_1fr]">
-                <div>
-                  <L>Marked as</L>
-                  <div className="flex overflow-hidden rounded-lg border border-slate-300">
-                    {([
-                      ['blank', '—'], ['included', 'Incl.'], ['onCall', 'On call'], ['excluded', 'Excl.'],
-                    ] as [SnowServiceStatus, string][]).map(([st, text]) => (
-                      <button key={st} type="button" disabled={!canEdit}
-                        onClick={() => patch(d => { d.services[i].status = st; })}
-                        title={st === 'blank' ? 'No box ticked — nothing stated about this service' : undefined}
-                        className={`min-h-[44px] px-3.5 text-[11px] font-black uppercase tracking-widest ${s.status === st
-                          ? (st === 'included' ? 'bg-emerald-600 text-white'
-                            : st === 'onCall' ? 'bg-amber-500 text-white'
-                            : st === 'excluded' ? 'bg-slate-600 text-white' : 'bg-slate-800 text-white')
-                          : 'bg-white text-slate-500 hover:bg-slate-50'}`}>
-                        {text}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <Field label="Scope / notes">
-                  <input disabled={!canEdit} className={inputCls} defaultValue={s.notes}
-                    onBlur={e => patch(d => { d.services[i].notes = e.target.value; })} />
-                </Field>
-              </div>
-              {canEdit && s.custom && (
-                <button type="button" onClick={() => patch(d => { d.services.splice(i, 1); })}
-                  className="mt-3 inline-flex min-h-[36px] items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-slate-400 hover:text-rose-600">
-                  <Trash2 className="h-4 w-4" /> remove row
-                </button>
-              )}
-            </div>
-          ))}
+        <div>
+          <L>Client selects one level</L>
+          <div className="grid gap-2.5 sm:grid-cols-3">
+            {SERVICE_LEVELS.map(l => (
+              <button key={l.n} type="button" disabled={!canEdit}
+                onClick={() => patch(d => { d.serviceLevel = d.serviceLevel === l.n ? null : l.n; })}
+                className={`rounded-lg border p-3 text-left ${c.serviceLevel === l.n
+                  ? 'border-sky-700 bg-sky-50 ring-2 ring-sky-500/30' : 'border-slate-300 bg-white hover:bg-slate-50'}`}>
+                <div className="text-[15px] font-black text-slate-800">Level {l.n}</div>
+                <div className="text-[12px] font-bold text-slate-500">{l.short}</div>
+              </button>
+            ))}
+          </div>
         </div>
-        {canEdit && (
-          <button type="button"
-            onClick={() => patch(d => {
-              d.services.push({ key: `custom-${Date.now()}`, label: 'New service', detail: '', status: 'blank', notes: '', custom: true });
-            })}
-            className="inline-flex min-h-[44px] items-center gap-1.5 text-xs font-black uppercase tracking-widest text-sky-700">
-            <Plus className="h-4 w-4" /> add service row
-          </button>
-        )}
         <p className="text-[12px] text-slate-500">
-          <b>—</b> leaves every box blank, which is how a new contract starts: nothing is stated about
-          a service until someone states it.
+          What each level includes is fixed contract text and prints in full. Level 1 has no ice
+          control of any kind — not even on call.
         </p>
       </Section>
 
-      {/* 4 · PRICING */}
+      {/* 4 · PRICING — all three levels quoted, both ways. */}
       <Section id="pricing">
         <div>
-          <L>Client selects</L>
+          <L>Price every level — the client chooses from the printed table</L>
+          <div className="space-y-3">
+            {SERVICE_LEVELS.map(l => (
+              <div key={l.n} className={`grid gap-3 rounded-lg border p-3 sm:grid-cols-[7rem_1fr_1fr] ${
+                c.serviceLevel === l.n ? 'border-sky-300 bg-sky-50/40' : 'border-slate-200'}`}>
+                <div className="self-center">
+                  <div className="text-[14px] font-black text-slate-800">Level {l.n}</div>
+                  <div className="text-[11px] font-bold text-slate-400">{l.short}</div>
+                </div>
+                <Field label="Seasonal (Option A)">
+                  <input type="number" step="0.01" inputMode="decimal" disabled={!canEdit} className={`${inputCls} text-right`}
+                    defaultValue={c.pricing.levels[l.n]?.seasonal || ''} placeholder="—"
+                    onBlur={e => patch(d => { d.pricing.levels[l.n].seasonal = Number(e.target.value) || 0; })} />
+                </Field>
+                <Field label="Per visit (Option B)">
+                  <input type="number" step="0.01" inputMode="decimal" disabled={!canEdit} className={`${inputCls} text-right`}
+                    defaultValue={c.pricing.levels[l.n]?.perVisit || ''} placeholder="—"
+                    onBlur={e => patch(d => { d.pricing.levels[l.n].perVisit = Number(e.target.value) || 0; })} />
+                </Field>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <L>Client selects one pricing option</L>
           <div className="flex flex-wrap gap-2.5">
             {(['A', 'B'] as const).map(o => (
               <button key={o} type="button" disabled={!canEdit}
-                onClick={() => patch(d => { d.pricing.selectedOption = d.pricing.selectedOption === o ? null : o; })}
+                onClick={() => patch(d => {
+                  d.pricing.selectedOption = d.pricing.selectedOption === o ? null : o;
+                  // Option B has no payment choice to make; clear a stale one
+                  // rather than printing a tick under an option nobody picked.
+                  if (d.pricing.selectedOption !== 'A') d.pricing.optionAPayment = null;
+                })}
                 className={`min-h-[44px] rounded-lg border px-4 text-xs font-black uppercase tracking-widest ${c.pricing.selectedOption === o
                   ? 'border-sky-800 bg-sky-700 text-white' : 'border-slate-300 bg-white text-slate-600'}`}>
-                Option {o}
+                Option {o} — {o === 'A' ? 'seasonal' : 'per visit'}
               </button>
             ))}
           </div>
         </div>
 
-        {/* OPTION A */}
-        <div className="space-y-4 rounded-lg border border-slate-200 p-3.5">
-          <label className="flex min-h-[40px] items-center gap-2.5 text-[15px] font-black text-slate-800">
-            <input type="checkbox" className="h-5 w-5" checked={c.pricing.optionA.enabled} disabled={!canEdit}
-              onChange={e => patch(d => { d.pricing.optionA.enabled = e.target.checked; })} />
-            Option A — Seasonal Contract
-          </label>
-          {c.pricing.optionA.enabled && (
-            <div className="grid gap-5 sm:grid-cols-3">
-              <Field label="Total contract price">
-                <input type="number" step="0.01" inputMode="decimal" disabled={!canEdit} className={inputCls}
-                  defaultValue={c.pricing.optionA.totalPrice || ''} placeholder="leave blank for a ruled line"
-                  onBlur={e => patch(d => { d.pricing.optionA.totalPrice = Number(e.target.value) || 0; })} />
-              </Field>
-              <div><L>6 instalments of</L>
-                <div className="min-h-[44px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[15px] font-black text-slate-700">
-                  ${c.pricing.optionA.instalmentAmount.toFixed(2)}
-                </div>
-              </div>
-              <div><L>Prepay total (5% off)</L>
-                <div className="min-h-[44px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[15px] font-black text-emerald-700">
-                  ${c.pricing.optionA.prepayTotal.toFixed(2)}
-                </div>
-              </div>
-              <label className="flex min-h-[40px] items-center gap-2.5 text-[14px] font-bold text-slate-700 sm:col-span-2">
-                <input type="checkbox" className="h-5 w-5" checked={c.pricing.optionA.prepayDiscountEnabled} disabled={!canEdit}
-                  onChange={e => patch(d => { d.pricing.optionA.prepayDiscountEnabled = e.target.checked; })} />
-                Offer the pre-season discount
-              </label>
-              <Field label="Prepay deadline">
-                <input type="date" disabled={!canEdit} className={inputCls} defaultValue={c.pricing.optionA.prepayDeadline}
-                  onBlur={e => patch(d => { d.pricing.optionA.prepayDeadline = e.target.value; })} />
-              </Field>
-            </div>
-          )}
-        </div>
-
-        {/* OPTION B */}
-        <div className="space-y-4 rounded-lg border border-slate-200 p-3.5">
-          <label className="flex min-h-[40px] items-center gap-2.5 text-[15px] font-black text-slate-800">
-            <input type="checkbox" className="h-5 w-5" checked={c.pricing.optionB.enabled} disabled={!canEdit}
-              onChange={e => patch(d => { d.pricing.optionB.enabled = e.target.checked; })} />
-            Option B — Per-Service Rates
-          </label>
-          {c.pricing.optionB.enabled && (
-            <>
-              <div className="space-y-4">
-                {c.pricing.optionB.lines.map((l, i) => (
-                  <div key={i} className="grid gap-3 sm:grid-cols-[1fr_9rem_auto]">
-                    <Field label={i === 0 ? 'Rate line' : ''}>
-                      <input disabled={!canEdit} className={inputCls} defaultValue={l.label}
-                        onBlur={e => patch(d => { d.pricing.optionB.lines[i].label = e.target.value; })} />
-                    </Field>
-                    <Field label={i === 0 ? 'Amount' : ''}>
-                      <input type="number" step="0.01" inputMode="decimal" disabled={!canEdit}
-                        className={`${inputCls} text-right`} defaultValue={l.amount || ''} placeholder="—"
-                        onBlur={e => patch(d => { d.pricing.optionB.lines[i].amount = Number(e.target.value) || 0; })} />
-                    </Field>
-                    <div className="flex items-end">
-                      {canEdit && (
-                        <button type="button" onClick={() => patch(d => { d.pricing.optionB.lines.splice(i, 1); })}
-                          className="flex h-[44px] w-[44px] items-center justify-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600">
-                          <Trash2 className="h-4.5 w-4.5" />
-                        </button>
-                      )}
-                    </div>
-                    {/* The tonnage allowance and any other qualifier that has to
-                        print beside the rate. */}
-                    <Field label="" span>
-                      <input disabled={!canEdit} className={inputCls} defaultValue={l.note || ''}
-                        placeholder="qualifier printed after the amount — e.g. includes up to ___ tons"
-                        onBlur={e => patch(d => { d.pricing.optionB.lines[i].note = e.target.value; })} />
-                    </Field>
-                  </div>
+        {c.pricing.selectedOption === 'A' && (
+          <div className="space-y-4 rounded-lg border border-slate-200 p-3.5">
+            <div>
+              <L>Option A payment</L>
+              <div className="flex flex-wrap gap-2.5">
+                {([['instalments', '6 monthly instalments'], ['prepay', 'Paid in full — 5% off']] as const).map(([k, label]) => (
+                  <button key={k} type="button" disabled={!canEdit}
+                    onClick={() => patch(d => { d.pricing.optionAPayment = d.pricing.optionAPayment === k ? null : k; })}
+                    className={`min-h-[44px] rounded-lg border px-4 text-xs font-black uppercase tracking-widest ${c.pricing.optionAPayment === k
+                      ? 'border-sky-800 bg-sky-700 text-white' : 'border-slate-300 bg-white text-slate-600'}`}>
+                    {label}
+                  </button>
                 ))}
               </div>
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
-                {canEdit && (
-                  <button type="button"
-                    onClick={() => patch(d => { d.pricing.optionB.lines.push({ label: 'New line', amount: 0 }); })}
-                    className="inline-flex min-h-[44px] items-center gap-1.5 text-xs font-black uppercase tracking-widest text-sky-700">
-                    <Plus className="h-4 w-4" /> add rate line
-                  </button>
-                )}
-                <span className="text-[15px] font-black text-slate-800">
-                  Total per visit ${c.pricing.optionB.totalPerVisit.toFixed(2)}
-                </span>
+            </div>
+            <div className="grid gap-5 sm:grid-cols-3">
+              <Field label="Prepay deadline">
+                <input type="date" disabled={!canEdit} className={inputCls} defaultValue={c.pricing.prepayDeadline}
+                  onBlur={e => patch(d => { d.pricing.prepayDeadline = e.target.value; })} />
+              </Field>
+              {/* WORKED OUT, NOT PRINTED. The document states the rule; these
+                  are here so whoever is quoting sees what it comes to. */}
+              <div><L>Each instalment</L>
+                <div className="min-h-[44px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[15px] font-black text-slate-700">
+                  {sel ? `$${instalmentAmount(sel.seasonal).toFixed(2)}` : '—'}
+                </div>
               </div>
-            </>
-          )}
-        </div>
+              <div><L>Paid in full (5% off)</L>
+                <div className="min-h-[44px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[15px] font-black text-emerald-700">
+                  {sel ? `$${prepayTotal(sel.seasonal).toFixed(2)}` : '—'}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
-        {/* ADD-ONS */}
-        <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="Sand $ / ton">
-            <input type="number" step="0.01" inputMode="decimal" disabled={!canEdit} className={inputCls}
-              defaultValue={c.pricing.addOns.sandPerTon || ''}
-              onBlur={e => patch(d => { d.pricing.addOns.sandPerTon = Number(e.target.value) || 0; })} />
-          </Field>
-          <Field label="Sand loading fee">
-            <input type="number" step="0.01" inputMode="decimal" disabled={!canEdit} className={inputCls}
-              defaultValue={c.pricing.addOns.sandLoadingFee || ''}
-              onBlur={e => patch(d => { d.pricing.addOns.sandLoadingFee = Number(e.target.value) || 0; })} />
-          </Field>
-          <Field label="After-hours / emergency call-out" span>
-            <input disabled={!canEdit} className={inputCls} defaultValue={c.pricing.addOns.afterHours}
-              placeholder="leave blank for a ruled line to fill in"
-              onBlur={e => patch(d => { d.pricing.addOns.afterHours = e.target.value; })} />
-          </Field>
-          <Field label="On-site snow relocation" span>
-            <textarea disabled={!canEdit} className={areaCls} defaultValue={c.pricing.addOns.relocation}
-              onBlur={e => patch(d => { d.pricing.addOns.relocation = e.target.value; })} />
-          </Field>
-          <Field label="Off-site haul-away" span>
-            <textarea disabled={!canEdit} className={areaCls} defaultValue={c.pricing.addOns.haulAway}
-              onBlur={e => patch(d => { d.pricing.addOns.haulAway = e.target.value; })} />
-          </Field>
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3.5">
+          <L>Additional services — derived, printed as rules not figures</L>
+          <ul className="space-y-1 text-[13px] text-slate-600">
+            <li>
+              Called-in sanding / salting:{' '}
+              <b>{c.serviceLevel === 1
+                ? 'not available at Level 1'
+                : calledIn != null && calledIn > 0 ? `$${calledIn.toFixed(2)} (50% of the Level 2 per-visit rate)` : 'set the Level 2 per-visit rate'}</b>
+            </li>
+            <li>
+              Plowing called in below the trigger depth:{' '}
+              <b>{sel && sel.perVisit > 0 ? `$${sel.perVisit.toFixed(2)} (this level's full per-visit rate)` : 'set the per-visit rate'}</b>
+            </li>
+            <li>Relocation / haul-away: <b>quoted when requested</b> — not included at any level.</li>
+          </ul>
         </div>
       </Section>
 
-      {/* 5 · TRIGGER */}
+      {/* 5 · TRIGGER & RESPONSE */}
       <Section id="trigger">
         <div className="grid gap-5 sm:grid-cols-2">
           <Field label="Trigger depth">
             <input disabled={!canEdit} className={inputCls} defaultValue={c.serviceTerms.triggerDepth}
               onBlur={e => patch(d => { d.serviceTerms.triggerDepth = e.target.value; })} />
           </Field>
-          <div><L>Priority tier</L>
+          <div><L>Assigned service window</L>
             <div className="flex w-fit overflow-hidden rounded-lg border border-slate-300">
-              {(['standard', 'priority'] as const).map(t => (
-                <button key={t} type="button" disabled={!canEdit}
-                  onClick={() => patch(d => { d.serviceTerms.priorityTier = t; })}
-                  className={`min-h-[44px] px-5 text-[11px] font-black uppercase tracking-widest ${c.serviceTerms.priorityTier === t ? 'bg-sky-700 text-white' : 'bg-white text-slate-500'}`}>
-                  {t}
+              {([['overnight', 'Overnight'], ['daytime', 'Daytime'], ['nonPriority', 'Non-priority']] as const).map(([k, label]) => (
+                <button key={k} type="button" disabled={!canEdit}
+                  onClick={() => patch(d => { d.serviceTerms.serviceWindow = d.serviceTerms.serviceWindow === k ? null : k; })}
+                  className={`min-h-[44px] px-4 text-[11px] font-black uppercase tracking-widest ${c.serviceTerms.serviceWindow === k ? 'bg-sky-700 text-white' : 'bg-white text-slate-500'}`}>
+                  {label}
                 </button>
               ))}
             </div>
           </div>
-          {([['clearedBefore', 'Cleared before (a.m.)'], ['snowfallEndsBy', 'If snowfall ends by (a.m.)'],
-            ['otherwiseWithinHours', 'Otherwise within (hours)']] as [keyof SnowContract['serviceTerms'], string][]).map(([k, label]) => (
+          {([
+            ['overnightCutoff', 'Overnight — snowfall ends by (a.m.)'],
+            ['overnightClearBy', 'Overnight — cleared by (a.m.)'],
+            ['daytimeHours', 'Daytime — within (hours)'],
+            ['nonPriorityHours', 'Non-priority — within (hours)'],
+          ] as ['overnightCutoff' | 'overnightClearBy' | 'daytimeHours' | 'nonPriorityHours', string][]).map(([k, label]) => (
             <Field key={k} label={label}>
-              <input disabled={!canEdit} className={inputCls} defaultValue={String(c.serviceTerms[k])}
-                onBlur={e => patch(d => { (d.serviceTerms as any)[k] = e.target.value; })} />
+              <input disabled={!canEdit} className={inputCls} defaultValue={c.serviceTerms[k]}
+                onBlur={e => patch(d => { d.serviceTerms[k] = e.target.value; })} />
             </Field>
           ))}
         </div>
         <p className="text-[12px] text-slate-500">
-          The bullets under this section are fixed contract terms and are not editable here.
+          All three windows print with their response times; the assigned one is ticked. The
+          bullets under this section are fixed contract terms and are not editable here.
+        </p>
+      </Section>
+
+      {/* 11 · INSURANCE — one editable figure inside fixed text. */}
+      <Section id="insurance">
+        <Field label="Commercial General Liability — not less than ($)">
+          <input disabled={!canEdit} className={inputCls} defaultValue={c.insurance.cglAmount}
+            placeholder={DEFAULT_CGL}
+            onBlur={e => patch(d => { d.insurance.cglAmount = e.target.value.trim() || DEFAULT_CGL; })} />
+        </Field>
+        <p className="text-[12px] text-slate-500">
+          Printed inside the clause. The rest of the section — WSIB, certificates on request,
+          additional-insured before the season — is fixed text.
         </p>
       </Section>
 
       {/* FIXED-TEXT SECTIONS — removable, not editable. */}
-      {(['payment', 'damage', 'indemnity', 'insurance', 'contact', 'acceptance'] as const).map(id => (
+      {(['payment', 'damage', 'indemnity', 'ice', 'delays', 'termination', 'contact', 'acceptance'] as const).map(id => (
         <Section key={id} id={id}>
           <p className="text-[13px] text-slate-500">
             Fixed contract text. It can be removed from this contract, but not reworded here —
@@ -651,6 +636,9 @@ export default function SnowContractEditor({
           currentUser={currentUser}
           initial={c.scope.measurement || null}
           initialAddress={c.client.serviceAddress}
+          // The SAME tool the lawn quote uses, switched to the snow palette:
+          // plow / shovel / storage / hazard instead of add / subtract.
+          palette="snow"
         />
       )}
     </div>

@@ -20,7 +20,7 @@
 //
 // This version:
 //   1. BUNDLES AND MOUNTS THE REAL COMPONENT in the browser, so the real
-//      useLayoutEffect runs and the real measured fit is what gets printed.
+//      layout effects run and what gets printed is what the app renders.
 //   2. Gets the page count from `--print-to-pdf`. That is Chrome's own
 //      fragmentation engine — the same one the print dialog uses.
 //   3. RASTERISES page 1 and reads pixels, so the header band's colour, the
@@ -36,12 +36,13 @@
 // layout, plus the page-count agreement above. Chrome exposes no per-page
 // element map, so that precondition is the strongest available check.
 //
-// Run at BOTH EXTREMES: an empty scope description and a full page of one.
+// Run at BOTH EXTREMES: an empty contract and a fully filled one. Page 1 is
+// composed to a fixed height, so the pair now proves it CANNOT be grown.
 import { execFileSync } from 'node:child_process';
 import * as esbuild from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PAGE_BUDGET_PX, FOOTER_RESERVE_PX, PAGE_MARGIN_IN, PAGE_SIDE_IN } from '../src/lib/snowContractMap';
+import { PAGE_BUDGET_PX, FOOTER_RESERVE_PX, PAGE_MARGIN_IN, PAGE_SIDE_IN, MAP_BOX_IN } from '../src/lib/snowContractMap';
 
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 // PROJECT-LOCAL scratch: the generated entry imports ../src/… and needs the
@@ -52,15 +53,17 @@ fs.mkdirSync(tmp, { recursive: true });
 // PER-FIXTURE EXPECTATIONS, with the reason stated. The two fixtures are not
 // the same document at different sizes — they are the two ends of how much
 // the estimator can type, and they legitimately paginate differently.
-const EXPECT: Record<string, { pages: number; scopeOnPage1: boolean; why: string }> = {
-  // The reference layout: map fits, Property Scope closes page 1.
-  empty: { pages: 3, scopeOnPage1: true, why: 'the reference three-page layout' },
-  // FOUR IS CORRECT HERE, not a regression. ~2,700 characters of scope
-  // description plus the map at its 1.7in floor is more than one page holds,
-  // and the floor exists precisely so the map overflows rather than being
-  // squeezed into an unreadable strip. If this ever prints in 3, the floor has
-  // been removed and the map is being crushed — which is why it is asserted.
-  full: { pages: 4, scopeOnPage1: false, why: 'a full page of scope text past the map floor' },
+// Page count of the rebuilt document, asserted so a clause edit that spills
+// onto another page is visible rather than silent.
+const PAGES = 5;
+const EXPECT: Record<string, { pages: number; mapOnPage1: boolean; why: string }> = {
+  // Page 1 is COMPOSED now — a fixed-height column that always ends with the
+  // service-area map — so the map landing on page 1 is the check, not whether
+  // a section flowed there. The page count is what the clause text comes to
+  // once page 1 is fixed; both fixtures share it because nothing the estimator
+  // types can grow page 1 any more.
+  empty: { pages: PAGES, mapOnPage1: true, why: 'the composed page 1 plus the fixed clause text' },
+  full: { pages: PAGES, mapOnPage1: true, why: 'a filled contract paginates the same — page 1 cannot grow' },
 };
 
 // NO --user-data-dir. It was added on a guess — one run died with SIGKILL and
@@ -97,32 +100,32 @@ function chrome(args: string[]): string {
 // ── THE FIXTURE, as a module the bundle can import ───────────────────────────
 const FIXTURE_SRC = `
 import { newContract, withDerived } from '../../src/lib/snowContracts';
-const LOREM = ${JSON.stringify(
-  'The serviced area comprises the main customer lot fronting Rosslyn Road, the rear loading dock and turnaround, the north-side employee parking strip, and the connecting drive aisle between them. Walkways include the front entrance apron, the accessible ramp on the south elevation, the side fire exit landing, and the path linking the rear dock to the employee door. Snow is to be stacked at the north-west corner of the rear lot and along the east fence line only; the south berm is not available this season because of the new transformer pad. Fire hydrants on the north boundary and the two bollards flanking the dock are to be kept clear at all times. Access is through the Rosslyn Road entrance; the rear gate is locked outside business hours and a key is held at the office. Overnight trailer parking regularly occupies the eastern third of the rear lot between November and February, and those bays are serviced only when clear. ',
+const LONG = ${JSON.stringify(
+  'The serviced area comprises the main customer lot fronting Rosslyn Road, the rear loading dock and turnaround, the north-side employee parking strip, and the connecting drive aisle between them. Snow is stacked at the north-west corner of the rear lot and along the east fence line only. ',
 )};
 export function fixture(kind) {
   const c = newContract({ id: 'verify-' + kind, createdBy: 'verify', now: Date.parse('2026-08-07T12:00:00Z') });
+  if (kind === 'empty') return c;
   c.client = {
     businessName: 'Northbridge Commercial Properties Inc.',
-    siteContact: 'Pat Lindgren, Facilities',
-    serviceAddress: '1175 Rosslyn Road, Thunder Bay, ON P7E 6X5',
+    siteContact: 'Pat Lindgren, Facilities · (807) 555-0142',
+    billingContact: 'Dana Okonkwo, Accounts Payable · (807) 555-0198',
     billingEmail: 'ap@northbridge.example.ca',
-    phone: '(807) 555-0142',
+    billingAddress: 'PO Box 4120, Thunder Bay, ON P7B 6T8',
+    serviceAddress: '1175 Rosslyn Road, Thunder Bay, ON P7E 6X5',
   };
-  c.scope.totalArea = '41,200 sq ft';
-  c.scope.lotAreas = 'Main customer lot, rear dock, drive aisle';
-  c.scope.walkwaysEntrances = 'Front apron, accessible ramp, dock path';
-  c.scope.snowStorage = 'North-west corner, east fence line';
-  c.scope.markedHazards = 'Hydrants (north), dock bollards';
-  c.scope.accessNotes = 'Rosslyn Rd entrance; rear gate keyed';
-  c.scope.description = kind === 'full' ? LOREM.repeat(3).trim() : '';
-  c.services[0].status = 'included';
-  c.services[1].status = 'included';
-  c.services[2].status = 'onCall';
+  // The two fields that print, at the longest anyone would reasonably type.
+  c.scope.plowArea = LONG;
+  c.scope.shovelArea = 'Front entrance apron, the accessible ramp on the south elevation, the side fire exit landing, and the path linking the rear dock to the employee door.';
+  c.serviceLevel = 3;
+  c.pricing.levels = {
+    1: { seasonal: 18500, perVisit: 265 },
+    2: { seasonal: 24000, perVisit: 340 },
+    3: { seasonal: 31200, perVisit: 425 },
+  };
   c.pricing.selectedOption = 'A';
-  c.pricing.optionA.totalPrice = 24000;
-  c.pricing.optionB.lines = c.pricing.optionB.lines.map((l, i) => ({ ...l, amount: [300, 120, 210, 95][i] || 0 }));
-  c.pricing.addOns.afterHours = '250 per call-out';
+  c.pricing.optionAPayment = 'instalments';
+  c.serviceTerms.serviceWindow = 'overnight';
   return withDerived(c);
 }
 `;
@@ -203,6 +206,13 @@ var i=new Image();i.onload=function(){
     // the bottom margin: the content box ends at 11in less the bottom @page
     // margin, so sample the strip just above that line.
     footerInk: ink(11 - ${PAGE_MARGIN_IN} - 0.30, 11 - ${PAGE_MARGIN_IN} - 0.02, ${PAGE_SIDE_IN}, 8.5 - ${PAGE_SIDE_IN}),
+    // THE MAP ROW, READ OFF THE PAPER. Page 1 is a fixed column that always
+    // ends with the service-area map, so this strip is map box and legend or
+    // it is nothing. It exists because the DOM-side check passed while the
+    // printed page had a 3.75in hole in it: the row sat at exactly the page
+    // boundary, and break-inside:avoid moved it to page 2 where no geometry
+    // measured on the staging layout could see it.
+    mapRowInk: ink(9.0, 9.8, ${PAGE_SIDE_IN}, 8.5 - ${PAGE_SIDE_IN}),
   });
 };i.src='file://${png}';
 </script>`);
@@ -231,6 +241,10 @@ const MEASURE = `
     out.contentWidthPx = firstSec ? Math.round(firstSec.getBoundingClientRect().width) : 0;
     var mw = doc.querySelector('.mapwrap');
     out.mapIn = mw ? Math.round(mw.getBoundingClientRect().height / 96 * 100) / 100 : 0;
+    // The composed page 1 has to END inside one page. Measured from the top
+    // of the document to the bottom of the map row — the last thing on it.
+    out.mapBottomPx = mw ? Math.round(mw.getBoundingClientRect().bottom - origin) : 0;
+    out.mapOnPage1 = !!mw && out.mapBottomPx <= PAGE;
     // A .pagegrid.brk starts a new page BEFORE itself; .pb (unused by the
     // current structure, kept so the model still covers it) breaks after.
     var nodes = [].slice.call(doc.querySelectorAll('section, .pb, .pagegrid.brk'));
@@ -274,13 +288,13 @@ const ok = (msg: string) => console.log(`   ✓ ${msg}`);
 const mapHeights: Record<string, number> = {};
 
 for (const kind of ['empty', 'full'] as const) {
-  console.log(`\n${'='.repeat(66)}\nSCOPE TEXT: ${kind.toUpperCase()}\n${'='.repeat(66)}`);
+  console.log(`\n${'='.repeat(66)}\nFIXTURE: ${kind.toUpperCase()}\n${'='.repeat(66)}`);
   const { pages, pdf, mediaBox } = printToPdf(js, kind);
   const layout = measureLayout(js, kind);
   const px = rasterProbe(pdf, kind);
 
   console.log(`real Chrome pagination: ${pages} page(s)   MediaBox ${mediaBox}`);
-  console.log(`content width: ${layout.contentWidthPx}px   map fitted to ${layout.mapIn}in   running footer ${layout.footerPx}px → page budget ${layout.pageBudgetPx}px`);
+  console.log(`content width: ${layout.contentWidthPx}px   map box ${layout.mapIn}in   running footer ${layout.footerPx}px → page budget ${layout.pageBudgetPx}px`);
   for (const s of layout.sections) console.log(`   p${s.page}  ${String(s.height).padStart(4)}px  ${s.title}`);
 
   // COVERAGE, ASSERTED. Every claim below is worth exactly nothing if the
@@ -290,10 +304,10 @@ for (const kind of ['empty', 'full'] as const) {
   // now themselves checks, and a refactor that removes one FAILS here rather
   // than quietly turning its check into a tautology.
   if (!layout.sections.length) bad('no <section> elements rendered — every layout check below is vacuous');
-  if (!layout.mapIn) bad('no map box rendered — the measured-fit checks below are vacuous');
+  if (!layout.mapIn) bad('no map box rendered — the page-1 checks below are vacuous');
   if (!layout.footerPx) bad('no footer element rendered — the running-footer check below is vacuous');
   else if (layout.footerPx > FOOTER_RESERVE_PX) {
-    bad(`the running footer measures ${layout.footerPx}px but the map fit reserves only ${FOOTER_RESERVE_PX}px `
+    bad(`the running footer measures ${layout.footerPx}px but the page budget reserves only ${FOOTER_RESERVE_PX}px `
       + 'per page — FOOTER_RESERVE_PX is stale and every page budget below is over-optimistic');
   }
   if (!layout.contentWidthPx) bad('content width measured as 0 — the margin checks below are vacuous');
@@ -316,10 +330,14 @@ for (const kind of ['empty', 'full'] as const) {
   if (layout.overflowing.length) bad(`section taller than a page — WILL split: ${layout.overflowing.join(', ')}`);
   else ok('no section exceeds the content height — break-inside:avoid cannot be violated');
 
-  const scopePage = layout.sections.find((s: any) => /Property Scope/.test(s.title))?.page;
-  if (expect.scopeOnPage1 && scopePage !== 1) bad(`Property Scope landed on page ${scopePage}, not page 1`);
-  else if (expect.scopeOnPage1) ok('Property Scope finishes on page 1');
-  else ok(`Property Scope on page ${scopePage} — expected past the map floor`);
+  // The whole composed block — band through map — has to land on page 1.
+  // TWO checks on purpose: the model says it fits, the PAPER says it printed.
+  if (expect.mapOnPage1 && !layout.mapOnPage1) bad('layout puts the service-area map past the end of page 1');
+  else if (expect.mapOnPage1) ok('layout: the composed page 1 (header, photo, Sections 1–2, map) fits');
+  if (expect.mapOnPage1 && !px.mapRowInk) {
+    bad('NOTHING PRINTED where the service-area map belongs — the row was pushed off page 1 '
+      + 'and page 1 has a hole in it, whatever the layout model says');
+  } else if (expect.mapOnPage1) ok('the map row printed on page 1');
 
   // Printed-artefact checks. These read the paper, not the stylesheet.
   const [r, g, b] = px.band;
@@ -336,18 +354,22 @@ for (const kind of ['empty', 'full'] as const) {
   else ok('running footer present on page 1');
 }
 
-// The two fixtures exist to drive the map fit to opposite ends. If they land
-// on the SAME height the pair has stopped discriminating — the fit is either
-// broken or pinned at a bound — and this file's "both extremes" claim is a
-// fiction even though every check above still passes.
+// The two fixtures exist to prove page 1 CANNOT be grown by anything typed
+// into it. The old pair drove a measured map fit to opposite ends; there is
+// no fit any more, so the invariant inverts — an empty contract and a fully
+// filled one must paginate identically and hold the map at its fixed size.
+// If these ever differ, something above the fold has started to flex again
+// and the "composed page" is a fiction.
 console.log(`\n${'─'.repeat(66)}`);
-if (mapHeights.empty === mapHeights.full) {
-  console.error(`   ✗ both fixtures fitted the map to ${mapHeights.empty}in — the extremes no longer `
-    + 'differ, so the measured fit is not actually being exercised');
+if (mapHeights.empty !== mapHeights.full) {
+  console.error(`   ✗ the map printed at ${mapHeights.empty}in empty but ${mapHeights.full}in full — `
+    + 'page 1 is flexing with its content again');
+  fail++;
+} else if (Math.abs(mapHeights.full - MAP_BOX_IN) > 0.02) {
+  console.error(`   ✗ the map printed at ${mapHeights.full}in, not the fixed ${MAP_BOX_IN}in box`);
   fail++;
 } else {
-  console.log(`   ✓ map fit exercised across the extremes: `
-    + `${mapHeights.empty}in (empty) → ${mapHeights.full}in (full)`);
+  console.log(`   ✓ page 1 is fixed: the map held ${mapHeights.full}in on both fixtures`);
 }
 
 console.log(`\n${fail === 0 ? 'ALL PRINT CHECKS PASSED' : `${fail} PRINT CHECK(S) FAILED`}\n`);

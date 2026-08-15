@@ -1,9 +1,10 @@
-// SnowMaster contract — defaults, derived values, renewal.
+// SnowMaster contract — defaults, derived values, migration, renewal.
 //   npx tsx src/lib/snowContracts.test.ts
 import assert from 'node:assert/strict';
 import {
-  seasonFor, termFor, prepayDeadlineFor, instalmentAmount, prepayTotal,
-  optionBTotal, withDerived, newContract, duplicateForNextSeason, headlinePrice,
+  seasonFor, termFor, prepayDeadlineFor, validUntilFrom, instalmentAmount, prepayTotal,
+  calledInRate, selectedPrice, withDerived, newContract, migrateContract, needsRequote,
+  duplicateForNextSeason, headlinePrice, DEFAULT_CGL,
 } from './snowContracts';
 
 let pass = 0, fail = 0;
@@ -12,7 +13,10 @@ const test = (n: string, fn: () => void) => {
   catch (e) { fail++; console.error(`  ✗ ${n}\n      ${(e as Error).message}`); }
 };
 
-console.log('\nSeason');
+const NOW = Date.parse('2026-08-07T12:00:00Z');
+const fresh = () => newContract({ id: 'c1', createdBy: 'marco', now: NOW, season: '2026/2027' });
+
+console.log('\nSeason and dates');
 test('August onward is the UPCOMING season', () => {
   assert.equal(seasonFor(new Date('2026-08-07T12:00:00')), '2026/2027');
   assert.equal(seasonFor(new Date('2026-12-31T12:00:00')), '2026/2027');
@@ -21,149 +25,236 @@ test('before August is still the season in progress', () => {
   assert.equal(seasonFor(new Date('2027-02-01T12:00:00')), '2026/2027');
   assert.equal(seasonFor(new Date('2026-07-31T12:00:00')), '2025/2026');
 });
-test('term runs Nov 1 to Apr 15 of the following year', () => {
-  assert.deepEqual(termFor('2026/2027'), { start: '2026-11-01', end: '2027-04-15' });
+test('term runs Nov 1 to Apr 30 of the following year', () => {
+  assert.deepEqual(termFor('2026/2027'), { start: '2026-11-01', end: '2027-04-30' });
 });
 test('prepay deadline is Oct 15 of the term start year', () => {
   assert.equal(prepayDeadlineFor('2026/2027'), '2026-10-15');
 });
-
-console.log('\nDerived values');
-test('instalment = total / 6, to the cent', () => {
-  assert.equal(instalmentAmount(12000), 2000);
-  assert.equal(instalmentAmount(10000), 1666.67);
-});
-test('prepay total = total less 5%', () => {
-  assert.equal(prepayTotal(12000), 11400);
-  assert.equal(prepayTotal(9999), 9499.05);
-});
-test('Option B per-visit total is the sum of its lines', () => {
-  assert.equal(optionBTotal([{ label: 'Plow', amount: 250 }, { label: 'Walkways', amount: 85.5 }]), 335.5);
-  assert.equal(optionBTotal([]), 0);
-  assert.equal(optionBTotal(undefined), 0);
-});
-test('withDerived recomputes all three from the inputs around them', () => {
-  const c = newContract({ id: 'c1', createdBy: 'u', now: Date.parse('2026-08-07T12:00:00Z') });
-  c.pricing.optionA.totalPrice = 18000;
-  c.pricing.optionB.lines = [{ label: 'Plow', amount: 300 }, { label: 'Salt', amount: 120 }];
-  const d = withDerived(c);
-  assert.equal(d.pricing.optionA.instalmentAmount, 3000);
-  assert.equal(d.pricing.optionA.prepayTotal, 17100);
-  assert.equal(d.pricing.optionB.totalPerVisit, 420);
-});
-test('a stale derived figure cannot survive a recompute', () => {
-  const c = newContract({ id: 'c2', createdBy: 'u' });
-  c.pricing.optionA.totalPrice = 6000;
-  c.pricing.optionA.instalmentAmount = 99999;    // as if hand-edited
-  assert.equal(withDerived(c).pricing.optionA.instalmentAmount, 1000);
+test('a quote is valid for 30 days from its date', () => {
+  assert.equal(validUntilFrom('2026-08-07'), '2026-09-06');
+  // Across a month end, and across a year end.
+  assert.equal(validUntilFrom('2026-12-20'), '2027-01-19');
 });
 
 console.log('\nNew contract defaults');
-const fresh = newContract({ id: 'n1', createdBy: 'marco', now: Date.parse('2026-08-07T12:00:00Z') });
-test('season, term and prepay deadline are set together', () => {
-  assert.equal(fresh.season, '2026/2027');
-  assert.deepEqual(fresh.term, { start: '2026-11-01', end: '2027-04-15' });
-  assert.equal(fresh.pricing.optionA.prepayDeadline, '2026-10-15');
+test('no service level and no option — a contract states nothing nobody chose', () => {
+  const c = fresh();
+  assert.equal(c.serviceLevel, null);
+  assert.equal(c.pricing.selectedOption, null);
+  assert.equal(c.pricing.optionAPayment, null);
+  assert.equal(c.serviceTerms.serviceWindow, null);
 });
-test('the seven standard services default to EXCLUDED', () => {
-  assert.equal(fresh.services.length, 7);
-  assert.equal(fresh.services.every(s => s.status === 'excluded'), true,
-    'a contract must never imply a service nobody agreed to');
-  assert.deepEqual(fresh.services.map(s => s.key), [
-    'plowing', 'shovelling', 'sanding', 'salting', 'iceManagement', 'relocation', 'haulAway',
-  ]);
-});
-test('relocation and haul-away carry their not-included note', () => {
-  for (const k of ['relocation', 'haulAway']) {
-    assert.match(fresh.services.find(s => s.key === k)!.notes, /Not included/);
+test('all three levels start unpriced, both ways', () => {
+  const c = fresh();
+  for (const n of [1, 2, 3] as const) {
+    assert.equal(c.pricing.levels[n].seasonal, 0);
+    assert.equal(c.pricing.levels[n].perVisit, 0);
   }
 });
-test('add-ons, trigger and response match the stated defaults', () => {
-  assert.equal(fresh.pricing.addOns.sandPerTon, 120);
-  assert.equal(fresh.pricing.addOns.sandLoadingFee, 200);
-  assert.equal(fresh.serviceTerms.triggerDepth, '2" accumulation');
-  assert.equal(fresh.serviceTerms.priorityTier, 'standard');
-  assert.equal(fresh.serviceTerms.clearedBefore, '6:00');
-  assert.equal(fresh.serviceTerms.snowfallEndsBy, '4:00');
-  assert.equal(fresh.serviceTerms.otherwiseWithinHours, '6');
+test('the header dates are set together', () => {
+  const c = fresh();
+  assert.equal(c.quoteDate, '2026-08-07');
+  assert.equal(c.validUntil, validUntilFrom('2026-08-07'));
 });
-test('both pricing options start enabled, prepay discount on at 5%', () => {
-  assert.equal(fresh.pricing.optionA.enabled, true);
-  assert.equal(fresh.pricing.optionB.enabled, true);
-  assert.equal(fresh.pricing.optionA.prepayDiscountEnabled, true);
-  assert.equal(fresh.pricing.optionA.prepayDiscountPct, 5);
-  assert.equal(fresh.pricing.optionA.instalments, 6);
+test('trigger, response windows and CGL carry the reference defaults', () => {
+  const c = fresh();
+  assert.equal(c.serviceTerms.triggerDepth, '2" accumulation');
+  assert.equal(c.serviceTerms.overnightCutoff, '2:00');
+  assert.equal(c.serviceTerms.overnightClearBy, '8:00');
+  assert.equal(c.serviceTerms.daytimeHours, '24');
+  assert.equal(c.serviceTerms.nonPriorityHours, '48');
+  assert.equal(c.insurance.cglAmount, DEFAULT_CGL);
 });
-test('a new contract starts as a draft with nothing hidden', () => {
-  assert.equal(fresh.status, 'draft');
-  assert.deepEqual(fresh.hiddenSections, []);
-  assert.equal(fresh.scope.showMap, true);
+
+console.log('\nDerived values (shown in the editor, never printed)');
+test('instalment = seasonal / 6, to the cent', () => {
+  assert.equal(instalmentAmount(12000), 2000);
+  assert.equal(instalmentAmount(10000), 1666.67);
+});
+test('paid in full = seasonal less 5%', () => {
+  assert.equal(prepayTotal(12000), 11400);
+  assert.equal(prepayTotal(9999), 9499.05);
+});
+test('called-in sanding is 50% of the LEVEL 2 per-visit rate, whatever level is selected', () => {
+  const c = fresh();
+  c.pricing.levels[2].perVisit = 300;
+  c.pricing.levels[3].perVisit = 420;
+  c.serviceLevel = 3;
+  assert.equal(calledInRate(c), 150);
+});
+test('Level 1 has no called-in rate — no ice control at all, not even on call', () => {
+  const c = fresh();
+  c.pricing.levels[2].perVisit = 300;
+  c.serviceLevel = 1;
+  assert.equal(calledInRate(c), null);
+});
+test('selectedPrice follows the chosen level', () => {
+  const c = fresh();
+  c.pricing.levels[2] = { seasonal: 24000, perVisit: 300 };
+  c.serviceLevel = 2;
+  assert.deepEqual(selectedPrice(c), { seasonal: 24000, perVisit: 300 });
+  c.serviceLevel = null;
+  assert.equal(selectedPrice(c), null);
+});
+test('withDerived rounds prices to the cent', () => {
+  const c = fresh();
+  c.pricing.levels[1].seasonal = 1200.005;
+  assert.equal(withDerived(c).pricing.levels[1].seasonal, 1200.01);
+});
+
+console.log('\nMigration from the pre-service-level shape');
+const legacy = {
+  id: 'old-1', season: '2025/2026', status: 'signed',
+  createdAt: Date.parse('2025-09-01T12:00:00Z'), updatedAt: Date.parse('2025-09-02T12:00:00Z'),
+  createdBy: 'marco',
+  client: {
+    businessName: 'Northbridge', siteContact: 'Pat Lindgren',
+    serviceAddress: '1175 Rosslyn Road', billingEmail: 'ap@nb.example', phone: '(807) 555-0142',
+  },
+  term: { start: '2025-11-01', end: '2026-04-15' },
+  scope: {
+    totalArea: '41,200 sq ft', lotAreas: 'Main lot, rear dock',
+    walkwaysEntrances: 'Front apron, ramp', snowStorage: 'NW corner',
+    markedHazards: 'Hydrants', accessNotes: 'Rear gate keyed',
+    description: 'Long prose', showMap: true, mapImages: [],
+  },
+  services: [{ key: 'plowing', label: 'Plowing', detail: '', status: 'included', notes: '', custom: false }],
+  pricing: {
+    selectedOption: 'A',
+    optionA: { enabled: true, totalPrice: 24000, instalmentAmount: 4000, prepayDeadline: '2025-10-15', prepayTotal: 22800 },
+    optionB: { enabled: true, lines: [{ label: 'Plowing', amount: 300 }], totalPerVisit: 300 },
+    addOns: { sandPerTon: 120, sandLoadingFee: 200, relocation: 'x', haulAway: 'y', afterHours: '' },
+  },
+  serviceTerms: { triggerDepth: '2" accumulation', priorityTier: 'priority', clearedBefore: '6:00', snowfallEndsBy: '4:00', otherwiseWithinHours: '6' },
+  hiddenSections: ['addons', 'damage'],
+};
+
+test('REFUSES to guess a service level, and clears the prices with it', () => {
+  const c = migrateContract(legacy);
+  assert.equal(c.serviceLevel, null);
+  assert.equal(c.pricing.selectedOption, null);
+  assert.equal(c.pricing.levels[2].seasonal, 0);
+  assert.equal(c.pricing.levels[2].perVisit, 0);
+});
+test('keeps the old figures in legacyPricing so a renewal can still see them', () => {
+  const c = migrateContract(legacy);
+  assert.deepEqual(c.legacyPricing, { seasonalTotal: 24000, perVisitTotal: 300 });
+  assert.equal(needsRequote(c), true);
+});
+test('lot and walkway descriptions become the plow and shovel fields', () => {
+  const c = migrateContract(legacy);
+  assert.equal(c.scope.plowArea, 'Main lot, rear dock');
+  assert.equal(c.scope.shovelArea, 'Front apron, ramp');
+});
+test('nothing described on the old scope table is thrown away', () => {
+  const c = migrateContract(legacy);
+  assert.equal(c.scope.snowStorage, 'NW corner');
+  assert.equal(c.scope.markedHazards, 'Hydrants');
+  assert.equal(c.scope.accessNotes, 'Rear gate keyed');
+  assert.equal(c.scope.description, 'Long prose');
+  assert.equal(c.scope.totalArea, '41,200 sq ft');
+});
+test('the phone joins the site contact rather than being dropped', () => {
+  const c = migrateContract(legacy);
+  assert.equal(c.client.siteContact, 'Pat Lindgren · (807) 555-0142');
+});
+test('a contact that already carries the number is not doubled up', () => {
+  const c = migrateContract({
+    ...legacy,
+    client: { ...legacy.client, siteContact: 'Pat Lindgren (807) 555-0142' },
+  });
+  assert.equal(c.client.siteContact, 'Pat Lindgren (807) 555-0142');
+});
+test('priority tier maps to the overnight window, standard to daytime', () => {
+  assert.equal(migrateContract(legacy).serviceTerms.serviceWindow, 'overnight');
+  const std = migrateContract({ ...legacy, serviceTerms: { ...legacy.serviceTerms, priorityTier: 'standard' } });
+  assert.equal(std.serviceTerms.serviceWindow, 'daytime');
+});
+test('hidden sections survive; the section that no longer exists is dropped', () => {
+  const c = migrateContract(legacy);
+  assert.deepEqual(c.hiddenSections, ['damage']);
+});
+test('signed status and its stamps are untouched — migration is not an edit', () => {
+  const c = migrateContract(legacy);
+  assert.equal(c.status, 'signed');
+  assert.equal(c.createdAt, legacy.createdAt);
+});
+test('a CURRENT contract passes through unchanged, and gains any newer field', () => {
+  const c = fresh();
+  const again = migrateContract(JSON.parse(JSON.stringify(c)));
+  assert.equal(again.serviceLevel, null);
+  assert.equal(again.quoteDate, c.quoteDate);
+  assert.equal(again.insurance.cglAmount, DEFAULT_CGL);
+  assert.equal(needsRequote(again), false);
+});
+test('a current contract written before insurance existed gets the default', () => {
+  const c: any = fresh();
+  delete c.insurance;
+  assert.equal(migrateContract(c).insurance.cglAmount, DEFAULT_CGL);
 });
 
 console.log('\nRenewal');
-const signed = (() => {
-  const c = newContract({ id: 'old', createdBy: 'marco', now: Date.parse('2026-08-07T12:00:00Z') });
-  c.status = 'signed';
-  c.signedAt = 123;
-  c.signedBy = 'Marco';
-  c.sentAt = 100;
-  c.client = { businessName: 'Acme', siteContact: 'Pat', serviceAddress: '1 Main St', billingEmail: 'a@b.c', phone: '555' };
-  c.scope.description = 'Front lot and loading dock.';
-  c.scope.mapImages = ['https://storage/x.png'];
-  c.scope.measuredSqft = 41200;
-  c.scope.totalArea = '41,200 sq ft';
-  c.services[0].status = 'included';
-  c.pricing.selectedOption = 'A';
-  c.pricing.optionA.totalPrice = 24000;
-  c.pricing.optionB.lines = [{ label: 'Plow', amount: 300 }];
-  return withDerived(c);
-})();
-const renewed = duplicateForNextSeason(signed, { id: 'new', createdBy: 'james', now: Date.parse('2027-08-01T12:00:00Z') });
-
-test('rolls the season and term forward one year', () => {
-  assert.equal(renewed.season, '2027/2028');
-  assert.deepEqual(renewed.term, { start: '2027-11-01', end: '2028-04-15' });
-  assert.equal(renewed.pricing.optionA.prepayDeadline, '2027-10-15');
+test('carries the property, the level and the terms', () => {
+  const src = fresh();
+  src.serviceLevel = 2;
+  src.scope.plowArea = 'Main lot';
+  src.serviceTerms.serviceWindow = 'overnight';
+  const next = duplicateForNextSeason(src, { id: 'c2', createdBy: 'marco', now: NOW });
+  assert.equal(next.season, '2027/2028');
+  assert.equal(next.serviceLevel, 2);
+  assert.equal(next.scope.plowArea, 'Main lot');
+  assert.equal(next.serviceTerms.serviceWindow, 'overnight');
 });
-test('carries client, scope (map and measurement), services and terms', () => {
-  assert.equal(renewed.client.businessName, 'Acme');
-  assert.equal(renewed.scope.description, 'Front lot and loading dock.');
-  assert.deepEqual(renewed.scope.mapImages, ['https://storage/x.png']);
-  assert.equal(renewed.scope.measuredSqft, 41200);
-  assert.equal(renewed.services[0].status, 'included');
-  assert.equal(renewed.serviceTerms.triggerDepth, '2" accumulation');
+test('CLEARS every price, the option and the status stamps', () => {
+  const src = fresh();
+  src.serviceLevel = 2;
+  src.pricing.levels[2] = { seasonal: 24000, perVisit: 300 };
+  src.pricing.selectedOption = 'A';
+  src.pricing.optionAPayment = 'instalments';
+  src.status = 'signed';
+  src.signedAt = NOW;
+  const next = duplicateForNextSeason(src, { id: 'c2', createdBy: 'marco', now: NOW });
+  assert.equal(next.pricing.levels[2].seasonal, 0);
+  assert.equal(next.pricing.selectedOption, null);
+  assert.equal(next.pricing.optionAPayment, null);
+  assert.equal(next.status, 'draft');
+  assert.equal(next.signedAt, undefined);
 });
-test('CLEARS pricing, status and the timestamps that recorded it', () => {
-  assert.equal(renewed.status, 'draft');
-  assert.equal(renewed.signedAt, undefined);
-  assert.equal(renewed.signedBy, undefined);
-  assert.equal(renewed.sentAt, undefined);
-  assert.equal(renewed.pricing.selectedOption, null);
-  assert.equal(renewed.pricing.optionA.totalPrice, 0);
-  assert.equal(renewed.pricing.optionA.instalmentAmount, 0);
-  assert.equal(renewed.pricing.optionA.prepayTotal, 0);
-  assert.equal(renewed.pricing.optionB.totalPerVisit, 0);
-});
-test('keeps Option B line LABELS but zeroes their amounts', () => {
-  assert.deepEqual(renewed.pricing.optionB.lines, [{ label: 'Plow', amount: 0 }]);
+test('last season’s figures ride along for reference only', () => {
+  const src = fresh();
+  src.serviceLevel = 2;
+  src.pricing.levels[2] = { seasonal: 24000, perVisit: 300 };
+  const next = duplicateForNextSeason(src, { id: 'c2', createdBy: 'marco', now: NOW });
+  assert.deepEqual(next.legacyPricing, { seasonalTotal: 24000, perVisitTotal: 300 });
 });
 test('the source contract is not mutated by duplicating it', () => {
-  assert.equal(signed.pricing.optionA.totalPrice, 24000);
-  assert.equal(signed.status, 'signed');
+  const src = fresh();
+  src.pricing.levels[1].seasonal = 9000;
+  duplicateForNextSeason(src, { id: 'c2', createdBy: 'marco', now: NOW });
+  assert.equal(src.pricing.levels[1].seasonal, 9000);
 });
 
 console.log('\nList headline price');
-test('follows the selected option', () => {
-  assert.deepEqual(headlinePrice(signed), { amount: 24000, kind: 'seasonal' });
+test('follows the selected level AND option', () => {
+  const c = fresh();
+  c.pricing.levels[3] = { seasonal: 31000, perVisit: 410 };
+  c.serviceLevel = 3;
+  c.pricing.selectedOption = 'B';
+  assert.deepEqual(headlinePrice(c), { amount: 410, kind: 'perVisit' });
+  c.pricing.selectedOption = 'A';
+  assert.deepEqual(headlinePrice(c), { amount: 31000, kind: 'seasonal' });
 });
-test('falls back to whichever option carries a figure', () => {
-  const c = newContract({ id: 'x', createdBy: 'u' });
-  c.pricing.optionB.lines = [{ label: 'Plow', amount: 275 }];
-  const d = withDerived(c);
-  assert.deepEqual(headlinePrice(d), { amount: 275, kind: 'perVisit' });
+test('a level with no option shows whichever side is quoted, seasonal first', () => {
+  const c = fresh();
+  c.pricing.levels[1] = { seasonal: 0, perVisit: 250 };
+  c.serviceLevel = 1;
+  assert.deepEqual(headlinePrice(c), { amount: 250, kind: 'perVisit' });
 });
-test('an unpriced contract reports no headline rather than a zero', () => {
-  assert.deepEqual(headlinePrice(newContract({ id: 'y', createdBy: 'u' })), { amount: 0, kind: null });
+test('no level chosen means no headline, however the levels are priced', () => {
+  const c = fresh();
+  c.pricing.levels[2] = { seasonal: 24000, perVisit: 300 };
+  assert.deepEqual(headlinePrice(c), { amount: 0, kind: null });
 });
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

@@ -69,6 +69,7 @@ import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
 import MarketingMaster from './components/MarketingMaster';
 import { clipKey, commentSubject } from './components/MarketingComments';
+import { migrateContract as migrateSnowContract } from './lib/snowContracts';
 import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, reportIsDeletable, planPhaseMerge, isContractingWorker } from './lib/contracting';
 import type { ContractingProperty, ContractingSupplier } from './types';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabel, payDateLabel } from './lib/payPeriods';
@@ -1192,7 +1193,17 @@ export default function App() {
       collection(db, 'snowContracts'),
       snap => {
         const map: Record<string, SnowContract> = {};
-        snap.forEach(d => { const v = d.data() as SnowContract; if (v && v.id) map[v.id] = v; });
+        // MIGRATE ON READ. A contract saved under the pre-service-level shape
+        // is upgraded in memory on every load and only written back when
+        // someone edits it — so opening the list never rewrites history, and
+        // no screen has to know which shape a record was stored in.
+        snap.forEach(d => {
+          const raw = d.data();
+          if (!raw || !raw.id) return;
+          try { map[raw.id] = migrateSnowContract(raw); } catch (e) {
+            console.error('snowContract migrate failed, skipping', raw.id, e);
+          }
+        });
         setSnowContracts(map);
       },
       err => { console.error('snowContracts listen error:', err); },

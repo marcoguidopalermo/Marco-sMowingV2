@@ -12,6 +12,7 @@
 // JavaScript Maps API the measuring tool uses. Without it the request returns
 // an error image, which is why callers check `hasMeasurementMap` and fall back.
 import type { PropertyMeasurement, MeasureRing, LatLngLiteral } from '../types';
+import { areaSpec, ringCounts } from './snowAreas';
 
 const STATIC_BASE = 'https://maps.googleapis.com/maps/api/staticmap';
 
@@ -44,20 +45,54 @@ export function encodePath(path: LatLngLiteral[]): string {
 }
 
 export const hasMeasurementMap = (m: PropertyMeasurement | undefined | null): boolean =>
-  !!m && Array.isArray(m.polygons) && m.polygons.some(r => (r.path || []).length >= 3);
+  !!m && (
+    (Array.isArray(m.polygons) && m.polygons.some(r => (r.path || []).length >= 3))
+    || (Array.isArray(m.markers) && m.markers.length > 0)
+  );
 
 // Serviced areas draw green and filled; exclusions draw red, so a printed map
-// shows what is NOT serviced as plainly as what is.
+// shows what is NOT serviced as plainly as what is. A ring that carries a snow
+// PURPOSE overrides both and draws in that purpose's colour — the same hex the
+// legend prints beside it, from the one definition in snowAreas.ts.
 const SERVICED = { color: '0x16a34aff', fill: '0x16a34a55' };
 const EXCLUDED = { color: '0xdc2626ff', fill: '0xdc262644' };
 
-function pathParam(ring: MeasureRing, style: { color: string; fill: string }): string | null {
+// #rrggbb → Static Maps 0xrrggbbaa. 0x38 ≈ 22% — the reference's fill alpha.
+const staticColor = (hex: string, alpha: string): string =>
+  `0x${hex.replace('#', '')}${alpha}`;
+
+function styleForRing(ring: MeasureRing, fallback: { color: string; fill: string }) {
+  const spec = areaSpec(ring.purpose);
+  if (!spec) return fallback;
+  return { color: staticColor(spec.hex, 'ff'), fill: staticColor(spec.hex, '38') };
+}
+
+function pathParam(ring: MeasureRing, fallback: { color: string; fill: string }): string | null {
   const path = ring.path || [];
   if (path.length < 3) return null;
+  const style = styleForRing(ring, fallback);
   // Close the ring so the fill renders as a polygon rather than a stroke.
   const closed = [...path, path[0]];
   return `path=fillcolor:${style.fill}|color:${style.color}|weight:2|enc:${encodePath(closed)}`;
 }
+
+// A point feature — a hydrant, a bollard. Small and unlabelled: the legend
+// says what the colour means, and a lettered pin on a 3.75in map is noise.
+function markerParam(at: LatLngLiteral, hex: string): string {
+  return `markers=size:small|color:${staticColor(hex, '')}|${at.lat.toFixed(6)},${at.lng.toFixed(6)}`;
+}
+
+// Serviced square footage: plow and shovel areas, less exclusions. Storage and
+// hazard areas are drawn but never counted — see SnowAreaSpec.counts.
+export const servicedSqft = (
+  ringSqft: (r: MeasureRing) => number,
+  m: PropertyMeasurement | undefined | null,
+): number => {
+  if (!m) return 0;
+  const add = (m.polygons || []).filter(ringCounts).reduce((s, r) => s + ringSqft(r), 0);
+  const sub = (m.exclusions || []).reduce((s, r) => s + ringSqft(r), 0);
+  return Math.max(0, add - sub);
+};
 
 export interface StaticMapOptions {
   width?: number;
@@ -91,6 +126,10 @@ export function staticMapUrl(
   for (const ring of m!.exclusions || []) {
     const p = pathParam(ring, EXCLUDED);
     if (p) parts.push(p);
+  }
+  for (const mk of m!.markers || []) {
+    const spec = areaSpec(mk.purpose);
+    if (spec && mk.at) parts.push(markerParam(mk.at, spec.hex));
   }
   // No explicit center/zoom: with paths present Google fits the viewport to
   // them, which is what we want — the outline should fill the frame.
@@ -130,18 +169,35 @@ export const PAGE_CONTENT_WIDTH_PX = (8.5 - PAGE_SIDE_IN * 2) * 96;   // 720
 // outgrown this reserve, so the constant cannot silently go stale.
 export const FOOTER_RESERVE_PX = 18;
 export const PAGE_BUDGET_PX = PAGE_CONTENT_PX - FOOTER_RESERVE_PX;   // 957.36
-export const MAP_MAX_IN = 4.2;
-export const MAP_MIN_IN = Math.round((MAP_MAX_IN - 2.5) * 100) / 100;   // 1.7in — the cap on reduction
 
-// THE MEASURED FIT. Given the height of everything on page 1 EXCEPT the map
-// box, return the map height that lets Property Scope finish on page 1.
-// Shrinks from 4.2in and stops at the floor, so a page that genuinely cannot
-// fit overflows rather than squeezing the map into a strip.
-export function fitMapHeightIn(withoutMapPx: number): number {
-  const available = PAGE_BUDGET_PX - withoutMapPx;
-  if (available >= MAP_MAX_IN * 96) return MAP_MAX_IN;
-  // FLOOR, never round: rounding up by a hundredth of an inch is ~1px, and a
-  // single pixel over the page budget spills the whole section onto page 2.
-  const floored = Math.floor(Math.max(MAP_MIN_IN, available / 96) * 100) / 100;
-  return Math.max(MAP_MIN_IN, floored);
-}
+// ── PAGE 1 IS COMPOSED, NOT FLOWED ─────────────────────────────────────────
+// The measured-fit pass that used to shrink the map until Property Scope fit
+// is GONE, and with it the reason for it: the new page 1 is a fixed-height
+// flex column — band, property head, photo banner, Sections 1 and 2, then the
+// map row — and the SITE PHOTO is the flexible element. Whatever height the
+// fixed parts do not use, the photo takes. Nothing has to be measured and
+// re-measured because nothing above the fold can grow unboundedly any more:
+// the six-row scope table and the free-text scope description that used to
+// push the map around are both gone from the document.
+//
+// The column is sized to the page BUDGET, not the paper: the running <tfoot>
+// takes its reserve off every page including this one.
+//
+// LESS FOUR PIXELS, AND THAT MATTERS. Set to the budget exactly, the column's
+// last element — the map row — ended at 957px inside a table body with 957px
+// to give: (PAGE_CONTENT_PX − 1) less the footer's real 17px. Zero margin, and
+// in the printed artefact it lost. The map row carries break-inside:avoid, so
+// losing by a fraction of a pixel does not clip it — it moves the whole row to
+// page 2 and leaves a 3.75in hole on page 1, which every geometric check still
+// called a pass because the staging layout put it at exactly the boundary.
+// FOUR PIXELS of slack is the difference between a layout that fits and a
+// layout that is betting on sub-pixel rounding.
+export const PAGE1_SAFETY_PX = 4;
+export const PAGE1_HEIGHT_PX = Math.floor(PAGE_BUDGET_PX) - PAGE1_SAFETY_PX;
+// The reference's square map box, with the legend column filling the rest of
+// the row beside it.
+export const MAP_BOX_IN = 3.75;
+// The banner's floor. Below this a photo is a stripe rather than a picture, so
+// page 1 is allowed to run over instead — the same principle the old map floor
+// served, applied to the element that now flexes.
+export const PHOTO_MIN_IN = 1.5;

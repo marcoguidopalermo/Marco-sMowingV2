@@ -1002,25 +1002,34 @@ export interface AppSettings {
 // a standalone HTML file that was filled in, printed and emailed but saved
 // nothing — the point of this record is that the contract survives.
 export type SnowContractStatus = 'draft' | 'sent' | 'signed' | 'declined' | 'expired';
-// 'blank' is the DEFAULT and it is not a fourth checkbox — it means no box is
-// ticked. A new contract must not assert anything about a service nobody has
-// filled in yet: defaulting to 'excluded' made an untouched contract state
-// that Marco's provides nothing.
-export type SnowServiceStatus = 'blank' | 'included' | 'onCall' | 'excluded';
 
-export interface SnowContractService {
-  key: string;                    // 'plowing' | 'shovelling' | … | custom id
-  label: string;
-  detail: string;                 // the "— lot and driving areas" part
-  status: SnowServiceStatus;
-  notes: string;
-  custom: boolean;
-}
+// ── SERVICE LEVEL ──────────────────────────────────────────────────────────
+// The Client picks ONE. This replaced a per-service Included/On-call/Excluded
+// matrix: the levels are cumulative and their contents are fixed legal text
+// (see SERVICE_LEVELS in snowContractText), so the contract stores the choice
+// and nothing else. `null` means nobody has chosen yet — a contract must never
+// imply a level nobody agreed to, and that includes contracts migrated from
+// the old matrix, where the level cannot be inferred.
+export type SnowServiceLevel = 1 | 2 | 3;
 
-export interface SnowContractOptionBLine {
-  label: string;
-  amount: number;
-  note?: string;
+// Two INDEPENDENT selections: which level, and how it is priced. Option A also
+// carries its own payment choice, which the document makes a third tick.
+export type SnowPricingOption = 'A' | 'B';
+export type SnowOptionAPayment = 'instalments' | 'prepay';
+
+// Assigned by the Contractor from route capacity, not requested by the Client.
+// All three response windows print; this says which one is ticked.
+export type SnowServiceWindow = 'overnight' | 'daytime' | 'nonPriority';
+
+// What a drawn area on the service map MEANS. Absent on a ring drawn by the
+// lawn measuring tool, which has no purposes — see MeasureRing.
+export type SnowAreaPurpose = 'plow' | 'shovel' | 'storage' | 'hazard';
+
+// One level's two prices. Both print for all three levels, side by side, so
+// the Client can see what each level costs before choosing.
+export interface SnowLevelPrice {
+  seasonal: number;    // Option A — the whole term
+  perVisit: number;    // Option B — per visit
 }
 
 export interface SnowContract {
@@ -1034,60 +1043,70 @@ export interface SnowContract {
   updatedAt: number;
   createdBy: string;
   clientId?: string;
+  // Header block, ABOVE Section 1: the address is the page's title and the two
+  // dates sit beside it. `validUntil` is what Acceptance cross-references —
+  // it is deliberately not inside a section, which is why that clause now
+  // points at "the top of this Agreement" rather than at a section number.
+  quoteDate: string;              // YYYY-MM-DD
+  validUntil: string;             // YYYY-MM-DD
   client: {
     businessName: string;
-    siteContact: string;
-    serviceAddress: string;
+    siteContact: string;          // name + phone in one field, as the form asks
+    billingContact: string;
     billingEmail: string;
-    phone: string;
+    billingAddress: string;       // only when different from the service address
+    // The property. Held here rather than at the top level because the list,
+    // search and the measuring tool's address seed all read it from here.
+    serviceAddress: string;
+    /** @deprecated pre-2026 field; migrated into siteContact. Kept so an old
+     *  record does not silently lose the number. */
+    phone?: string;
   };
   term: { start: string; end: string };
   scope: {
-    totalArea: string;            // auto-filled from the measuring tool, then editable
-    lotAreas: string;
-    walkwaysEntrances: string;
-    snowStorage: string;
-    markedHazards: string;
-    accessNotes: string;
-    description: string;
+    // The two free-text fields that survive on the printed page, in the legend
+    // column beside the map. Everything else about the property is now drawn.
+    plowArea: string;
+    shovelArea: string;
     showMap: boolean;
-    mapImages: string[];          // 0–2 Storage URLs (manual fallback)
+    sitePhoto?: string;           // Storage URL — the page-1 banner
+    mapImages: string[];          // 0–2 Storage URLs (fallback when unmeasured)
     measuredSqft?: number;
     measurement?: PropertyMeasurement;   // same shape SalesMaster stores
+    // ── legacy, kept so migrated contracts lose nothing ──
+    // None of these print any more: the old six-row scope table is gone, and
+    // storage and hazards are drawn on the map instead of described.
+    /** @deprecated */ totalArea?: string;
+    /** @deprecated */ snowStorage?: string;
+    /** @deprecated */ markedHazards?: string;
+    /** @deprecated */ accessNotes?: string;
+    /** @deprecated */ description?: string;
   };
-  services: SnowContractService[];
+  serviceLevel: SnowServiceLevel | null;
   pricing: {
-    selectedOption: 'A' | 'B' | null;
-    optionA: {
-      enabled: boolean;
-      totalPrice: number;
-      instalments: 6;
-      instalmentAmount: number;          // DERIVED
-      prepayDiscountEnabled: boolean;
-      prepayDeadline: string;
-      prepayDiscountPct: 5;
-      prepayTotal: number;               // DERIVED
-    };
-    optionB: {
-      enabled: boolean;
-      lines: SnowContractOptionBLine[];
-      totalPerVisit: number;             // DERIVED
-    };
-    addOns: {
-      sandPerTon: number;
-      sandLoadingFee: number;
-      relocation: string;
-      haulAway: string;
-      afterHours: string;
-    };
+    selectedOption: SnowPricingOption | null;
+    // All three levels are quoted whether or not they are chosen — the matrix
+    // prints every row, and the Client picks from it.
+    levels: Record<SnowServiceLevel, SnowLevelPrice>;
+    optionAPayment: SnowOptionAPayment | null;
+    prepayDeadline: string;
   };
   serviceTerms: {
     triggerDepth: string;
-    priorityTier: 'standard' | 'priority';
-    clearedBefore: string;
-    snowfallEndsBy: string;
-    otherwiseWithinHours: string;
+    serviceWindow: SnowServiceWindow | null;
+    overnightCutoff: string;      // "2:00" — snowfall must end by
+    overnightClearBy: string;     // "8:00" — cleared by
+    daytimeHours: string;         // "24"
+    nonPriorityHours: string;     // "48"
   };
+  insurance: {
+    cglAmount: string;            // "5,000,000" — printed inside the clause
+  };
+  // What the old pricing shape held, carried across the rewrite so a renewal
+  // can still see last season's figures. NEVER printed and never migrated into
+  // the new fields: the old total was for a services matrix, not for a level,
+  // so re-quoting is deliberate rather than inherited.
+  legacyPricing?: { seasonalTotal: number; perVisitTotal: number };
   // Sections removed from THIS contract's printed output. Never deletes the
   // underlying data — restoring a section brings its content back intact.
   hiddenSections: string[];
@@ -1697,11 +1716,30 @@ export interface LatLngLiteral { lat: number; lng: number }
 // A ring is wrapped in { path } because Firestore forbids NESTED arrays (an
 // array element cannot itself be an array). polygons/exclusions are therefore
 // arrays of maps, each holding one ring's vertex list — same data, storable.
-export interface MeasureRing { path: LatLngLiteral[] }
+export interface MeasureRing {
+  path: LatLngLiteral[];
+  // What this area IS, on a snow contract. Absent for lawn measuring, which
+  // has no purposes and is unaffected by this field — a ring with no purpose
+  // behaves exactly as it always has.
+  //
+  // 'plow' and 'shovel' are SERVICED area and count toward totalSqft.
+  // 'storage' and 'hazard' are drawn for the map and legend only: a snow pile
+  // location and a marked obstacle are not area being cleared, so counting
+  // them would inflate the figure the price is built on.
+  purpose?: SnowAreaPurpose;
+}
+// A single point rather than an area — a hydrant, a bollard, a curb corner.
+// The reference's map tool allows one click to drop a marker, so the model has
+// to be able to hold one.
+export interface MeasureMarker {
+  at: LatLngLiteral;
+  purpose: SnowAreaPurpose;
+}
 export interface PropertyMeasurement {
   polygons: MeasureRing[];            // added areas (front yard, back yard…)
   exclusions: MeasureRing[];          // subtracted areas (driveway, pool, beds…)
-  totalSqft: number;                  // Σ polygons − Σ exclusions (clamped ≥ 0)
+  totalSqft: number;                  // Σ serviced polygons − Σ exclusions (clamped ≥ 0)
+  markers?: MeasureMarker[];          // point features; never contribute area
   address?: string;                   // resolved search address, if any
   measuredAt: number;
   measuredBy?: { email: string; name: string };
