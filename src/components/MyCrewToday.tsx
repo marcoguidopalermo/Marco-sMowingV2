@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { Calendar as CalendarIcon, Target, Clock, TrendingUp, Link2, Users, Truck, Hammer, Wrench, AlertCircle, AlertTriangle, CheckCircle, FileText } from 'lucide-react';
-import { AppSettings, Crew, Employee, FleetItem, EquipmentSubtypeDefinition, PerformanceLog, PartialTimeOff, Inspection } from '../types';
+import { AppSettings, Crew, Employee, FleetItem, EquipmentSubtypeDefinition, PerformanceLog, PartialTimeOff, Inspection, HoursBankEntry } from '../types';
 import { formatTimeRange, addDaysToronto } from '../lib/dateUtils';
 import { personColorClass } from '../lib/personColor';
 import { sortFleetGrouped, fleetItemLabel, isFleetOutOfService } from '../lib/fleetUtils';
@@ -12,9 +12,13 @@ import type { ActiveInspectionState } from './InspectionModal';
 import TopCrewSpotlight from './TopCrewSpotlight';
 import MtdSelfWidget from './MtdSelfWidget';
 import DivisionStandings from './DivisionStandings';
+import { MyHoursBank } from './HoursBank';
 import { scanOutstandingCrewDays, managerCoversDivision } from '../lib/approvalOversight';
 
 interface MyCrewTodayProps {
+  // The signed-in person's own hours-bank entries, if they have any. Passed
+  // pre-filtered: this screen never sees anybody else's ledger.
+  myHoursBank?: HoursBankEntry[];
   today: string;
   currentUserEmployee: Employee | null;
   schedules: Record<string, Crew[]>;
@@ -60,6 +64,7 @@ const deductHours = (d: unknown): number => {
 
 export default function MyCrewToday({
   today,
+  myHoursBank,
   currentUserEmployee,
   schedules,
   performance,
@@ -218,6 +223,15 @@ export default function MyCrewToday({
           </h2>
           <span className="text-xs text-slate-500 font-medium">{today}</span>
         </div>
+
+        {/* HOURS BANK — their own, read-only, collapsed to the balance.
+            Renders nothing at all when they have no ledger: an account nobody
+            has banked into is not information. */}
+        {!!myHoursBank?.length && (
+          <div className="mb-4">
+            <MyHoursBank entries={myHoursBank} collapsible />
+          </div>
+        )}
 
         {/* MANAGER REMINDER — division managers see a nudge when their
             division has crew-days from the past week still neither

@@ -57,5 +57,32 @@ service cloud.firestore {
       allow read: if isAuthorized() || isSuperAdmin();
       allow write: if isSuperAdmin();
     }
+
+    // HOURS BANK — the ledger of hours owed to employees. APPEND-ONLY, and
+    // enforced HERE rather than only in the app: an entry can be created and
+    // then never updated and never deleted, by anyone, including the super
+    // admin. A mistake is corrected with a reversing entry (see
+    // lib/hoursBank), which is itself a create.
+    //
+    // Kept OUTSIDE artifacts/** deliberately, for the same reason the rate
+    // configs are: the artifacts/** rule grants full write to every authorized
+    // user and its OR-semantics mean it cannot be narrowed. Under that rule
+    // "append-only" would be a UI convention, and a UI convention is not what
+    // you want standing between a payroll record and someone's console.
+    //
+    // WHO may create is enforced at the app layer (admin only — see
+    // addHoursBankEntry). Rules cannot cheaply resolve a role, and the choice
+    // was a real one: an authorized non-admin who bypassed the UI could append
+    // an entry, but they could not alter or hide one, and every entry carries
+    // who wrote it. Tamper-evidence beats a lock that cannot be built here.
+    //
+    // BREAK GLASS: removing a genuinely junk entry (test data) means editing
+    // this rule, deleting, and putting it back — deliberately awkward, because
+    // deleting from this collection should never be routine.
+    match /hoursBank/{entryId} {
+      allow read: if isAuthorized() || isSuperAdmin();
+      allow create: if isAuthorized() || isSuperAdmin();
+      allow update, delete: if false;
+    }
   }
 }

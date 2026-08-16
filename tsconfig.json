@@ -25,6 +25,9 @@
     "ignoreDeprecations": "5.0"
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts"],
+  // Tests run under tsx with node types available; the app build has neither
+  // and does not need to typecheck them. .tsx is listed too — a render test
+  // is still a test.
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

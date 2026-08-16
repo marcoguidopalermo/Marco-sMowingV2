@@ -997,6 +997,52 @@ export interface AppSettings {
   capacity?: CapacitySettings;
 }
 
+// ══ HOURS BANK ════════════════════════════════════════════════════════════
+// Some crew bank hours instead of being paid them out. This is the LEDGER of
+// that arrangement: hours in, hours out, running balance, per employee.
+//
+// APPEND-ONLY, AND THAT IS THE WHOLE DESIGN. An entry is never edited and
+// never deleted — a mistake is corrected by a REVERSING entry that carries a
+// reason. This is money owed to somebody: a ledger you can quietly edit is not
+// a record of what happened, it is a record of what the last person to touch
+// it wanted it to say.
+//
+// It is also SEPARATE FROM TIME. Banking hours does not touch timeEntries,
+// pay chunks, performance or bonus math — nothing here is an input to any of
+// them. The employee worked the hours either way; this only tracks whether
+// they were paid out or held.
+export type HoursBankEntryType = 'banked' | 'paid_out' | 'reversal';
+
+export interface HoursBankEntry {
+  id: string;
+  // WHOSE ledger. The id is the key; the name is a SNAPSHOT taken when the
+  // entry was written, so a renamed or removed employee's history still reads
+  // as what it was at the time.
+  employeeId: string;
+  employeeName: string;
+  type: HoursBankEntryType;
+  // SIGNED, and the only source of the balance: banked is positive, paid out
+  // is negative, a reversal is the exact negation of what it reverses. One
+  // number rather than a magnitude plus a direction, because two fields that
+  // must agree eventually will not. Balance = Σ hours.
+  hours: number;
+  // BANKED entries: the pay period the hours are banked FROM, as YYYY-MM-DD
+  // bounds taken from the pay-period model rather than typed by hand.
+  periodStart?: string;
+  periodEnd?: string;
+  // PAID OUT entries: the date the money went out.
+  paidOn?: string;
+  note?: string;
+  // REVERSALS: which entry this corrects, and why. Both required on a
+  // reversal — a correction with no stated reason is just another mystery.
+  reversesId?: string;
+  reversalReason?: string;
+  // The audit, on every entry: what was recorded, when, by whom. Stamped from
+  // the signed-in identity by the save handler, never from the form.
+  recordedAt: number;
+  recordedBy: { email: string; name: string };
+}
+
 // ══ SNOWMASTER · COMMERCIAL CONTRACT BUILDER ══════════════════════════════
 // One document per client per season in the snowContracts collection. Replaces
 // a standalone HTML file that was filled in, printed and emailed but saved
@@ -2444,6 +2490,9 @@ export interface AppData {
   marketingClips?: Record<string, MarketingClipThread>;
   marketingPostQueue?: Record<string, MarketingPostQueueEntry>;
   marketingTodos?: Record<string, MarketingTodo>;
+  // ── Hours bank — one doc per LEDGER ENTRY. Grows forever and is never
+  // trimmed: it is the record of hours owed to people.
+  hoursBank?: Record<string, HoursBankEntry>;
   roleTaskInstances?: Record<string, RoleTaskInstance>;
   // Schema sentinel for the multi-day ledger keying scheme. v2 = keyed by
   // jobberVisitId. Anything < 2 (or missing) triggers a one-time wipe of

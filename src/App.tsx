@@ -28,7 +28,7 @@ import {
   CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract,
   MarketingContentItem, MarketingShot, MarketingLink,
   MarketingFeedbackEntry, MarketingClipThread, MarketingClipStatus,
-  MarketingPostQueueEntry, MarketingTodo
+  MarketingPostQueueEntry, MarketingTodo, HoursBankEntry
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
@@ -70,6 +70,7 @@ import ContractingMaster from './components/ContractingMaster';
 import MarketingMaster from './components/MarketingMaster';
 import { clipKey, commentSubject } from './components/MarketingComments';
 import { migrateContract as migrateSnowContract } from './lib/snowContracts';
+import { entriesFor as bankEntriesFor } from './lib/hoursBank';
 import { computeReportTotals, labourForReport, ratesOrDefault as contractingRatesOrDefault, nextProgNumber, DEFAULT_CONTRACTING_RATES, rateMapFor, propertiesOrDefault, suppliersOrDefault, projectIsRemovable, reportIsDeletable, planPhaseMerge, isContractingWorker } from './lib/contracting';
 import type { ContractingProperty, ContractingSupplier } from './types';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, periodRangeLabel, payDateLabel } from './lib/payPeriods';
@@ -269,6 +270,7 @@ export default function App() {
   const subMarketingClipsRef = useRef<Record<string, MarketingClipThread>>({});
   const subMarketingPostQueueRef = useRef<Record<string, MarketingPostQueueEntry>>({});
   const subMarketingTodosRef = useRef<Record<string, MarketingTodo>>({});
+  const subHoursBankRef = useRef<Record<string, HoursBankEntry>>({});
   // ContractingMaster (Palermo's) — namespaced subcollections, own tenant.
   const subContractingProjectsRef = useRef<Record<string, ContractingProject>>({});
   const subContractingTimeEntriesRef = useRef<Record<string, ContractingTimeEntry>>({});
@@ -523,6 +525,44 @@ export default function App() {
   // ContractingMaster (Palermo's) — full-manage is admin OR the contracting
   // manager flag (Tony). Regular contractors (Kris) only view + clock + WO/shop.
   const canManageContracting = isAdmin || !!currentUserEmployee?.contractingManager;
+
+  // ── HOURS BANK VISIBILITY ────────────────────────────────────────────────
+  // WRITES are admin-only, everywhere, always. This is about who can LOOK.
+  //
+  // Managers see their own division, read-only. The recommendation was asked
+  // for and this is it: a manager planning a crew's season needs to know who
+  // is carrying banked hours — it is a liability against their division and it
+  // is the thing that gets paid out when someone leaves. But banked hours are
+  // money owed, so the person who agrees the arrangement and the person who
+  // records it should be the same one, and that is the admin. Visibility, not
+  // authorship.
+  //
+  // A manager with no division set sees nobody but is not shown an error — the
+  // roster's managedDivision is what defines their scope, and an unset one is
+  // a personnel-record gap, not an access decision to make here.
+  const DIVISION_CREWS: Record<string, string[]> = {
+    lawn: ['Lawn'], small: ['Small Project'], large: ['Large Project'],
+  };
+  const bankVisibleEmployeeIds = useMemo<Set<string> | undefined>(() => {
+    if (isAdmin) return undefined;                       // everyone
+    const div = currentUserEmployee?.managedDivision;
+    if (div === 'all') return undefined;
+    const crews = div ? DIVISION_CREWS[div] : undefined;
+    const ids = new Set<string>();
+    if (crews) {
+      for (const e of (appData.employees || [])) {
+        if (e.primaryCrew && crews.includes(e.primaryCrew)) ids.add(e.id);
+      }
+    }
+    // Their own ledger is always theirs to see, division or not.
+    if (currentUserEmployee?.id) ids.add(currentUserEmployee.id);
+    return ids;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, currentUserEmployee?.id, currentUserEmployee?.managedDivision, appData.employees]);
+  const bankScopeNote = isAdmin ? undefined
+    : currentUserEmployee?.managedDivision && currentUserEmployee.managedDivision !== 'all'
+      ? `Showing the ${currentUserEmployee.managedDivision} division.`
+      : undefined;
 
   // MarketingMaster access = the marketing ROLE (whose only permission this is)
   // OR the two named people (Marco, James). The email grant is evaluated
@@ -1013,6 +1053,10 @@ export default function App() {
           marketingClips: subMarketingClipsRef.current,
           marketingPostQueue: subMarketingPostQueueRef.current,
           marketingTodos: subMarketingTodosRef.current,
+          // Hours bank — overlaid from its own subcollection. Read-only from
+          // the main-doc sync's point of view: nothing in appData ever writes
+          // it back, so a sync cannot rewrite a ledger entry.
+          hoursBank: subHoursBankRef.current,
           authorizedEmails: data.authorizedEmails || [SUPER_ADMIN_EMAIL],
           supplies: data.supplies || ["Blower", "Trimmer", "Mower (Push)", "Rake", "Shovel", "Wheelbarrow", "Fuel Can (Mix)", "Fuel Can (Gas)"],
           // Doc-base overlaid by the live subcollection (Phase 3).
@@ -1417,7 +1461,18 @@ export default function App() {
     const m5 = mk('marketingClips', subMarketingClipsRef, 'marketingClips');
     const m6 = mk('marketingPostQueue', subMarketingPostQueueRef, 'marketingPostQueue');
     const m7 = mk('marketingTodos', subMarketingTodosRef, 'marketingTodos');
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); };
+    // Hours bank — one doc per ledger entry, appended forever. TOP-LEVEL
+    // (outside artifacts/**) so its firestore rule can make the collection
+    // genuinely append-only: create yes, update and delete never. Under
+    // artifacts/** the blanket rule grants full write to every authorized
+    // user and cannot be narrowed — see firestore.rules.
+    const hb1 = onSnapshot(collection(db, 'hoursBank'), (snap) => {
+      const map: Record<string, HoursBankEntry> = {};
+      snap.forEach((d) => { const v = d.data() as HoursBankEntry; if (v && v.id) map[v.id] = v; });
+      subHoursBankRef.current = map;
+      setAppData((prev) => ({ ...prev, hoursBank: map }));
+    }, (err) => { console.error('hoursBank listen error:', err); });
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); hb1(); };
   }, [user]);
 
   useEffect(() => {
@@ -3100,6 +3155,41 @@ export default function App() {
     // subcollection keyed by the same clip number and is untouched.
     await deleteDoc(doc(roleColl('marketingPostQueue'), clip));
     showToastMsg('Removed from the post queue.');
+  };
+
+  // ── HOURS BANK ───────────────────────────────────────────────────────────
+  // THE ONLY WRITE PATH, and it only ever APPENDS. There is deliberately no
+  // update handler and no delete handler: a ledger of hours owed to people is
+  // not a working document, and the way to fix an entry is to reverse it (see
+  // reversalEntry in lib/hoursBank), which is itself another append.
+  //
+  // The audit stamps come from the SIGNED-IN IDENTITY here, never from the
+  // form — a screen cannot claim an entry was recorded by someone else. The
+  // id is minted here too if the caller left it blank, so two forms open at
+  // once cannot collide on one.
+  //
+  // Admin only. Managers read; nothing else reaches this function.
+  const addHoursBankEntry = async (entry: Omit<HoursBankEntry, 'recordedAt' | 'recordedBy'>) => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
+    const hours = Number(entry.hours);
+    if (!entry.employeeId || !Number.isFinite(hours) || hours === 0) return;
+    const id = entry.id || `hb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    // REFUSE TO OVERWRITE. An id that already exists means a double-submit or
+    // a collision; either way the existing entry stands.
+    if (appData.hoursBank?.[id]) { showToastMsg('That entry is already recorded.'); return; }
+    const rec: HoursBankEntry = {
+      ...entry,
+      id,
+      hours: Math.round(hours * 10) / 10,
+      recordedAt: Date.now(),
+      recordedBy: { email: displayEmail, name: displayName },
+    };
+    await setDoc(doc(db, 'hoursBank', id), cleanRM(rec));
+    showToastMsg(
+      rec.type === 'banked' ? `Banked ${Math.abs(rec.hours).toFixed(1)} hrs for ${rec.employeeName}.`
+        : rec.type === 'paid_out' ? `Payout of ${Math.abs(rec.hours).toFixed(1)} hrs recorded for ${rec.employeeName}.`
+          : 'Reversal recorded.',
+    );
   };
 
   // Shared marketing to-do. Same single gate as the rest of the module: no
@@ -5869,6 +5959,11 @@ export default function App() {
           <MyCrewToday
             today={formatTodayInToronto()}
             currentUserEmployee={currentUserEmployee}
+            // Their OWN ledger only, filtered here — this screen never
+            // receives another employee's entries.
+            myHoursBank={currentUserEmployee
+              ? bankEntriesFor(appData.hoursBank || {}, currentUserEmployee.id)
+              : undefined}
             schedules={appData.schedules}
             performance={appData.performance}
             employees={appData.employees}
@@ -5939,6 +6034,19 @@ export default function App() {
           timeOffPendingCount={timeOffPendingForAdminCount}
           onApproveTimeOff={approveTimeOffRequest}
           onDenyTimeOff={denyTimeOffRequest}
+          hoursBank={appData.hoursBank || {}}
+          myEmployeeId={currentUserEmployee?.id || null}
+          // WRITES ARE ADMIN-ONLY. The handler enforces it again server-side
+          // of this component; this is what decides whether the buttons exist.
+          canManageBank={isAdmin}
+          // The TAB is for people who look at other people's ledgers — an
+          // admin at all of them, a manager at their division. An employee
+          // does not get a tab: their own bank is a card on My Logs, right
+          // where they already read their hours.
+          canViewBank={isManager}
+          bankVisibleEmployeeIds={bankVisibleEmployeeIds}
+          bankScopeNote={bankScopeNote}
+          onAddBankEntry={addHoursBankEntry}
         />
       ) : currentView === 'bulletins' ? renderBulletinBoard()
         : currentView === 'taskmaster' ? (

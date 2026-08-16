@@ -2,13 +2,15 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Clock, MapPin, Edit, Plus, Download, Users, AlertTriangle,
   ChevronDown, ChevronUp, X, Save, ArrowLeft, Calendar as CalendarIcon,
-  Plane, RotateCcw, Trash2
+  Plane, RotateCcw, Trash2, PiggyBank
 } from 'lucide-react';
-import { AppData, TimeEntry, TimeEntryNote, TimeOffRequest, UserRole, DeletionAuditEntry } from '../types';
+import { AppData, TimeEntry, TimeEntryNote, TimeOffRequest, UserRole, DeletionAuditEntry, HoursBankEntry } from '../types';
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto } from '../lib/dateUtils';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, stepPeriod, periodOfYmd, periodRangeLabel, payDateLabel, PayPeriod } from '../lib/payPeriods';
 import { chunksForMechanic, computeHoursWorkedBetween } from '../lib/payChunkUtils';
 import TimeOffApprovalPage from './TimeOffApprovalPage';
+import { HoursBankAdmin, MyHoursBank, NewBankEntry } from './HoursBank';
+import { entriesFor } from '../lib/hoursBank';
 
 interface TimeMasterProps {
   appData: AppData;
@@ -37,6 +39,22 @@ interface TimeMasterProps {
   timeOffPendingCount: number;
   onApproveTimeOff: (requestId: string) => void;
   onDenyTimeOff: (requestId: string, reason: string) => void;
+  // ── HOURS BANK ──────────────────────────────────────────────────────────
+  // A separate ledger that lives alongside the timesheet and never touches
+  // it. Present here because this is where people already come to look at
+  // their hours.
+  hoursBank: Record<string, HoursBankEntry>;
+  // Which employee id the signed-in user IS, for their own ledger. Null when
+  // the account has no employee record — then there is no self view.
+  myEmployeeId: string | null;
+  // ADMIN ONLY writes. canViewBank is broader: admins see everyone, a manager
+  // sees their own division (read-only), and everyone sees themselves.
+  canManageBank: boolean;
+  canViewBank: boolean;
+  // A manager's scope. Undefined for an admin = everybody.
+  bankVisibleEmployeeIds?: Set<string>;
+  bankScopeNote?: string;
+  onAddBankEntry: (entry: NewBankEntry) => void;
 }
 
 const UNCLOSED_THRESHOLD_MS = 12 * 60 * 60 * 1000;
@@ -81,6 +99,13 @@ export default function TimeMaster({
   timeOffPendingCount,
   onApproveTimeOff,
   onDenyTimeOff,
+  hoursBank,
+  myEmployeeId,
+  canManageBank,
+  canViewBank,
+  bankVisibleEmployeeIds,
+  bankScopeNote,
+  onAddBankEntry,
 }: TimeMasterProps) {
   // Tick every 60s so live "elapsed" updates
   const [now, setNow] = useState(() => new Date());
@@ -89,7 +114,7 @@ export default function TimeMaster({
     return () => clearInterval(id);
   }, []);
 
-  const [viewMode, setViewMode] = useState<'mine' | 'all' | 'approvals'>('mine');
+  const [viewMode, setViewMode] = useState<'mine' | 'all' | 'approvals' | 'bank'>('mine');
   const [drilledUserEmail, setDrilledUserEmail] = useState<string | null>(null);
 
   const [dateFilter, setDateFilter] = useState<'today' | 'week' | 'month' | 'custom'>('today');
@@ -1188,11 +1213,16 @@ export default function TimeMaster({
               <ArrowLeft className="w-3.5 h-3.5" /> Back to All Users
             </button>
           )}
-          {(canViewAll || canApproveTimeOff) && !drilledUserEmail && (
+          {(canViewAll || canApproveTimeOff || canViewBank) && !drilledUserEmail && (
             <div className="flex bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
               <button onClick={() => setViewMode('mine')} className={`px-4 py-1.5 text-xs font-black uppercase tracking-widest rounded-md ${viewMode === 'mine' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}>My Logs</button>
               {canViewAll && (
                 <button onClick={() => setViewMode('all')} className={`px-4 py-1.5 text-xs font-black uppercase tracking-widest rounded-md ${viewMode === 'all' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}>All Users</button>
+              )}
+              {canViewBank && (
+                <button onClick={() => setViewMode('bank')} className={`px-4 py-1.5 text-xs font-black uppercase tracking-widest rounded-md inline-flex items-center gap-1.5 ${viewMode === 'bank' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}>
+                  <PiggyBank className="w-3.5 h-3.5" /> Hours Bank
+                </button>
               )}
               {canApproveTimeOff && (
                 <button onClick={() => setViewMode('approvals')} className={`relative px-4 py-1.5 text-xs font-black uppercase tracking-widest rounded-md inline-flex items-center gap-1.5 ${viewMode === 'approvals' ? 'bg-sky-50 text-sky-700' : 'text-gray-500 hover:text-gray-700'}`}>
@@ -1210,7 +1240,17 @@ export default function TimeMaster({
         </div>
       </div>
 
-      {viewMode === 'approvals' ? (
+      {viewMode === 'bank' ? (
+        <HoursBankAdmin
+          all={hoursBank}
+          employees={appData.employees || []}
+          canManage={canManageBank}
+          onAddEntry={onAddBankEntry}
+          restrictToIds={bankVisibleEmployeeIds}
+          restrictionNote={bankScopeNote}
+          payPeriodCfg={payCfg}
+        />
+      ) : viewMode === 'approvals' ? (
         <TimeOffApprovalPage
           requests={appData.timeOffRequests || {}}
           employees={appData.employees || []}
@@ -1219,6 +1259,14 @@ export default function TimeMaster({
         />
       ) : (
         <>
+          {/* THE EMPLOYEE'S OWN BANK. Read-only, on the page where they
+              already come to look at their hours. Renders nothing at all when
+              they have no ledger. */}
+          {!drilledUserEmail && myEmployeeId && (
+            <div className="mb-4">
+              <MyHoursBank entries={entriesFor(hoursBank, myEmployeeId)} collapsible />
+            </div>
+          )}
           {!drilledUserEmail && renderMyTimeOff()}
           {showAdminAllUsers ? (
             <>
