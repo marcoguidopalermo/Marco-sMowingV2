@@ -1,6 +1,6 @@
 // SNOWMASTER · CONTRACT LIST — every contract for a season, at a glance.
 import { useMemo, useState } from 'react';
-import { Plus, Search, FileText, ExternalLink } from 'lucide-react';
+import { Plus, Search, FileText, ExternalLink, Archive } from 'lucide-react';
 import type { SnowContract, SnowContractStatus } from '../types';
 import { headlinePrice, STATUS_LABEL, STATUS_FLOW, STATUS_OFFRAMP, seasonFor } from '../lib/snowContracts';
 
@@ -43,17 +43,21 @@ export default function SnowContractList({
   const [season, setSeason] = useState<string>(seasons[0] || '');
   const [status, setStatus] = useState<'all' | SnowContractStatus>('all');
   const [q, setQ] = useState('');
+  // Archived records are OUT of the working list by default — that is the
+  // point of archiving. They are never deleted, just behind this toggle.
+  const [showArchived, setShowArchived] = useState(false);
 
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return all
+      .filter(c => (showArchived ? !!c.archived : !c.archived))
       .filter(c => (season === 'all' || c.season === season))
       .filter(c => (status === 'all' || c.status === status))
       .filter(c => !needle
         || c.client.businessName.toLowerCase().includes(needle)
         || c.client.serviceAddress.toLowerCase().includes(needle))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-  }, [all, season, status, q]);
+  }, [all, season, status, q, showArchived]);
 
   // Pipeline counts follow the SEASON and the search box but NOT the status
   // filter — a stage count that changed when you filtered by that stage would
@@ -61,6 +65,7 @@ export default function SnowContractList({
   const counts = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const base = all
+      .filter(c => !c.archived)          // archived is not part of the pipeline
       .filter(c => (season === 'all' || c.season === season))
       .filter(c => !needle
         || c.client.businessName.toLowerCase().includes(needle)
@@ -71,6 +76,10 @@ export default function SnowContractList({
     for (const c of base) if (out[c.status] !== undefined) out[c.status]++;
     return out;
   }, [all, season, q]);
+
+  // Across every season — the toggle is about reaching archived records at
+  // all, and scoping it to the season in view would hide the way in.
+  const archivedCount = useMemo(() => all.filter(c => c.archived).length, [all]);
 
   return (
     <div className="space-y-3">
@@ -95,6 +104,12 @@ export default function SnowContractList({
           <input value={q} onChange={e => setQ(e.target.value)} placeholder="business or address"
             className="text-xs border border-slate-300 rounded-lg pl-7 pr-2 py-2 outline-none w-52" />
         </div>
+        {archivedCount > 0 && (
+          <button type="button" onClick={() => setShowArchived(v => !v)}
+            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-black uppercase tracking-widest border ${showArchived ? 'bg-amber-100 text-amber-900 border-amber-400' : 'bg-white text-slate-600 border-slate-300'}`}>
+            <Archive className="w-3.5 h-3.5" /> {showArchived ? 'Viewing archived' : `Archived (${archivedCount})`}
+          </button>
+        )}
         <a href={BUILDER_URL} target="_blank" rel="noreferrer"
           title="Open the standalone HTML contract builder in a new tab"
           className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-black uppercase tracking-widest border-2 border-sky-600 text-sky-700 bg-sky-50 hover:bg-sky-100">

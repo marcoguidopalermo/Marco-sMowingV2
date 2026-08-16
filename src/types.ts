@@ -327,7 +327,7 @@ export interface DeletionAuditEntry {
   userEmail: string;
   userName: string;
   userRole: UserRole;
-  recordType: 'task' | 'repair_log' | 'inspection_log' | 'time_entry';
+  recordType: 'task' | 'repair_log' | 'inspection_log' | 'time_entry' | 'snow_contract';
   recordId: string;
   summary: {
     title?: string;
@@ -1064,7 +1064,7 @@ export type SnowContractStatus =
 // What an attached PDF IS. The workflow is: build the document in the
 // standalone HTML builder, print to PDF, attach it here — so the record keeps
 // the pipeline and the actual paper that was sent or signed.
-export type SnowContractDocLabel = 'sent_copy' | 'signed_copy' | 'other';
+export type SnowContractDocLabel = 'quote' | 'sent_copy' | 'signed_copy' | 'other';
 
 export interface SnowContractDocument {
   id: string;
@@ -1137,9 +1137,18 @@ export interface SnowContract {
   signedAt?: number;
   /** @deprecated migrated into approvedBy. */
   signedBy?: string;
-  // Attached PDFs — the sent and signed paper for this contract. Multiple
-  // allowed; a contract commonly gains a sent copy and then a signed one.
+  // Attached PDFs — the quote, and the sent and signed paper for this
+  // contract. Multiple allowed; a contract commonly gains a quote, then a
+  // sent copy, then a signed one.
   documents?: SnowContractDocument[];
+  // ARCHIVE — the alternative to deleting an agreement. An approved or booked
+  // contract is a commercial commitment, and its signed PDF is often the only
+  // copy; archiving takes it out of the working list without destroying it.
+  // Archived records keep everything, are excluded from the pipeline counts,
+  // and are visible behind the list's "Show archived" toggle.
+  archived?: boolean;
+  archivedAt?: number;
+  archivedBy?: string;
   createdAt: number;
   updatedAt: number;
   createdBy: string;

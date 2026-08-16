@@ -280,6 +280,32 @@ test('every migrated status has a label — no chip can render blank', () => {
     assert.ok(STATUS_LABEL[migrateContract(c).status], `no label for stored status ${String(s)}`);
   }
 });
+console.log('\nArchive');
+test('a new contract is not archived, and the flag survives migration', () => {
+  assert.equal(fresh().archived, false);
+  assert.equal(migrateContract({ ...legacy, archived: true }).archived, true);
+  // Absent, null or anything non-true reads as NOT archived — a record must
+  // never disappear from the working list because of a stray value.
+  assert.equal(migrateContract({ ...legacy }).archived, false);
+  assert.equal(migrateContract({ ...legacy, archived: 'yes' }).archived, false);
+  assert.equal(migrateContract({ ...legacy, archived: null }).archived, false);
+});
+test('a CURRENT-shape record keeps its archived flag too', () => {
+  const c: any = fresh();
+  c.archived = true;
+  assert.equal(migrateContract(c).archived, true);
+});
+test('a renewal is never born archived', () => {
+  const src: any = fresh();
+  src.archived = true;
+  src.archivedAt = NOW;
+  src.archivedBy = 'Marco';
+  const next = duplicateForNextSeason(src, { id: 'c2', createdBy: 'marco', now: NOW });
+  assert.equal(next.archived, false);
+  assert.equal(next.archivedAt, undefined);
+  assert.equal(next.archivedBy, undefined);
+});
+
 test('a CURRENT contract passes through unchanged, and gains any newer field', () => {
   const c = fresh();
   const again = migrateContract(JSON.parse(JSON.stringify(c)));

@@ -60,6 +60,9 @@ interface Props {
   onUploadSnowContractMap: (contractId: string, file: File) => Promise<string | null>;
   onUploadSnowContractDoc: (contractId: string, file: File, onProgress: (pct: number) => void) => Promise<import('../types').StoredFile | null>;
   onDeleteSnowContractDoc: (path: string) => Promise<void>;
+  onDeleteSnowContract: (id: string) => Promise<boolean>;
+  onArchiveSnowContract: (id: string, archived: boolean) => Promise<void>;
+  canDeleteSnowContracts: boolean;
   canEditSnowContracts: boolean;
 }
 
@@ -80,7 +83,8 @@ export default function SalesMaster(props: Props) {
     lawnConfigs, lawnActiveVersion, lawnActiveConfig, onSaveLawnConfig, onRevertLawnConfig,
     appData, capacityForecasts, currentUserEmployee, onRefreshCapacity, canRefreshCapacity, onSaveCapacitySettings, jobberUsers, hourlyEstimates, onSetHourlyEstimate,
     snowContracts, onSaveSnowContract, onCreateSnowContract, onDuplicateSnowContract,
-    onUploadSnowContractMap, onUploadSnowContractDoc, onDeleteSnowContractDoc, canEditSnowContracts,
+    onUploadSnowContractMap, onUploadSnowContractDoc, onDeleteSnowContractDoc,
+    onDeleteSnowContract, onArchiveSnowContract, canDeleteSnowContracts, canEditSnowContracts,
   } = props;
   const [module, setModule] = useState<ModuleKey>('project');
 
@@ -133,6 +137,9 @@ export default function SalesMaster(props: Props) {
             onUploadSnowContractMap={onUploadSnowContractMap}
             onUploadSnowContractDoc={onUploadSnowContractDoc}
             onDeleteSnowContractDoc={onDeleteSnowContractDoc}
+            onDeleteSnowContract={onDeleteSnowContract}
+            onArchiveSnowContract={onArchiveSnowContract}
+            canDeleteSnowContracts={canDeleteSnowContracts}
             canEditSnowContracts={canEditSnowContracts}
           />
         )}

@@ -3102,6 +3102,73 @@ export default function App() {
       return null;
     }
   };
+  // DELETE / ARCHIVE a contract record. Admin or the contracting manager
+  // (Tony) — the same pair that manages ContractingMaster.
+  const canDeleteSnowContracts = isAdmin || !!currentUserEmployee?.contractingManager;
+  // Archive is the SAFE path for an agreement: it keeps the record and its
+  // signed PDFs and only takes it out of the working list. Delete is for junk
+  // quotes. The editor offers archive first on an approved/booked contract.
+  const archiveSnowContract = async (id: string, archived: boolean): Promise<void> => {
+    if (!canDeleteSnowContracts) { showToastMsg(PERMISSION_DENIED); return; }
+    const c = snowContracts[id];
+    if (!c) { showToastMsg('Contract not found.'); return; }
+    await saveSnowContract({
+      ...c,
+      archived,
+      archivedAt: archived ? Date.now() : undefined,
+      archivedBy: archived ? displayName : undefined,
+      updatedAt: Date.now(),
+    });
+    showToastMsg(archived ? 'Contract archived.' : 'Contract restored.');
+  };
+  // ORDER MATTERS. Audit first (its snapshot carries the whole record,
+  // including every attachment path, so nothing becomes unrecoverable
+  // without a trace), then the Storage objects, then the Firestore doc.
+  //
+  // Storage before the doc, and ABORT if any object fails to delete: while the
+  // record still exists it still points at its files, so a retry finds them.
+  // Deleting the doc first and then failing would leave bytes in the bucket
+  // with nothing referencing them — exactly the orphan this avoids.
+  const deleteSnowContractRecord = async (id: string): Promise<boolean> => {
+    if (!canDeleteSnowContracts) { showToastMsg(PERMISSION_DENIED); return false; }
+    const c = snowContracts[id];
+    if (!c) { showToastMsg('Contract not found.'); return false; }
+
+    const auditOk = await executeDelete(
+      'snow_contract',
+      c.id,
+      c,
+      {
+        title: c.client.businessName || 'Untitled contract',
+        unitName: c.client.serviceAddress || undefined,
+        severity: c.status,
+        date: c.quoteDate,
+      },
+      (d) => d,      // the record is not in appData — only the audit is written here
+    );
+    if (!auditOk) { showToastMsg('Delete aborted — the audit entry could not be written.'); return false; }
+
+    const paths = (c.documents || []).map(d => d.file?.path).filter(Boolean) as string[];
+    if (paths.length) {
+      const { deleteFile } = await import('./lib/storage');
+      const failed: string[] = [];
+      for (const p of paths) {
+        try { await deleteFile(p); } catch { failed.push(p); }
+      }
+      if (failed.length) {
+        showToastMsg(`Delete stopped: ${failed.length} attachment(s) could not be removed. The contract was kept so nothing is orphaned — try again.`);
+        return false;
+      }
+    }
+    try {
+      await deleteDoc(doc(db, 'snowContracts', c.id));
+    } catch (err: any) {
+      showToastMsg(`Attachments were removed but the contract could not be deleted: ${err?.message || String(err)}`);
+      return false;
+    }
+    showToastMsg(`Deleted "${c.client.businessName || 'Untitled contract'}".`);
+    return true;
+  };
   const deleteSnowContractDoc = async (path: string): Promise<void> => {
     if (!canEditSnowContracts) { showToastMsg(PERMISSION_DENIED); return; }
     try {
@@ -6456,6 +6523,9 @@ export default function App() {
           onUploadSnowContractMap={uploadSnowContractMap}
           onUploadSnowContractDoc={uploadSnowContractDoc}
           onDeleteSnowContractDoc={deleteSnowContractDoc}
+          onDeleteSnowContract={deleteSnowContractRecord}
+          onArchiveSnowContract={archiveSnowContract}
+          canDeleteSnowContracts={canDeleteSnowContracts}
           canEditSnowContracts={canEditSnowContracts}
         />
       ) : currentView === 'contracting' ? (

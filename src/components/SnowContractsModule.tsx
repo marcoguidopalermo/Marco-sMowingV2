@@ -21,6 +21,9 @@ interface Props {
   onUploadMap: (contractId: string, file: File) => Promise<string | null>;
   onUploadDocument: (contractId: string, file: File, onProgress: (pct: number) => void) => Promise<StoredFile | null>;
   onDeleteDocument: (path: string) => Promise<void>;
+  onDeleteContract: (id: string) => Promise<boolean>;
+  onArchiveContract: (id: string, archived: boolean) => Promise<void>;
+  canDelete: boolean;
   canEdit: boolean;
   currentUser: { email: string; name: string };
   today: string;
@@ -43,7 +46,8 @@ export function printContract(c: SnowContract) {
 
 export default function SnowContractsModule({
   contracts, onSave, onCreate, onDuplicate, onUploadMap,
-  onUploadDocument, onDeleteDocument, canEdit, currentUser, today,
+  onUploadDocument, onDeleteDocument, onDeleteContract, onArchiveContract,
+  canDelete, canEdit, currentUser, today,
 }: Props) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [saving, setSaving] = useState<'idle' | 'saving' | 'saved'>('idle');
@@ -67,6 +71,9 @@ export default function SnowContractsModule({
         onUploadMap={(f) => onUploadMap(open.id, f)}
         onUploadDocument={(f, p) => onUploadDocument(open.id, f, p)}
         onDeleteDocument={onDeleteDocument}
+        onDeleteContract={async () => { const ok = await onDeleteContract(open.id); if (ok) setOpenId(null); }}
+        onArchiveContract={(a) => onArchiveContract(open.id, a)}
+        canDelete={canDelete}
         canEdit={canEdit}
         saving={saving}
         currentUser={currentUser}

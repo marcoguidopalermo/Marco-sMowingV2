@@ -17,7 +17,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ArrowLeft, Check, ChevronDown, Loader2, Plus, Trash2, Printer, Copy, Ruler, Upload, X,
-  Paperclip, FileText,
+  Paperclip, FileText, ArchiveRestore,
 } from 'lucide-react';
 import type {
   SnowContract, SnowContractStatus, PropertyMeasurement, SnowPhotoView,
@@ -44,6 +44,9 @@ interface Props {
   // delete), not just a URL like the map upload — the record lists them.
   onUploadDocument: (file: File, onProgress: (pct: number) => void) => Promise<StoredFile | null>;
   onDeleteDocument: (path: string) => Promise<void>;
+  onDeleteContract: () => Promise<void>;
+  onArchiveContract: (archived: boolean) => Promise<void>;
+  canDelete: boolean;
   canEdit: boolean;
   saving: 'idle' | 'saving' | 'saved';
   currentUser: { email: string; name: string };
@@ -58,6 +61,104 @@ const inputCls = 'w-full min-h-[44px] rounded-lg border border-slate-300 bg-whit
   + 'disabled:bg-slate-50 disabled:text-slate-500';
 const areaCls = `${inputCls} min-h-[92px] resize-y`;
 
+// DELETE CONFIRM — type the exact business name, same pattern as project
+// deletion in ContractingMaster.
+//
+// A contract that reached APPROVED or BOOKED is a commercial commitment, and
+// its signed PDF is frequently the only copy anyone has. So the two paths are
+// not equally weighted: for those records ARCHIVE is the primary action, and
+// permanent deletion needs the typed name PLUS an explicit acknowledgement
+// that the agreement and its attachments are being destroyed. A quote nobody
+// accepted keeps the plain single-gate delete — junk should be easy to remove.
+function DeleteContractModal({
+  contract, onClose, onArchive, onDelete,
+}: {
+  contract: SnowContract;
+  onClose: () => void;
+  onArchive: () => Promise<void>;
+  onDelete: () => Promise<void>;
+}) {
+  const name = contract.client.businessName?.trim() || '';
+  const committed = contract.status === 'approved' || contract.status === 'booked';
+  const [typed, setTyped] = useState('');
+  const [ack, setAck] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // An untitled contract has no name to type, so fall back to its id — there
+  // still has to be something deliberate to type.
+  const target = name || contract.id;
+  const match = typed.trim() === target;
+  const canDelete = match && (!committed || ack) && !busy;
+  const attachments = (contract.documents || []).length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-xl" onClick={e => e.stopPropagation()}>
+        <h3 className="mb-2 text-lg font-black text-slate-900">
+          {committed ? 'Archive or delete this contract?' : 'Delete this contract?'}
+        </h3>
+
+        {committed && (
+          <div className="mb-3 rounded-lg border-2 border-amber-400 bg-amber-50 p-3">
+            <p className="text-[13px] font-bold text-amber-900">
+              This contract is {STATUS_LABEL[contract.status].toUpperCase()}
+              {contract.approvedAt ? ` — approved ${stampDate(contract.approvedAt)}` : ''}
+              {contract.bookedAt ? `, booked ${stampDate(contract.bookedAt)}` : ''}.
+            </p>
+            <p className="mt-1 text-[12px] text-amber-900">
+              It represents an agreement the client accepted. Archiving keeps the record and its
+              attachments and only removes it from the working list — that is almost always what
+              you want here.
+            </p>
+          </div>
+        )}
+
+        <p className="mb-3 text-[13px] text-slate-700">
+          Deleting <b>{name || 'this untitled contract'}</b> permanently removes the record
+          {attachments > 0
+            ? <> and <b>{attachments} attached file{attachments === 1 ? '' : 's'}</b> from storage</>
+            : null}. This cannot be undone.
+        </p>
+
+        <label className="block">
+          <span className="mb-1.5 block text-[11px] font-black uppercase tracking-wider text-slate-500">
+            Type {name ? 'the business name' : 'the contract id'} to confirm
+          </span>
+          <input className={inputCls} value={typed} onChange={e => setTyped(e.target.value)}
+            placeholder={target} autoFocus autoComplete="off" />
+        </label>
+
+        {committed && (
+          <label className="mt-3 flex items-start gap-2">
+            <input type="checkbox" checked={ack} onChange={e => setAck(e.target.checked)} className="mt-1" />
+            <span className="text-[12px] font-bold text-rose-700">
+              I understand this destroys an accepted agreement and any signed copy attached to it.
+            </span>
+          </label>
+        )}
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button type="button" onClick={onClose} disabled={busy}
+            className="min-h-[44px] flex-1 rounded-lg border border-slate-300 px-3 text-sm font-bold">
+            Cancel
+          </button>
+          <button type="button" disabled={busy}
+            onClick={async () => { setBusy(true); try { await onArchive(); } finally { setBusy(false); } }}
+            className={`min-h-[44px] flex-1 rounded-lg px-3 text-sm font-black ${committed ? 'bg-amber-500 text-white' : 'border border-amber-400 bg-amber-50 text-amber-800'}`}>
+            Archive instead
+          </button>
+          <button type="button" disabled={!canDelete}
+            onClick={async () => { setBusy(true); try { await onDelete(); } finally { setBusy(false); } }}
+            className="inline-flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-lg bg-rose-600 px-3 text-sm font-black text-white disabled:opacity-40">
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            Delete permanently
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Stage stamps and upload times — short form, no year unless it isn't this one.
 const stampDate = (ms: number) => {
   const d = new Date(ms);
@@ -66,8 +167,8 @@ const stampDate = (ms: number) => {
     sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
 };
 const fileSize = (b: number) => (b >= 1024 * 1024 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
-const DOC_LABEL: Record<import('../types').SnowContractDocLabel, string> = {
-  sent_copy: 'Sent copy', signed_copy: 'Signed copy', other: 'Other',
+const DOC_LABEL: Record<SnowContractDocLabel, string> = {
+  quote: 'Quote', sent_copy: 'Sent copy', signed_copy: 'Signed copy', other: 'Other',
 };
 
 const L = ({ children }: { children: ReactNode }) => (
@@ -205,14 +306,16 @@ function PhotoFrame({
 
 export default function SnowContractEditor({
   contract, onChange, onBack, onPrint, onDuplicate, onUploadMap,
-  onUploadDocument, onDeleteDocument, canEdit, saving, currentUser,
+  onUploadDocument, onDeleteDocument, onDeleteContract, onArchiveContract,
+  canDelete, canEdit, saving, currentUser,
 }: Props) {
   const [pane, setPane] = useState<'form' | 'preview'>('form');
   const [measuring, setMeasuring] = useState(false);
   const [uploading, setUploading] = useState(false);
   // Attachment upload: which label the next file gets, and live progress.
-  const [docLabel, setDocLabel] = useState<SnowContractDocLabel>('sent_copy');
+  const [docLabel, setDocLabel] = useState<SnowContractDocLabel>('quote');
   const [docBusy, setDocBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [docPct, setDocPct] = useState(0);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const fileRef = useRef<HTMLInputElement>(null);
@@ -877,8 +980,30 @@ export default function SnowContractEditor({
             className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-slate-800 px-4 text-xs font-black uppercase tracking-widest text-white">
             <Printer className="h-3.5 w-3.5" /> Print / PDF
           </button>
+          {canDelete && (
+            c.archived ? (
+              <button type="button" onClick={() => onArchiveContract(false)}
+                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-amber-400 bg-amber-50 px-3 text-xs font-black uppercase tracking-widest text-amber-800">
+                <ArchiveRestore className="h-3.5 w-3.5" /> Restore
+              </button>
+            ) : (
+              <button type="button" onClick={() => setDeleting(true)}
+                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-rose-300 px-3 text-xs font-black uppercase tracking-widest text-rose-700">
+                <Trash2 className="h-3.5 w-3.5" /> Delete
+              </button>
+            )
+          )}
         </div>
       </div>
+
+      {deleting && (
+        <DeleteContractModal
+          contract={c}
+          onClose={() => setDeleting(false)}
+          onArchive={async () => { await onArchiveContract(true); setDeleting(false); }}
+          onDelete={async () => { await onDeleteContract(); setDeleting(false); }}
+        />
+      )}
 
       {/* TWO PANES — a dragged split on desktop, tabbed full-width on mobile. */}
       <div ref={splitHostRef} className="lg:grid lg:gap-0"
