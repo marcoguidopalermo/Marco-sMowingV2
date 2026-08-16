@@ -178,6 +178,7 @@ export function newContract(args: {
     status: 'quoted',
     documents: [],
     archived: false,
+    crew: '',
     createdAt: now,
     updatedAt: now,
     createdBy: args.createdBy,
@@ -246,6 +247,7 @@ export function migrateContract(raw: any): SnowContract {
       approvedBy: raw.approvedBy ?? raw.signedBy,
       documents: Array.isArray(raw.documents) ? raw.documents : [],
       archived: raw.archived === true,
+      crew: str(raw.crew),
       quoteDate,
       validUntil: str(raw.validUntil) || validUntilFrom(quoteDate),
       scope: { plowArea: '', shovelArea: '', showMap: true, mapImages: [], ...oldScope },
@@ -280,6 +282,7 @@ export function migrateContract(raw: any): SnowContract {
     signedAt: raw.signedAt,
     signedBy: raw.signedBy,
     documents: Array.isArray(raw.documents) ? raw.documents : [],
+    crew: str(raw.crew),
     archived: raw.archived === true,
     archivedAt: raw.archivedAt,
     archivedBy: raw.archivedBy,
@@ -380,6 +383,7 @@ export function duplicateForNextSeason(
     signedAt: undefined,
     signedBy: undefined,
     documents: [],
+    // Crew CARRIES to the renewal: same property, same route.
     // A renewal is a live quote, never born archived.
     archived: false,
     archivedAt: undefined,

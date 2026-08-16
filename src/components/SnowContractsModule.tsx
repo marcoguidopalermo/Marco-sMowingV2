@@ -1,24 +1,28 @@
 // SNOWMASTER · CONTRACTS — the module tab.
 //
-// Owns the list/editor switch. No router: the app navigates by state
+// Owns the list/record switch. No router: the app navigates by state
 // everywhere else, and adding routing for one feature would be a larger
 // architectural change than the feature justifies.
 //
-// PRINT opens a new window rendering the SAME SnowContractDocument in print
-// mode — not a second layout, the same component.
+// UNMOUNTED — SnowContractEditor (the two-pane in-app builder) and
+// SnowContractDocument (the renderer that backed its preview and the print
+// window) are still in the repo but are no longer reachable: nothing imports
+// them, there is no route to them and no button opens them. Contracts are
+// written in the standalone HTML builder at /snow-contract-builder, printed to
+// PDF and attached to the record. The files are kept deliberately in case that
+// decision is revisited — along with lib/snowContractText, whose transcription
+// guard still verifies the clause constants against the reference HTML that is
+// now the live document.
 import { useState } from 'react';
-import { createRoot } from 'react-dom/client';
-import type { SnowContract, StoredFile } from '../types';
+import type { SnowContract, SnowContractDocLabel, StoredFile } from '../types';
 import SnowContractList from './SnowContractList';
-import SnowContractEditor from './SnowContractEditor';
-import SnowContractDocument from './SnowContractDocument';
+import SnowContractSimple, { applyFields, type SnowContractFields } from './SnowContractSimple';
+import SnowContractNewModal from './SnowContractNewModal';
 
 interface Props {
   contracts: Record<string, SnowContract>;
   onSave: (c: SnowContract) => Promise<void>;
   onCreate: () => Promise<string | null>;
-  onDuplicate: (id: string) => Promise<string | null>;
-  onUploadMap: (contractId: string, file: File) => Promise<string | null>;
   onUploadDocument: (contractId: string, file: File, onProgress: (pct: number) => void) => Promise<StoredFile | null>;
   onDeleteDocument: (path: string) => Promise<void>;
   onDeleteContract: (id: string) => Promise<boolean>;
@@ -29,27 +33,13 @@ interface Props {
   today: string;
 }
 
-// Renders the document into a fresh window and prints it. Styles ride along in
-// the component's own <style> block, so the popup needs no stylesheet link.
-export function printContract(c: SnowContract) {
-  const w = window.open('', '_blank', 'width=900,height=1100');
-  if (!w) { alert('Allow pop-ups to print the contract.'); return; }
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8">` +
-    `<title>${(c.client.businessName || 'Contract').replace(/[<>]/g, '')} — Snow Agreement</title>` +
-    `<style>body{margin:0;background:#fff}</style></head><body><div id="root"></div></body></html>`);
-  w.document.close();
-  const mount = w.document.getElementById('root')!;
-  createRoot(mount).render(<SnowContractDocument contract={c} mode="print" />);
-  // Give the map image and the measured-fit pass a beat before printing.
-  w.setTimeout(() => { w.focus(); w.print(); }, 900);
-}
-
 export default function SnowContractsModule({
-  contracts, onSave, onCreate, onDuplicate, onUploadMap,
+  contracts, onSave, onCreate,
   onUploadDocument, onDeleteDocument, onDeleteContract, onArchiveContract,
   canDelete, canEdit, currentUser, today,
 }: Props) {
   const [openId, setOpenId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState<'idle' | 'saving' | 'saved'>('idle');
   const open = openId ? contracts[openId] : null;
 
@@ -60,15 +50,42 @@ export default function SnowContractsModule({
     window.setTimeout(() => setSaving(s => (s === 'saved' ? 'idle' : s)), 1600);
   };
 
+  // Create → apply the five fields → optionally attach the PDF, all before the
+  // modal closes, so a contract never appears in the list half-made.
+  const create = async (
+    fields: SnowContractFields,
+    picked: { file: File; label: SnowContractDocLabel } | null,
+    onProgress: (pct: number) => void,
+  ): Promise<string | null> => {
+    const id = await onCreate();
+    if (!id) return null;
+    // The snapshot may not have delivered the new record yet. applyFields only
+    // needs something contract-shaped to spread over and the listener
+    // reconciles after; falling back beats dropping the typed fields.
+    const seed = contracts[id] || ({ id, client: {}, serviceTerms: {} } as unknown as SnowContract);
+    let next = applyFields(seed, fields, currentUser.name);
+    if (picked) {
+      const stored = await onUploadDocument(id, picked.file, onProgress);
+      if (stored) {
+        next = {
+          ...next,
+          documents: [
+            ...(next.documents || []),
+            { id: `scd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, label: picked.label, file: stored },
+          ],
+        };
+      }
+    }
+    await onSave(next);
+    return id;
+  };
+
   if (open) {
     return (
-      <SnowContractEditor
+      <SnowContractSimple
         contract={open}
         onChange={save}
         onBack={() => setOpenId(null)}
-        onPrint={() => printContract(open)}
-        onDuplicate={async () => { const id = await onDuplicate(open.id); if (id) setOpenId(id); }}
-        onUploadMap={(f) => onUploadMap(open.id, f)}
         onUploadDocument={(f, p) => onUploadDocument(open.id, f, p)}
         onDeleteDocument={onDeleteDocument}
         onDeleteContract={async () => { const ok = await onDeleteContract(open.id); if (ok) setOpenId(null); }}
@@ -82,20 +99,25 @@ export default function SnowContractsModule({
   }
 
   return (
-    <SnowContractList
-      contracts={contracts}
-      onOpen={setOpenId}
-      onNew={async () => { const id = await onCreate(); if (id) setOpenId(id); }}
-      onRename={async (id, businessName) => {
-        const c = contracts[id];
-        if (!c) return;
-        await onSave({ ...c, client: { ...c.client, businessName }, updatedAt: Date.now() });
-      }}
-      onDelete={onDeleteContract}
-      onArchive={onArchiveContract}
-      canDelete={canDelete}
-      canEdit={canEdit}
-      today={today}
-    />
+    <>
+      <SnowContractList
+        contracts={contracts}
+        onOpen={setOpenId}
+        onNew={() => setCreating(true)}
+        onRename={async (id, businessName) => {
+          const c = contracts[id];
+          if (!c) return;
+          await onSave({ ...c, client: { ...c.client, businessName }, updatedAt: Date.now() });
+        }}
+        onDelete={onDeleteContract}
+        onArchive={onArchiveContract}
+        canDelete={canDelete}
+        canEdit={canEdit}
+        today={today}
+      />
+      {creating && (
+        <SnowContractNewModal onClose={() => setCreating(false)} onCreate={create} />
+      )}
+    </>
   );
 }

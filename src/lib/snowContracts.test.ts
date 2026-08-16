@@ -280,6 +280,21 @@ test('every migrated status has a label — no chip can render blank', () => {
     assert.ok(STATUS_LABEL[migrateContract(c).status], `no label for stored status ${String(s)}`);
   }
 });
+console.log('\nCrew');
+test('crew survives migration and carries to a renewal (same property, same route)', () => {
+  assert.equal(fresh().crew, '');
+  assert.equal(migrateContract({ ...legacy, crew: 'Tony, Tom, Al' }).crew, 'Tony, Tom, Al');
+  const cur: any = fresh();
+  cur.crew = 'Tony, Tom, Al';
+  assert.equal(migrateContract(cur).crew, 'Tony, Tom, Al');
+  const next = duplicateForNextSeason(cur, { id: 'c2', createdBy: 'marco', now: NOW });
+  assert.equal(next.crew, 'Tony, Tom, Al');
+});
+test('a missing or non-string crew reads as empty, never undefined', () => {
+  assert.equal(migrateContract({ ...legacy }).crew, '');
+  assert.equal(migrateContract({ ...legacy, crew: 42 }).crew, '');
+});
+
 console.log('\nArchive');
 test('a new contract is not archived, and the flag survives migration', () => {
   assert.equal(fresh().archived, false);

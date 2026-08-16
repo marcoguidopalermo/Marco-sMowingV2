@@ -1137,6 +1137,13 @@ export interface SnowContract {
   signedAt?: number;
   /** @deprecated migrated into approvedBy. */
   signedBy?: string;
+  // WHICH CREW the site is on — free text, e.g. "Tony, Tom, Al". Free text
+  // rather than a reference to a crew record on purpose: snow crews are named
+  // ad hoc per site and change through a season, and requiring a managed crew
+  // list before a contract can be entered would be setup standing in the way
+  // of the thing you actually want to do. The list filters on the distinct
+  // values found, so it organises itself from whatever gets typed.
+  crew?: string;
   // Attached PDFs — the quote, and the sent and signed paper for this
   // contract. Multiple allowed; a contract commonly gains a quote, then a
   // sent copy, then a signed one.

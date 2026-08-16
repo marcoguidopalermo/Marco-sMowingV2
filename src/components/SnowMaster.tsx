@@ -187,8 +187,6 @@ export default function SnowMaster({
           contracts={snowContracts}
           onSave={onSaveSnowContract || (async () => {})}
           onCreate={onCreateSnowContract || (async () => null)}
-          onDuplicate={onDuplicateSnowContract || (async () => null)}
-          onUploadMap={onUploadSnowContractMap || (async () => null)}
           onUploadDocument={onUploadSnowContractDoc || (async () => null)}
           onDeleteDocument={onDeleteSnowContractDoc || (async () => {})}
           onDeleteContract={onDeleteSnowContract || (async () => false)}

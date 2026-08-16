@@ -4,11 +4,9 @@ import { Plus, Search, FileText, ExternalLink, Archive, ArchiveRestore, Trash2, 
 import type { SnowContract, SnowContractStatus } from '../types';
 import { headlinePrice, STATUS_LABEL, STATUS_FLOW, STATUS_OFFRAMP, seasonFor } from '../lib/snowContracts';
 import SnowContractDeleteModal from './SnowContractDeleteModal';
-
-// Attachment labels, shown on the expanded multi-PDF picker.
-const DOC_LABEL: Record<string, string> = {
-  quote: 'Quote', sent_copy: 'Sent copy', signed_copy: 'Signed copy', other: 'Other',
-};
+// One definition of the attachment and window labels, shared with the record
+// view so the list and the record can never disagree about what to call them.
+import { DOC_LABEL, WINDOW_LABEL } from './SnowContractSimple';
 
 const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -56,6 +54,7 @@ export default function SnowContractList({
   // Archived records are OUT of the working list by default — that is the
   // point of archiving. They are never deleted, just behind this toggle.
   const [showArchived, setShowArchived] = useState(false);
+  const [crew, setCrew] = useState<string>('all');
 
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -63,11 +62,12 @@ export default function SnowContractList({
       .filter(c => (showArchived ? !!c.archived : !c.archived))
       .filter(c => (season === 'all' || c.season === season))
       .filter(c => (status === 'all' || c.status === status))
+      .filter(c => (crew === 'all' || (c.crew || '').trim() === crew))
       .filter(c => !needle
         || c.client.businessName.toLowerCase().includes(needle)
         || c.client.serviceAddress.toLowerCase().includes(needle))
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-  }, [all, season, status, q, showArchived]);
+  }, [all, season, status, q, showArchived, crew]);
 
   // Pipeline counts follow the SEASON and the search box but NOT the status
   // filter — a stage count that changed when you filtered by that stage would
@@ -90,6 +90,15 @@ export default function SnowContractList({
   // Across every season — the toggle is about reaching archived records at
   // all, and scoping it to the season in view would hide the way in.
   const archivedCount = useMemo(() => all.filter(c => c.archived).length, [all]);
+
+  // Crew filter options come from the values actually in use — the field is
+  // free text, so the list organises itself from whatever has been typed
+  // rather than from a crew registry nobody has to maintain.
+  const crews = useMemo(() => {
+    const s = new Set<string>();
+    for (const c of all) { const v = (c.crew || '').trim(); if (v) s.add(v); }
+    return [...s].sort((a, b) => a.localeCompare(b));
+  }, [all]);
 
   // ── ROW STATE ────────────────────────────────────────────────────────────
   // The list is the working surface: rename, open a PDF and clear out dead
@@ -132,6 +141,13 @@ export default function SnowContractList({
           {(Object.keys(STATUS_LABEL) as SnowContractStatus[]).map(s =>
             <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
         </select>
+        {crews.length > 0 && (
+          <select value={crew} onChange={e => setCrew(e.target.value)}
+            className="text-xs font-bold text-slate-700 bg-white border border-slate-300 rounded-lg px-2 py-2">
+            <option value="all">All crews</option>
+            {crews.map(x => <option key={x} value={x}>{x}</option>)}
+          </select>
+        )}
         <div className="relative">
           <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2 top-1/2 -translate-y-1/2" />
           <input value={q} onChange={e => setQ(e.target.value)} placeholder="business or address"
@@ -192,6 +208,8 @@ export default function SnowContractList({
             <tr className="text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100">
               <th className="py-2 px-3 text-left">Business</th>
               <th className="py-2 px-3 text-left">Address</th>
+              <th className="py-2 px-3 text-left">Crew</th>
+              <th className="py-2 px-3 text-left">Window</th>
               <th className="py-2 px-3 text-left">Status</th>
               <th className="py-2 px-3 text-center">PDF</th>
               <th className="py-2 px-3 text-right">Price</th>
@@ -201,7 +219,7 @@ export default function SnowContractList({
           </thead>
           <tbody>
             {rows.length === 0 && (
-              <tr><td colSpan={7} className="py-8 text-center text-sm text-slate-500">
+              <tr><td colSpan={9} className="py-8 text-center text-sm text-slate-500">
                 {showArchived
                   ? 'No archived contracts.'
                   : `No contracts${season !== 'all' ? ` for ${season}` : ''} yet.`}
@@ -245,6 +263,14 @@ export default function SnowContractList({
                       </div>
                     </td>
                     <td className="py-2 px-3 text-left text-slate-600">{c.client.serviceAddress || '—'}</td>
+                    <td className="py-2 px-3 text-left text-slate-700 font-bold">
+                      {c.crew?.trim() || <span className="text-slate-300 font-normal">—</span>}
+                    </td>
+                    <td className="py-2 px-3 text-left text-[11px] font-bold text-slate-600">
+                      {c.serviceTerms?.serviceWindow
+                        ? WINDOW_LABEL[c.serviceTerms.serviceWindow]
+                        : <span className="text-slate-300 font-normal">—</span>}
+                    </td>
                     <td className="py-2 px-3 text-left">
                       <span className={`text-[10px] font-black uppercase tracking-widest border px-1.5 py-0.5 rounded ${STATUS_CHIP[c.status]}`}>
                         {STATUS_LABEL[c.status]}
@@ -300,7 +326,7 @@ export default function SnowContractList({
                   </tr>
                   {expanded && docs.length > 1 && (
                     <tr className="bg-slate-50/70">
-                      <td colSpan={7} className="px-3 pb-2 pt-1">
+                      <td colSpan={9} className="px-3 pb-2 pt-1">
                         <div className="flex flex-wrap gap-1.5">
                           {docs.map(d => (
                             <a key={d.id} href={d.file.url} target="_blank" rel="noreferrer"
