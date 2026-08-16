@@ -86,6 +86,14 @@ export default function SnowContractsModule({
       contracts={contracts}
       onOpen={setOpenId}
       onNew={async () => { const id = await onCreate(); if (id) setOpenId(id); }}
+      onRename={async (id, businessName) => {
+        const c = contracts[id];
+        if (!c) return;
+        await onSave({ ...c, client: { ...c.client, businessName }, updatedAt: Date.now() });
+      }}
+      onDelete={onDeleteContract}
+      onArchive={onArchiveContract}
+      canDelete={canDelete}
       canEdit={canEdit}
       today={today}
     />
