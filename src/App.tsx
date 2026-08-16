@@ -154,6 +154,37 @@ const MARKETING_EMAILS = new Set([
 ]);
 const normalizeEmail = (e: string | null | undefined): string => (e || '').trim().toLowerCase();
 
+// Fields whose SOLE source of truth is a subcollection. Each one is assigned
+// from its sub*Ref in the main-snapshot overlay block, so the value carried in
+// appData is a live projection of the collection — never the doc's own copy.
+// syncToCloud strips every key listed here from the document write, which is
+// what keeps them out of the 1 MiB appData doc.
+//
+// A feature that moves to a subcollection is NOT finished until its key is
+// added here. Overlaying on read alone leaves the doc write spreading the
+// projection straight back in, so the data lands in BOTH places and the doc
+// never shrinks — that omission is what put ~74 KB of unread duplicates in the
+// doc across contracting, marketing, RoleMaster, SalesMaster and the trends
+// summaries. `hoursBank` is listed here from the start for that reason.
+//
+// NOT listed (deliberately): performance, schedules, multiDayJobs and
+// inspections are doc-base + subcollection MERGES, not pure projections, so
+// syncToCloud substitutes their frozen doc-base refs instead of dropping them.
+const SUBCOLLECTION_ONLY_FIELDS = [
+  'monthlySummaries',
+  'roleMasterRoles', 'roleMasterDuties', 'roleMasterResponsibilities',
+  'roleMasterTemplates', 'roleMasterPolicies', 'roleMasterPolicyRequests',
+  'roleTaskInstances',
+  'salesMasterQuotes',
+  'snowQuotes', 'snowRateConfigs', 'lawnQuotes', 'lawnRateConfigs',
+  'contractingProjects', 'contractingTimeEntries', 'contractingProgressReports',
+  'contractingInvoices', 'contractingWorkOrders', 'contractingShoppingList',
+  'contractingPersonalItems', 'contractingPropertyDocs',
+  'marketingContent', 'marketingShots', 'marketingLinks', 'marketingFeedback',
+  'marketingClips', 'marketingPostQueue', 'marketingTodos',
+  'hoursBank',
+] as const;
+
 export default function App() {
   // --- STATE ---
   const [user, setUser] = useState<any>(null);
@@ -236,6 +267,20 @@ export default function App() {
   // (subcollection wins), newest-first to match the prepend convention.
   const docInspectionsRef = useRef<Inspection[]>([]);
   const subInspectionsRef = useRef<Inspection[]>([]);
+  // Phase 4: activityLog lives in its own subcollection. Same overlay model as
+  // inspections — doc-base copy + live subcollection, merged by id, newest
+  // first. The log is APPEND-ONLY (a "deleted" entry is a new record of a
+  // deletion, never a removal), which is why the write path below only ever
+  // creates docs and never deletes them, and why the merge needs no tombstones.
+  const docActivityLogRef = useRef<TaskActivity[]>([]);
+  const subActivityLogRef = useRef<TaskActivity[]>([]);
+  // Phase 5: deletionAuditLog lives in its own subcollection. Same overlay
+  // model as activityLog, and append-only for the same reason — an audit trail
+  // that can be edited or pruned from the UI is not an audit trail. Note the
+  // timestamp here is a NUMBER (epoch ms), not the ISO string activityLog
+  // uses, so the sort below is numeric.
+  const docDeletionAuditRef = useRef<DeletionAuditEntry[]>([]);
+  const subDeletionAuditRef = useRef<DeletionAuditEntry[]>([]);
   // "Push Month": completed months live in performanceMonths/{YYYY-MM}
   // sheets, not the appData doc. docPerformanceRef holds the doc's own
   // (current-month) performance; subPerformanceMonthsRef holds the
@@ -296,6 +341,33 @@ export default function App() {
     docSched: Record<string, Crew[]>,
     monthOverlay: Record<string, Crew[]>,
   ): Record<string, Crew[]> => ({ ...monthOverlay, ...docSched });
+  // Merge the doc-base activity log with the live subcollection. Subcollection
+  // wins on id collision (it is the newer home), newest-first to match the
+  // prepend convention every reader assumes. MechanicPerformance, MyMechanic
+  // and the pay-chunk completion counts all read this merged array, so it must
+  // contain the FULL history — nothing here trims.
+  const mergeActivityLog = (base: TaskActivity[], sub: TaskActivity[]): TaskActivity[] => {
+    const byId: Record<string, TaskActivity> = {};
+    for (const a of base) if (a && a.id) byId[a.id] = a;
+    for (const a of sub) if (a && a.id) byId[a.id] = a; // subcollection wins
+    return Object.values(byId).sort(
+      (a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')),
+    );
+  };
+
+  // Merge the doc-base deletion audit trail with the live subcollection.
+  // Subcollection wins on id collision, newest-first by NUMERIC timestamp.
+  // TimeMaster reads this merged array to rebuild deleted time entries from
+  // their snapshots, so it must carry the full trail — nothing here trims.
+  const mergeDeletionAudit = (
+    base: DeletionAuditEntry[], sub: DeletionAuditEntry[],
+  ): DeletionAuditEntry[] => {
+    const byId: Record<string, DeletionAuditEntry> = {};
+    for (const d of base) if (d && d.id) byId[d.id] = d;
+    for (const d of sub) if (d && d.id) byId[d.id] = d; // subcollection wins
+    return Object.values(byId).sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+  };
+
   const mergeInspections = (base: Inspection[], sub: Inspection[]): Inspection[] => {
     // NB: `Map` is the lucide icon import in this file — use a plain object.
     const byId: Record<string, Inspection> = {};
@@ -965,6 +1037,12 @@ export default function App() {
         // value is the subcollection overlaid on top (pre-removal this is
         // the frozen doc copy, post-removal []).
         docInspectionsRef.current = (data.inspections || []) as Inspection[];
+        // Phase 4: same for the activity log — the doc's legacy copy, with the
+        // subcollection overlaid on top (pre-migration this is the frozen doc
+        // copy, post-migration []).
+        docActivityLogRef.current = (data.activityLog || []) as TaskActivity[];
+        // Phase 5: same for the deletion audit trail.
+        docDeletionAuditRef.current = (data.deletionAuditLog || []) as DeletionAuditEntry[];
         // Push Month: remember the doc's own performance (current month)
         // so the syncToCloud DOC write can substitute it (stripping any
         // pushed month), and overlay the loaded month sheets on top for
@@ -1063,7 +1141,8 @@ export default function App() {
           inspections: mergeInspections(docInspectionsRef.current, subInspectionsRef.current),
           cvorExpiry: data.cvorExpiry,
           mechanicTasks: data.mechanicTasks || [],
-          activityLog: data.activityLog || [],
+          // Doc-base overlaid by the live subcollection (Phase 4).
+          activityLog: mergeActivityLog(docActivityLogRef.current, subActivityLogRef.current),
           timeEntries: data.timeEntries || [],
           overrides: data.overrides || {},
           rolePermissions: (data.rolePermissions && typeof data.rolePermissions === 'object' && !('foreman' in data.rolePermissions && 'canEditSchedule' in (data.rolePermissions as any).foreman))
@@ -1091,7 +1170,8 @@ export default function App() {
           timeOffRequests: data.timeOffRequests || {},
           visitBHSplits: data.visitBHSplits || {},
           bulletinReads: data.bulletinReads || {},
-          deletionAuditLog: data.deletionAuditLog || [],
+          // Doc-base overlaid by the live subcollection (Phase 5).
+          deletionAuditLog: mergeDeletionAudit(docDeletionAuditRef.current, subDeletionAuditRef.current),
           __multiDayKeyVersion: data.__multiDayKeyVersion,
           // Seed equipment subtypes on first load (or when wiped). Once
           // an admin edits them, this value will be present and we
@@ -1313,6 +1393,66 @@ export default function App() {
         }));
       },
       (err) => { console.error('inspections subcollection listen error:', err); },
+    );
+  }, [user]);
+
+  // Phase 4: live activityLog subcollection listener. Rebuilds TaskActivity[]
+  // from one-doc-per-entry and merges it OVER the appData doc's legacy copy,
+  // so ActivityLog, MechanicPerformance, MyMechanic and the pay-chunk
+  // completion counts all work unchanged — they read appData.activityLog and
+  // never learn where it came from.
+  //
+  // NOTE ON READ VOLUME: this loads the whole log (403 entries at the time of
+  // the move, growing ~50/month). That matches how inspections and
+  // multiDayJobs already work, and the stats readers genuinely need full
+  // history — MechanicPerformance's lifetime totals read every 'completed'
+  // entry. If this collection gets big enough to matter, the fix is a bounded
+  // query for the display surfaces plus an aggregate for the stats, NOT
+  // trimming the collection.
+  useEffect(() => {
+    if (!user) return;
+    const actCol = collection(db, 'artifacts', appId, 'public', 'data', 'activityLog');
+    return onSnapshot(
+      actCol,
+      (snap) => {
+        const list: TaskActivity[] = [];
+        snap.forEach((d) => {
+          const v = d.data() as TaskActivity;
+          if (v && v.id) list.push(v);
+        });
+        subActivityLogRef.current = list;
+        setAppData((prev) => ({
+          ...prev,
+          activityLog: mergeActivityLog(docActivityLogRef.current, list),
+        }));
+      },
+      (err) => { console.error('activityLog subcollection listen error:', err); },
+    );
+  }, [user]);
+
+  // Phase 5: live deletionAuditLog subcollection listener. Rebuilds
+  // DeletionAuditEntry[] from one-doc-per-entry and merges it OVER the appData
+  // doc's legacy copy, so TimeMaster's deleted-entry reconstruction (it reads
+  // appData.deletionAuditLog, filters recordType === 'time_entry' and rebuilds
+  // the TimeEntry from d.snapshot) works unchanged.
+  useEffect(() => {
+    if (!user) return;
+    const audCol = collection(db, 'artifacts', appId, 'public', 'data', 'deletionAuditLog');
+    return onSnapshot(
+      audCol,
+      (snap) => {
+        const list: DeletionAuditEntry[] = [];
+        snap.forEach((d) => {
+          const v = d.data() as DeletionAuditEntry;
+          if (v && v.id) list.push(v);
+        });
+        subDeletionAuditRef.current = list;
+        setAppData((prev) => ({
+          ...prev,
+          deletionAuditLog: mergeDeletionAudit(docDeletionAuditRef.current, list),
+        }));
+      },
+      (err) => { console.error('deletionAuditLog subcollection listen error:', err); },
     );
   }, [user]);
 
@@ -1957,44 +2097,89 @@ export default function App() {
         .filter(Boolean)),
     ).sort();
     // Bound the in-document deletion audit log so a delete (which appends a
-    // record snapshot) can never push the single appData doc past
-    // Firestore's 1 MiB limit. Two non-destructive levers — neither touches
-    // the who/when/what summary that the audit trail relies on:
+    // record snapshot) can never push the single appData doc past Firestore's
+    // 1 MiB limit.
+    //
+    // The previous bound was MAX_AUDIT_ENTRIES x MAX_SNAPSHOT_BYTES = 500 x
+    // 4000 B. That is not a bound: its worst case is ~2 MB, twice the document
+    // limit, so the "cap" could itself be what broke the doc. The guarantee
+    // now comes from a CUMULATIVE BYTE BUDGET, which holds regardless of how
+    // large individual snapshots are; the count and per-snapshot caps are
+    // secondary guards that keep the common case cheap.
+    //
+    // Shedding is ordered so the audit trail degrades gracefully — the
+    // who/when/what summary (userEmail, userName, userRole, timestamp,
+    // summary, recordType, recordId) is the part the trail exists for, and it
+    // is the LAST thing to go:
     //   1. Keep only the most recent MAX_AUDIT_ENTRIES.
-    //   2. Strip oversized snapshots from heavy record types. `time_entry`
-    //      snapshots are EXEMPT — TimeMaster reconstructs the deleted entry
-    //      from them — but those are tiny TimeEntry objects, never the bloat.
-    // Runs on every save against the in-memory object before the write, so
-    // it self-heals existing bloat on the next successful sync (and lets the
-    // duplicate-repair cleanup write get the doc back under the cap).
-    const MAX_AUDIT_ENTRIES = 500;
-    const MAX_SNAPSHOT_BYTES = 4000;
-    const normalizedAuditLog = (newData.deletionAuditLog || [])
+    //   2. Strip individually-oversized snapshots from heavy record types.
+    //   3. Still over budget? Drop snapshots from the OLDEST entries first,
+    //      keeping their summaries.
+    //   4. Still over budget (pathological)? Only then drop whole entries.
+    // `time_entry` snapshots are EXEMPT from 2 and 3 — TimeMaster
+    // reconstructs the deleted entry from them (TimeMaster.tsx) — but those
+    // are tiny TimeEntry objects (~425 B observed), never the bloat.
+    //
+    // PHASE 5 SCOPE: this budget now applies ONLY to the doc-base — the legacy
+    // entries still in the appData doc that the migration has not relocated.
+    // The in-memory / subcollection trail is the FULL audit history and is
+    // never shed: TimeMaster rebuilds deleted time entries from the snapshots,
+    // and an audit trail that quietly drops its own oldest records to save
+    // space is not one. Once the base is empty this is a no-op, and the growth
+    // it was capping is gone with it.
+    const MAX_AUDIT_ENTRIES = 300;
+    const MAX_SNAPSHOT_BYTES = 2000;
+    // Hard ceiling on the field's contribution to the doc: 96 KB, ~9% of the
+    // 1 MiB limit. Today's log is ~60 KB / 81 entries, so nothing is shed yet.
+    const MAX_AUDIT_TOTAL_BYTES = 96 * 1024;
+    const auditBytes = (v: unknown) => {
+      try { return JSON.stringify(v ?? null).length; } catch { return 0; }
+    };
+    const auditTrail = (docDeletionAuditRef.current || [])
       .slice(0, MAX_AUDIT_ENTRIES)
       .map((e: any) => {
         if (!e || e.recordType === 'time_entry' || e.snapshot == null) return e;
-        let tooBig = false;
-        try { tooBig = JSON.stringify(e.snapshot).length > MAX_SNAPSHOT_BYTES; }
-        catch { tooBig = true; }
-        return tooBig ? { ...e, snapshot: { trimmed: true } } : e;
+        return auditBytes(e.snapshot) > MAX_SNAPSHOT_BYTES
+          ? { ...e, snapshot: { trimmed: true } }
+          : e;
       });
-    // PHASE 0 STORAGE STOPGAP — bound activityLog. TYPE-AWARE: 'completed'
-    // entries are the ONLY ones any stat reads (MechanicPerformance /
-    // MyMechanic labor+cost+counts, pay-chunk repair counts), so they are
-    // EXEMPT from both the floor and the age trim — completion history is
-    // never shortened. Non-completed types (created, status_changed, notes,
-    // priority/parts toggles, deleted) are display-only churn (~74% of the
-    // log): they keep a floor of the most-recent ACTIVITY_LOG_FLOOR plus
-    // anything from the last 90 days, and a non-completed entry is dropped
-    // only when it is BOTH beyond that floor AND older than 90 days. The
-    // list is newest-first (prepended on every write). Unparseable
-    // timestamps are kept (never silently delete on a bad date). Idempotent
-    // and self-heals existing bloat on the next sync.
+    let auditTotal = auditBytes(auditTrail);
+    // 3. Oldest-first snapshot shedding (newest-first array, so walk backwards).
+    const normalizedAuditLog = auditTrail.slice();
+    for (let i = normalizedAuditLog.length - 1; i >= 0 && auditTotal > MAX_AUDIT_TOTAL_BYTES; i--) {
+      const e: any = normalizedAuditLog[i];
+      if (!e || e.recordType === 'time_entry' || e.snapshot == null) continue;
+      if (e.snapshot?.trimmed === true) continue;               // already shed
+      const shed = { ...e, snapshot: { trimmed: true } };
+      auditTotal -= auditBytes(e) - auditBytes(shed);
+      normalizedAuditLog[i] = shed;
+    }
+    // 4. Last resort — drop whole entries from the oldest end.
+    while (normalizedAuditLog.length > 0 && auditTotal > MAX_AUDIT_TOTAL_BYTES) {
+      auditTotal -= auditBytes(normalizedAuditLog.pop());
+    }
+    // Entries this save ADDED (append-only trail, so a new id is a new entry).
+    const prevAuditIds: Record<string, true> = {};
+    for (const d of (appData.deletionAuditLog || [])) if (d && d.id) prevAuditIds[d.id] = true;
+    const newAuditEntries = (newData.deletionAuditLog || []).filter(
+      (d: DeletionAuditEntry) => d && d.id && !prevAuditIds[d.id],
+    );
+    // PHASE 4 — activityLog. The in-memory / subcollection copy is the FULL
+    // history and is never trimmed: MechanicPerformance's lifetime totals,
+    // MyMechanic's completed-repair list and the pay-chunk completion counts
+    // all read every 'completed' entry, and the whole point of moving the log
+    // off the doc is that it no longer has to be short.
+    //
+    // The Phase 0 trim below now applies ONLY to the doc-base — the legacy
+    // entries still sitting in the appData doc, which the migration script has
+    // not relocated yet. It keeps the pre-migration safety net exactly as it
+    // was (completions exempt, 300-entry floor, 90-day age) so the doc can
+    // still self-heal, and it becomes a no-op the moment the base is empty.
     const ACTIVITY_LOG_FLOOR = 300;
     const ACTIVITY_LOG_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
     const activityCutoffMs = Date.now() - ACTIVITY_LOG_MAX_AGE_MS;
     let nonCompletedSeen = 0;
-    const normalizedActivityLog = (newData.activityLog || [])
+    const trimmedDocActivityBase = (docActivityLogRef.current || [])
       .filter((e: any) => {
         if (e?.type === 'completed') return true;   // stats source — never trim
         nonCompletedSeen++;
@@ -2002,6 +2187,12 @@ export default function App() {
         const t = e?.timestamp ? Date.parse(e.timestamp) : NaN;
         return Number.isNaN(t) ? true : t >= activityCutoffMs;    // else 90-day age
       });
+    // Entries this save ADDED (append-only log, so a new id is a new entry).
+    const prevActivityIds: Record<string, true> = {};
+    for (const a of (appData.activityLog || [])) if (a && a.id) prevActivityIds[a.id] = true;
+    const newActivityEntries = (newData.activityLog || []).filter(
+      (a: TaskActivity) => a && a.id && !prevActivityIds[a.id],
+    );
 
     // PHASE 0 STORAGE STOPGAP — slim COMPLETED multi-day ledgers. Once a
     // ledger is complete its credited BH already lives in
@@ -2047,8 +2238,11 @@ export default function App() {
     const safeData: AppData = {
       ...newData,
       authorizedEmails: normalizedAuthEmails,
-      deletionAuditLog: normalizedAuditLog,
-      activityLog: normalizedActivityLog,
+      // Optimistic LOCAL state keeps the FULL merged trail / log (with this
+      // save's new entries). The DOC write below substitutes the trimmed
+      // doc-bases instead.
+      deletionAuditLog: newData.deletionAuditLog || [],
+      activityLog: newData.activityLog || [],
       // Optimistic LOCAL state shows the live merged map (with the change).
       // The DOC write below substitutes the frozen doc-base instead.
       multiDayJobs: nextMdj,
@@ -2105,11 +2299,63 @@ export default function App() {
       console.error('inspections subcollection write error:', err);
     }
 
-    // DOC write — multiDayJobs (Phase 1) and inspections (Phase 3) are
-    // substituted with their FROZEN doc-base refs: pre-migration this
-    // preserves the legacy in-doc copies so nothing is lost; after each
-    // one-time removal pass empties that base, this writes the empty value
-    // and the doc shrinks. No second code change is needed for the cutover.
+    // PHASE 4 — route NEW activityLog entries to the subcollection (one doc
+    // per entry id). The log is append-only, so this only ever creates: there
+    // is deliberately no delete pass, and an entry missing from the in-memory
+    // array (because the doc-base trim dropped it) must never remove the
+    // subcollection copy.
+    //
+    // Unlike the other phases a failure here is NOT simply logged. These
+    // entries feed MechanicPerformance labor/cost totals and the pay-chunk
+    // completion counts, so a silently dropped 'completed' entry is wrong pay
+    // data. If the subcollection write fails we fall back to carrying this
+    // save's new entries in the DOC (via activityDocFallback below), which is
+    // where they used to live anyway — nothing is lost, and the next
+    // successful save or a backfill run relocates them.
+    let activityDocFallback: TaskActivity[] = [];
+    if (newActivityEntries.length > 0) {
+      const actColRef = collection(db, 'artifacts', appId, 'public', 'data', 'activityLog');
+      try {
+        for (const a of newActivityEntries) {
+          const cleanAct = JSON.parse(JSON.stringify(a, (_k, val) => val === undefined ? null : val));
+          await setDoc(doc(actColRef, encodeURIComponent(a.id)), cleanAct);
+        }
+      } catch (err: any) {
+        console.error('activityLog subcollection write error:', err);
+        activityDocFallback = newActivityEntries;
+        showToastMsg('⚠️ Activity entry saved to the main record only — check connection.');
+      }
+    }
+
+    // PHASE 5 — route NEW deletionAuditLog entries to the subcollection (one
+    // doc per entry id). Append-only, so creates only: no delete pass, and a
+    // doc-base shed can never remove the subcollection copy.
+    //
+    // Same fallback as Phase 4, and for a stronger reason: this trail is the
+    // ONLY remaining record of a deleted time entry (the TimeEntry itself is
+    // gone from timeEntries and from pay). If the subcollection write fails we
+    // carry the entry in the DOC rather than lose it.
+    let auditDocFallback: DeletionAuditEntry[] = [];
+    if (newAuditEntries.length > 0) {
+      const audColRef = collection(db, 'artifacts', appId, 'public', 'data', 'deletionAuditLog');
+      try {
+        for (const d of newAuditEntries) {
+          const cleanAudit = JSON.parse(JSON.stringify(d, (_k, val) => val === undefined ? null : val));
+          await setDoc(doc(audColRef, encodeURIComponent(d.id)), cleanAudit);
+        }
+      } catch (err: any) {
+        console.error('deletionAuditLog subcollection write error:', err);
+        auditDocFallback = newAuditEntries;
+        showToastMsg('⚠️ Deletion audit entry saved to the main record only — check connection.');
+      }
+    }
+
+    // DOC write — multiDayJobs (Phase 1), inspections (Phase 3) and
+    // activityLog (Phase 4) are substituted with their FROZEN doc-base refs:
+    // pre-migration this preserves the legacy in-doc copies so nothing is
+    // lost; after each one-time removal pass empties that base, this writes
+    // the empty value and the doc shrinks. No second code change is needed
+    // for the cutover.
     // Push Month: the DOC only ever stores the CURRENT (unpushed) month's
     // performance. Strip any date belonging to a pushed month from the doc
     // write — those live on their performanceMonths/{YYYY-MM} sheet. This
@@ -2137,13 +2383,27 @@ export default function App() {
       if (archivedSchedSet.has(date.slice(0, 7))) continue;
       docSchedules[date] = crews;
     }
-    const docPayload = {
+    const docPayload: Record<string, unknown> = {
       ...safeData,
       performance: docPerformance,
       schedules: docSchedules,
       multiDayJobs: docMultiDayJobsRef.current,
       inspections: docInspectionsRef.current,
+      // Trimmed legacy bases, plus anything the subcollection writes above
+      // failed to persist (normally empty).
+      activityLog: [...activityDocFallback, ...trimmedDocActivityBase],
+      deletionAuditLog: [...auditDocFallback, ...normalizedAuditLog],
     };
+    // Every field in SUBCOLLECTION_ONLY_FIELDS is READ from its own
+    // subcollection (the overlay block in the main snapshot handler assigns
+    // each one from its sub*Ref), so the copy in appData is never the source
+    // of truth. Without this delete the spread above would write that copy
+    // straight back into the doc on every save — which is exactly what it
+    // used to do, quietly re-creating ~74 KB of duplicate data that nothing
+    // reads. Deleting the KEY (rather than setting undefined/{}) matters:
+    // the write below is a full setDoc replace, so an absent key removes the
+    // field from the document outright.
+    for (const k of SUBCOLLECTION_ONLY_FIELDS) delete docPayload[k];
     // Scrubber: Firestore does not allow 'undefined'. Convert to null or remove.
     const cleanData = JSON.parse(JSON.stringify(docPayload, (key, value) =>
       value === undefined ? null : value
