@@ -15,9 +15,50 @@ const FREE_TIER = 1_073_741_824;  // 1 GiB Firestore free tier
 const SAMPLE = 20;                // docs sampled per collection for avg size
 const SUPER_ADMIN = "marcoguidopalermo@gmail.com";  // warnings are Marco-only
 
-// Byte length of a value's JSON serialization (approximates stored size).
-function jsonBytes(v: unknown): number {
-  try { return Buffer.byteLength(JSON.stringify(v ?? null), "utf8"); } catch { return 0; }
+// ── Firestore's REAL storage sizing ────────────────────────────────────────
+// https://firebase.google.com/docs/firestore/storage-size
+//
+// This used to be `Buffer.byteLength(JSON.stringify(v))`. JSON length is NOT
+// how Firestore charges: it counts quotes, commas, braces and full decimal
+// number text, none of which are stored. Measured against the live appData
+// doc it read 838,260 B where the true size was 732,103 B — 14% high, which
+// showed 79.9% of the 1 MiB cap when the document was actually at 69.8%. A
+// gauge that errs toward the alarm is worse than no gauge, so it now applies
+// the documented per-type rules.
+const u8 = (s: string): number => Buffer.byteLength(s, "utf8");
+
+function valueBytes(v: unknown): number {
+  if (v === null || v === undefined) return 1;
+  if (typeof v === "boolean") return 1;
+  if (typeof v === "number") return 8;            // integer and double alike
+  if (typeof v === "string") return u8(v) + 1;
+  if (v instanceof admin.firestore.Timestamp) return 8;
+  if (v instanceof admin.firestore.GeoPoint) return 16;
+  if (v instanceof admin.firestore.DocumentReference) return docNameBytes(v.path);
+  if (Buffer.isBuffer(v)) return v.length;
+  if (Array.isArray(v)) return v.reduce((s: number, e) => s + valueBytes(e), 0);
+  if (typeof v === "object") {
+    let s = 0;
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      s += u8(k) + 1 + valueBytes(val);           // map key costs name + 1
+    }
+    return s;
+  }
+  return 0;
+}
+
+// Document name size: each collection/document id in the path costs its UTF-8
+// length + 1, plus 16 bytes.
+function docNameBytes(path: string): number {
+  return path.split("/").reduce((s, seg) => s + u8(seg) + 1, 0) + 16;
+}
+
+// Total stored size of a document: name + fields (each name + 1 + value)
+// + 32 bytes of per-document overhead.
+function documentBytes(data: Record<string, unknown>, path: string): number {
+  let s = docNameBytes(path) + 32;
+  for (const [k, v] of Object.entries(data)) s += u8(k) + 1 + valueBytes(v);
+  return s;
 }
 
 // count() aggregate + sampled average doc size → {docs, bytes estimate}.
@@ -32,7 +73,7 @@ async function measureCollection(
     if (docs === 0) return { name, docs: 0, bytes: 0 };
     const sample = await col.limit(SAMPLE).get();
     let sum = 0;
-    for (const d of sample.docs) sum += jsonBytes(d.data());
+    for (const d of sample.docs) sum += documentBytes(d.data(), d.ref.path);
     const avg = sample.size ? sum / sample.size : 0;
     return { name, docs, bytes: Math.round(avg * docs) };
   } catch (e) {
@@ -46,13 +87,16 @@ export async function runStorageMeasurement(
 ): Promise<void> {
   const PUB = `artifacts/${appId}/public/data`;
 
-  // ── Headline: the appData main doc's serialized size vs the 1 MiB cap ──
-  const mainSnap = await db.doc(`${PUB}/appData/main`).get();
+  // ── Headline: the appData main doc's STORED size vs the 1 MiB cap ──
+  const mainPath = `${PUB}/appData/main`;
+  const mainSnap = await db.doc(mainPath).get();
   const mainData = mainSnap.data() || {};
-  const mainBytes = jsonBytes(mainData);
+  const mainBytes = documentBytes(mainData, mainPath);
   // Largest fields on the main doc — so the card can point at what to trim.
+  // Field cost is its name + 1 + the value, matching how the total is built,
+  // so the parts sum to the whole (less the fixed name + 32 B overhead).
   const fieldSizes = Object.entries(mainData)
-    .map(([k, v]) => ({ field: k, bytes: jsonBytes(v) }))
+    .map(([k, v]) => ({ field: k, bytes: u8(k) + 1 + valueBytes(v) }))
     .sort((a, b) => b.bytes - a.bytes)
     .slice(0, 6);
 
