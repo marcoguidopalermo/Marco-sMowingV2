@@ -175,7 +175,8 @@ export function newContract(args: {
   return withDerived({
     id: args.id,
     season,
-    status: 'draft',
+    status: 'quoted',
+    documents: [],
     createdAt: now,
     updatedAt: now,
     createdBy: args.createdBy,
@@ -235,6 +236,14 @@ export function migrateContract(raw: any): SnowContract {
     const quoteDate = str(raw.quoteDate) || ymd(num(raw.createdAt) || Date.now());
     return withDerived({
       ...raw,
+      // A record can be the CURRENT shape and still carry a pre-rename status:
+      // 'serviceLevel' arrived long before the pipeline was renamed, so this
+      // branch sees plenty of 'draft'/'signed' values. Normalizing only in the
+      // legacy branch below would leave those showing a status with no label.
+      status: normalizeStatus(raw.status),
+      approvedAt: raw.approvedAt ?? raw.signedAt,
+      approvedBy: raw.approvedBy ?? raw.signedBy,
+      documents: Array.isArray(raw.documents) ? raw.documents : [],
       quoteDate,
       validUntil: str(raw.validUntil) || validUntilFrom(quoteDate),
       scope: { plowArea: '', shovelArea: '', showMap: true, mapImages: [], ...oldScope },
@@ -254,10 +263,21 @@ export function migrateContract(raw: any): SnowContract {
   return withDerived({
     id: str(raw.id),
     season,
-    status: (str(raw.status) || 'draft') as SnowContractStatus,
+    status: normalizeStatus(raw.status),
     sentAt: raw.sentAt,
+    sentBy: raw.sentBy,
+    // signedAt/signedBy were the approval stamp before the rename. Carry them
+    // into the new fields when the new ones are absent, and keep the originals
+    // so nothing stored is lost.
+    approvedAt: raw.approvedAt ?? raw.signedAt,
+    approvedBy: raw.approvedBy ?? raw.signedBy,
+    bookedAt: raw.bookedAt,
+    bookedBy: raw.bookedBy,
+    declinedAt: raw.declinedAt,
+    declinedBy: raw.declinedBy,
     signedAt: raw.signedAt,
     signedBy: raw.signedBy,
+    documents: Array.isArray(raw.documents) ? raw.documents : [],
     createdAt: num(raw.createdAt) || Date.now(),
     updatedAt: num(raw.updatedAt) || Date.now(),
     createdBy: str(raw.createdBy),
@@ -340,10 +360,21 @@ export function duplicateForNextSeason(
     ...src,
     id: args.id,
     season,
-    status: 'draft',
+    // A renewal is a NEW quote: it starts at the top of the pipeline with
+    // every stage stamp cleared, and does NOT inherit last season's attached
+    // paper — those PDFs are the previous agreement, not this one.
+    status: 'quoted',
     sentAt: undefined,
+    sentBy: undefined,
+    approvedAt: undefined,
+    approvedBy: undefined,
+    bookedAt: undefined,
+    bookedBy: undefined,
+    declinedAt: undefined,
+    declinedBy: undefined,
     signedAt: undefined,
     signedBy: undefined,
+    documents: [],
     createdAt: now,
     updatedAt: now,
     createdBy: args.createdBy,
@@ -388,5 +419,30 @@ export function headlinePrice(c: SnowContract): { amount: number; kind: 'seasona
 }
 
 export const STATUS_LABEL: Record<SnowContractStatus, string> = {
-  draft: 'Draft', sent: 'Sent', signed: 'Signed', declined: 'Declined', expired: 'Expired',
+  quoted: 'Quoted', sent: 'Sent', approved: 'Approved', booked: 'Booked',
+  declined: 'Declined', expired: 'Expired',
 };
+
+// The forward pipeline, in order. DECLINED and EXPIRED are deliberately NOT in
+// it: they are off-ramps reachable from any stage, not steps along the way, so
+// counting them as pipeline stages would imply a progression that doesn't
+// exist. The list renders its counts from this array, so adding a stage here
+// adds it to the strip.
+export const STATUS_FLOW: SnowContractStatus[] = ['quoted', 'sent', 'approved', 'booked'];
+export const STATUS_OFFRAMP: SnowContractStatus[] = ['declined', 'expired'];
+
+// Legacy status values, mapped on read. 'draft' predates the rename and
+// 'signed' predates the split between approval (the client's decision) and the
+// signed paper (now an attached PDF). Anything unrecognised — including a
+// missing status — lands on 'quoted', which is the safe end of the pipeline:
+// it can only understate progress, never claim a contract is booked when it
+// isn't.
+const LEGACY_STATUS: Record<string, SnowContractStatus> = {
+  draft: 'quoted',
+  signed: 'approved',
+};
+export function normalizeStatus(raw: unknown): SnowContractStatus {
+  const s = String(raw ?? '').trim();
+  if ((STATUS_LABEL as Record<string, string>)[s]) return s as SnowContractStatus;
+  return LEGACY_STATUS[s] || 'quoted';
+}

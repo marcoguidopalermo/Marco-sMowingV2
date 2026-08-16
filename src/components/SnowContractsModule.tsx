@@ -8,7 +8,7 @@
 // mode — not a second layout, the same component.
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { SnowContract } from '../types';
+import type { SnowContract, StoredFile } from '../types';
 import SnowContractList from './SnowContractList';
 import SnowContractEditor from './SnowContractEditor';
 import SnowContractDocument from './SnowContractDocument';
@@ -19,6 +19,8 @@ interface Props {
   onCreate: () => Promise<string | null>;
   onDuplicate: (id: string) => Promise<string | null>;
   onUploadMap: (contractId: string, file: File) => Promise<string | null>;
+  onUploadDocument: (contractId: string, file: File, onProgress: (pct: number) => void) => Promise<StoredFile | null>;
+  onDeleteDocument: (path: string) => Promise<void>;
   canEdit: boolean;
   currentUser: { email: string; name: string };
   today: string;
@@ -40,7 +42,8 @@ export function printContract(c: SnowContract) {
 }
 
 export default function SnowContractsModule({
-  contracts, onSave, onCreate, onDuplicate, onUploadMap, canEdit, currentUser, today,
+  contracts, onSave, onCreate, onDuplicate, onUploadMap,
+  onUploadDocument, onDeleteDocument, canEdit, currentUser, today,
 }: Props) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [saving, setSaving] = useState<'idle' | 'saving' | 'saved'>('idle');
@@ -62,6 +65,8 @@ export default function SnowContractsModule({
         onPrint={() => printContract(open)}
         onDuplicate={async () => { const id = await onDuplicate(open.id); if (id) setOpenId(id); }}
         onUploadMap={(f) => onUploadMap(open.id, f)}
+        onUploadDocument={(f, p) => onUploadDocument(open.id, f, p)}
+        onDeleteDocument={onDeleteDocument}
         canEdit={canEdit}
         saving={saving}
         currentUser={currentUser}

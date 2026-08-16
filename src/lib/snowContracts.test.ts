@@ -6,7 +6,7 @@ import {
   seasonFor, termFor, prepayDeadlineFor, validUntilFrom, instalmentAmount, prepayTotal,
   calledInRate, selectedPrice, withDerived, newContract, migrateContract, needsRequote,
   duplicateForNextSeason, headlinePrice, DEFAULT_CGL,
-  photoView, photoStyle, photoSlackPx, clampPhotoView,
+  photoView, photoStyle, photoSlackPx, clampPhotoView, STATUS_LABEL,
 } from './snowContracts';
 
 
@@ -221,10 +221,64 @@ test('hidden sections survive; the section that no longer exists is dropped', ()
   const c = migrateContract(legacy);
   assert.deepEqual(c.hiddenSections, ['damage']);
 });
-test('signed status and its stamps are untouched — migration is not an edit', () => {
+test('legacy "signed" maps to "approved", carrying its stamps and losing nothing', () => {
   const c = migrateContract(legacy);
-  assert.equal(c.status, 'signed');
+  // The rename is the ONE thing migration now changes about status: 'signed'
+  // described both the client's decision and the paper, and those split when
+  // the signed copy became an attached PDF.
+  assert.equal(c.status, 'approved');
+  // Everything else about the record is still untouched — migration is not an edit.
   assert.equal(c.createdAt, legacy.createdAt);
+});
+test('legacy "draft" maps to "quoted"; an unknown status lands on "quoted"', () => {
+  assert.equal(migrateContract({ ...legacy, status: 'draft' }).status, 'quoted');
+  assert.equal(migrateContract({ ...legacy, status: 'nonsense' }).status, 'quoted');
+  assert.equal(migrateContract({ ...legacy, status: undefined }).status, 'quoted');
+});
+test('a current status passes through untouched', () => {
+  for (const s of ['quoted', 'sent', 'approved', 'booked', 'declined', 'expired']) {
+    assert.equal(migrateContract({ ...legacy, status: s }).status, s);
+  }
+});
+test('the approval stamp is carried from signedAt/signedBy, which are also kept', () => {
+  const at = Date.parse('2025-10-04T15:00:00Z');
+  const c = migrateContract({ ...legacy, signedAt: at, signedBy: 'Marco' });
+  assert.equal(c.approvedAt, at);
+  assert.equal(c.approvedBy, 'Marco');
+  assert.equal(c.signedAt, at);      // original kept — nothing stored is dropped
+  assert.equal(c.signedBy, 'Marco');
+});
+test('an explicit approvedAt wins over the legacy signedAt', () => {
+  const signed = Date.parse('2025-10-04T15:00:00Z');
+  const approved = Date.parse('2025-10-05T15:00:00Z');
+  const c = migrateContract({ ...legacy, signedAt: signed, approvedAt: approved, approvedBy: 'Jane' });
+  assert.equal(c.approvedAt, approved);
+  assert.equal(c.approvedBy, 'Jane');
+});
+// REGRESSION: migrateContract has a fast path for records already in the
+// current shape, which spreads ...raw. A record can be the current shape and
+// STILL carry a pre-rename status — 'serviceLevel' predates the pipeline
+// rename by months — so normalizing only in the legacy branch left live
+// contracts sitting on 'draft', rendering a status chip with no label.
+test('a CURRENT-shape record with a legacy status is still normalized', () => {
+  const c: any = fresh();
+  c.status = 'draft';
+  assert.equal(migrateContract(c).status, 'quoted');
+  const d: any = fresh();
+  d.status = 'signed';
+  d.signedAt = NOW;
+  d.signedBy = 'Marco';
+  const m = migrateContract(d);
+  assert.equal(m.status, 'approved');
+  assert.equal(m.approvedAt, NOW);
+  assert.equal(m.approvedBy, 'Marco');
+});
+test('every migrated status has a label — no chip can render blank', () => {
+  for (const s of ['draft', 'signed', 'quoted', 'sent', 'approved', 'booked', 'declined', 'expired', 'nonsense', undefined]) {
+    const c: any = fresh();
+    c.status = s;
+    assert.ok(STATUS_LABEL[migrateContract(c).status], `no label for stored status ${String(s)}`);
+  }
 });
 test('a CURRENT contract passes through unchanged, and gains any newer field', () => {
   const c = fresh();
@@ -258,14 +312,35 @@ test('CLEARS every price, the option and the status stamps', () => {
   src.pricing.levels[2] = { seasonal: 24000, perVisit: 300 };
   src.pricing.selectedOption = 'A';
   src.pricing.optionAPayment = 'instalments';
-  src.status = 'signed';
+  src.status = 'booked';
+  src.sentAt = NOW; src.sentBy = 'Marco';
+  src.approvedAt = NOW; src.approvedBy = 'Marco';
+  src.bookedAt = NOW; src.bookedBy = 'Marco';
   src.signedAt = NOW;
+  src.documents = [{
+    id: 'scd-1', label: 'signed_copy',
+    file: {
+      url: 'https://example.test/x.pdf', path: 'snowContracts/c1/x.pdf', name: 'x.pdf',
+      size: 1234, contentType: 'application/pdf', uploadedAt: NOW,
+      uploadedBy: { email: 'marco@example.test', name: 'Marco' }, kind: 'pdf',
+    },
+  }];
   const next = duplicateForNextSeason(src, { id: 'c2', createdBy: 'marco', now: NOW });
   assert.equal(next.pricing.levels[2].seasonal, 0);
   assert.equal(next.pricing.selectedOption, null);
   assert.equal(next.pricing.optionAPayment, null);
-  assert.equal(next.status, 'draft');
+  // A renewal starts at the top of the pipeline with every stamp cleared.
+  assert.equal(next.status, 'quoted');
+  assert.equal(next.sentAt, undefined);
+  assert.equal(next.sentBy, undefined);
+  assert.equal(next.approvedAt, undefined);
+  assert.equal(next.approvedBy, undefined);
+  assert.equal(next.bookedAt, undefined);
+  assert.equal(next.bookedBy, undefined);
   assert.equal(next.signedAt, undefined);
+  // And it does NOT inherit last season's paper — those PDFs are the previous
+  // agreement, not this one.
+  assert.deepEqual(next.documents, []);
 });
 test('last season’s figures ride along for reference only', () => {
   const src = fresh();

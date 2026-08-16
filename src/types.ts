@@ -1047,7 +1047,35 @@ export interface HoursBankEntry {
 // One document per client per season in the snowContracts collection. Replaces
 // a standalone HTML file that was filled in, printed and emailed but saved
 // nothing — the point of this record is that the contract survives.
-export type SnowContractStatus = 'draft' | 'sent' | 'signed' | 'declined' | 'expired';
+// The pipeline ONE record moves along — a contract is never re-created at a
+// stage. QUOTED → SENT → APPROVED → BOOKED, with DECLINED as an off-ramp from
+// any stage and EXPIRED for a quote whose validUntil passed unanswered.
+//
+// Renamed from the original draft/sent/signed/declined/expired set:
+// 'draft' → 'quoted' (the record IS a quote from the moment it exists, and
+// "draft" wrongly implied it wasn't real yet) and 'signed' → 'approved'
+// (approval is the client's decision; the signed paper is now an attached PDF,
+// which is a separate fact). BOOKED is new: approved means they said yes,
+// booked means it is on the route. Legacy values are migrated on read by
+// normalizeStatus in lib/snowContracts — nothing stored is orphaned.
+export type SnowContractStatus =
+  | 'quoted' | 'sent' | 'approved' | 'booked' | 'declined' | 'expired';
+
+// What an attached PDF IS. The workflow is: build the document in the
+// standalone HTML builder, print to PDF, attach it here — so the record keeps
+// the pipeline and the actual paper that was sent or signed.
+export type SnowContractDocLabel = 'sent_copy' | 'signed_copy' | 'other';
+
+export interface SnowContractDocument {
+  id: string;
+  label: SnowContractDocLabel;
+  // Free text shown alongside the label; the only place 'other' can explain
+  // itself, and optional on the two fixed labels.
+  note?: string;
+  // Bytes live in Storage under snowContracts/{contractId}/ — Firestore holds
+  // this metadata only, same as every other upload surface.
+  file: StoredFile;
+}
 
 // ── SERVICE LEVEL ──────────────────────────────────────────────────────────
 // The Client picks ONE. This replaced a per-service Included/On-call/Excluded
@@ -1093,9 +1121,25 @@ export interface SnowContract {
   id: string;
   season: string;                 // "2026/2027"
   status: SnowContractStatus;
+  // Who and when, stamped as the record crosses each stage. Set once on entry
+  // and never cleared by a later move, so a booked contract still shows when
+  // it was sent and approved.
   sentAt?: number;
+  sentBy?: string;
+  approvedAt?: number;
+  approvedBy?: string;
+  bookedAt?: number;
+  bookedBy?: string;
+  declinedAt?: number;
+  declinedBy?: string;
+  /** @deprecated pre-BOOKED field, migrated into approvedAt/approvedBy on
+   *  read. Kept so an old record does not silently lose who approved it. */
   signedAt?: number;
-  signedBy?: string;              // who marked it signed — contracts are paper
+  /** @deprecated migrated into approvedBy. */
+  signedBy?: string;
+  // Attached PDFs — the sent and signed paper for this contract. Multiple
+  // allowed; a contract commonly gains a sent copy and then a signed one.
+  documents?: SnowContractDocument[];
   createdAt: number;
   updatedAt: number;
   createdBy: string;

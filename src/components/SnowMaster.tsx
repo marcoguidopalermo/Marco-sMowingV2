@@ -52,6 +52,8 @@ interface Props {
   onCreateSnowContract?: () => Promise<string | null>;
   onDuplicateSnowContract?: (id: string) => Promise<string | null>;
   onUploadSnowContractMap?: (contractId: string, file: File) => Promise<string | null>;
+  onUploadSnowContractDoc?: (contractId: string, file: File, onProgress: (pct: number) => void) => Promise<import('../types').StoredFile | null>;
+  onDeleteSnowContractDoc?: (path: string) => Promise<void>;
   canEditSnowContracts?: boolean;
 }
 
@@ -59,7 +61,7 @@ export default function SnowMaster({
   quotes, currentUser, isAdmin, onSave, onDelete, initial,
   isSuperAdmin = false, config = SNOW_CONFIG_V1, activeVersion = 'snow-v1', configs = {},
   snowContracts = {}, onSaveSnowContract, onCreateSnowContract, onDuplicateSnowContract,
-  onUploadSnowContractMap, canEditSnowContracts = false,
+  onUploadSnowContractMap, onUploadSnowContractDoc, onDeleteSnowContractDoc, canEditSnowContracts = false,
   onSaveConfig, onRevertConfig,
 }: Props) {
   const [sub, setSub] = useState<'quote' | 'saved' | 'report' | 'contracts' | 'rates'>('quote');
@@ -183,6 +185,8 @@ export default function SnowMaster({
           onCreate={onCreateSnowContract || (async () => null)}
           onDuplicate={onDuplicateSnowContract || (async () => null)}
           onUploadMap={onUploadSnowContractMap || (async () => null)}
+          onUploadDocument={onUploadSnowContractDoc || (async () => null)}
+          onDeleteDocument={onDeleteSnowContractDoc || (async () => {})}
           canEdit={canEditSnowContracts}
           currentUser={currentUser}
           today={new Date().toISOString().slice(0, 10)}

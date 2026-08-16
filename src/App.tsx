@@ -3079,6 +3079,40 @@ export default function App() {
       return null;
     }
   };
+  // Contract ATTACHMENTS (the sent/signed PDF). Same Storage prefix as the
+  // site maps — snowContracts/{id}/ is already permitted by storage.rules —
+  // but returns the whole StoredFile rather than just a URL, because the
+  // record lists name, size, uploader and needs the path to delete.
+  const uploadSnowContractDoc = async (
+    contractId: string, file: File, onProgress: (pct: number) => void,
+  ): Promise<import('./types').StoredFile | null> => {
+    if (!canEditSnowContracts) { showToastMsg(PERMISSION_DENIED); return null; }
+    try {
+      const { uploadFile } = await import('./lib/storage');
+      return await uploadFile(`snowContracts/${contractId}`, file, {
+        uploadedBy: { email: displayEmail, name: displayName },
+        // A contract PDF must never be re-encoded. skipCompression is a no-op
+        // for PDFs (only images are compressed), but an attached scan of a
+        // signed page is an image and must stay legible at full resolution.
+        skipCompression: true,
+        onProgress,
+      });
+    } catch (err: any) {
+      showToastMsg(`Upload failed: ${err?.message || String(err)}`);
+      return null;
+    }
+  };
+  const deleteSnowContractDoc = async (path: string): Promise<void> => {
+    if (!canEditSnowContracts) { showToastMsg(PERMISSION_DENIED); return; }
+    try {
+      const { deleteFile } = await import('./lib/storage');
+      await deleteFile(path);
+    } catch (err: any) {
+      // The metadata is already off the record; a failed byte delete leaves an
+      // orphan object, not a broken contract. Say so rather than fail silently.
+      showToastMsg(`Attachment removed from the contract, but the file could not be deleted: ${err?.message || String(err)}`);
+    }
+  };
 
   // Capacity settings (weekly BH + colour thresholds) saved straight from the
   // Capacity view. Same settings block Manage Resources edits — bounded,
@@ -6420,6 +6454,8 @@ export default function App() {
           onCreateSnowContract={createSnowContract}
           onDuplicateSnowContract={duplicateSnowContract}
           onUploadSnowContractMap={uploadSnowContractMap}
+          onUploadSnowContractDoc={uploadSnowContractDoc}
+          onDeleteSnowContractDoc={deleteSnowContractDoc}
           canEditSnowContracts={canEditSnowContracts}
         />
       ) : currentView === 'contracting' ? (

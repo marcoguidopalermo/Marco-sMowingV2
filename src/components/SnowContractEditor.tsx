@@ -17,8 +17,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ArrowLeft, Check, ChevronDown, Loader2, Plus, Trash2, Printer, Copy, Ruler, Upload, X,
+  Paperclip, FileText,
 } from 'lucide-react';
-import type { SnowContract, SnowContractStatus, PropertyMeasurement, SnowPhotoView } from '../types';
+import type {
+  SnowContract, SnowContractStatus, PropertyMeasurement, SnowPhotoView,
+  SnowContractDocLabel, StoredFile,
+} from '../types';
 import SnowContractDocument from './SnowContractDocument';
 import PropertyMeasureTool from './PropertyMeasureTool';
 import {
@@ -36,6 +40,10 @@ interface Props {
   onPrint: () => void;
   onDuplicate: () => void;
   onUploadMap: (file: File) => Promise<string | null>;
+  // Attachments need the FULL StoredFile (name, size, uploader, path for
+  // delete), not just a URL like the map upload — the record lists them.
+  onUploadDocument: (file: File, onProgress: (pct: number) => void) => Promise<StoredFile | null>;
+  onDeleteDocument: (path: string) => Promise<void>;
   canEdit: boolean;
   saving: 'idle' | 'saving' | 'saved';
   currentUser: { email: string; name: string };
@@ -49,6 +57,18 @@ const inputCls = 'w-full min-h-[44px] rounded-lg border border-slate-300 bg-whit
   + 'focus:border-sky-500 focus:ring-2 focus:ring-sky-500/30 '
   + 'disabled:bg-slate-50 disabled:text-slate-500';
 const areaCls = `${inputCls} min-h-[92px] resize-y`;
+
+// Stage stamps and upload times — short form, no year unless it isn't this one.
+const stampDate = (ms: number) => {
+  const d = new Date(ms);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString('en-US',
+    sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+};
+const fileSize = (b: number) => (b >= 1024 * 1024 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+const DOC_LABEL: Record<import('../types').SnowContractDocLabel, string> = {
+  sent_copy: 'Sent copy', signed_copy: 'Signed copy', other: 'Other',
+};
 
 const L = ({ children }: { children: ReactNode }) => (
   <span className="mb-1.5 block text-[11px] font-black uppercase tracking-wider text-slate-500">{children}</span>
@@ -184,11 +204,16 @@ function PhotoFrame({
 }
 
 export default function SnowContractEditor({
-  contract, onChange, onBack, onPrint, onDuplicate, onUploadMap, canEdit, saving, currentUser,
+  contract, onChange, onBack, onPrint, onDuplicate, onUploadMap,
+  onUploadDocument, onDeleteDocument, canEdit, saving, currentUser,
 }: Props) {
   const [pane, setPane] = useState<'form' | 'preview'>('form');
   const [measuring, setMeasuring] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // Attachment upload: which label the next file gets, and live progress.
+  const [docLabel, setDocLabel] = useState<SnowContractDocLabel>('sent_copy');
+  const [docBusy, setDocBusy] = useState(false);
+  const [docPct, setDocPct] = useState(0);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const fileRef = useRef<HTMLInputElement>(null);
   // ONE file input, two destinations — which one the last click was for.
@@ -359,12 +384,34 @@ export default function SnowContractEditor({
             onChange={e => patch(d => {
               const s = e.target.value as SnowContractStatus;
               d.status = s;
-              if (s === 'sent' && !d.sentAt) d.sentAt = Date.now();
-              if (s === 'signed') { d.signedAt = Date.now(); d.signedBy = currentUser.name; }
+              // Stamp on ENTRY to a stage, first time only. Never cleared by a
+              // later move: a booked contract still shows when it was sent and
+              // when it was approved, which is the point of the pipeline.
+              const now = Date.now();
+              if (s === 'sent' && !d.sentAt) { d.sentAt = now; d.sentBy = currentUser.name; }
+              if (s === 'approved' && !d.approvedAt) { d.approvedAt = now; d.approvedBy = currentUser.name; }
+              if (s === 'booked') {
+                if (!d.bookedAt) { d.bookedAt = now; d.bookedBy = currentUser.name; }
+                // Booked implies approved. Backfill the earlier stamp if the
+                // contract was moved straight here, so the record can't show a
+                // booking with no approval behind it.
+                if (!d.approvedAt) { d.approvedAt = now; d.approvedBy = currentUser.name; }
+              }
+              if (s === 'declined' && !d.declinedAt) { d.declinedAt = now; d.declinedBy = currentUser.name; }
             })}>
             {(Object.keys(STATUS_LABEL) as SnowContractStatus[]).map(s =>
               <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
           </select>
+          {/* The trail, not just the current stage — each stamp stays put once
+              set, so this reads as the contract's history. */}
+          {(c.sentAt || c.approvedAt || c.bookedAt || c.declinedAt) && (
+            <div className="mt-1.5 space-y-0.5 text-[10px] font-bold text-slate-500">
+              {c.sentAt && <div>Sent {stampDate(c.sentAt)}{c.sentBy ? ` by ${c.sentBy}` : ''}</div>}
+              {c.approvedAt && <div>Approved {stampDate(c.approvedAt)}{c.approvedBy ? ` by ${c.approvedBy}` : ''}</div>}
+              {c.bookedAt && <div className="text-emerald-700">Booked {stampDate(c.bookedAt)}{c.bookedBy ? ` by ${c.bookedBy}` : ''}</div>}
+              {c.declinedAt && <div className="text-rose-700">Declined {stampDate(c.declinedAt)}{c.declinedBy ? ` by ${c.declinedBy}` : ''}</div>}
+            </div>
+          )}
         </Field>
         <Field label="Season">
           <input disabled={!canEdit} className={inputCls} defaultValue={c.season}
@@ -394,6 +441,84 @@ export default function SnowContractEditor({
           <input type="date" disabled={!canEdit} className={inputCls} defaultValue={c.term.end}
             onBlur={e => patch(d => { d.term.end = e.target.value; })} />
         </Field>
+      </div>
+
+      {/* ATTACHED DOCUMENTS — the signed and sent paper for this contract.
+          The working flow is: build the document in the standalone HTML
+          builder, print it to PDF, attach it here. So this sits high in the
+          form, next to the status it evidences, rather than buried at the
+          bottom. Bytes go to Storage; the record keeps metadata only. */}
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <Paperclip className="h-4 w-4 text-slate-700" />
+          <h4 className="text-sm font-black text-slate-900">Attached documents</h4>
+          <span className="text-[11px] font-bold text-slate-400">
+            {(c.documents || []).length === 0 ? 'none yet' : `${(c.documents || []).length} attached`}
+          </span>
+          {canEdit && (
+            <div className="ml-auto flex items-center gap-2">
+              <select value={docLabel} onChange={e => setDocLabel(e.target.value as SnowContractDocLabel)}
+                className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold text-slate-700">
+                {(Object.keys(DOC_LABEL) as SnowContractDocLabel[]).map(k =>
+                  <option key={k} value={k}>{DOC_LABEL[k]}</option>)}
+              </select>
+              <label className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-black uppercase tracking-widest text-white ${docBusy ? 'bg-slate-400' : 'bg-slate-800'}`}>
+                {docBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                {docBusy ? `${docPct}%` : 'Attach PDF'}
+                <input type="file" accept="application/pdf,image/*" className="hidden" disabled={docBusy}
+                  onChange={async e => {
+                    const f = e.target.files?.[0];
+                    e.target.value = '';           // allow re-picking the same file
+                    if (!f) return;
+                    setDocBusy(true); setDocPct(0);
+                    const stored = await onUploadDocument(f, p => setDocPct(p));
+                    setDocBusy(false);
+                    if (!stored) return;           // handler already surfaced why
+                    patch(d => {
+                      d.documents = [
+                        ...(d.documents || []),
+                        { id: `scd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, label: docLabel, file: stored },
+                      ];
+                    });
+                  }} />
+              </label>
+            </div>
+          )}
+        </div>
+        {(c.documents || []).length === 0 ? (
+          <p className="text-[12px] text-slate-500">
+            Print the contract to PDF from the builder, then attach the sent and signed copies here.
+          </p>
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {(c.documents || []).map(d => (
+              <li key={d.id} className="flex items-center gap-3 py-2">
+                <FileText className="h-4 w-4 shrink-0 text-slate-400" />
+                <div className="min-w-0 flex-1">
+                  <a href={d.file.url} target="_blank" rel="noreferrer"
+                    className="block truncate text-[13px] font-bold text-sky-700 underline">
+                    {d.file.name}
+                  </a>
+                  <div className="text-[10px] font-bold text-slate-400">
+                    {DOC_LABEL[d.label]}{d.note ? ` · ${d.note}` : ''} · {fileSize(d.file.size)} ·
+                    {' '}{stampDate(d.file.uploadedAt)} by {d.file.uploadedBy?.name || d.file.uploadedBy?.email || 'unknown'}
+                  </div>
+                </div>
+                {canEdit && (
+                  <button type="button" title="Remove attachment"
+                    onClick={() => {
+                      if (!window.confirm(`Remove "${d.file.name}" from this contract?`)) return;
+                      patch(x => { x.documents = (x.documents || []).filter(y => y.id !== d.id); });
+                      void onDeleteDocument(d.file.path);
+                    }}
+                    className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600">
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* 1 · CLIENT DETAILS */}
