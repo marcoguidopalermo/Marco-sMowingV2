@@ -1,9 +1,9 @@
 // Contract site-map URL construction.
-//   npx tsx src/lib/snowContractMap.test.ts
+//   npm test -- snowContractMap
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { encodePath, staticMapUrl, hasMeasurementMap, areaLabel, servicedSqft } from './snowContractMap';
-let pass=0, fail=0;
-const test=(n:string,fn:()=>void)=>{try{fn();pass++;console.log('  ✓ '+n)}catch(e){fail++;console.error('  ✗ '+n+'\n      '+(e as Error).message)}};
+
 console.log('\nStatic map URL');
 test('encodePath matches Google’s documented example', () => {
   // The canonical example from Google's polyline algorithm docs.
@@ -66,6 +66,3 @@ test('serviced square footage counts plow and shovel, never storage or hazard', 
     exclusions:[ring()], totalSqft:0, measuredAt:1 } as any;
   assert.equal(servicedSqft(sq, m3), 100);   // 100 + 100 − 100
 });
-
-console.log('\n'+pass+' passed, '+fail+' failed\n');
-if (fail>0) process.exit(1);

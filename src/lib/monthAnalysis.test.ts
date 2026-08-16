@@ -1,9 +1,8 @@
 // Tests for the Month Sheets analysis layer.  npx tsx src/lib/monthAnalysis.test.ts
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { crewDayRows, monthStats, sortCrewDayRows, bhOf, ahOf } from './monthAnalysis';
 
-let pass = 0, fail = 0;
-const test = (n: string, fn: () => void) => { try { fn(); pass++; console.log(`  ✓ ${n}`); } catch (e) { fail++; console.error(`  ✗ ${n}\n      ${(e as Error).message}`); } };
 const cd = (division: string, crewNumber: number, bh: number, ah: number, status = 'approved') =>
   ({ division, crewNumber, isAdHoc: false, jobs: bh ? [{ bh }] : [], employeeAH: ah ? { e1: ah } : {}, approvalStatus: status } as any);
 
@@ -49,6 +48,3 @@ test('sortCrewDayRows: worst-first / best-first; null-AH rows last', () => {
   const best = sortCrewDayRows(rows, 'best');
   assert.equal(best[0].crewId, 'a');    // 125%
 });
-
-console.log(`\n${fail === 0 ? '✅' : '❌'} ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);

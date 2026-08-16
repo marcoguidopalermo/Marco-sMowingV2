@@ -1,13 +1,12 @@
 // Tests for month-end partial-job resolution helpers.
-//   npx tsx src/lib/multiDayResolution.test.ts
+//   npm test -- multiDayResolution
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   scanBlockingPartialJobs, remainingBHOf, creditedBHOf, creditedPctOf,
   voidLedger, carryLedger, completeLedger, monthResolutionSummary,
 } from './multiDayResolution';
 
-let pass = 0, fail = 0;
-const test = (n: string, fn: () => void) => { try { fn(); pass++; console.log(`  ✓ ${n}`); } catch (e) { fail++; console.error(`  ✗ ${n}\n      ${(e as Error).message}`); } };
 const log = (o: any) => ({ division: 'Lawn Division', crewNumber: 1, isAdHoc: false, jobs: [], employeeAH: {}, ...o } as any);
 
 // A visit: total 35 BH, ~85% credited over prior days = 29.7, remaining 5.3.
@@ -101,6 +100,3 @@ test('summary counts N + BH per kind for the month', () => {
   assert.equal(s.carried.n, 1);
   assert.equal(s.completed.n, 0);    // d is August
 });
-
-console.log(`\n${fail === 0 ? '✅' : '❌'} ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);

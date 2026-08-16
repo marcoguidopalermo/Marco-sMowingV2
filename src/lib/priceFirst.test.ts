@@ -1,5 +1,6 @@
 // Price-first quoting — the working, the precision, and Marco's example.
-//   npx tsx src/lib/priceFirst.test.ts
+//   npm test -- priceFirst
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   priceFirstWorking, bhFromPrice, priceFromBH, computeQuote, round2,
@@ -7,11 +8,6 @@ import {
 } from './salesMaster';
 import type { SalesRates } from '../types';
 
-let pass = 0, fail = 0;
-const test = (n: string, fn: () => void) => {
-  try { fn(); pass++; console.log(`  ✓ ${n}`); }
-  catch (e) { fail++; console.error(`  ✗ ${n}\n      ${(e as Error).message}`); }
-};
 
 // Marco's example: 10 yards crusher fines, target price $4,500. Crusher fines
 // live on the live rate sheet; the figures below are the ones in his own
@@ -116,6 +112,3 @@ test('profit figures follow the price-first BH', () => {
   assert.equal(q.materialsCost, 420);
   assert.equal(round2(q.bh * 30), 975);
 });
-
-console.log(`\n${pass} passed, ${fail} failed\n`);
-if (fail > 0) process.exit(1);

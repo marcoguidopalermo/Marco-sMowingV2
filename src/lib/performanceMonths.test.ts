@@ -1,15 +1,11 @@
 // Tests for the month-finalize reconciliation: content-less placeholder
 // crew-days must NOT gate a month, but real unsettled work must.
-//   npx tsx src/lib/performanceMonths.test.ts
+//   npm test -- performanceMonths
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { monthSettlementStatus, logHasRealWork, logActualHours } from './performanceMonths';
 import { scanOutstandingCrewDays } from './approvalOversight';
 
-let pass = 0, fail = 0;
-const test = (name: string, fn: () => void) => {
-  try { fn(); pass++; console.log(`  ✓ ${name}`); }
-  catch (e) { fail++; console.error(`  ✗ ${name}\n      ${(e as Error).message}`); }
-};
 const log = (o: any) => ({ division: 'Lawn Division', crewNumber: 1, isAdHoc: false, jobs: [], employeeAH: {}, ...o } as any);
 
 console.log('performanceMonths — finalize reconciliation:');
@@ -71,6 +67,3 @@ test('the finalize gate and the outstanding banner agree on which days matter', 
   assert.deepEqual(gate, ['c1']);
   assert.deepEqual(banner, ['c1']); // placeholder c2 hidden from BOTH — reconciled
 });
-
-console.log(`\n${fail === 0 ? '✅' : '❌'} ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);

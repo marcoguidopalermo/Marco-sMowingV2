@@ -1,5 +1,6 @@
 // SnowMaster contract — defaults, derived values, migration, renewal.
-//   npx tsx src/lib/snowContracts.test.ts
+//   npm test -- snowContracts
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   seasonFor, termFor, prepayDeadlineFor, validUntilFrom, instalmentAmount, prepayTotal,
@@ -8,11 +9,6 @@ import {
   photoView, photoStyle, photoSlackPx, clampPhotoView,
 } from './snowContracts';
 
-let pass = 0, fail = 0;
-const test = (n: string, fn: () => void) => {
-  try { fn(); pass++; console.log(`  ✓ ${n}`); }
-  catch (e) { fail++; console.error(`  ✗ ${n}\n      ${(e as Error).message}`); }
-};
 
 const NOW = Date.parse('2026-08-07T12:00:00Z');
 const fresh = () => newContract({ id: 'c1', createdBy: 'marco', now: NOW, season: '2026/2027' });
@@ -306,6 +302,3 @@ test('no level chosen means no headline, however the levels are priced', () => {
   c.pricing.levels[2] = { seasonal: 24000, perVisit: 300 };
   assert.deepEqual(headlinePrice(c), { amount: 0, kind: null });
 });
-
-console.log(`\n${pass} passed, ${fail} failed\n`);
-if (fail > 0) process.exit(1);

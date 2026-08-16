@@ -1,5 +1,6 @@
 // Hours bank — the ledger's arithmetic and its append-only rules.
-//   npx tsx src/lib/hoursBank.test.ts
+//   npm test -- hoursBank
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import type { HoursBankEntry } from '../types';
 import {
@@ -8,11 +9,6 @@ import {
   validateHours, overdrawnBy, roundHours, signedHours, entryLine,
 } from './hoursBank';
 
-let pass = 0, fail = 0;
-const test = (n: string, fn: () => void) => {
-  try { fn(); pass++; console.log(`  ✓ ${n}`); }
-  catch (e) { fail++; console.error(`  ✗ ${n}\n      ${(e as Error).message}`); }
-};
 
 const RECORDER = { email: 'marco@x.com', name: 'Marco' };
 const stamp = (
@@ -177,6 +173,3 @@ test('a banked line reads as the brief asks', () => {
 test('a payout line names the date it went out', () => {
   assert.equal(entryLine(ledger[2]), 'Paid out 10.0 hrs — Aug 20 — recorded Aug 20 by Marco');
 });
-
-console.log(`\n${pass} passed, ${fail} failed\n`);
-if (fail > 0) process.exit(1);

@@ -1,11 +1,12 @@
 // Hours bank — RENDER smoke test.
-//   npx tsx src/components/hoursBankRender.test.tsx
+//   npm test -- hoursBankRender
 //
 // The arithmetic has its own tests (lib/hoursBank.test.ts). This asserts the
 // things only a render can tell you: that the components mount at all, and —
 // the part that matters — that the read-only surfaces contain no write path.
 // A ledger of money owed should not depend on someone remembering which prop
 // hides the buttons, so the absence of those buttons is a test.
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement as h } from 'react';
@@ -13,11 +14,6 @@ import type { Employee, HoursBankEntry } from '../types';
 import { HoursBankAdmin, HoursBankLedger, MyHoursBank } from './HoursBank';
 import { DEFAULT_PAY_PERIOD } from '../lib/payPeriods';
 
-let pass = 0, fail = 0;
-const test = (n: string, fn: () => void) => {
-  try { fn(); pass++; console.log(`  ✓ ${n}`); }
-  catch (e) { fail++; console.error(`  ✗ ${n}\n      ${(e as Error).message}`); }
-};
 
 const REC = { email: 'marco@x.com', name: 'Marco' };
 const AUG = (d: number) => Date.parse(`2026-08-${String(d).padStart(2, '0')}T12:00:00Z`);
@@ -118,6 +114,3 @@ test('a division-scoped manager sees only their own division’s ledgers', () =>
   assert.match(html, /5\.0 hrs/);            // the total is the scoped total
   assert.doesNotMatch(html, /17\.0 hrs/);
 });
-
-console.log(`\n${pass} passed, ${fail} failed\n`);
-if (fail > 0) process.exit(1);

@@ -1,5 +1,6 @@
 // Tests for the two capacity tools.
-//   npx tsx src/lib/capacity.test.ts
+//   npm test -- capacity
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   buildWeeks, mondayOf, bandFor, thresholdsOrDefault, ceilingFor, declaredFor,
@@ -9,11 +10,6 @@ import {
 } from './capacity';
 import type { AppData, CapacityForecast, CapacityForecastVisit, Crew, Employee, MultiDayJob } from '../types';
 
-let pass = 0, fail = 0;
-const test = (n: string, fn: () => void) => {
-  try { fn(); pass++; console.log(`  ✓ ${n}`); }
-  catch (e) { fail++; console.error(`  ✗ ${n}\n      ${(e as Error).message}`); }
-};
 
 // Anchor: Thursday 2026-08-06. Its week starts Monday 2026-08-03.
 const TODAY = '2026-08-06';
@@ -617,6 +613,3 @@ test('capacityOrDefault no longer drops assigneeMap', () => {
   const round = capacityOrDefault({ assigneeMap: { slot1: { division: 'Small Projects' } } });
   assert.deepEqual(round.assigneeMap, { slot1: { division: 'Small Projects' } });
 });
-
-console.log(`\n${pass} passed, ${fail} failed\n`);
-if (fail > 0) process.exit(1);

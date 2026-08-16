@@ -1,18 +1,14 @@
 // Tests for the bonus PAYOUT MARKER layer.
-//   npx tsx src/lib/bonusPayouts.test.ts
+//   npm test -- bonusPayouts
 //
 // The load-bearing assertion in this file is that marking NEVER changes what
 // anyone earned — only what is paid.
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { summarisePayout, applyMark, applyAmountEdit, nextState, stateOf, reasonLabel, effectiveAmount, editOf } from './bonusPayouts';
 import { computeBonus, STANDARD_BONUS_TIERS } from './bonusTiers';
 import type { BonusPayoutRecord, MonthlySummary } from '../types';
 
-let pass = 0, fail = 0;
-const test = (n: string, fn: () => void) => {
-  try { fn(); pass++; console.log(`  ✓ ${n}`); }
-  catch (e) { fail++; console.error(`  ✗ ${n}\n      ${(e as Error).message}`); }
-};
 
 // A month with one division at 90% (→ $3/BH) and three people.
 const SUMMARY = {
@@ -246,6 +242,3 @@ test('marking does not discard edits and editing does not discard marks', () => 
   assert.equal(editOf(r, 'e1')!.amount, 200);
   assert.equal(r.audit.length, 2);
 });
-
-console.log(`\n${pass} passed, ${fail} failed\n`);
-if (fail > 0) process.exit(1);

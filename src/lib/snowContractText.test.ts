@@ -1,5 +1,5 @@
 // SnowMaster contract — THE TRANSCRIPTION GUARD.
-//   npx tsx src/lib/snowContractText.test.ts
+//   npm test -- snowContractText
 //
 // The clause text in snowContractText.ts is transcribed verbatim from
 // reference/Marcos_Snow_Contract_Builder.html. "Verbatim" is a claim that
@@ -15,6 +15,7 @@
 // The ONE sanctioned difference is Acceptance's first sentence (the Section 1
 // cross-reference fix); the test asserts that it still differs, so silently
 // reverting to the reference's wording fails too.
+import { test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
   PROPERTY_DAMAGE, LIABILITY, ICE_CONDITIONS, DELAYS, INSURANCE_PARTS,
@@ -45,23 +46,17 @@ const bullets = (block: string) =>
 const smalls = (block: string) =>
   [...block.matchAll(/<p class="small"[^>]*>([\s\S]*?)<\/p>/g)].map(m => strip(m[1]));
 
-let bad = 0;
+// Registers one vitest case per clause group. The comparison is unchanged from
+// the standalone version — paragraph count, then each paragraph compared
+// character-for-character against the reference — but a mismatch now FAILS the
+// run instead of incrementing a counter, and vitest prints the character diff
+// itself (which is what the hand-rolled loop below used to do by hand).
 function cmp(label: string, expected: string[], got: string[]) {
-  if (expected.length !== got.length) {
-    console.log(`✗ ${label}: ${expected.length} paragraph(s) in reference, ${got.length} transcribed`);
-    bad++; return;
-  }
-  expected.forEach((e, i) => {
-    if (e === got[i]) { console.log(`✓ ${label} [${i + 1}] — ${e.length} chars`); return; }
-    bad++;
-    console.log(`✗ ${label} [${i + 1}] DIFFERS`);
-    for (let k = 0; k < Math.max(e.length, got[i].length); k++) {
-      if (e[k] !== got[i][k]) {
-        console.log(`    at ${k}: reference …${JSON.stringify(e.slice(Math.max(0, k - 40), k + 40))}`);
-        console.log(`            code …${JSON.stringify(got[i].slice(Math.max(0, k - 40), k + 40))}`);
-        break;
-      }
-    }
+  test(label, () => {
+    expect(got.length, `${label}: paragraph count vs reference`).toBe(expected.length);
+    expected.forEach((e, i) => {
+      expect(got[i], `${label} [${i + 1}]`).toBe(e);
+    });
   });
 }
 
@@ -77,11 +72,9 @@ cmp('§6 bullets', bullets(section('s6')), PAYMENT_BULLETS.map(flat));
 // §13's first sentence is the ONE deliberate wording change; the rest must match.
 const acc = smalls(section('s13'));
 const accGot = ACCEPTANCE_PARAS.map(flat);
-console.log(acc[0] === accGot[0]
-  ? '✗ §13 [1] unchanged — the Section 1 cross-reference was NOT corrected'
-  : `✓ §13 [1] corrected as intended\n    was: ${acc[0]}\n    now: ${accGot[0]}`);
-if (acc[0] === accGot[0]) bad++;
+// Asserted as a DIFFERENCE on purpose: silently reverting to the reference's
+// "the date shown in Section 1" wording must fail the run too.
+test('§13 [1] Section 1 cross-reference is corrected (sanctioned deviation)', () => {
+  expect(accGot[0], '§13 [1] reverted to the reference wording').not.toBe(acc[0]);
+});
 cmp('§13 Acceptance (rest)', acc.slice(1), accGot.slice(1));
-
-console.log(bad === 0 ? '\nALL CLAUSES MATCH THE REFERENCE' : `\n${bad} MISMATCH(ES)`);
-if (bad > 0) process.exit(1);

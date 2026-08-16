@@ -1,7 +1,8 @@
 // Unit tests for the snow pricing engine — the agreed cases from the spec.
 // No test framework (none is installed / allowed); run with the repo's existing
 // TS runner:  npx tsx src/lib/snowPricing.test.ts
-// Exits non-zero if any case fails.
+// Exits non-zero if any case fails (vitest reports per-case).
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   priceSnow, measureGrid, SNOW_PRICING_CONFIG, SNOW_CONFIG_V1, SNOW_PRICING_CONFIG_VERSION, SnowGrid, SnowConfig,
@@ -29,12 +30,7 @@ function withDrag(grid: SnowGrid, n: number): SnowGrid {
   return g;
 }
 
-let pass = 0;
-let fail = 0;
-function test(name: string, fn: () => void) {
-  try { fn(); pass++; console.log(`  ✓ ${name}`); }
-  catch (e) { fail++; console.error(`  ✗ ${name}\n      ${(e as Error).message.replace(/\n/g, '\n      ')}`); }
-}
+
 
 // ── The agreed table: shape → lanes×depth, cars, tier, price ────────────────
 const TABLE: Array<{ name: string; lanes: number; depth: number; cars: number; tier: 1|2|3|'custom'; price: number }> = [
@@ -202,6 +198,3 @@ test('diffSnowConfig: reports only changed fields, old → new', () => {
   assert.equal(dr.from, '50'); assert.equal(dr.to, '60');
   assert.deepEqual(diffSnowConfig(SNOW_CONFIG_V1, SNOW_CONFIG_V1), []); // no-op
 });
-
-console.log(`\n${fail === 0 ? '✅' : '❌'} ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);

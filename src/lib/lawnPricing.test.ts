@@ -1,6 +1,7 @@
 // Unit tests for the lawn pricing engine — every agreed case from the spec.
 // No test framework (none installed / allowed); run with the repo's TS runner:
-//   npx tsx src/lib/lawnPricing.test.ts
+//   npm test -- lawnPricing
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   LAWN_CONFIG_V1, LawnConfig, resolveTierIndex, priceMowing, priceMowingBase, pricePackages, priceLawn, tierLabel,
@@ -9,11 +10,6 @@ import {
   availableMonthEnds, billingDates, isValidYmd, mondayOfNextWeek, migrateFirstCutDate, cutWeeks, cutsRemaining,
 } from './lawnPricing';
 
-let pass = 0, fail = 0;
-function test(name: string, fn: () => void) {
-  try { fn(); pass++; console.log(`  ✓ ${name}`); }
-  catch (e) { fail++; console.error(`  ✗ ${name}\n      ${(e as Error).message.replace(/\n/g, '\n      ')}`); }
-}
 const mow = (sqft: number, flags = {}) => priceMowing(resolveTierIndex(sqft)!, flags);
 
 // ── Mowing tiers: weekly + biweekly ─────────────────────────────────────────
@@ -689,6 +685,3 @@ test('packages remain full-season rate — unaffected by discount or first cut d
     assert.equal(p.packagesTotal, 499);
   }
 });
-
-console.log(`\n${fail === 0 ? '✅' : '❌'} ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
