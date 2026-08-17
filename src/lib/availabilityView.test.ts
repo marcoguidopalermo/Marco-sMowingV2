@@ -4,7 +4,8 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   buildAvailabilityDay, buildAvailabilityMonth, isDayBuilt,
-  isEmployed, employeeDivisionName, LENDABLE_MIN_HEADCOUNT,
+  isActiveEmployee, isInactiveEmployeeStatus, employeeDivisionName,
+  managersForEmployee, countInactive, LENDABLE_MIN_HEADCOUNT,
 } from './availabilityView';
 import type { AppData, Crew, Employee } from '../types';
 
@@ -22,14 +23,43 @@ const app = (o: Partial<AppData>): AppData => ({
 } as AppData);
 
 console.log('\nRoster membership');
-test('employed = Active or Away, never a test user', () => {
-  assert.equal(isEmployed(emp({ id: 'a', name: 'A' })), true);
-  assert.equal(isEmployed(emp({ id: 'b', name: 'B', status: 'Away' })), true);
-  assert.equal(isEmployed(emp({ id: 'c', name: 'C', isTestUser: true })), false);
-  // An unknown status is EXCLUDED, not included — the safe direction is to
-  // omit someone rather than offer a departed employee as free labour.
-  assert.equal(isEmployed(emp({ id: 'd', name: 'D', status: 'Terminated' })), false);
-  assert.equal(isEmployed(emp({ id: 'e', name: 'E', status: 'Inactive' })), false);
+test('INACTIVE is not the same as away — status Away means not working here', () => {
+  // "Away (Indefinite)" is the Personnel screen's inactive option. It is NOT
+  // booked-off: booked-off comes from awayDates, absence from dailyAbsences.
+  assert.equal(isInactiveEmployeeStatus('Away'), true);
+  assert.equal(isInactiveEmployeeStatus('Inactive'), true);
+  assert.equal(isInactiveEmployeeStatus('Archived'), true);
+  assert.equal(isInactiveEmployeeStatus('Terminated'), true);
+  assert.equal(isInactiveEmployeeStatus('Active'), false);
+  assert.equal(isInactiveEmployeeStatus(undefined), false);
+});
+test('active = currently working here, never a test user', () => {
+  assert.equal(isActiveEmployee(emp({ id: 'a', name: 'A' })), true);
+  assert.equal(isActiveEmployee(emp({ id: 'b', name: 'B', status: 'Away' })), false);
+  assert.equal(isActiveEmployee(emp({ id: 'c', name: 'C', isTestUser: true })), false);
+  assert.equal(isActiveEmployee(emp({ id: 'd', name: 'D', status: 'Terminated' })), false);
+});
+test('an inactive employee appears in NO availability bucket', () => {
+  const d = buildAvailabilityDay(app({
+    employees: [
+      emp({ id: 'on', name: 'On Crew', primaryCrew: 'Lawn' }),
+      emp({ id: 'free', name: 'Free', primaryCrew: 'Lawn' }),
+      emp({ id: 'inact', name: 'Inactive Person', primaryCrew: 'Lawn', status: 'Away' }),
+    ],
+    schedules: { '2026-08-17': [crew('Lawn Division', 1, ['on'])] },
+  }), '2026-08-17', 'All');
+  assert.deepEqual(d.unassigned.map(p => p.id), ['free']);
+  // Crucially NOT listed as away beside somebody on vacation.
+  assert.deepEqual(d.away.map(p => p.id), []);
+  assert.equal(d.totals.employed, 2, 'an inactive person must not be counted as employed');
+});
+test('countInactive reports the withheld records so they do not vanish silently', () => {
+  assert.equal(countInactive([
+    emp({ id: 'a', name: 'A' }),
+    emp({ id: 'b', name: 'B', status: 'Away' }),
+    emp({ id: 'c', name: 'C', status: 'Inactive' }),
+    emp({ id: 't', name: 'T', isTestUser: true }),   // test users are not "inactive"
+  ]), 2);
 });
 test('division name maps primaryCrew onto the board’s division names', () => {
   assert.equal(employeeDivisionName({ primaryCrew: 'Lawn' }), 'Lawn Division');
@@ -80,8 +110,10 @@ test('booked off and absent are separated, and are not "unassigned"', () => {
   assert.equal(away.get('v')!.reason, 'vacation');
   assert.equal(away.get('sick')!.kind, 'absent');
   assert.equal(away.get('sick')!.reason, 'sick');
-  assert.equal(away.get('ind')!.kind, 'absent');
-  assert.equal(d.totals.away, 3);
+  // 'ind' has status Away = INACTIVE, so it is not an absence at all and must
+  // not sit in this list beside a vacation. Away holds two people, not three.
+  assert.equal(away.has('ind'), false);
+  assert.equal(d.totals.away, 2);
 });
 
 test('every employed person in the division lands in exactly one bucket', () => {
@@ -92,14 +124,15 @@ test('every employed person in the division lands in exactly one bucket', () => 
   assert.equal(d.totals.assigned + d.totals.unassigned + d.totals.away, d.totals.employed);
 });
 
-test('crew headcount is today’s ACTUAL count, and 2+ is flagged as lendable', () => {
+test('crew headcount is today’s ACTUAL count, and 3+ is flagged as lendable', () => {
   const schedules: Record<string, Crew[]> = {
     // Past days are irrelevant now — a crew that ran 5 last week and 1 today
     // reads as 1, with no norm anywhere in the answer.
     '2026-08-13': [crew('Lawn Division', 3, ['l1', 'l2', 'l3', 's1', 'o1'])],
     '2026-08-17': [
-      crew('Lawn Division', 1, ['l1', 'l2', 'l3']),   // 3 → lendable
-      crew('Lawn Division', 2, ['s1', 'o1']),         // 2 → lendable (the boundary)
+      crew('Lawn Division', 1, ['l1', 'l2', 'l3']),   // 3 → lendable (the boundary)
+      crew('Lawn Division', 2, ['s1', 'o1']),         // 2 → NOT lendable: a pair
+                                                      //   can't spare one
       crew('Lawn Division', 3, ['l1']),               // 1 → shown, NOT lendable
     ],
   };
@@ -107,13 +140,13 @@ test('crew headcount is today’s ACTUAL count, and 2+ is flagged as lendable', 
   const by = new Map(d.crews.map(c => [c.key, c]));
   assert.equal(by.get('Lawn Division #1')!.today, 3);
   assert.equal(by.get('Lawn Division #1')!.canLend, true);
-  // Exactly at the threshold counts.
+  // A crew of TWO cannot spare one — lending would leave somebody alone.
   assert.equal(by.get('Lawn Division #2')!.today, 2);
-  assert.equal(by.get('Lawn Division #2')!.canLend, true);
+  assert.equal(by.get('Lawn Division #2')!.canLend, false);
   // A crew of one is listed but never offered up.
   assert.equal(by.get('Lawn Division #3')!.today, 1);
   assert.equal(by.get('Lawn Division #3')!.canLend, false);
-  assert.equal(LENDABLE_MIN_HEADCOUNT, 2);
+  assert.equal(LENDABLE_MIN_HEADCOUNT, 3);
 });
 test('past days cannot influence today’s headcount at all', () => {
   // The whole reason the norm was dropped: a thin or fat day elsewhere in the
@@ -142,9 +175,10 @@ test('an empty crew reads as 0 and is not lendable', () => {
 test('test users do not pad a headcount into being lendable', () => {
   const d = buildAvailabilityDay(app({
     employees: [...people, emp({ id: 'test2', name: 'Test Two', isTestUser: true })],
-    schedules: { '2026-08-17': [crew('Lawn Division', 1, ['l1', 'test2'])] },
+    schedules: { '2026-08-17': [crew('Lawn Division', 1, ['l1', 'l2', 'test2'])] },
   }), '2026-08-17', 'All');
-  assert.equal(d.crews[0].today, 1);
+  // Two real people plus a test user must not reach the threshold of three.
+  assert.equal(d.crews[0].today, 2);
   assert.equal(d.crews[0].canLend, false);
 });
 
@@ -221,9 +255,10 @@ test('a BUILT day reports its genuine unassigned people', () => {
   const built = by.get('2026-08-18')!;
   assert.equal(built.built, true);
   assert.equal(built.crewCount, 1);
-  // l3, s1 and o1 are employed, not away, and not on a crew that day.
-  assert.deepEqual(built.unassigned.map(p => p.id).sort(), ['l3', 'o1', 's1']);
-  assert.equal(built.count, 3);
+  // l3 and s1 are crew staff, free that day. o1 is Office — the month counts
+  // crew staff only, so it is excluded here (the daily view still lists it).
+  assert.deepEqual(built.unassigned.map(p => p.id).sort(), ['l3', 's1']);
+  assert.equal(built.count, 2);
 });
 
 test('the month range is inclusive and walks every day exactly once', () => {
@@ -251,7 +286,8 @@ test('the month honours the division filter', () => {
   // Lawn people not on the crew: l2, l3. Office/Small are out of scope.
   assert.deepEqual(lawn[0].unassigned.map(p => p.id).sort(), ['l2', 'l3']);
   const all = buildAvailabilityMonth(app({ employees: people, schedules }), '2026-08-18', '2026-08-18', 'All');
-  assert.deepEqual(all[0].unassigned.map(p => p.id).sort(), ['l2', 'l3', 'o1', 's1']);
+  // No o1 — the month excludes no-division staff even under "All".
+  assert.deepEqual(all[0].unassigned.map(p => p.id).sort(), ['l2', 'l3', 's1']);
 });
 
 test('someone booked off is not counted as free on a built day', () => {
@@ -265,4 +301,58 @@ test('someone booked off is not counted as free on a built day', () => {
   }), '2026-08-18', '2026-08-18', 'All');
   assert.deepEqual(month[0].unassigned.map(p => p.id), ['free']);
   assert.equal(month[0].count, 1);
+});
+
+console.log('\nMonth excludes no-division staff');
+test('the MONTH counts crew staff only — office/no-division are left out', () => {
+  const month = buildAvailabilityMonth(app({
+    employees: people,
+    schedules: { '2026-08-18': [crew('Lawn Division', 1, ['l1'])] },
+  }), '2026-08-18', '2026-08-18', 'All');
+  // l2, l3 (Lawn) and s1 (Small) are field staff; o1 is Office and excluded.
+  assert.deepEqual(month[0].unassigned.map(p => p.id).sort(), ['l2', 'l3', 's1']);
+  assert.equal(month[0].count, 3);
+  assert.ok(!month[0].unassigned.some(p => p.division === null));
+});
+test('the DAILY view still lists no-division staff — only the month drops them', () => {
+  const d = buildAvailabilityDay(app({
+    employees: people,
+    schedules: { '2026-08-18': [crew('Lawn Division', 1, ['l1'])] },
+  }), '2026-08-18', 'All');
+  assert.ok(d.unassigned.some(p => p.id === 'o1'), 'the daily view must keep office staff');
+});
+
+console.log('\nWho is my manager');
+const withManagers: Employee[] = [
+  emp({ id: 'w', name: 'Worker', primaryCrew: 'Lawn' }),
+  emp({ id: 'lawnmgr', name: 'Lawn Manager', primaryCrew: 'Lawn', managedDivision: 'lawn', linkedUserEmail: 'lawn@x.test' }),
+  emp({ id: 'smallmgr', name: 'Small Manager', primaryCrew: 'Small Project', managedDivision: 'small', linkedUserEmail: 'small@x.test' }),
+  emp({ id: 'allmgr', name: 'All Manager', managedDivision: 'all', linkedUserEmail: 'all@x.test' }),
+  emp({ id: 'exmgr', name: 'Ex Manager', managedDivision: 'lawn', status: 'Away', linkedUserEmail: 'ex@x.test' }),
+  emp({ id: 'nomail', name: 'No Email Manager', managedDivision: 'lawn' }),
+];
+test('a worker’s managers are their own division plus any all-division manager', () => {
+  const m = managersForEmployee(withManagers, withManagers[0]);
+  assert.deepEqual(m.map(x => x.id), ['lawnmgr', 'allmgr']);
+  // Division manager first — the person closest to the work reads first.
+  assert.equal(m[0].scope, 'lawn');
+  assert.equal(m[1].scope, 'all');
+  // Another division's manager is not involved.
+  assert.ok(!m.some(x => x.id === 'smallmgr'));
+});
+test('an inactive manager, or one with no email, is not offered as a recipient', () => {
+  const m = managersForEmployee(withManagers, withManagers[0]);
+  assert.ok(!m.some(x => x.id === 'exmgr'), 'an inactive manager cannot act on it');
+  assert.ok(!m.some(x => x.id === 'nomail'), 'nobody to notify without an address');
+});
+test('a manager is never their own recipient', () => {
+  const lawnMgr = withManagers[1];
+  const m = managersForEmployee(withManagers, lawnMgr);
+  assert.ok(!m.some(x => x.id === lawnMgr.id));
+  assert.deepEqual(m.map(x => x.id), ['allmgr']);
+});
+test('someone with no division still reaches the all-division manager', () => {
+  const office = emp({ id: 'off', name: 'Office', primaryCrew: 'Office' });
+  const m = managersForEmployee([...withManagers, office], office);
+  assert.deepEqual(m.map(x => x.id), ['allmgr']);
 });

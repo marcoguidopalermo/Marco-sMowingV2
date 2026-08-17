@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import { Calendar as CalendarIcon, Target, Clock, TrendingUp, Link2, Users, Truck, Hammer, Wrench, AlertCircle, AlertTriangle, CheckCircle, FileText, StickyNote } from 'lucide-react';
+import { Calendar as CalendarIcon, Target, Clock, TrendingUp, Link2, Users, Truck, Hammer, Wrench, AlertCircle, AlertTriangle, CheckCircle, FileText, StickyNote, BellRing } from 'lucide-react';
 import { AppSettings, Crew, Employee, FleetItem, EquipmentSubtypeDefinition, PerformanceLog, PartialTimeOff, Inspection, HoursBankEntry } from '../types';
 import { formatTimeRange, addDaysToronto } from '../lib/dateUtils';
 import { personColorClass } from '../lib/personColor';
@@ -14,6 +14,7 @@ import MtdSelfWidget from './MtdSelfWidget';
 import DivisionStandings from './DivisionStandings';
 import { MyHoursBank } from './HoursBank';
 import { scanOutstandingCrewDays, managerCoversDivision } from '../lib/approvalOversight';
+import { managersForEmployee } from '../lib/availabilityView';
 
 interface MyCrewTodayProps {
   // The signed-in person's own hours-bank entries, if they have any. Passed
@@ -46,6 +47,10 @@ interface MyCrewTodayProps {
   // One-tap access to a unit's documents (view-only for workers). Opens the
   // App-level UnitDocumentsModal. Omit to hide the documents affordance.
   onOpenUnitDocuments?: (unitId: string) => void;
+  // Tells the viewer's manager they are not on a crew and are available.
+  // NOTIFY ONLY — there is deliberately no self-assign counterpart. Omit to
+  // hide the button (e.g. roles for whom it makes no sense).
+  onNotifyAvailable?: () => Promise<void>;
 }
 
 const numericOr = (v: unknown, fallback = 0): number => {
@@ -79,12 +84,22 @@ export default function MyCrewToday({
   setViewingInspectionId,
   inspections,
   onOpenUnitDocuments,
+  onNotifyAvailable,
 }: MyCrewTodayProps) {
   const myCrews = useMemo<Crew[]>(() => {
     if (!currentUserEmployee) return [];
     const todaysCrews = schedules[today] || [];
     return todaysCrews.filter(c => (c.employees || []).includes(currentUserEmployee.id));
   }, [currentUserEmployee, schedules, today]);
+
+  // Who to tell when nobody has put you on a crew. Same rule the server uses
+  // to resolve recipients (see managersForEmployee) — this copy only decides
+  // what the screen SAYS.
+  const myManagers = useMemo(
+    () => managersForEmployee(employees || [], currentUserEmployee),
+    [employees, currentUserEmployee],
+  );
+  const [notifyState, setNotifyState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
 
   // MANAGER NOTES for today, one per crew the viewer is on. Read straight off
   // the same crew.notes the schedule board writes — no separate field, no copy.
@@ -411,14 +426,82 @@ export default function MyCrewToday({
         {activeTab === 'today' ? (
         <>
         {myCrews.length === 0 ? (
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          /* NOT ON A CREW TODAY. Previously this said so and stopped, which
+             left somebody standing around with no idea whether it was
+             intentional. It now names their manager and gives them one action:
+             tell that manager they're available.
+
+             THERE IS DELIBERATELY NO "JOIN A CREW" BUTTON. Crew composition is
+             the manager's morning decision — it balances skills, licences,
+             equipment, route and which crew is short. Self-assignment would
+             mean people picking the easy jobs, two people joining the same crew
+             while a short one stays short, and managers discovering their crews
+             instead of setting them. The problem here is that the person is
+             stranded and nobody knows; notifying solves that without moving the
+             decision. */
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 text-center">
             <CalendarIcon className="w-10 h-10 mx-auto mb-3 text-slate-300" />
-            <h3 className="text-lg font-bold text-slate-700">You're not scheduled to a crew today.</h3>
+            <h3 className="text-lg font-bold text-slate-700">You&rsquo;re not on a crew today.</h3>
             <p className="text-sm text-slate-500 mt-2">
               {scheduledTomorrow
                 ? "You're scheduled on a crew tomorrow — check back then."
-                : 'Take it easy. Check the schedule view for upcoming days.'}
+                : 'Your manager sets the crews each morning.'}
             </p>
+
+            {myManagers.length > 0 && (
+              <p className="mt-3 text-sm text-slate-600">
+                <span className="font-bold text-slate-500 text-[11px] uppercase tracking-widest block mb-0.5">
+                  Your manager{myManagers.length > 1 ? 's' : ''}
+                </span>
+                {myManagers.map(m => m.name).join(' · ')}
+              </p>
+            )}
+
+            {onNotifyAvailable && myManagers.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  disabled={notifyState !== 'idle'}
+                  onClick={async () => {
+                    setNotifyState('sending');
+                    try {
+                      await onNotifyAvailable();
+                      setNotifyState('sent');
+                    } catch {
+                      // Say it failed rather than showing a success the manager
+                      // never received.
+                      setNotifyState('failed');
+                    }
+                  }}
+                  className={`mt-4 w-full min-h-[48px] inline-flex items-center justify-center gap-2 px-4 rounded-xl text-sm font-black uppercase tracking-widest shadow-sm border ${notifyState === 'sent'
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                    : notifyState === 'failed'
+                      ? 'bg-rose-50 text-rose-700 border-rose-300'
+                      : 'bg-lime-600 text-white border-lime-700 hover:bg-lime-700'}`}
+                >
+                  {notifyState === 'sending' && <>Sending…</>}
+                  {notifyState === 'sent' && <><CheckCircle className="w-4 h-4" /> Manager notified</>}
+                  {notifyState === 'failed' && <><AlertCircle className="w-4 h-4" /> Didn&rsquo;t send — tap to retry</>}
+                  {notifyState === 'idle' && <><BellRing className="w-4 h-4" /> Notify my manager I&rsquo;m available</>}
+                </button>
+                {notifyState === 'sent' && (
+                  <p className="mt-2 text-[11px] font-bold text-emerald-700">
+                    They&rsquo;ll add you to a crew if they need you.
+                  </p>
+                )}
+                {notifyState === 'failed' && (
+                  <button type="button" onClick={() => setNotifyState('idle')}
+                    className="mt-2 text-[11px] font-black uppercase tracking-widest text-slate-500 underline">
+                    Try again
+                  </button>
+                )}
+              </>
+            )}
+            {myManagers.length === 0 && (
+              <p className="mt-3 text-[11px] font-bold text-slate-400">
+                No manager is set up for your division yet — speak to the office.
+              </p>
+            )}
           </div>
         ) : (
           <div className="space-y-4">

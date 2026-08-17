@@ -15,7 +15,7 @@ import {
 import type { AppData } from '../types';
 import { DIVISIONS } from '../constants';
 import { addDaysToronto, formatTodayInToronto } from '../lib/dateUtils';
-import { buildAvailabilityDay, LENDABLE_MIN_HEADCOUNT, type PersonRow } from '../lib/availabilityView';
+import { buildAvailabilityDay, LENDABLE_MIN_HEADCOUNT, countInactive, type PersonRow } from '../lib/availabilityView';
 import AvailabilityMonth from './AvailabilityMonth';
 
 function PersonChip({ p, showDivision }: { p: PersonRow; showDivision?: boolean }) {
@@ -74,6 +74,9 @@ export default function AvailabilityView({
   // Crews with someone to spare this morning. No "running short" counterpart —
   // that judgement needed a norm, and the norm is gone.
   const lendable = day.crews.filter(c => c.canLend);
+  // Inactive records are excluded from every bucket above; say how many rather
+  // than letting them vanish out of a roster count without explanation.
+  const inactiveCount = useMemo(() => countInactive(appData.employees || []), [appData.employees]);
 
   // MODE TOGGLE — rendered by both branches so switching back is always in the
   // same place. Full-width halves on a phone.
@@ -278,7 +281,12 @@ export default function AvailabilityView({
       <p className="px-1 pb-2 text-[10px] font-bold text-slate-400">
         Read-only. Reshuffle on the board itself — nothing here changes a crew.
         Headcounts are today&rsquo;s actual crew assignments; a crew of
-        {' '}{LENDABLE_MIN_HEADCOUNT} or more is flagged as able to lend someone.
+        {' '}{LENDABLE_MIN_HEADCOUNT} or more is flagged as able to lend someone
+        — a crew of two can&rsquo;t spare one.
+        {inactiveCount > 0 && (
+          <> {inactiveCount} inactive employee{inactiveCount === 1 ? '' : 's'} not shown
+          (status Away/Indefinite — not the same as booked off).</>
+        )}
       </p>
     </div>
   );

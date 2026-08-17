@@ -6337,6 +6337,13 @@ export default function App() {
             setViewingInspectionId={setViewingInspectionId}
             inspections={appData.inspections}
             onOpenUnitDocuments={(unitId) => setDocumentsUnitId(unitId)}
+            // NOTIFY ONLY. Recipients are resolved server-side from the
+            // caller's own employee record — no addresses cross the wire, so
+            // this cannot be pointed at anyone else. Deliberately has no
+            // self-assign counterpart: crews stay the manager's call.
+            onNotifyAvailable={async () => {
+              await httpsCallable(functions, 'pushAvailableForWork')({ date: formatTodayInToronto() });
+            }}
           onReportRepair={(effectiveRole === 'worker' || effectiveRole === 'foreman' || effectiveRole === 'manager') ? () => setManualTaskModal({
             isOpen: true,
             unitId: '',

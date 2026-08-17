@@ -27,21 +27,49 @@ export function employeeDivisionName(emp: Pick<Employee, 'primaryCrew'>): string
   }
 }
 
-// Statuses that count as currently employed. An ALLOWLIST on purpose: if a
-// status this doesn't know about ever appears, the person is left out rather
-// than offered up as free labour. Being wrongly absent from the list is a
-// question someone asks; being wrongly present sends a manager to assign
-// somebody who has left.
-const EMPLOYED_STATUSES = new Set(['Active', 'Away']);
-export const isEmployed = (e: Pick<Employee, 'status' | 'isTestUser'>): boolean =>
-  !e.isTestUser && EMPLOYED_STATUSES.has(String(e.status));
+// INACTIVE vs AWAY — two different things that were being shown as one.
+//
+// The Personnel screen's status control offers exactly "Active" and "Away
+// (Indefinite)", and "Away (Indefinite)" means NOT CURRENTLY WORKING HERE. It
+// is not booked-off: booked-off comes from employee.awayDates (a dated vacation
+// range) and same-day absence comes from dailyAbsences. Availability was
+// treating status 'Away' as an absence and listing those people under "Away
+// today" beside someone on vacation, which reads as "back next week" for
+// somebody who is not on the roster at all.
+//
+// So inactive people are EXCLUDED from availability entirely rather than
+// relabelled: they are not in the roster count, not unassigned, and not away.
+// A manager placing crews at 6:45 is choosing among people who work here; a
+// former or indefinitely-away employee is not a candidate, and showing them in
+// any bucket only invites the question of why they are there. The count of them
+// is surfaced as a footnote so nobody silently disappears.
+//
+// The substring test matches the one App.tsx already uses to decide who can be
+// impersonated, so "Inactive", "Archived" and "Terminated" behave the same way
+// if they ever appear — one definition of inactive, not two.
+export const isInactiveEmployeeStatus = (status: string | undefined): boolean => {
+  const v = (status || '').toLowerCase();
+  return v.includes('away') || v.includes('inactive')
+    || v.includes('archive') || v.includes('terminat');
+};
+
+// Currently working here, and therefore placeable on a crew.
+export const isActiveEmployee = (e: Pick<Employee, 'status' | 'isTestUser'>): boolean =>
+  !e.isTestUser && !isInactiveEmployeeStatus(e.status);
+
+// How many records are being withheld as inactive, so the view can say so
+// rather than letting people quietly vanish from a roster count.
+export const countInactive = (
+  employees: Pick<Employee, 'status' | 'isTestUser'>[],
+): number => employees.filter(e => !e.isTestUser && isInactiveEmployeeStatus(e.status)).length;
 
 export const crewKey = (division: string, crewNumber: number): string =>
   `${division} #${crewNumber}`;
 
 // ── LENDABLE ───────────────────────────────────────────────────────────────
-// A crew with two or more people has somebody who could move to another crew
-// this morning. A crew of one does not, and is shown but never flagged.
+// A crew of THREE or more has somebody who could move this morning. A crew of
+// two cannot spare one — that would leave a person working alone — so two is
+// shown like any other count and never flagged.
 //
 // THERE IS DELIBERATELY NO "USUAL SIZE" HERE. An earlier version compared
 // today's headcount against a norm inferred from past scheduled days, and that
@@ -52,7 +80,7 @@ export const crewKey = (division: string, crewNumber: number): string =>
 // next week defined the norm and three of four Small Projects crews reported
 // the wrong size. Today's headcount is a fact; a norm is a statistic that can
 // be wrong, and being wrong here costs someone a crew member.
-export const LENDABLE_MIN_HEADCOUNT = 2;
+export const LENDABLE_MIN_HEADCOUNT = 3;
 
 // ── THE DAY MODEL ──────────────────────────────────────────────────────────
 export interface PersonRow {
@@ -83,6 +111,53 @@ export interface AvailabilityDay {
   // Roster totals for the chosen division, so the header can say 12 of 18
   // rather than leaving the reader to add up cards.
   totals: { employed: number; assigned: number; unassigned: number; away: number };
+}
+
+// ── WHO IS MY MANAGER ──────────────────────────────────────────────────────
+// A worker's division comes from primaryCrew ("Lawn" / "Small Project" /
+// "Large Project"); a manager carries managedDivision ("lawn" / "small" /
+// "large" / "all"). This maps the first onto the second's vocabulary.
+//
+// MIRRORED SERVER-SIDE in functions/src/notifications.ts (pushAvailableForWork)
+// which resolves recipients itself and never trusts an address from the client.
+// This copy exists only so the screen can SAY whose attention it is about to
+// get — if the two ever disagree, the server's answer is the one that delivers.
+export const managedDivisionKey = (emp: Pick<Employee, 'primaryCrew'>): string | null => {
+  const c = (emp.primaryCrew || '').toLowerCase();
+  if (c.includes('lawn')) return 'lawn';
+  if (c.includes('small')) return 'small';
+  if (c.includes('large')) return 'large';
+  return null;
+};
+
+export interface ManagerRef {
+  id: string;
+  name: string;
+  email: string;
+  scope: string;                      // managedDivision, e.g. 'lawn' | 'all'
+}
+
+export function managersForEmployee(
+  employees: Employee[],
+  emp: Pick<Employee, 'id' | 'primaryCrew'> | null | undefined,
+): ManagerRef[] {
+  if (!emp) return [];
+  const mine = managedDivisionKey(emp);
+  const out: ManagerRef[] = [];
+  for (const e of employees) {
+    if (e.id === emp.id) continue;                 // never yourself
+    if (!isActiveEmployee(e)) continue;            // an inactive manager can't act
+    const scope = (e.managedDivision || '').toLowerCase();
+    if (!scope) continue;
+    if (scope !== 'all' && !(mine && scope === mine)) continue;
+    const email = (e.linkedUserEmail || e.email || '').trim();
+    if (!email) continue;                          // nobody to notify
+    out.push({ id: e.id, name: e.name || email, email, scope });
+  }
+  // A division manager before an all-division one: the person closest to the
+  // work reads first.
+  return out.sort((a, b) =>
+    (a.scope === 'all' ? 1 : 0) - (b.scope === 'all' ? 1 : 0) || a.name.localeCompare(b.name));
 }
 
 // ── BUILT vs UNBUILT ───────────────────────────────────────────────────────
@@ -131,10 +206,17 @@ export function buildAvailabilityMonth(
     const built = isDayBuilt(schedules, date);
     if (built) {
       const day = buildAvailabilityDay(appData, date, division);
+      // FIELD STAFF ONLY in the month. Office and other no-division people are
+      // unassigned every single day, so on a month grid they are a constant
+      // offset of a dozen or so that swamps the variation actually being looked
+      // for — whether a given day has two spare hands or five. They are not
+      // people a manager is placing onto a crew either. The daily view still
+      // lists them, grouped and collapsed, for the day you are working.
+      const fieldStaff = day.unassigned.filter(p => p.division !== null);
       out.push({
         date, built: true,
-        unassigned: day.unassigned,
-        count: day.unassigned.length,
+        unassigned: fieldStaff,
+        count: fieldStaff.length,
         crewCount: day.crews.length,
       });
     } else {
@@ -152,7 +234,7 @@ export function buildAvailabilityDay(
 ): AvailabilityDay {
   const employees = appData.employees || [];
   const testUserIds = new Set(employees.filter(e => e.isTestUser).map(e => e.id));
-  const roster = employees.filter(isEmployed);
+  const roster = employees.filter(isActiveEmployee);
   const byId = new Map(roster.map(e => [e.id, e]));
 
   const inDivision = (d: string | null) => division === 'All' || d === division;

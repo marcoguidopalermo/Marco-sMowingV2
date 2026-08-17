@@ -21,7 +21,11 @@ const LOG_CAP = 500;
 
 export type Category =
   | "announcements" | "repairs" | "workorders" | "leases" | "fleet" | "policies"
-  | "storage" | "marketing";
+  | "storage" | "marketing"
+  // Crew/scheduling messages TO a manager. Today that is a worker reporting
+  // they are not on a crew; it is its own category so a manager can mute
+  // marketing chatter without muting somebody telling them they are stranded.
+  | "crew";
 
 // Global kill switches + per-trigger sub-toggles. Defaults: all ON except the
 // dormant policy sign-off. Enforced SERVER-SIDE here.
@@ -356,6 +360,61 @@ export const pushRepairAssigned = onCall({region: REGION}, async (req) => {
   return res;
 });
 
+// A worker on nobody's crew today telling their manager they are available.
+//
+// RECIPIENTS ARE RESOLVED HERE, never passed in: the client sends no addresses,
+// so this cannot be used to message arbitrary people. The caller's own employee
+// record gives their division; that division's manager(s) plus any all-division
+// manager are the recipients.
+//
+// This notifies. It does NOT assign — crew composition stays the manager's
+// decision (see MyCrewToday for why).
+export const pushAvailableForWork = onCall({region: REGION}, async (req) => {
+  const email = normEmail(req.auth?.token?.email);
+  if (!email) throw new HttpsError("unauthenticated", "Sign in required.");
+  const emps = await loadEmployees();
+  const me = emps.find((e) => empEmail(e) === email);
+  if (!me) throw new HttpsError("permission-denied", "No employee record for this account.");
+
+  // A worker's division comes from primaryCrew ("Lawn" / "Small Project" /
+  // "Large Project"); managers carry managedDivision ("lawn"/"small"/"large"/
+  // "all"). Map the former onto the latter's vocabulary.
+  const crew = (me.primaryCrew || "").toLowerCase();
+  const myDiv = crew.includes("lawn") ? "lawn"
+    : crew.includes("small") ? "small"
+      : crew.includes("large") ? "large" : null;
+
+  const recips = new Set<string>();
+  for (const e of emps) {
+    const md = (e.managedDivision || "").toLowerCase();
+    if (!md) continue;
+    // An all-division manager always hears it; a division manager hears it for
+    // their own division only.
+    if (md === "all" || (myDiv && md === myDiv)) {
+      const em = empEmail(e);
+      // Never notify the caller about themselves — a manager who is somehow
+      // unassigned should not get their own message.
+      if (em && em !== email) recips.add(em);
+    }
+  }
+  if (recips.size === 0) {
+    // Honest failure rather than a silent success: the button said it would
+    // tell somebody, and there is nobody to tell.
+    throw new HttpsError("failed-precondition", "No manager is set up to receive this yet.");
+  }
+
+  const date = String((req.data || {}).date || "").slice(0, 10);
+  const when = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "today";
+  const name = me.name || email;
+  const divLabel = myDiv ? ` (${myDiv})` : "";
+  const res = await sendNotification([...recips], "crew", {
+    title: `🙋 ${name} is available`,
+    body: `Not on a crew ${when === "today" ? "today" : `on ${when}`}${divLabel} — available to work.`,
+    url: "/#schedule",
+  });
+  return res;
+});
+
 // Dashboard "Send test to me" → sample of a type to the caller's own devices
 // only. Bypasses the global kill switch + the caller's own prefs (so a disabled
 // or muted type is still testable), but logs like any real send.
@@ -368,6 +427,7 @@ const TEST_SAMPLES: Record<Category, {title: string; body: string; url: string}>
   policies: {title: "📝 Policy sign-off", body: "Sample policy acknowledgement.", url: "/"},
   storage: {title: "⚠️ Storage warning", body: "Sample — main data document nearing its size limit.", url: "/"},
   marketing: {title: "💬 Sample commented on clip #0058", body: "Sample — trim the intro, the drone shot is the hook.", url: "/#marketing"},
+  crew: {title: "🙋 Sample is available", body: "Sample — not on a crew today, available to work.", url: "/#schedule"},
 };
 export const sendTestNotification = onCall({region: REGION}, async (req) => {
   const email = normEmail(req.auth?.token?.email);

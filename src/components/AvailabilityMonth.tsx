@@ -132,6 +132,7 @@ export default function AvailabilityMonth({
             <div className="text-[11px] font-bold text-slate-500">
               <span className="text-emerald-700 font-black">{builtDays.length}</span> day{builtDays.length === 1 ? '' : 's'} scheduled
               {unbuiltCount > 0 && <span className="text-slate-400"> · {unbuiltCount} not yet</span>}
+              <span className="text-slate-400"> · crew staff only</span>
             </div>
             <div className="flex items-center gap-2 bg-white border border-slate-300 rounded-lg px-2 py-1.5 shadow-sm">
               <Filter className="w-4 h-4 text-slate-500" />
@@ -237,37 +238,12 @@ export default function AvailabilityMonth({
               </div>
               {open.count === 0 ? (
                 <div className="text-sm text-slate-400 italic text-center py-4">Everyone available is on a crew.</div>
-              ) : (() => {
-                // Grouped the way the daily view groups: field staff under the
-                // division they normally work with, no-division (office and
-                // similar) last and labelled. The flat list buried the two or
-                // three names that matter under a dozen office records that are
-                // free every single day.
-                const groups = new Map<string, typeof open.unassigned>();
-                const none: typeof open.unassigned = [];
-                for (const p of open.unassigned) {
-                  if (!p.division) { none.push(p); continue; }
-                  const g = groups.get(p.division);
-                  if (g) g.push(p); else groups.set(p.division, [p]);
-                }
-                const sections = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-                if (none.length) sections.push(['No division (office / other)', none]);
-                return sections.map(([label, list]) => (
-                  <div key={label} className="pt-1">
-                    <div className="mb-1 text-[10px] font-black uppercase tracking-widest text-slate-400">
-                      {label} · {list.length}
-                    </div>
-                    <div className="space-y-1.5">
-                      {list.map(p => (
-                        <div key={p.id}
-                          className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border ${p.division ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
-                          <span className={`text-sm font-bold ${p.division ? 'text-emerald-900' : 'text-slate-600'}`}>{p.name}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ));
-              })()}
+              ) : open.unassigned.map(p => (
+                <div key={p.id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border bg-emerald-50 border-emerald-200">
+                  <span className="text-sm font-bold text-emerald-900">{p.name}</span>
+                  {p.division && <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{p.division}</span>}
+                </div>
+              ))}
             </div>
             {/* MONTH FOR THE PATTERN, DAY FOR THE DECISION — crew headcounts
                 and the lendable flags live on the daily view, so this hands
