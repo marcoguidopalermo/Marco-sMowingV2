@@ -16,6 +16,7 @@ import type { AppData } from '../types';
 import { DIVISIONS } from '../constants';
 import { addDaysToronto, formatTodayInToronto } from '../lib/dateUtils';
 import { buildAvailabilityDay, LENDABLE_MIN_HEADCOUNT, type PersonRow } from '../lib/availabilityView';
+import AvailabilityMonth from './AvailabilityMonth';
 
 function PersonChip({ p, showDivision }: { p: PersonRow; showDivision?: boolean }) {
   return (
@@ -38,6 +39,9 @@ export default function AvailabilityView({
 }) {
   const [date, setDate] = useState(formatTodayInToronto());
   const [division, setDivision] = useState(defaultDivision);
+  // DAY is the default: the reshuffle happens today, and the month is the
+  // pattern you consult rather than the thing you act on.
+  const [mode, setMode] = useState<'day' | 'month'>('day');
   // Office / no-division staff are employed and unassigned but are not crew
   // material, and at 19 unassigned records they bury the six names that
   // matter. Grouped and collapsed rather than hidden — the count is always
@@ -71,8 +75,40 @@ export default function AvailabilityView({
   // that judgement needed a norm, and the norm is gone.
   const lendable = day.crews.filter(c => c.canLend);
 
+  // MODE TOGGLE — rendered by both branches so switching back is always in the
+  // same place. Full-width halves on a phone.
+  const modeToggle = (
+    <div className="flex rounded-lg bg-slate-100 p-1" role="tablist" aria-label="Availability view">
+      {(['day', 'month'] as const).map(m => (
+        <button key={m} type="button" role="tab" aria-selected={mode === m}
+          onClick={() => setMode(m)}
+          className={`flex-1 min-h-[40px] rounded px-4 text-xs font-black uppercase tracking-widest transition-all ${mode === m ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+          {m === 'day' ? 'Day' : 'Month'}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (mode === 'month') {
+    return (
+      <div className="mx-auto w-full max-w-5xl">
+        <div className="px-3 pt-3 sm:px-4 sm:pt-4">{modeToggle}</div>
+        <AvailabilityMonth
+          appData={appData}
+          division={division}
+          setDivision={setDivision}
+          initialMonth={new Date(`${date}T12:00:00`)}
+          // Tapping through sets the date AND drops into the day view, which is
+          // where crew headcounts and the lendable flags live.
+          onOpenDay={(d) => { setDate(d); setMode('day'); }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto w-full max-w-5xl space-y-3 p-3 sm:p-4">
+      {modeToggle}
       {/* DATE + FILTER — stacked on a phone, one row from sm up. */}
       <div className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:flex-row sm:items-center">
         <div className="flex items-center gap-1">

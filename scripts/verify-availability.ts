@@ -59,3 +59,18 @@ for (const division of ['All', 'Lawn Division', 'Small Projects', 'Large Project
   console.log(`\n  reconciliation: ${d.totals.assigned} + ${d.totals.unassigned} + ${d.totals.away} = ${total} vs ${d.totals.employed} employed  ${total === d.totals.employed ? 'OK' : 'MISMATCH'}`);
   console.log('');
 }
+
+// MONTH view — built vs unbuilt across the month containing `date`.
+const { buildAvailabilityMonth } = await import('../src/lib/availabilityView');
+const first = `${date.slice(0, 7)}-01`;
+const lastDay = new Date(Number(date.slice(0, 4)), Number(date.slice(5, 7)), 0).getDate();
+const last = `${date.slice(0, 7)}-${String(lastDay).padStart(2, '0')}`;
+const month = buildAvailabilityMonth(appData as AppData, first, last, 'All');
+const built = month.filter(m => m.built);
+console.log(`=== MONTH ${date.slice(0, 7)} — ${built.length} of ${month.length} days built ===`);
+for (const m of month) {
+  const dow = new Date(`${m.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short' });
+  console.log(`  ${m.date} ${dow}  ${m.built
+    ? `${String(m.crewCount).padStart(2)} crew(s), ${String(m.count).padStart(2)} free: ${m.unassigned.slice(0, 4).map(p => p.name).join(', ')}${m.count > 4 ? ` +${m.count - 4}` : ''}`
+    : 'not scheduled yet'}`);
+}

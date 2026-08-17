@@ -85,6 +85,66 @@ export interface AvailabilityDay {
   totals: { employed: number; assigned: number; unassigned: number; away: number };
 }
 
+// ── BUILT vs UNBUILT ───────────────────────────────────────────────────────
+// A day only tells you something about availability once somebody has actually
+// scheduled it. Before that, NOBODY is on a crew, so a naive "who isn't on a
+// crew" reading reports the entire roster as free — and every future day in a
+// month grid lights up as fully available, which is not information, it is
+// noise that hides the days that do mean something.
+//
+// The test is whether any crew that day has at least one person on it. Crews
+// created but left empty are mid-build and count as unbuilt for the same
+// reason: the assignment work hasn't happened yet, so the absence of
+// assignments says nothing about who is free.
+export function isDayBuilt(schedules: Record<string, Crew[]>, date: string): boolean {
+  const crews = (schedules || {})[date] || [];
+  return crews.some(c => (c?.employees || []).length > 0);
+}
+
+export interface AvailabilityMonthDay {
+  date: string;
+  built: boolean;
+  // Only meaningful when built. On an unbuilt day these are empty rather than
+  // "everyone", so a caller that forgets to check `built` under-reports rather
+  // than claiming the whole roster is available.
+  unassigned: PersonRow[];
+  count: number;
+  crewCount: number;
+}
+
+// One entry per date in [fromDate, toDate] inclusive. Used by the month grid;
+// the daily view calls buildAvailabilityDay directly for the day it shows.
+export function buildAvailabilityMonth(
+  appData: Pick<AppData, 'employees' | 'schedules' | 'dailyAbsences' | 'fleet'>,
+  fromDate: string,
+  toDate: string,
+  division: string,
+): AvailabilityMonthDay[] {
+  const out: AvailabilityMonthDay[] = [];
+  const schedules = appData.schedules || {};
+  // Walk by string date rather than by Date arithmetic so a DST boundary
+  // cannot skip or repeat a day.
+  const cur = new Date(`${fromDate}T12:00:00Z`);
+  const end = new Date(`${toDate}T12:00:00Z`);
+  while (cur <= end) {
+    const date = cur.toISOString().slice(0, 10);
+    const built = isDayBuilt(schedules, date);
+    if (built) {
+      const day = buildAvailabilityDay(appData, date, division);
+      out.push({
+        date, built: true,
+        unassigned: day.unassigned,
+        count: day.unassigned.length,
+        crewCount: day.crews.length,
+      });
+    } else {
+      out.push({ date, built: false, unassigned: [], count: 0, crewCount: 0 });
+    }
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+
 export function buildAvailabilityDay(
   appData: Pick<AppData, 'employees' | 'schedules' | 'dailyAbsences' | 'fleet'>,
   date: string,

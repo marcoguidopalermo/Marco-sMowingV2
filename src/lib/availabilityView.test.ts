@@ -3,7 +3,8 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
-  buildAvailabilityDay, isEmployed, employeeDivisionName, LENDABLE_MIN_HEADCOUNT,
+  buildAvailabilityDay, buildAvailabilityMonth, isDayBuilt,
+  isEmployed, employeeDivisionName, LENDABLE_MIN_HEADCOUNT,
 } from './availabilityView';
 import type { AppData, Crew, Employee } from '../types';
 
@@ -176,4 +177,92 @@ test('a person on two crews is counted once as assigned', () => {
   }), '2026-08-17', 'All');
   assert.equal(d.totals.assigned, 1);
   assert.equal(d.totals.assigned + d.totals.unassigned + d.totals.away, d.totals.employed);
+});
+
+console.log('\nBuilt vs unbuilt days');
+test('a day is BUILT only when some crew actually has a person on it', () => {
+  assert.equal(isDayBuilt({ '2026-08-17': [crew('Lawn Division', 1, ['l1'])] }, '2026-08-17'), true);
+  // No entry at all.
+  assert.equal(isDayBuilt({}, '2026-08-17'), false);
+  // Entry exists but is an empty array.
+  assert.equal(isDayBuilt({ '2026-08-17': [] }, '2026-08-17'), false);
+  // Crews created but nobody assigned — mid-build. The absence of assignments
+  // says nothing about who is free, so this is NOT built.
+  assert.equal(isDayBuilt({ '2026-08-17': [crew('Lawn Division', 1, [])] }, '2026-08-17'), false);
+  // One staffed crew among empty ones is enough.
+  assert.equal(isDayBuilt({
+    '2026-08-17': [crew('Lawn Division', 1, []), crew('Lawn Division', 2, ['l1'])],
+  }, '2026-08-17'), true);
+});
+
+test('an UNBUILT day reports nobody free — never the whole roster', () => {
+  // This is the bug the distinction exists to prevent: with no schedule, every
+  // employee is "not on a crew", so a naive read makes every future day look
+  // fully available and the month grid becomes noise.
+  const month = buildAvailabilityMonth(
+    app({ employees: people, schedules: {} }), '2026-08-17', '2026-08-19', 'All',
+  );
+  assert.equal(month.length, 3);
+  for (const d of month) {
+    assert.equal(d.built, false);
+    assert.equal(d.count, 0, `unbuilt ${d.date} reported ${d.count} people free`);
+    assert.deepEqual(d.unassigned, []);
+  }
+});
+
+test('a BUILT day reports its genuine unassigned people', () => {
+  const month = buildAvailabilityMonth(app({
+    employees: people,
+    schedules: { '2026-08-18': [crew('Lawn Division', 1, ['l1', 'l2'])] },
+  }), '2026-08-17', '2026-08-19', 'All');
+  const by = new Map(month.map(d => [d.date, d]));
+  assert.equal(by.get('2026-08-17')!.built, false);
+  assert.equal(by.get('2026-08-19')!.built, false);
+  const built = by.get('2026-08-18')!;
+  assert.equal(built.built, true);
+  assert.equal(built.crewCount, 1);
+  // l3, s1 and o1 are employed, not away, and not on a crew that day.
+  assert.deepEqual(built.unassigned.map(p => p.id).sort(), ['l3', 'o1', 's1']);
+  assert.equal(built.count, 3);
+});
+
+test('the month range is inclusive and walks every day exactly once', () => {
+  const month = buildAvailabilityMonth(app({ employees: people }), '2026-08-01', '2026-08-31', 'All');
+  assert.equal(month.length, 31);
+  assert.equal(month[0].date, '2026-08-01');
+  assert.equal(month[30].date, '2026-08-31');
+  assert.equal(new Set(month.map(d => d.date)).size, 31, 'a date was repeated or skipped');
+});
+
+test('the month range crosses a DST boundary without skipping or repeating a day', () => {
+  // Toronto springs forward on 2026-03-08. Date arithmetic in local time can
+  // drop or double a day here; the walk is UTC-anchored so it cannot.
+  const month = buildAvailabilityMonth(app({ employees: people }), '2026-03-01', '2026-03-31', 'All');
+  assert.equal(month.length, 31);
+  assert.equal(new Set(month.map(d => d.date)).size, 31);
+  assert.ok(month.some(d => d.date === '2026-03-08'));
+});
+
+test('the month honours the division filter', () => {
+  const schedules: Record<string, Crew[]> = {
+    '2026-08-18': [crew('Lawn Division', 1, ['l1'])],
+  };
+  const lawn = buildAvailabilityMonth(app({ employees: people, schedules }), '2026-08-18', '2026-08-18', 'Lawn Division');
+  // Lawn people not on the crew: l2, l3. Office/Small are out of scope.
+  assert.deepEqual(lawn[0].unassigned.map(p => p.id).sort(), ['l2', 'l3']);
+  const all = buildAvailabilityMonth(app({ employees: people, schedules }), '2026-08-18', '2026-08-18', 'All');
+  assert.deepEqual(all[0].unassigned.map(p => p.id).sort(), ['l2', 'l3', 'o1', 's1']);
+});
+
+test('someone booked off is not counted as free on a built day', () => {
+  const month = buildAvailabilityMonth(app({
+    employees: [
+      emp({ id: 'on', name: 'On Crew', primaryCrew: 'Lawn' }),
+      emp({ id: 'free', name: 'Free', primaryCrew: 'Lawn' }),
+      emp({ id: 'off', name: 'Off', primaryCrew: 'Lawn', awayDates: [{ start: '2026-08-18', end: '2026-08-18' }] }),
+    ],
+    schedules: { '2026-08-18': [crew('Lawn Division', 1, ['on'])] },
+  }), '2026-08-18', '2026-08-18', 'All');
+  assert.deepEqual(month[0].unassigned.map(p => p.id), ['free']);
+  assert.equal(month[0].count, 1);
 });
