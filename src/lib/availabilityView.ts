@@ -53,9 +53,56 @@ export const isInactiveEmployeeStatus = (status: string | undefined): boolean =>
     || v.includes('archive') || v.includes('terminat');
 };
 
-// Currently working here, and therefore placeable on a crew.
+// Currently working here.
 export const isActiveEmployee = (e: Pick<Employee, 'status' | 'isTestUser'>): boolean =>
   !e.isTestUser && !isInactiveEmployeeStatus(e.status);
+
+// ── WHO THIS VIEW IS ABOUT ─────────────────────────────────────────────────
+// Availability answers "who is waiting to be put on a crew". That is a narrower
+// set than "everyone employed", and the two kept disagreeing: the count included
+// office staff and the managers doing the placing, while the list showed neither.
+//
+// A DENYLIST of roles, not an allowlist, and the distinction is not stylistic.
+// resolveRole() treats a MISSING systemRole as 'worker', and on live data 19 of
+// the ~20 people actually appearing on crews have no systemRole set at all. An
+// allowlist of ['worker','foreman'] would therefore have hidden almost every
+// crew member. Excluding named non-crew roles keeps unset records — the actual
+// crew — where they belong.
+//
+// EXCLUDED, and why:
+//   admin, manager      — they DO the morning placement; they are not waiting
+//                         to be placed. (Note: three division managers do also
+//                         work on crews. They still appear by name on their
+//                         crew card, which reads from crew.employees; they are
+//                         just not counted in the placeable roster.)
+//   mechanic            — verified against live schedules: across every day
+//                         built, no mechanic has ever been placed on a crew.
+//                         They work the shop, not a route.
+//   contractor          — Palermo's tenant; its own scheduling entirely.
+//   property_manager    — leases and properties, not crews.
+//   marketing           — marketing-only role, sees nothing else in the app.
+// INCLUDED: worker, foreman, and any record with no systemRole (the crew).
+const NON_PLACEABLE_ROLES = new Set<string>([
+  'admin', 'manager', 'mechanic', 'contractor', 'property_manager', 'marketing',
+]);
+export const PLACEABLE_ROLES_NOTE = 'crew members and foremen';
+
+// Somebody a manager could put on a crew this morning: active, in a crew
+// division, and not in a role that does something else.
+//
+// A DIVISION IS REQUIRED. Office / Snow / unset primaryCrew resolve to no
+// division (see employeeDivisionName) and are excluded from both the list and
+// the counts — the two must agree, and an office record that is "unassigned"
+// every day of the year was never a candidate for a crew.
+export const isPlaceableOnCrew = (e: Employee): boolean =>
+  isActiveEmployee(e)
+  && !NON_PLACEABLE_ROLES.has(String(e.systemRole || 'worker'))
+  && employeeDivisionName(e) !== null;
+
+// Active employees this view deliberately leaves out, so the screen can say so
+// rather than letting a roster count quietly disagree with the company.
+export const countNonPlaceable = (employees: Employee[]): number =>
+  employees.filter(e => isActiveEmployee(e) && !isPlaceableOnCrew(e)).length;
 
 // How many records are being withheld as inactive, so the view can say so
 // rather than letting people quietly vanish from a roster count.
@@ -134,30 +181,52 @@ export interface ManagerRef {
   id: string;
   name: string;
   email: string;
-  scope: string;                      // managedDivision, e.g. 'lawn' | 'all'
+  scope: string;                      // managedDivision, or 'admin'
 }
 
+// OWN DIVISION MANAGER ONLY, falling back to admin.
+//
+// Not every manager: a lawn worker saying "I'm available" should reach whoever
+// runs the lawn roster, not everyone with a management role. Copying people who
+// have no say over that roster is how a notification type teaches its audience
+// to ignore it.
+//
+// The fallback matters more than the primary path — somebody stranded must
+// always reach a human. If the division has no manager set, or the person has no
+// division to route by, it goes to admin (and to any all-division manager, who
+// is an admin for this purpose).
+//
+// MIRRORED SERVER-SIDE in functions/src/notifications.ts (pushAvailableForWork),
+// which resolves recipients itself and never trusts an address from the client.
+// This copy only decides what the screen SAYS; the server's answer is the one
+// that delivers, and the two rules are kept identical on purpose.
 export function managersForEmployee(
   employees: Employee[],
   emp: Pick<Employee, 'id' | 'primaryCrew'> | null | undefined,
 ): ManagerRef[] {
   if (!emp) return [];
   const mine = managedDivisionKey(emp);
-  const out: ManagerRef[] = [];
-  for (const e of employees) {
-    if (e.id === emp.id) continue;                 // never yourself
-    if (!isActiveEmployee(e)) continue;            // an inactive manager can't act
-    const scope = (e.managedDivision || '').toLowerCase();
-    if (!scope) continue;
-    if (scope !== 'all' && !(mine && scope === mine)) continue;
+  const ref = (e: Employee, scope: string): ManagerRef | null => {
+    if (e.id === emp.id) return null;              // never yourself
+    if (!isActiveEmployee(e)) return null;         // an inactive manager can't act
     const email = (e.linkedUserEmail || e.email || '').trim();
-    if (!email) continue;                          // nobody to notify
-    out.push({ id: e.id, name: e.name || email, email, scope });
+    if (!email) return null;                       // nobody to notify
+    return { id: e.id, name: e.name || email, email, scope };
+  };
+
+  if (mine) {
+    const own = employees
+      .filter(e => (e.managedDivision || '').toLowerCase() === mine)
+      .map(e => ref(e, mine))
+      .filter((m): m is ManagerRef => m !== null);
+    if (own.length > 0) return own.sort((a, b) => a.name.localeCompare(b.name));
   }
-  // A division manager before an all-division one: the person closest to the
-  // work reads first.
-  return out.sort((a, b) =>
-    (a.scope === 'all' ? 1 : 0) - (b.scope === 'all' ? 1 : 0) || a.name.localeCompare(b.name));
+  // Fallback: admin, plus all-division managers.
+  return employees
+    .filter(e => e.systemRole === 'admin' || (e.managedDivision || '').toLowerCase() === 'all')
+    .map(e => ref(e, 'admin'))
+    .filter((m): m is ManagerRef => m !== null)
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // ── BUILT vs UNBUILT ───────────────────────────────────────────────────────
@@ -205,18 +274,15 @@ export function buildAvailabilityMonth(
     const date = cur.toISOString().slice(0, 10);
     const built = isDayBuilt(schedules, date);
     if (built) {
+      // No extra filtering here: buildAvailabilityDay's roster is already the
+      // placeable set, so office staff, managers and admin are out of both the
+      // month and the day by construction rather than by two separate rules
+      // that could drift apart.
       const day = buildAvailabilityDay(appData, date, division);
-      // FIELD STAFF ONLY in the month. Office and other no-division people are
-      // unassigned every single day, so on a month grid they are a constant
-      // offset of a dozen or so that swamps the variation actually being looked
-      // for — whether a given day has two spare hands or five. They are not
-      // people a manager is placing onto a crew either. The daily view still
-      // lists them, grouped and collapsed, for the day you are working.
-      const fieldStaff = day.unassigned.filter(p => p.division !== null);
       out.push({
         date, built: true,
-        unassigned: fieldStaff,
-        count: fieldStaff.length,
+        unassigned: day.unassigned,
+        count: day.unassigned.length,
         crewCount: day.crews.length,
       });
     } else {
@@ -234,8 +300,15 @@ export function buildAvailabilityDay(
 ): AvailabilityDay {
   const employees = appData.employees || [];
   const testUserIds = new Set(employees.filter(e => e.isTestUser).map(e => e.id));
-  const roster = employees.filter(isActiveEmployee);
-  const byId = new Map(roster.map(e => [e.id, e]));
+  // The placeable roster — see isPlaceableOnCrew. Every bucket and every
+  // total below is computed over exactly this set, so the numbers and the lists
+  // can never disagree.
+  const roster = employees.filter(isPlaceableOnCrew);
+  // Name lookup spans EVERY employee record, not just the placeable roster.
+  // Crew cards list whoever the schedule put on the crew — including a working
+  // division manager, who is deliberately outside the roster — and resolving
+  // those names from the narrowed roster rendered them as "Unknown".
+  const byId = new Map(employees.map(e => [e.id, e]));
 
   const inDivision = (d: string | null) => division === 'All' || d === division;
   const row = (e: Employee): PersonRow => ({

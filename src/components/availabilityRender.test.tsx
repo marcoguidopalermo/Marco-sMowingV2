@@ -90,14 +90,14 @@ test('NO inferred norm appears anywhere in the output', () => {
   }
 });
 
-test('unassigned people are grouped, and no-division staff sit in their own group', () => {
-  // In this fixture every Lawn/Small person IS on a crew (a,b,c on Lawn #1,
-  // d on Lawn #9, e on Small #1) and Vic is away — so the ONLY unassigned
-  // person is Office Olive, who has no division. Fay is unassigned too.
+test('unassigned people are grouped by division, and office staff are gone', () => {
+  // Every Lawn/Small person IS on a crew (a,b,c on Lawn #1, d on Lawn #9,
+  // e on Small #1) except Fay, who is free. Vic is away.
   assert.match(html, /Small Projects · 1/);      // Fay Foster, unassigned
-  assert.match(html, /No division · 1/);         // Office Olive, own group
-  // Collapsed by default: the count shows but the name does not.
+  // Office Olive has no division, so she is in neither the list NOR the count —
+  // the number and the list must agree.
   assert.doesNotMatch(html, /Office Olive/);
+  assert.doesNotMatch(html, /No division/);
 });
 
 test('the away list names who is booked off, and they are not offered as free', () => {

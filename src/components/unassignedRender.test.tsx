@@ -55,11 +55,20 @@ test('the person is told plainly that they are not on a crew', () => {
   assert.match(html, /You&#x27;re not on a crew today\.|You’re not on a crew today\./);
 });
 
-test('their manager is named', () => {
+test('their OWN DIVISION manager is named — not every manager', () => {
   assert.match(html, /Your manager/);
   assert.match(html, /Jonah Lahtinen/);
-  // The all-division manager is a recipient too, so both are named.
-  assert.match(html, /Marco Palermo/);
+  // The admin/all-division manager is NOT copied when a division manager
+  // exists: a lawn worker's message goes to whoever runs the lawn roster.
+  assert.doesNotMatch(html, /Marco Palermo/);
+});
+
+test('with no division manager, it names the admin fallback instead', () => {
+  // Somebody stranded must always reach a human, so a division with no manager
+  // set falls through to admin rather than showing nobody.
+  const noDivMgr = render({ employees: [me, allMgr] });
+  assert.match(noDivMgr, /Marco Palermo/);
+  assert.match(noDivMgr, /Notify my manager/);
 });
 
 test('the notify button is offered', () => {

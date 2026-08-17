@@ -132,7 +132,7 @@ export default function AvailabilityMonth({
             <div className="text-[11px] font-bold text-slate-500">
               <span className="text-emerald-700 font-black">{builtDays.length}</span> day{builtDays.length === 1 ? '' : 's'} scheduled
               {unbuiltCount > 0 && <span className="text-slate-400"> · {unbuiltCount} not yet</span>}
-              <span className="text-slate-400"> · crew staff only</span>
+              <span className="text-slate-400"> · crew members only</span>
             </div>
             <div className="flex items-center gap-2 bg-white border border-slate-300 rounded-lg px-2 py-1.5 shadow-sm">
               <Filter className="w-4 h-4 text-slate-500" />

@@ -2,7 +2,7 @@
 // the numbers can be checked against reality before trusting the UI.
 //   npx tsx scripts/verify-availability.ts [YYYY-MM-DD]
 import { execFileSync } from 'node:child_process';
-import { buildAvailabilityDay, isActiveEmployee, LENDABLE_MIN_HEADCOUNT } from '../src/lib/availabilityView';
+import { buildAvailabilityDay, isPlaceableOnCrew, LENDABLE_MIN_HEADCOUNT } from '../src/lib/availabilityView';
 import type { AppData } from '../src/types';
 
 const date = process.argv[2] || new Date().toISOString().slice(0, 10);
@@ -32,9 +32,9 @@ for (const [k, v] of Object.entries(raw.fields || {})) appData[k] = pv(v);
 appData.dailyAbsences = appData.dailyAbsences || {};
 appData.fleet = appData.fleet || [];
 
-const roster = (appData.employees || []).filter(isActiveEmployee);
+const roster = (appData.employees || []).filter(isPlaceableOnCrew);
 console.log(`=== AVAILABILITY · ${date} ===`);
-console.log(`roster (employed, non-test): ${roster.length} of ${(appData.employees || []).length} employee records\n`);
+console.log(`placeable roster (crew members with a division): ${roster.length} of ${(appData.employees || []).length} employee records\n`);
 
 for (const division of ['All', 'Lawn Division', 'Small Projects', 'Large Projects']) {
   const d = buildAvailabilityDay(appData as AppData, date, division);

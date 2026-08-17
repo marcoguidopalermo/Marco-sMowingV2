@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   buildAvailabilityDay, buildAvailabilityMonth, isDayBuilt,
   isActiveEmployee, isInactiveEmployeeStatus, employeeDivisionName,
+  isPlaceableOnCrew, countNonPlaceable,
   managersForEmployee, countInactive, LENDABLE_MIN_HEADCOUNT,
 } from './availabilityView';
 import type { AppData, Crew, Employee } from '../types';
@@ -86,12 +87,12 @@ test('unassigned = employed, not away, not on a crew today', () => {
     employees: people,
     schedules: { '2026-08-17': [crew('Lawn Division', 1, ['l1'])] },
   }), '2026-08-17', 'All');
-  assert.deepEqual(d.unassigned.map(p => p.id).sort(), ['l2', 'l3', 'o1', 's1']);
+  // o1 is Office — no division, so not placeable and not listed.
+  assert.deepEqual(d.unassigned.map(p => p.id).sort(), ['l2', 'l3', 's1']);
   // Departed and test users never appear anywhere.
   assert.ok(!d.unassigned.some(p => p.id === 'gone' || p.id === 'test'));
   // And the division travels with the name, so it's obvious who they work with.
   assert.equal(d.unassigned.find(p => p.id === 'l2')!.division, 'Lawn Division');
-  assert.equal(d.unassigned.find(p => p.id === 'o1')!.division, null);
 });
 
 test('booked off and absent are separated, and are not "unassigned"', () => {
@@ -189,16 +190,19 @@ test('the division filter narrows people AND crews together', () => {
   const lawn = buildAvailabilityDay(app({ employees: people, schedules }), '2026-08-17', 'Lawn Division');
   assert.deepEqual(lawn.crews.map(c => c.key), ['Lawn Division #1']);
   assert.deepEqual(lawn.unassigned.map(p => p.id).sort(), ['l2', 'l3']);
-  // Office staff carry no division, so they only show under All.
+  // Office staff carry no division and are now out of BOTH scopes — the count
+  // and the list have to agree, and an office record was never a candidate.
   assert.ok(!lawn.unassigned.some(p => p.id === 'o1'));
   const all = buildAvailabilityDay(app({ employees: people, schedules }), '2026-08-17', 'All');
-  assert.ok(all.unassigned.some(p => p.id === 'o1'));
+  assert.ok(!all.unassigned.some(p => p.id === 'o1'));
 });
 
 test('a day with no schedule built shows everyone as unassigned, no crews', () => {
   const d = buildAvailabilityDay(app({ employees: people }), '2026-08-17', 'All');
   assert.equal(d.crews.length, 0);
-  assert.equal(d.unassigned.length, 5);       // the 5 employed, non-test people
+  // The 4 placeable people: l1, l2, l3 (Lawn) and s1 (Small). o1 is Office,
+  // 'gone' is inactive, 'test' is a test user.
+  assert.equal(d.unassigned.length, 4);
   assert.equal(d.totals.assigned, 0);
 });
 
@@ -314,45 +318,131 @@ test('the MONTH counts crew staff only — office/no-division are left out', () 
   assert.equal(month[0].count, 3);
   assert.ok(!month[0].unassigned.some(p => p.division === null));
 });
-test('the DAILY view still lists no-division staff — only the month drops them', () => {
-  const d = buildAvailabilityDay(app({
+test('the DAILY view and the MONTH agree on who counts — one roster, not two', () => {
+  const appd = app({
     employees: people,
     schedules: { '2026-08-18': [crew('Lawn Division', 1, ['l1'])] },
-  }), '2026-08-18', 'All');
-  assert.ok(d.unassigned.some(p => p.id === 'o1'), 'the daily view must keep office staff');
+  });
+  const d = buildAvailabilityDay(appd, '2026-08-18', 'All');
+  const m = buildAvailabilityMonth(appd, '2026-08-18', '2026-08-18', 'All');
+  // Both derive from the same placeable roster, so neither can include somebody
+  // the other leaves out — the earlier version filtered in two places and drifted.
+  assert.deepEqual(m[0].unassigned.map(p => p.id).sort(), d.unassigned.map(p => p.id).sort());
+  assert.equal(m[0].count, d.totals.unassigned);
+  assert.ok(!d.unassigned.some(p => p.id === 'o1'), 'office staff are out of both');
 });
 
-console.log('\nWho is my manager');
+console.log('\nWho this view is about');
+test('placeable = crew roles WITH a division; unset systemRole counts as crew', () => {
+  // resolveRole() treats a missing systemRole as 'worker', and most real crew
+  // records have none — so unset MUST be placeable or the view empties out.
+  assert.equal(isPlaceableOnCrew(emp({ id: 'a', name: 'A', primaryCrew: 'Lawn' })), true);
+  assert.equal(isPlaceableOnCrew(emp({ id: 'b', name: 'B', primaryCrew: 'Lawn', systemRole: 'worker' })), true);
+  assert.equal(isPlaceableOnCrew(emp({ id: 'c', name: 'C', primaryCrew: 'Lawn', systemRole: 'foreman' })), true);
+});
+test('the people DOING the placing are not waiting to be placed', () => {
+  for (const role of ['admin', 'manager'] as const) {
+    assert.equal(
+      isPlaceableOnCrew(emp({ id: role, name: role, primaryCrew: 'Lawn', systemRole: role })),
+      false, `${role} must not appear as unassigned`);
+  }
+});
+test('roles that do other work are excluded', () => {
+  // Mechanics verified against live schedules: none has ever been placed on a
+  // crew. Contractors, property managers and marketing are other surfaces.
+  for (const role of ['mechanic', 'contractor', 'property_manager', 'marketing'] as const) {
+    assert.equal(
+      isPlaceableOnCrew(emp({ id: role, name: role, primaryCrew: 'Lawn', systemRole: role })),
+      false, `${role} must not appear as unassigned`);
+  }
+});
+test('no division means not placeable — office and snow-only records', () => {
+  assert.equal(isPlaceableOnCrew(emp({ id: 'o', name: 'O', primaryCrew: 'Office' })), false);
+  assert.equal(isPlaceableOnCrew(emp({ id: 's', name: 'S', primaryCrew: 'Snow' })), false);
+  assert.equal(isPlaceableOnCrew(emp({ id: 'n', name: 'N' })), false);
+});
+test('THE COUNT AND THE LIST AGREE — no-division staff are in neither', () => {
+  const d = buildAvailabilityDay(app({
+    employees: [
+      emp({ id: 'l1', name: 'Lawn One', primaryCrew: 'Lawn' }),
+      emp({ id: 'l2', name: 'Lawn Two', primaryCrew: 'Lawn' }),
+      emp({ id: 'off', name: 'Office', primaryCrew: 'Office' }),
+      emp({ id: 'mgr', name: 'Manager', primaryCrew: 'Lawn', systemRole: 'manager' }),
+      emp({ id: 'adm', name: 'Admin', primaryCrew: 'Lawn', systemRole: 'admin' }),
+      emp({ id: 'mech', name: 'Mechanic', primaryCrew: 'Lawn', systemRole: 'mechanic' }),
+    ],
+    schedules: { '2026-08-17': [crew('Lawn Division', 1, ['l1'])] },
+  }), '2026-08-17', 'All');
+  assert.deepEqual(d.unassigned.map(p => p.id), ['l2']);
+  // The number the header shows is the length of the list it shows.
+  assert.equal(d.totals.unassigned, d.unassigned.length);
+  assert.equal(d.totals.unassigned, 1);
+  assert.equal(d.totals.employed, 2, 'only the two placeable crew members count');
+  // Every person in the list has a division, so the grouped UI has no orphans.
+  assert.ok(d.unassigned.every(p => p.division !== null));
+});
+test('a manager on a crew still shows on the crew card, just not in the roster', () => {
+  const d = buildAvailabilityDay(app({
+    employees: [
+      emp({ id: 'mgr', name: 'Jonah', primaryCrew: 'Lawn', systemRole: 'manager' }),
+      emp({ id: 'l1', name: 'Lawn One', primaryCrew: 'Lawn' }),
+    ],
+    schedules: { '2026-08-17': [crew('Lawn Division', 3, ['mgr'])] },
+  }), '2026-08-17', 'All');
+  // Headcount reads crew.employees, so the working manager is counted there.
+  assert.equal(d.crews[0].today, 1);
+  assert.deepEqual(d.crews[0].people.map(p => p.name), ['Jonah']);
+  // But he is not in the placeable roster, and not offered as unassigned.
+  assert.ok(!d.unassigned.some(p => p.id === 'mgr'));
+});
+test('countNonPlaceable reports the active staff left out', () => {
+  assert.equal(countNonPlaceable([
+    emp({ id: 'l1', name: 'L', primaryCrew: 'Lawn' }),                       // placeable
+    emp({ id: 'off', name: 'O', primaryCrew: 'Office' }),                    // no division
+    emp({ id: 'mgr', name: 'M', primaryCrew: 'Lawn', systemRole: 'manager' }), // manager
+    emp({ id: 'gone', name: 'G', primaryCrew: 'Lawn', status: 'Away' }),      // inactive, not counted here
+  ]), 2);
+});
+
+console.log('\nNotify routing — own division manager, else admin');
 const withManagers: Employee[] = [
   emp({ id: 'w', name: 'Worker', primaryCrew: 'Lawn' }),
   emp({ id: 'lawnmgr', name: 'Lawn Manager', primaryCrew: 'Lawn', managedDivision: 'lawn', linkedUserEmail: 'lawn@x.test' }),
   emp({ id: 'smallmgr', name: 'Small Manager', primaryCrew: 'Small Project', managedDivision: 'small', linkedUserEmail: 'small@x.test' }),
-  emp({ id: 'allmgr', name: 'All Manager', managedDivision: 'all', linkedUserEmail: 'all@x.test' }),
+  emp({ id: 'allmgr', name: 'All Manager', managedDivision: 'all', systemRole: 'admin', linkedUserEmail: 'all@x.test' }),
   emp({ id: 'exmgr', name: 'Ex Manager', managedDivision: 'lawn', status: 'Away', linkedUserEmail: 'ex@x.test' }),
-  emp({ id: 'nomail', name: 'No Email Manager', managedDivision: 'lawn' }),
 ];
-test('a worker’s managers are their own division plus any all-division manager', () => {
+test('goes to the OWN DIVISION manager only — not every manager', () => {
   const m = managersForEmployee(withManagers, withManagers[0]);
-  assert.deepEqual(m.map(x => x.id), ['lawnmgr', 'allmgr']);
-  // Division manager first — the person closest to the work reads first.
-  assert.equal(m[0].scope, 'lawn');
-  assert.equal(m[1].scope, 'all');
-  // Another division's manager is not involved.
+  assert.deepEqual(m.map(x => x.id), ['lawnmgr']);
+  // Explicitly NOT the all-division/admin manager when a division manager exists.
+  assert.ok(!m.some(x => x.id === 'allmgr'));
   assert.ok(!m.some(x => x.id === 'smallmgr'));
 });
-test('an inactive manager, or one with no email, is not offered as a recipient', () => {
-  const m = managersForEmployee(withManagers, withManagers[0]);
+test('falls back to admin when the division has no manager', () => {
+  const noLawnMgr = withManagers.filter(e => e.id !== 'lawnmgr');
+  const m = managersForEmployee(noLawnMgr, noLawnMgr[0]);
+  assert.deepEqual(m.map(x => x.id), ['allmgr']);
+  assert.equal(m[0].scope, 'admin');
+});
+test('falls back to admin when the person has no division at all', () => {
+  const office = emp({ id: 'off', name: 'Office', primaryCrew: 'Office' });
+  const m = managersForEmployee([...withManagers, office], office);
+  assert.deepEqual(m.map(x => x.id), ['allmgr']);
+});
+test('an inactive manager is skipped, and the admin fallback covers for them', () => {
+  const onlyExMgr = [withManagers[0], withManagers[3], withManagers[4]];
+  const m = managersForEmployee(onlyExMgr, onlyExMgr[0]);
   assert.ok(!m.some(x => x.id === 'exmgr'), 'an inactive manager cannot act on it');
-  assert.ok(!m.some(x => x.id === 'nomail'), 'nobody to notify without an address');
+  assert.deepEqual(m.map(x => x.id), ['allmgr']);
+});
+test('a manager with no email is not offered as a recipient', () => {
+  const noMail = [withManagers[0], emp({ id: 'nm', name: 'No Mail', managedDivision: 'lawn' }), withManagers[3]];
+  const m = managersForEmployee(noMail, noMail[0]);
+  assert.deepEqual(m.map(x => x.id), ['allmgr'], 'should fall through to admin');
 });
 test('a manager is never their own recipient', () => {
   const lawnMgr = withManagers[1];
   const m = managersForEmployee(withManagers, lawnMgr);
   assert.ok(!m.some(x => x.id === lawnMgr.id));
-  assert.deepEqual(m.map(x => x.id), ['allmgr']);
-});
-test('someone with no division still reaches the all-division manager', () => {
-  const office = emp({ id: 'off', name: 'Office', primaryCrew: 'Office' });
-  const m = managersForEmployee([...withManagers, office], office);
-  assert.deepEqual(m.map(x => x.id), ['allmgr']);
 });

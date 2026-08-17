@@ -10,12 +10,15 @@
 // itself, and this view just tells you what to reshuffle.
 import { useMemo, useState } from 'react';
 import {
-  ChevronLeft, ChevronRight, Filter, Users, UserCheck, Plane, ChevronDown,
+  ChevronLeft, ChevronRight, Filter, Users, UserCheck, Plane,
 } from 'lucide-react';
 import type { AppData } from '../types';
 import { DIVISIONS } from '../constants';
 import { addDaysToronto, formatTodayInToronto } from '../lib/dateUtils';
-import { buildAvailabilityDay, LENDABLE_MIN_HEADCOUNT, countInactive, type PersonRow } from '../lib/availabilityView';
+import {
+  buildAvailabilityDay, LENDABLE_MIN_HEADCOUNT, PLACEABLE_ROLES_NOTE,
+  countInactive, countNonPlaceable, type PersonRow,
+} from '../lib/availabilityView';
 import AvailabilityMonth from './AvailabilityMonth';
 
 function PersonChip({ p, showDivision }: { p: PersonRow; showDivision?: boolean }) {
@@ -42,11 +45,6 @@ export default function AvailabilityView({
   // DAY is the default: the reshuffle happens today, and the month is the
   // pattern you consult rather than the thing you act on.
   const [mode, setMode] = useState<'day' | 'month'>('day');
-  // Office / no-division staff are employed and unassigned but are not crew
-  // material, and at 19 unassigned records they bury the six names that
-  // matter. Grouped and collapsed rather than hidden — the count is always
-  // visible and one tap shows them.
-  const [showNoDivision, setShowNoDivision] = useState(false);
 
   const day = useMemo(
     () => buildAvailabilityDay(appData, date, division),
@@ -58,17 +56,17 @@ export default function AvailabilityView({
     weekday: 'long', month: 'long', day: 'numeric',
   });
 
-  // Unassigned split into field staff (grouped by the division they normally
-  // work with) and everyone with no division.
-  const { byDivision, noDivision } = useMemo(() => {
+  // Grouped by the division they normally work with. There is no no-division
+  // group any more: the roster requires a division, so office and snow-only
+  // records never reach this list OR its count — the two agree by construction.
+  const byDivision = useMemo(() => {
     const groups = new Map<string, PersonRow[]>();
-    const none: PersonRow[] = [];
     for (const p of day.unassigned) {
-      if (!p.division) { none.push(p); continue; }
+      if (!p.division) continue;
       const g = groups.get(p.division);
       if (g) g.push(p); else groups.set(p.division, [p]);
     }
-    return { byDivision: [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])), noDivision: none };
+    return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [day.unassigned]);
 
   // Crews with someone to spare this morning. No "running short" counterpart —
@@ -77,6 +75,7 @@ export default function AvailabilityView({
   // Inactive records are excluded from every bucket above; say how many rather
   // than letting them vanish out of a roster count without explanation.
   const inactiveCount = useMemo(() => countInactive(appData.employees || []), [appData.employees]);
+  const otherRolesCount = useMemo(() => countNonPlaceable(appData.employees || []), [appData.employees]);
 
   // MODE TOGGLE — rendered by both branches so switching back is always in the
   // same place. Full-width halves on a phone.
@@ -185,24 +184,6 @@ export default function AvailabilityView({
                 </div>
               </div>
             ))}
-            {byDivision.length === 0 && noDivision.length > 0 && (
-              <p className="text-[13px] text-slate-500">No field staff free — only office / no-division people below.</p>
-            )}
-            {noDivision.length > 0 && (
-              <div className="border-t border-slate-100 pt-2">
-                <button type="button" onClick={() => setShowNoDivision(v => !v)}
-                  className="inline-flex min-h-[36px] items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-slate-500">
-                  <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showNoDivision ? 'rotate-180' : ''}`} />
-                  No division · {noDivision.length}
-                  <span className="font-bold normal-case tracking-normal text-slate-400">(office / other)</span>
-                </button>
-                {showNoDivision && (
-                  <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    {noDivision.map(p => <PersonChip key={p.id} p={p} />)}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         )}
       </section>
@@ -283,6 +264,9 @@ export default function AvailabilityView({
         Headcounts are today&rsquo;s actual crew assignments; a crew of
         {' '}{LENDABLE_MIN_HEADCOUNT} or more is flagged as able to lend someone
         — a crew of two can&rsquo;t spare one.
+        {' '}Shows {PLACEABLE_ROLES_NOTE} in a crew division only
+        {otherRolesCount > 0 && <> — {otherRolesCount} other active staff
+        (managers, admin, mechanics, office) are not counted</>}.
         {inactiveCount > 0 && (
           <> {inactiveCount} inactive employee{inactiveCount === 1 ? '' : 's'} not shown
           (status Away/Indefinite — not the same as booked off).</>

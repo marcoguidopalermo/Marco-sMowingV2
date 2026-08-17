@@ -377,42 +377,66 @@ export const pushAvailableForWork = onCall({region: REGION}, async (req) => {
   if (!me) throw new HttpsError("permission-denied", "No employee record for this account.");
 
   // A worker's division comes from primaryCrew ("Lawn" / "Small Project" /
-  // "Large Project"); managers carry managedDivision ("lawn"/"small"/"large"/
-  // "all"). Map the former onto the latter's vocabulary.
+  // "Large Project"); a manager carries managedDivision ("lawn"/"small"/"large"
+  // /"all"). Map the former onto the latter's vocabulary.
   const crew = (me.primaryCrew || "").toLowerCase();
   const myDiv = crew.includes("lawn") ? "lawn"
     : crew.includes("small") ? "small"
       : crew.includes("large") ? "large" : null;
+  const DIV_LABEL: Record<string, string> = {
+    lawn: "Lawn Division", small: "Small Projects", large: "Large Projects",
+  };
 
-  const recips = new Set<string>();
-  for (const e of emps) {
-    const md = (e.managedDivision || "").toLowerCase();
-    if (!md) continue;
-    // An all-division manager always hears it; a division manager hears it for
-    // their own division only.
-    if (md === "all" || (myDiv && md === myDiv)) {
-      const em = empEmail(e);
-      // Never notify the caller about themselves — a manager who is somehow
-      // unassigned should not get their own message.
-      if (em && em !== email) recips.add(em);
-    }
+  const active = (e: any): boolean => {
+    const v = String(e.status || "").toLowerCase();
+    return !e.isTestUser && !(v.includes("away") || v.includes("inactive") ||
+      v.includes("archive") || v.includes("terminat"));
+  };
+  const addr = (e: any): string => {
+    const em = empEmail(e);
+    return em && em !== email ? em : "";     // never notify the caller themselves
+  };
+
+  // OWN DIVISION MANAGER ONLY. Previously every all-division manager was copied
+  // too, which meant a lawn worker's "I'm available" also went to people with no
+  // say over the lawn roster — noise that trains a manager to ignore the type.
+  let recips: string[] = [];
+  let routedTo = "";
+  if (myDiv) {
+    recips = emps
+      .filter((e) => active(e) && String(e.managedDivision || "").toLowerCase() === myDiv)
+      .map(addr).filter(Boolean);
+    routedTo = `${DIV_LABEL[myDiv]} manager`;
   }
-  if (recips.size === 0) {
-    // Honest failure rather than a silent success: the button said it would
-    // tell somebody, and there is nobody to tell.
-    throw new HttpsError("failed-precondition", "No manager is set up to receive this yet.");
+  // FALLBACK TO ADMIN when the division has no manager set — or when the person
+  // has no division to route by. Somebody stranded must always reach a human;
+  // silence here would be the worst outcome of the whole feature.
+  if (recips.length === 0) {
+    recips = emps
+      .filter((e) => active(e) && ((e.systemRole === "admin") ||
+        String(e.managedDivision || "").toLowerCase() === "all"))
+      .map(addr).filter(Boolean);
+    routedTo = myDiv ? `admin (no ${DIV_LABEL[myDiv]} manager set)` : "admin (no division set)";
+  }
+  recips = [...new Set(recips)];
+  if (recips.length === 0) {
+    // Honest failure rather than a silent success: the button said it would tell
+    // somebody, and there is nobody to tell.
+    throw new HttpsError("failed-precondition", "No manager or admin is set up to receive this yet.");
   }
 
   const date = String((req.data || {}).date || "").slice(0, 10);
-  const when = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "today";
+  const when = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "";
   const name = me.name || email;
-  const divLabel = myDiv ? ` (${myDiv})` : "";
-  const res = await sendNotification([...recips], "crew", {
-    title: `🙋 ${name} is available`,
-    body: `Not on a crew ${when === "today" ? "today" : `on ${when}`}${divLabel} — available to work.`,
+  const divLabel = myDiv ? DIV_LABEL[myDiv] : "no division";
+  const res = await sendNotification(recips, "crew", {
+    // Name and division in BOTH title and body: a manager reading a lock screen
+    // needs to know who and which crew without opening anything.
+    title: `🙋 ${name} is available — ${divLabel}`,
+    body: `${name} (${divLabel}) is not on a crew${when ? ` on ${when}` : " today"} and is available to work.`,
     url: "/#schedule",
   });
-  return res;
+  return {...res, routedTo};
 });
 
 // Dashboard "Send test to me" → sample of a type to the caller's own devices
