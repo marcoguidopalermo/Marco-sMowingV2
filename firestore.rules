@@ -79,6 +79,29 @@ service cloud.firestore {
     // BREAK GLASS: removing a genuinely junk entry (test data) means editing
     // this rule, deleting, and putting it back — deliberately awkward, because
     // deleting from this collection should never be routine.
+    // ACCESS-LIST AUDIT — one entry per address added to or removed from
+    // authorizedEmails. APPEND-ONLY and enforced here, not just in the app:
+    // this is the log of who changed who can get into the system, so an entry
+    // must not be editable or deletable by anyone, super admin included.
+    //
+    // Kept OUTSIDE artifacts/** for the same reason hoursBank is: that rule
+    // grants full write to every authorized user and its OR-semantics cannot be
+    // narrowed. Under it, "append-only" would be a UI convention.
+    //
+    // WHO may create is enforced at the app layer (admin only — see
+    // saveAuthorizedEmails). An authorized non-admin bypassing the UI could
+    // append a spurious entry, but could not alter or remove a real one, and
+    // every entry carries who wrote it. Tamper-evidence over a lock that
+    // cannot be expressed here.
+    //
+    // BREAK GLASS: removing a junk entry means editing this rule, deleting, and
+    // putting it back — deliberately awkward.
+    match /authorizedEmailAudit/{entryId} {
+      allow read: if isAuthorized() || isSuperAdmin();
+      allow create: if isAuthorized() || isSuperAdmin();
+      allow update, delete: if false;
+    }
+
     match /hoursBank/{entryId} {
       allow read: if isAuthorized() || isSuperAdmin();
       allow create: if isAuthorized() || isSuperAdmin();

@@ -120,3 +120,59 @@ export function decideAuthGate(input: AuthGateInput): AuthGateFacts {
     sessionAlreadyAuthorized: input.sessionAlreadyAuthorized,
   };
 }
+
+// ── ALLOWLIST EDITS ────────────────────────────────────────────────────────
+// Turning an admin's on-screen list into a safe, minimal change.
+//
+// Deltas are computed against the BASELINE the admin started from and applied
+// to the SERVER's current list — never "write the array on my screen". Two
+// admins editing at once therefore both land their changes, and neither
+// silently reverts the other. This is also what stops a stale screen from
+// removing somebody added since it loaded.
+export interface AllowlistUpdate {
+  finalList: string[];
+  added: string[];
+  removed: string[];
+  /** Set when the update was refused outright; finalList is then unchanged. */
+  refused?: 'empty-result';
+  /** True when the super admin had to be re-added to keep a recovery path. */
+  superAdminRestored: boolean;
+}
+
+export function computeAllowlistUpdate(input: {
+  serverList: string[];
+  baseline: string[];
+  next: string[];
+  superAdminEmail: string;
+}): AllowlistUpdate {
+  const norm = (a: string[]) => a.map(normalizeGateEmail).filter(Boolean);
+  const server = norm(input.serverList);
+  const base = new Set(norm(input.baseline));
+  const next = new Set(norm(input.next));
+  const superAdmin = normalizeGateEmail(input.superAdminEmail);
+
+  const added = [...next].filter((e) => !base.has(e));
+  const removed = [...base].filter((e) => !next.has(e));
+
+  const merged = new Set(server);
+  for (const e of added) merged.add(e);
+  for (const e of removed) merged.delete(e);
+
+  // An empty list locks everyone out and, because the gate treats an empty
+  // list as indeterminate, would do so silently. Refuse rather than write it.
+  if (merged.size === 0) {
+    return {
+      finalList: server, added, removed, refused: 'empty-result', superAdminRestored: false,
+    };
+  }
+  // The super admin is the recovery path if this list is ever wrong, so it
+  // cannot be removed by an edit.
+  let superAdminRestored = false;
+  if (superAdmin && !merged.has(superAdmin)) {
+    merged.add(superAdmin);
+    superAdminRestored = true;
+  }
+  return {
+    finalList: Array.from(merged).sort(), added, removed, superAdminRestored,
+  };
+}

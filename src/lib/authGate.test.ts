@@ -8,7 +8,7 @@
 // NOT reject.
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { decideAuthGate, listFingerprint, normalizeGateEmail } from './authGate';
+import { computeAllowlistUpdate, decideAuthGate, listFingerprint, normalizeGateEmail } from './authGate';
 
 const SUPER = 'marcoguidopalermo@gmail.com';
 const LIST = ['marcoguidopalermo@gmail.com', 'office@marcosmowing.com', 'sales@marcosmowing.com'];
@@ -139,4 +139,69 @@ console.log('\nEmail normalisation');
 test('normalizeGateEmail trims, lowercases, and tolerates non-strings', () => {
   assert.equal(normalizeGateEmail('  A@B.COM '), 'a@b.com');
   for (const v of [undefined, null, 42, {}, []]) assert.equal(normalizeGateEmail(v), '');
+});
+
+console.log('\nAllowlist edits — deltas applied to the server, not the screen');
+const SL = ['a@x.test', 'b@x.test', SUPER];
+const plan = (o: Partial<Parameters<typeof computeAllowlistUpdate>[0]> = {}) =>
+  computeAllowlistUpdate({ serverList: SL, baseline: SL, next: SL, superAdminEmail: SUPER, ...o });
+
+test('an add lands on top of the server list', () => {
+  const p = plan({ next: [...SL, 'new@x.test'] });
+  assert.deepEqual(p.added, ['new@x.test']);
+  assert.deepEqual(p.removed, []);
+  assert.ok(p.finalList.includes('new@x.test'));
+  assert.ok(p.finalList.includes('a@x.test'), 'existing entries survive');
+});
+test('a removal takes only that address', () => {
+  const p = plan({ next: ['a@x.test', SUPER] });
+  assert.deepEqual(p.removed, ['b@x.test']);
+  assert.ok(!p.finalList.includes('b@x.test'));
+  assert.ok(p.finalList.includes('a@x.test'));
+});
+test('THE BUG: a stale screen cannot revert somebody added since it loaded', () => {
+  // Admin opened the modal when the list was [a, b, SUPER]. Meanwhile sales@
+  // was added by someone else. The admin adds nothing and saves.
+  const p = plan({
+    baseline: ['a@x.test', 'b@x.test', SUPER],
+    next: ['a@x.test', 'b@x.test', SUPER],              // unchanged on screen
+    serverList: ['a@x.test', 'b@x.test', SUPER, 'sales@x.test'],   // moved on
+  });
+  assert.deepEqual(p.added, []);
+  assert.deepEqual(p.removed, []);
+  assert.ok(p.finalList.includes('sales@x.test'), 'the concurrent addition must survive');
+});
+test('two admins editing at once both land their changes', () => {
+  // This admin adds c@; the other already added d@ on the server.
+  const p = plan({
+    baseline: SL,
+    next: [...SL, 'c@x.test'],
+    serverList: [...SL, 'd@x.test'],
+  });
+  assert.ok(p.finalList.includes('c@x.test'));
+  assert.ok(p.finalList.includes('d@x.test'));
+});
+test('an edit that would empty the list is REFUSED, leaving the server list alone', () => {
+  const p = plan({ baseline: SL, next: [], serverList: SL, superAdminEmail: '' });
+  assert.equal(p.refused, 'empty-result');
+  assert.deepEqual(p.finalList, SL, 'the server list is returned unchanged');
+});
+test('the super admin cannot be removed — the recovery path is preserved', () => {
+  const p = plan({ next: ['a@x.test', 'b@x.test'] });   // dropped SUPER
+  assert.ok(p.finalList.includes(SUPER));
+  assert.equal(p.superAdminRestored, true);
+  assert.deepEqual(p.removed, [SUPER], 'the intent is still reported honestly');
+});
+test('normalisation applies to every input, and the result is deduped and sorted', () => {
+  const p = plan({
+    serverList: ['  B@X.test ', 'a@x.test'],
+    baseline: ['a@x.test', 'b@x.test'],
+    next: ['a@x.test', 'b@x.test', ' NEW@X.TEST '],
+  });
+  assert.deepEqual(p.finalList, ['a@x.test', 'b@x.test', 'marcoguidopalermo@gmail.com', 'new@x.test']);
+});
+test('a no-op edit reports no deltas, so the caller can skip the write', () => {
+  const p = plan();
+  assert.deepEqual(p.added, []);
+  assert.deepEqual(p.removed, []);
 });

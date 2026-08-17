@@ -122,7 +122,7 @@ import {
   scanBlockingPartialJobs, remainingBHOf, rowBlocksApproval, voidLedger, carryLedger, completeLedger, BlockingPartialJob,
 } from './lib/multiDayResolution';
 import { buildMonthlySummary } from './lib/monthlySummary';
-import { decideAuthGate } from './lib/authGate';
+import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { nextUnusedColorKey, nextPersonColorKey } from './lib/roleCategories';
 import { callGeminiWithRetry } from './lib/gemini';
 
@@ -259,6 +259,20 @@ export default function App() {
   // are only useful the first time, and a per-snapshot log would bury the
   // rejection we actually want to find.
   const sessionGateLoggedRef = useRef(false);
+  // THE ALLOWLIST AS THE SERVER LAST REPORTED IT.
+  //
+  // authorizedEmails decides who can get into the app, and it must never be
+  // written from component state. syncToCloud does a full-document setDoc built
+  // from `appData`, and a handler holding a STALE CLOSURE over appData (created
+  // on mount, invoked minutes later) writes whatever that closure captured —
+  // silently reverting the list and locking out anyone added since. Writing
+  // this ref instead means the value in the payload is always the newest one
+  // the server has reported, no matter how old the caller's closure is.
+  //
+  // Edits go through saveAuthorizedEmails() below, which does a TARGETED
+  // updateDoc on this one field. It is deliberately not editable via the
+  // whole-document path at all.
+  const serverAuthorizedEmailsRef = useRef<string[]>([]);
   // Phase 1: multiDayJobs lives in its own subcollection, not the appData
   // doc. We keep the doc's (legacy, pre-removal) copy and the live
   // subcollection copy in refs and merge them into appData.multiDayJobs —
@@ -1047,6 +1061,12 @@ export default function App() {
         // subcollection overlaid on top (pre-migration this is the frozen doc
         // copy, post-migration []).
         docActivityLogRef.current = (data.activityLog || []) as TaskActivity[];
+        // Track the server's allowlist verbatim (normalized) for the doc write.
+        serverAuthorizedEmailsRef.current = Array.from(
+          new Set((Array.isArray(data.authorizedEmails) ? data.authorizedEmails : [])
+            .map((e: string) => normalizeEmail(e))
+            .filter(Boolean)),
+        ).sort();
         // Phase 5: same for the deletion audit trail.
         docDeletionAuditRef.current = (data.deletionAuditLog || []) as DeletionAuditEntry[];
         // Push Month: remember the doc's own performance (current month)
@@ -2142,11 +2162,10 @@ export default function App() {
     // normalizeEmail) would re-introduce drift. Re-normalizing on every
     // syncToCloud is idempotent (clean lists pass through unchanged)
     // and cheap (one map+filter+sort over a tiny array).
-    const normalizedAuthEmails = Array.from(
-      new Set((newData.authorizedEmails || [])
-        .map(e => normalizeEmail(e))
-        .filter(Boolean)),
-    ).sort();
+    // NOT from newData: the allowlist in the payload is the server's own last
+    // reported value (see serverAuthorizedEmailsRef). A whole-document save can
+    // no longer change who has access, whatever state the caller is holding.
+    const normalizedAuthEmails = serverAuthorizedEmailsRef.current;
     // Bound the in-document deletion audit log so a delete (which appends a
     // record snapshot) can never push the single appData doc past Firestore's
     // 1 MiB limit.
@@ -3089,6 +3108,81 @@ export default function App() {
   // ── SNOW CONTRACTS. Writes go straight to the contract document; the
   // editor autosaves on blur, so these are called often and stay small.
   const canEditSnowContracts = isManager;   // managers read-only is enforced below
+  // ── ACCESS LIST ──────────────────────────────────────────────────────────
+  // The ONLY write path for authorizedEmails. A targeted updateDoc on that one
+  // field, so it cannot ride along with — or be reverted by — a whole-document
+  // save built from stale component state.
+  //
+  // Deltas are applied on top of the SERVER's current list rather than pushing
+  // a whole array the admin's screen happened to hold: two admins editing at
+  // once both get their changes, and neither wipes the other's. Each add and
+  // each removal is audited individually to its own append-only collection.
+  const saveAuthorizedEmails = async (
+    nextList: string[],
+    baseline: string[],
+  ): Promise<boolean> => {
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return false; }
+    const plan = computeAllowlistUpdate({
+      serverList: serverAuthorizedEmailsRef.current,
+      baseline,
+      next: nextList,
+      superAdminEmail: SUPER_ADMIN_EMAIL,
+    });
+    const { added, removed, finalList } = plan;
+    if (added.length === 0 && removed.length === 0) return true;   // nothing to do
+    if (plan.refused === 'empty-result') {
+      showToastMsg('Refusing to save an empty access list — everyone would be locked out.');
+      return false;
+    }
+    if (plan.superAdminRestored) {
+      showToastMsg('The super admin cannot be removed from the access list.');
+    }
+
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'), {
+        authorizedEmails: finalList,
+      });
+    } catch (err: any) {
+      showToastMsg(`Could not update the access list: ${err?.message || String(err)}`);
+      return false;
+    }
+    // Keep the ref in step immediately; the snapshot will confirm it shortly.
+    serverAuthorizedEmailsRef.current = finalList;
+
+    // AUDIT — after the change lands, one entry per address. Non-fatal: a
+    // failed audit write must not make the access change look like it failed,
+    // but it is surfaced rather than swallowed.
+    const auditCol = collection(db, 'authorizedEmailAudit');
+    const stamp = Date.now();
+    const write = (action: 'added' | 'removed', email: string, i: number) => setDoc(
+      doc(auditCol, `ael-${stamp}-${i}-${Math.random().toString(36).slice(2, 6)}`),
+      {
+        id: `ael-${stamp}-${i}`,
+        at: stamp,
+        action,
+        email,
+        byEmail: displayEmail,
+        byName: displayName || displayEmail,
+        listLengthAfter: finalList.length,
+      } satisfies import('./types').AuthorizedEmailAuditEntry,
+    );
+    try {
+      await Promise.all([
+        ...added.map((e, i) => write('added', e, i)),
+        ...removed.map((e, i) => write('removed', e, added.length + i)),
+      ]);
+    } catch (err: any) {
+      console.error('authorizedEmail audit write failed', err);
+      showToastMsg('Access list updated, but the audit entry could not be written.');
+    }
+    const parts = [
+      added.length ? `${added.length} added` : '',
+      removed.length ? `${removed.length} removed` : '',
+    ].filter(Boolean).join(', ');
+    showToastMsg(`Access list updated — ${parts}.`);
+    return true;
+  };
+
   const saveSnowContract = async (c: SnowContract) => {
     if (!canEditSnowContracts) { showToastMsg(PERMISSION_DENIED); return; }
     try {
@@ -7092,18 +7186,13 @@ export default function App() {
           // server list. Net effect: untouched lists pass the live list
           // through unchanged; concurrent additions by others survive;
           // the admin's own add/remove still take effect.
-          const baseline = localAdminsBaselineRef.current; // normalized at modal-open
-          const current = localAdmins.map(e => normalizeEmail(e)).filter(Boolean);
-          const baselineSet = new Set(baseline);
-          const currentSet = new Set(current);
-          const added = current.filter(e => !baselineSet.has(e));
-          const removed = baseline.filter(e => !currentSet.has(e));
-          const removedSet = new Set(removed);
-          const latest = (appData.authorizedEmails || []).map(e => normalizeEmail(e)).filter(Boolean);
-          const merged = new Set(latest);
-          for (const e of added) merged.add(e);
-          for (const e of removedSet) merged.delete(e);
-          const normalizedAdmins = Array.from(merged).sort();
+          // The access list is NO LONGER part of this whole-document save. It
+          // goes through saveAuthorizedEmails(), a targeted updateDoc on that
+          // field alone, so a stale save from anywhere in the app can't revert
+          // it — and every add/remove is audited. Fired after the main save
+          // below so a validation failure there doesn't leave the list changed.
+          const adminListBaseline = localAdminsBaselineRef.current;
+          const adminListNext = localAdmins.map(e => normalizeEmail(e)).filter(Boolean);
 
           // Validate pre-scheduled partial time-off drafts and rebuild the keyed map.
           // A row touched but not fully filled is a save-blocker; an entirely blank
@@ -7214,7 +7303,6 @@ export default function App() {
             fleet: fleetAfterSpawn,
             mechanicTasks: tasksAfterSpawn,
             routes: localRoutes,
-            authorizedEmails: normalizedAdmins,
             inventory: localInventory,
             supplies: localSupplies,
             rolePermissions: localPermissions,
@@ -7227,6 +7315,9 @@ export default function App() {
             // Fire the trainee-credit audit entries only after the write
             // lands, so the log never shows a toggle that failed to persist.
             for (const entry of traineeActivityToLog) logPerfActivity(entry);
+            // Access-list deltas go separately, on their own targeted write,
+            // and only once the main save has succeeded.
+            await saveAuthorizedEmails(adminListNext, adminListBaseline);
             setIsManageModalOpen(false);
             showToastMsg("System Resources updated successfully!");
           }

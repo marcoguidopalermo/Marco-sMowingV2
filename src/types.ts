@@ -321,6 +321,27 @@ export interface OverrideRecord {
 // One row per hard-delete of a mechanic record. The snapshot field holds
 // the full pre-delete record JSON so an admin can manually reconstruct
 // what was removed (or restore it via direct Firestore edit if needed).
+// ── ACCESS-LIST AUDIT ──────────────────────────────────────────────────────
+// One entry per address added to or removed from authorizedEmails — the list
+// that decides who can get into the app at all. Changes to it were previously
+// unrecorded: an address could appear or disappear with no trace of who did it
+// or when, which is the one place that should never be true.
+//
+// Stored in its own ROOT-LEVEL collection with create-only rules (the same
+// model as hoursBank), so an entry cannot be edited or deleted afterwards —
+// including by an admin. A security log that the app can rewrite is not one.
+export interface AuthorizedEmailAuditEntry {
+  id: string;
+  at: number;                       // epoch ms
+  action: 'added' | 'removed';
+  email: string;                    // the address added or removed (normalized)
+  byEmail: string;                  // who made the change
+  byName: string;
+  // Size of the list AFTER the change — makes a clobbering write obvious in
+  // the log without having to reconstruct state from the entries.
+  listLengthAfter: number;
+}
+
 export interface DeletionAuditEntry {
   id: string;
   timestamp: number;
