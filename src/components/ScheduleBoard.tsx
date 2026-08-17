@@ -1245,7 +1245,7 @@ export default function ScheduleBoard({
           <button
             onClick={() => { setAvailabilityView(v => !v); setBookedOffView(false); setCapacityView(false); }}
             aria-pressed={availabilityView}
-            title="Who's free today, and which crews are above or below their usual size"
+            title="Who's free today, how many people each crew has, and who's away"
             className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors print:hidden shadow-sm border ${availabilityView ? 'bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-700' : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'}`}
           ><UserCheck className="w-4 h-4" /> Availability</button>
           {/* Capacity is a management view (the same one SalesMaster hosts) —
