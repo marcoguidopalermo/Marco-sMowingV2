@@ -2,6 +2,9 @@ import { useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Filter, Plane, X, Clock } from 'lucide-react';
 import { Employee, TimeOffRequest } from '../types';
 import { DIVISIONS } from '../constants';
+// Shared with the availability view so the two division filters can never
+// disagree about which division a person belongs to.
+import { employeeDivisionName } from '../lib/availabilityView';
 
 // A month grid of APPROVED time off — nothing else. Reads the same
 // employee.awayDates ranges that approval + manual Personnel entry write
@@ -24,18 +27,6 @@ interface BookedOffCalendarProps {
   pendingRequest?: TimeOffRequest | null;
   // Month to open on (Date; day ignored). Defaults to today.
   initialMonth?: Date;
-}
-
-// Map an employee's primaryCrew to the schedule-board division name so the
-// division filter lines up with the board's own "All Divisions" control.
-// Office / Snow / unset carry no division and only appear under "All".
-function employeeDivisionName(emp: Employee): string | null {
-  switch (emp.primaryCrew) {
-    case 'Lawn': return 'Lawn Division';
-    case 'Small Project': return 'Small Projects';
-    case 'Large Project': return 'Large Projects';
-    default: return null;
-  }
 }
 
 function ymd(d: Date): string {

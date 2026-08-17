@@ -5,7 +5,7 @@ import {
   Filter, CloudSun, Cloud, Printer, Plus, Trash2, Users, Truck,
   ChevronDown, ChevronUp, X, Package, Hammer, Flame, CheckCircle, AlertTriangle, AlertCircle,
   TrendingUp, CreditCard as IdCard, Copy, ClipboardPaste, ShieldCheck,
-  Moon, Lock, Link2, ArrowLeft, Plane, CalendarRange
+  Moon, Lock, Link2, ArrowLeft, Plane, CalendarRange, UserCheck
 } from 'lucide-react';
 import { AppData, Crew, Employee, FleetItem, OverrideRecord, UserRole, JobberUser, MechanicTask, CapacityForecast, CapacityScope, CapacitySettings, HourlyEstimate } from '../types';
 import DispatchConfirmModal from './DispatchConfirmModal';
@@ -23,6 +23,7 @@ import CrewCardWarning from './CrewCardWarning';
 import OverrideModal from './OverrideModal';
 import EndDayModal from './EndDayModal';
 import BookedOffCalendar from './BookedOffCalendar';
+import AvailabilityView from './AvailabilityView';
 import CapacityCalendar from './CapacityCalendar';
 
 const getCrewColors = (div: string, num: number) => {
@@ -166,7 +167,10 @@ export default function ScheduleBoard({
   // exactly the view SalesMaster hosts, mounted here. The two modes are
   // mutually exclusive: turning one on turns the other off.
   const [capacityView, setCapacityView] = useState(false);
-  const altView = bookedOffView || capacityView;
+  // "Availability" does the same with the who's-free-today view. All three alt
+  // views are mutually exclusive: turning one on turns the others off.
+  const [availabilityView, setAvailabilityView] = useState(false);
+  const altView = bookedOffView || capacityView || availabilityView;
   // A division manager opens the booked-off view on their own division;
   // admins / all-division managers open on "All". Mirrors the crewFilter
   // division mapping used across the board.
@@ -1134,6 +1138,11 @@ export default function ScheduleBoard({
               <Plane className="w-5 h-5 text-rose-600" /> Booked off
               <span className="text-[11px] font-bold text-slate-400 normal-case tracking-normal">approved time off</span>
             </div>
+          ) : availabilityView ? (
+            <div className="text-gray-800 text-lg font-black tracking-wide inline-flex items-center gap-2">
+              <UserCheck className="w-5 h-5 text-emerald-700" /> Availability
+              <span className="text-[11px] font-bold text-slate-400 normal-case tracking-normal">who&rsquo;s free today</span>
+            </div>
           ) : capacityView ? (
             <div className="text-gray-800 text-lg font-black tracking-wide inline-flex items-center gap-2">
               <CalendarRange className="w-5 h-5 text-slate-700" /> Capacity
@@ -1184,16 +1193,22 @@ export default function ScheduleBoard({
           )}
 
           <button
-            onClick={() => { setBookedOffView(v => !v); setCapacityView(false); }}
+            onClick={() => { setBookedOffView(v => !v); setCapacityView(false); setAvailabilityView(false); }}
             aria-pressed={bookedOffView}
             className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors print:hidden shadow-sm border ${bookedOffView ? 'bg-rose-600 text-white border-rose-700 hover:bg-rose-700' : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'}`}
           ><Plane className="w-4 h-4" /> Booked off</button>
+          <button
+            onClick={() => { setAvailabilityView(v => !v); setBookedOffView(false); setCapacityView(false); }}
+            aria-pressed={availabilityView}
+            title="Who's free today, and which crews are above or below their usual size"
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors print:hidden shadow-sm border ${availabilityView ? 'bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-700' : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'}`}
+          ><UserCheck className="w-4 h-4" /> Availability</button>
           {/* Capacity is a management view (the same one SalesMaster hosts) —
               managers and admins only, matching who the booked-out number is
               for. */}
           {isManager && (
             <button
-              onClick={() => { setCapacityView(v => !v); setBookedOffView(false); }}
+              onClick={() => { setCapacityView(v => !v); setBookedOffView(false); setAvailabilityView(false); }}
               aria-pressed={capacityView}
               title="Forward scheduled BH by week — how far out we're booked"
               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors print:hidden shadow-sm border ${capacityView ? 'bg-slate-800 text-white border-slate-900 hover:bg-slate-700' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}
@@ -1208,7 +1223,11 @@ export default function ScheduleBoard({
         </div>
       </div>
 
-      {bookedOffView ? (
+      {availabilityView ? (
+        <div className="flex-1 overflow-y-auto">
+          <AvailabilityView appData={appData} defaultDivision={bookedOffDefaultDivision} />
+        </div>
+      ) : bookedOffView ? (
         <div className="flex-1 overflow-y-auto">
           <BookedOffCalendar
             employees={appData.employees || []}
