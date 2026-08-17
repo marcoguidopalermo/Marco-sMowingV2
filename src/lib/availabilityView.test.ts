@@ -3,7 +3,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
-  buildAvailabilityDay, typicalCrewSizes, isEmployed, employeeDivisionName, crewKey,
+  buildAvailabilityDay, isEmployed, employeeDivisionName, LENDABLE_MIN_HEADCOUNT,
 } from './availabilityView';
 import type { AppData, Crew, Employee } from '../types';
 
@@ -37,52 +37,6 @@ test('division name maps primaryCrew onto the board’s division names', () => {
   // Office / Snow / unset carry no division.
   assert.equal(employeeDivisionName({ primaryCrew: 'Office' }), null);
   assert.equal(employeeDivisionName({}), null);
-});
-
-console.log('\nTypical crew size (28-day past median)');
-test('median of past scheduled sizes, ignoring today and the future', () => {
-  const schedules: Record<string, Crew[]> = {
-    '2026-08-10': [crew('Lawn Division', 1, ['a', 'b', 'c'])],
-    '2026-08-11': [crew('Lawn Division', 1, ['a', 'b', 'c'])],
-    '2026-08-12': [crew('Lawn Division', 1, ['a'])],            // one thin day
-    '2026-08-13': [crew('Lawn Division', 1, ['a', 'b', 'c'])],
-    '2026-08-17': [crew('Lawn Division', 1, ['a'])],            // TODAY — excluded
-    '2026-08-18': [crew('Lawn Division', 1, ['a'])],            // future — excluded
-  };
-  const t = typicalCrewSizes(schedules, new Set(), '2026-08-17');
-  const v = t.get(crewKey('Lawn Division', 1))!;
-  assert.equal(v.size, 3, 'a single thin day must not drag the norm down');
-  assert.equal(v.days, 4, 'only the four past days count');
-  assert.equal(v.source, 'observed');
-});
-test('a day outside the 28-day window is not evidence', () => {
-  const schedules: Record<string, Crew[]> = {
-    '2026-06-01': [crew('Lawn Division', 1, ['a', 'b', 'c', 'd', 'e'])],   // long ago
-    '2026-08-16': [crew('Lawn Division', 1, ['a', 'b'])],
-  };
-  const t = typicalCrewSizes(schedules, new Set(), '2026-08-17');
-  assert.equal(t.get(crewKey('Lawn Division', 1))!.size, 2);
-  assert.equal(t.get(crewKey('Lawn Division', 1))!.days, 1);
-});
-test('empty crew-days and test users are excluded from the norm', () => {
-  const schedules: Record<string, Crew[]> = {
-    '2026-08-14': [crew('Lawn Division', 1, [])],                 // built but unstaffed
-    '2026-08-15': [crew('Lawn Division', 1, ['a', 'b', 'test'])],
-  };
-  const t = typicalCrewSizes(schedules, new Set(['test']), '2026-08-17');
-  const v = t.get(crewKey('Lawn Division', 1))!;
-  assert.equal(v.size, 2);
-  assert.equal(v.days, 1, 'the unstaffed day contributes nothing');
-});
-test('an even number of days averages the two middle values, then rounds', () => {
-  const schedules: Record<string, Crew[]> = {
-    '2026-08-13': [crew('Lawn Division', 1, ['a'])],
-    '2026-08-14': [crew('Lawn Division', 1, ['a', 'b'])],
-    '2026-08-15': [crew('Lawn Division', 1, ['a', 'b', 'c'])],
-    '2026-08-16': [crew('Lawn Division', 1, ['a', 'b', 'c', 'd'])],
-  };
-  // median of [1,2,3,4] = 2.5 → 3
-  assert.equal(typicalCrewSizes(schedules, new Set(), '2026-08-17').get(crewKey('Lawn Division', 1))!.size, 3);
 });
 
 console.log('\nThe day model');
@@ -137,25 +91,60 @@ test('every employed person in the division lands in exactly one bucket', () => 
   assert.equal(d.totals.assigned + d.totals.unassigned + d.totals.away, d.totals.employed);
 });
 
-test('headcount vs typical: above, below, on norm, and no norm at all', () => {
+test('crew headcount is today’s ACTUAL count, and 2+ is flagged as lendable', () => {
   const schedules: Record<string, Crew[]> = {
-    // Four past days at three people for #1, two for #2.
-    '2026-08-13': [crew('Lawn Division', 1, ['l1', 'l2', 'l3']), crew('Lawn Division', 2, ['s1', 'o1'])],
-    '2026-08-14': [crew('Lawn Division', 1, ['l1', 'l2', 'l3']), crew('Lawn Division', 2, ['s1', 'o1'])],
+    // Past days are irrelevant now — a crew that ran 5 last week and 1 today
+    // reads as 1, with no norm anywhere in the answer.
+    '2026-08-13': [crew('Lawn Division', 3, ['l1', 'l2', 'l3', 's1', 'o1'])],
     '2026-08-17': [
-      crew('Lawn Division', 1, ['l1', 'l2', 'l3', 's1']),   // 4 vs 3 → +1, one to lend
-      crew('Lawn Division', 2, ['o1']),                      // 1 vs 2 → −1, short
-      crew('Lawn Division', 3, ['l1']),                      // brand new crew → no norm
+      crew('Lawn Division', 1, ['l1', 'l2', 'l3']),   // 3 → lendable
+      crew('Lawn Division', 2, ['s1', 'o1']),         // 2 → lendable (the boundary)
+      crew('Lawn Division', 3, ['l1']),               // 1 → shown, NOT lendable
     ],
   };
   const d = buildAvailabilityDay(app({ employees: people, schedules }), '2026-08-17', 'All');
   const by = new Map(d.crews.map(c => [c.key, c]));
-  assert.equal(by.get('Lawn Division #1')!.delta, 1);
-  assert.equal(by.get('Lawn Division #2')!.delta, -1);
-  // A crew with no history has NO delta — that is not the same as "on norm",
-  // and must never render as a crew sitting exactly at its usual size.
-  assert.equal(by.get('Lawn Division #3')!.typical, null);
-  assert.equal(by.get('Lawn Division #3')!.delta, null);
+  assert.equal(by.get('Lawn Division #1')!.today, 3);
+  assert.equal(by.get('Lawn Division #1')!.canLend, true);
+  // Exactly at the threshold counts.
+  assert.equal(by.get('Lawn Division #2')!.today, 2);
+  assert.equal(by.get('Lawn Division #2')!.canLend, true);
+  // A crew of one is listed but never offered up.
+  assert.equal(by.get('Lawn Division #3')!.today, 1);
+  assert.equal(by.get('Lawn Division #3')!.canLend, false);
+  assert.equal(LENDABLE_MIN_HEADCOUNT, 2);
+});
+test('past days cannot influence today’s headcount at all', () => {
+  // The whole reason the norm was dropped: a thin or fat day elsewhere in the
+  // schedule must not change what this view reports for today.
+  const base: Record<string, Crew[]> = { '2026-08-17': [crew('Lawn Division', 1, ['l1', 'l2'])] };
+  const withHistory: Record<string, Crew[]> = {
+    '2026-08-10': [crew('Lawn Division', 1, ['l1', 'l2', 'l3', 's1'])],
+    '2026-08-18': [crew('Lawn Division', 1, ['l1'])],            // future, thin
+    ...base,
+  };
+  const a = buildAvailabilityDay(app({ employees: people, schedules: base }), '2026-08-17', 'All');
+  const b = buildAvailabilityDay(app({ employees: people, schedules: withHistory }), '2026-08-17', 'All');
+  assert.deepEqual(
+    a.crews.map(c => ({ key: c.key, today: c.today, canLend: c.canLend })),
+    b.crews.map(c => ({ key: c.key, today: c.today, canLend: c.canLend })),
+  );
+});
+test('an empty crew reads as 0 and is not lendable', () => {
+  const d = buildAvailabilityDay(app({
+    employees: people,
+    schedules: { '2026-08-17': [crew('Lawn Division', 1, [])] },
+  }), '2026-08-17', 'All');
+  assert.equal(d.crews[0].today, 0);
+  assert.equal(d.crews[0].canLend, false);
+});
+test('test users do not pad a headcount into being lendable', () => {
+  const d = buildAvailabilityDay(app({
+    employees: [...people, emp({ id: 'test2', name: 'Test Two', isTestUser: true })],
+    schedules: { '2026-08-17': [crew('Lawn Division', 1, ['l1', 'test2'])] },
+  }), '2026-08-17', 'All');
+  assert.equal(d.crews[0].today, 1);
+  assert.equal(d.crews[0].canLend, false);
 });
 
 test('the division filter narrows people AND crews together', () => {

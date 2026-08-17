@@ -1,10 +1,9 @@
 // Renders the availability view and asserts what a manager actually reads.
 //   npm test -- availabilityRender
 //
-// Beyond "it doesn't crash": the two judgements this view exists to make —
-// who is free, and which crew can lend or is short — have to appear in the
-// output, and a crew with no history must NOT read as sitting at its usual
-// size.
+// Beyond "it doesn't crash": the two things this view exists to say — who is
+// free, and which crews have somebody who could move — have to appear in the
+// output, and no inferred "usual size" may reappear anywhere in it.
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createElement as h } from 'react';
@@ -39,9 +38,8 @@ const employees: Employee[] = [
   emp({ id: 'vac', name: 'Vic Vance', primaryCrew: 'Lawn', awayDates: [{ start: daysBefore(1), end: TODAY }] }),
 ];
 
-// Lawn #1 normally runs 2; today it has 3 (can lend one).
-// Small #1 normally runs 2; today it has 1 (short one).
-// Lawn #9 has no history at all (new crew).
+// Today: Lawn #1 has 3 (lendable), Small #1 has 1 (not lendable), Lawn #9 has
+// 1 (not lendable). The past days exist purely to prove they are ignored.
 const schedules: Record<string, Crew[]> = {
   [daysBefore(3)]: [crew('Lawn Division', 1, ['a', 'b']), crew('Small Projects', 1, ['e', 'f'])],
   [daysBefore(2)]: [crew('Lawn Division', 1, ['a', 'b']), crew('Small Projects', 1, ['e', 'f'])],
@@ -64,28 +62,32 @@ test('the three sections render', () => {
   assert.match(html, /Away today/);
 });
 
-test('a crew above its norm reads as able to lend', () => {
-  assert.match(html, /Can lend someone/);
-  assert.match(html, /Lawn Division #1 \(\+1\)/);
-  assert.match(html, /can lend one/);
+test('a crew of 2+ is flagged as able to lend, and named in the headline', () => {
+  assert.match(html, /Could lend someone/);
+  assert.match(html, /Lawn Division #1 \(3\)/);
+  assert.match(html, /could lend someone/);
 });
 
-test('a crew below its norm reads as short', () => {
-  assert.match(html, /Running short/);
-  assert.match(html, /Small Projects #1 \(-1\)/);
-  assert.match(html, /short 1/);
+test('crews of 1 are shown but never flagged as lendable', () => {
+  // Both one-person crews render...
+  assert.match(html, /Small Projects #1/);
+  assert.match(html, /Lawn Division #9/);
+  // ...but neither appears in the lendable headline, which lists "key (count)".
+  assert.doesNotMatch(html, /Small Projects #1 \(1\)/);
+  assert.doesNotMatch(html, /Lawn Division #9 \(1\)/);
 });
 
-test('a crew with no history reads as new, never as "usual size"', () => {
-  assert.match(html, /new crew/);
-  // Lawn #9 must not be listed in either headline strip.
-  assert.ok(!/Lawn Division #9 \(/.test(html), 'a crew with no norm must not appear as lend/short');
+test('the headcount is today’s actual count, labelled in people', () => {
+  assert.match(html, /people|person/);
+  assert.match(html, /3\s*<[^>]*>\s*people/);
 });
 
-test('the headcount is shown against the usual size', () => {
-  // "3 / 2" for Lawn #1 — today over usual.
-  assert.match(html, /3\s*<\/?[^>]*>?\s*\/\s*2/);
-  assert.match(html, /usual 2/);
+test('NO inferred norm appears anywhere in the output', () => {
+  // The whole point of the change: today's count is a fact, a norm is a
+  // statistic that can be wrong. None of its vocabulary may come back.
+  for (const word of [/usual/i, /typical/i, /median/i, /norm\b/i, /running short/i, /new crew/i]) {
+    assert.doesNotMatch(html, word, `removed usual-size vocabulary reappeared: ${word}`);
+  }
 });
 
 test('unassigned people are grouped, and no-division staff sit in their own group', () => {
@@ -107,7 +109,7 @@ test('the away list names who is booked off, and they are not offered as free', 
 
 test('read-only is stated, so nobody looks for a control that is not there', () => {
   assert.match(html, /Read-only/);
-  assert.match(html, /median crew size/i);
+  assert.match(html, /today&#x27;s actual crew assignments|today’s actual crew assignments/);
 });
 
 test('mobile-first layout: single column by default, wider only at sm and up', () => {

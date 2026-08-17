@@ -2,7 +2,7 @@
 // the numbers can be checked against reality before trusting the UI.
 //   npx tsx scripts/verify-availability.ts [YYYY-MM-DD]
 import { execFileSync } from 'node:child_process';
-import { buildAvailabilityDay, typicalCrewSizes, isEmployed } from '../src/lib/availabilityView';
+import { buildAvailabilityDay, isEmployed, LENDABLE_MIN_HEADCOUNT } from '../src/lib/availabilityView';
 import type { AppData } from '../src/types';
 
 const date = process.argv[2] || new Date().toISOString().slice(0, 10);
@@ -44,12 +44,10 @@ for (const division of ['All', 'Lawn Division', 'Small Projects', 'Large Project
   console.log(`\n  UNASSIGNED (${d.unassigned.length}):`);
   for (const p of d.unassigned) console.log(`    ${p.name.padEnd(24)} ${p.division || '—'}`);
 
-  console.log(`\n  CREWS (${d.crews.length}):`);
-  console.log(`    ${'CREW'.padEnd(22)}${'TODAY'.padStart(6)}${'TYPICAL'.padStart(9)}${'DELTA'.padStart(7)}  BASIS`);
+  console.log(`\n  CREWS (${d.crews.length}) — today's actual headcount; ${LENDABLE_MIN_HEADCOUNT}+ can lend:`);
+  console.log(`    ${'CREW'.padEnd(22)}${'TODAY'.padStart(6)}  ${'LENDABLE'.padEnd(9)}PEOPLE`);
   for (const c of d.crews) {
-    const t = c.typical;
-    const delta = c.delta === null ? '—' : (c.delta > 0 ? `+${c.delta}` : String(c.delta));
-    console.log(`    ${c.key.padEnd(22)}${String(c.today).padStart(6)}${(t ? String(t.size) : '—').padStart(9)}${delta.padStart(7)}  ${t ? `median of ${t.days} past day(s)` : 'no past days in window'}`);
+    console.log(`    ${c.key.padEnd(22)}${String(c.today).padStart(6)}  ${(c.canLend ? 'yes' : '—').padEnd(9)}${c.people.map(p => p.name).join(', ')}`);
   }
 
   console.log(`\n  AWAY (${d.away.length}):`);
@@ -60,22 +58,4 @@ for (const division of ['All', 'Lawn Division', 'Small Projects', 'Large Project
   const total = d.totals.assigned + d.totals.unassigned + d.totals.away;
   console.log(`\n  reconciliation: ${d.totals.assigned} + ${d.totals.unassigned} + ${d.totals.away} = ${total} vs ${d.totals.employed} employed  ${total === d.totals.employed ? 'OK' : 'MISMATCH'}`);
   console.log('');
-}
-
-// Show the raw typical-size inputs so the median is auditable.
-const testIds = new Set((appData.employees || []).filter((e: any) => e.isTestUser).map((e: any) => e.id));
-const t = typicalCrewSizes(appData.schedules || {}, testIds, date);
-console.log('=== TYPICAL SIZE INPUTS (28-day strictly-past window, median) ===');
-for (const [key, v] of [...t.entries()].sort()) {
-  const sizes: number[] = [];
-  for (const [dt, crews] of Object.entries(appData.schedules || {}) as [string, any[]][]) {
-    if (!(dt < date)) continue;
-    for (const c of crews || []) {
-      if (!c?.division || !c?.crewNumber) continue;
-      if (`${c.division} #${c.crewNumber}` !== key) continue;
-      const n = (c.employees || []).filter((id: string) => !testIds.has(id)).length;
-      if (n > 0) sizes.push(n);
-    }
-  }
-  console.log(`  ${key.padEnd(22)} median ${v.size} from ${v.days} day(s): [${sizes.join(', ')}]`);
 }

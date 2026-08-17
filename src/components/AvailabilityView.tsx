@@ -15,28 +15,7 @@ import {
 import type { AppData } from '../types';
 import { DIVISIONS } from '../constants';
 import { addDaysToronto, formatTodayInToronto } from '../lib/dateUtils';
-import { buildAvailabilityDay, type CrewHeadcount, type PersonRow } from '../lib/availabilityView';
-
-// Delta → how the crew reads. Above its norm means someone could be lent out;
-// below means it is short. A crew with no norm yet is neither.
-function deltaChip(c: CrewHeadcount): { text: string; cls: string } {
-  if (c.typical === null) {
-    return { text: 'new crew', cls: 'bg-slate-100 text-slate-500 border-slate-300' };
-  }
-  if (c.delta === null || c.delta === 0) {
-    return { text: 'usual size', cls: 'bg-slate-100 text-slate-600 border-slate-300' };
-  }
-  if (c.delta > 0) {
-    return {
-      text: `+${c.delta} · can lend ${c.delta === 1 ? 'one' : c.delta}`,
-      cls: 'bg-emerald-50 text-emerald-800 border-emerald-300',
-    };
-  }
-  return {
-    text: `${c.delta} · short ${Math.abs(c.delta)}`,
-    cls: 'bg-amber-50 text-amber-900 border-amber-400',
-  };
-}
+import { buildAvailabilityDay, LENDABLE_MIN_HEADCOUNT, type PersonRow } from '../lib/availabilityView';
 
 function PersonChip({ p, showDivision }: { p: PersonRow; showDivision?: boolean }) {
   return (
@@ -88,8 +67,9 @@ export default function AvailabilityView({
     return { byDivision: [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])), noDivision: none };
   }, [day.unassigned]);
 
-  const canLend = day.crews.filter(c => (c.delta ?? 0) > 0);
-  const short = day.crews.filter(c => (c.delta ?? 0) < 0);
+  // Crews with someone to spare this morning. No "running short" counterpart —
+  // that judgement needed a norm, and the norm is gone.
+  const lendable = day.crews.filter(c => c.canLend);
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-3 p-3 sm:p-4">
@@ -131,25 +111,15 @@ export default function AvailabilityView({
         </div>
       </div>
 
-      {/* THE HEADLINE — the two facts a reshuffle turns on. */}
-      {(canLend.length > 0 || short.length > 0) && (
-        <div className="grid gap-2 sm:grid-cols-2">
-          {canLend.length > 0 && (
-            <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3">
-              <div className="text-[10px] font-black uppercase tracking-widest text-emerald-800">Can lend someone</div>
-              <div className="mt-1 text-[13px] font-bold text-emerald-900">
-                {canLend.map(c => `${c.key} (+${c.delta})`).join(' · ')}
-              </div>
-            </div>
-          )}
-          {short.length > 0 && (
-            <div className="rounded-xl border border-amber-400 bg-amber-50 p-3">
-              <div className="text-[10px] font-black uppercase tracking-widest text-amber-900">Running short</div>
-              <div className="mt-1 text-[13px] font-bold text-amber-900">
-                {short.map(c => `${c.key} (${c.delta})`).join(' · ')}
-              </div>
-            </div>
-          )}
+      {/* THE HEADLINE — which crews have somebody who could move. */}
+      {lendable.length > 0 && (
+        <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3">
+          <div className="text-[10px] font-black uppercase tracking-widest text-emerald-800">
+            Could lend someone · {LENDABLE_MIN_HEADCOUNT}+ on the crew
+          </div>
+          <div className="mt-1 text-[13px] font-bold text-emerald-900">
+            {lendable.map(c => `${c.key} (${c.today})`).join(' · ')}
+          </div>
         </div>
       )}
 
@@ -213,38 +183,32 @@ export default function AvailabilityView({
           </p>
         ) : (
           <div className="grid gap-2 sm:grid-cols-2">
-            {day.crews.map(c => {
-              const chip = deltaChip(c);
-              return (
-                <div key={c.key} className="rounded-xl border border-slate-200 p-2.5">
+            {day.crews.map(c => (
+                <div key={c.key}
+                  className={`rounded-xl border p-2.5 ${c.canLend ? 'border-emerald-300 bg-emerald-50/60' : 'border-slate-200'}`}>
                   <div className="flex items-baseline gap-2">
                     <span className="text-[13px] font-black text-slate-900">{c.key}</span>
                     <span className="ml-auto whitespace-nowrap font-mono text-lg font-black leading-none text-slate-900">
                       {c.today}
-                      <span className="text-xs font-bold text-slate-400">
-                        {c.typical !== null ? ` / ${c.typical.size}` : ''}
+                      <span className="ml-1 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                        {c.today === 1 ? 'person' : 'people'}
                       </span>
                     </span>
                   </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                    <span className={`rounded border px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${chip.cls}`}>
-                      {chip.text}
-                    </span>
-                    {c.typical !== null && (
-                      <span className="text-[10px] font-bold text-slate-400"
-                        title={`Median crew size over ${c.typical.days} past scheduled day(s) in the last 28 days`}>
-                        usual {c.typical.size} · {c.typical.days}d
+                  {c.canLend && (
+                    <div className="mt-1">
+                      <span className="rounded border border-emerald-300 bg-emerald-100 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-emerald-800">
+                        could lend someone
                       </span>
-                    )}
-                  </div>
+                    </div>
+                  )}
                   {c.people.length > 0 && (
                     <div className="mt-1.5 text-[11px] font-bold leading-snug text-slate-600">
                       {c.people.map(p => p.name).join(' · ')}
                     </div>
                   )}
                 </div>
-              );
-            })}
+            ))}
           </div>
         )}
       </section>
@@ -277,7 +241,8 @@ export default function AvailabilityView({
 
       <p className="px-1 pb-2 text-[10px] font-bold text-slate-400">
         Read-only. Reshuffle on the board itself — nothing here changes a crew.
-        &ldquo;Usual&rdquo; is the median crew size over past scheduled days in the last 28.
+        Headcounts are today&rsquo;s actual crew assignments; a crew of
+        {' '}{LENDABLE_MIN_HEADCOUNT} or more is flagged as able to lend someone.
       </p>
     </div>
   );

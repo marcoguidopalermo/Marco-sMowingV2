@@ -2,18 +2,18 @@
 // Availability toggle.
 //
 // The morning question this answers: crews are being reshuffled before they
-// leave, so a manager needs to see who isn't on a crew yet, which crews are
-// running above or below their normal size, and who is away. Nothing here
-// writes; every value is derived from data the board already holds.
+// leave, so a manager needs to see who isn't on a crew yet, how many people
+// each crew actually has today, and who is away. Nothing here writes; every
+// value is derived from data the board already holds.
 //
 // DELIBERATELY ABSENT: any notion of an employee being "extra", "spare" or
 // "borrowed". Crews get reshuffled and the schedule ends up correct, so a
 // marker for that would describe a state that exists only during a morning
 // conversation and would rot the first time somebody forgot to clear it.
-// Above/below normal is computed live from the schedule instead.
+// Also absent, and for a different reason, is any inferred "usual" crew size —
+// see LENDABLE_MIN_HEADCOUNT below.
 import type { AppData, Crew, Employee } from '../types';
 import { getResourceAvailability } from './availability';
-import { addDaysToronto } from './dateUtils';
 
 // Map an employee's primaryCrew onto the schedule board's division names, so
 // this view's division filter lines up with the board's own control. Office /
@@ -39,64 +39,20 @@ export const isEmployed = (e: Pick<Employee, 'status' | 'isTestUser'>): boolean 
 export const crewKey = (division: string, crewNumber: number): string =>
   `${division} #${crewNumber}`;
 
-// ── TYPICAL CREW SIZE ──────────────────────────────────────────────────────
-// Restored from the capacity work (Capacity v1.4, lib/capacity.ts) rather than
-// redefined: four weeks of STRICTLY PAST scheduled days, reduced to a MEDIAN.
-// That version was dropped when capacity was rebuilt around declared figures,
-// so there was no live definition left to share — this is the same rule, moved
-// somewhere it can be reused, not a second one invented alongside it.
+// ── LENDABLE ───────────────────────────────────────────────────────────────
+// A crew with two or more people has somebody who could move to another crew
+// this morning. A crew of one does not, and is shown but never flagged.
 //
-// Why those choices, from the original:
-//   · 28 days — long enough to be representative, short enough to track a crew
-//     that has genuinely changed shape this season.
-//   · Strictly past — a day still in progress is only half-assigned, and a day
-//     roughed in for next week is not evidence of anything.
-//   · Median, not mean or latest — one rain day, one split crew or one
-//     half-built day moves a mean and dominates a "latest", but barely moves a
-//     median.
-//
-// NOTE this is NOT the schedule-derived sizing the capacity types warn against.
-// That warning is about Jobber ASSIGNEES, which are route slots rather than
-// people. This counts crew.employees — the people a manager put on a crew.
-export const TYPICAL_LOOKBACK_DAYS = 28;
-
-export interface TypicalSize {
-  size: number;
-  days: number;                       // past scheduled days it was drawn from
-  source: 'observed' | 'declared';
-}
-
-export function typicalCrewSizes(
-  schedules: Record<string, Crew[]>,
-  testUserIds: Set<string>,
-  today: string,
-  lookbackDays: number = TYPICAL_LOOKBACK_DAYS,
-): Map<string, TypicalSize> {
-  const from = addDaysToronto(today, -lookbackDays);
-  const past = new Map<string, number[]>();
-  for (const [date, crews] of Object.entries(schedules || {})) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-    if (!(date < today && date >= from)) continue;
-    for (const crew of crews || []) {
-      if (!crew?.division || !crew?.crewNumber) continue;
-      const size = (crew.employees || []).filter(id => !testUserIds.has(id)).length;
-      if (size <= 0) continue;                   // an empty day is not evidence
-      const key = crewKey(crew.division, crew.crewNumber);
-      const arr = past.get(key);
-      if (arr) arr.push(size); else past.set(key, [size]);
-    }
-  }
-  const out = new Map<string, TypicalSize>();
-  for (const [key, arr] of past) {
-    const sorted = [...arr].sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    const median = sorted.length % 2 === 1
-      ? sorted[mid]
-      : (sorted[mid - 1] + sorted[mid]) / 2;
-    out.set(key, { size: Math.round(median), days: sorted.length, source: 'observed' });
-  }
-  return out;
-}
+// THERE IS DELIBERATELY NO "USUAL SIZE" HERE. An earlier version compared
+// today's headcount against a norm inferred from past scheduled days, and that
+// comparison is not what the decision turns on — a manager reshuffling at 6:45
+// wants to know who is actually standing there, not whether the count is
+// unusual. Inference had also already caused a real bug once: the capacity
+// version read the furthest-forward built day, so a thin day roughed in for
+// next week defined the norm and three of four Small Projects crews reported
+// the wrong size. Today's headcount is a fact; a norm is a statistic that can
+// be wrong, and being wrong here costs someone a crew member.
+export const LENDABLE_MIN_HEADCOUNT = 2;
 
 // ── THE DAY MODEL ──────────────────────────────────────────────────────────
 export interface PersonRow {
@@ -112,11 +68,10 @@ export interface CrewHeadcount {
   key: string;
   division: string;
   crewNumber: number;
+  // Today's ACTUAL headcount — people on the crew, test users excluded.
   today: number;
-  typical: TypicalSize | null;
-  // today − typical. null when there is no typical to compare against, which
-  // is different from 0 and must not render as "on norm".
-  delta: number | null;
+  // Two or more people, so one of them could go somewhere else this morning.
+  canLend: boolean;
   people: PersonRow[];
 }
 export interface AvailabilityDay {
@@ -134,7 +89,6 @@ export function buildAvailabilityDay(
   appData: Pick<AppData, 'employees' | 'schedules' | 'dailyAbsences' | 'fleet'>,
   date: string,
   division: string,
-  lookbackDays: number = TYPICAL_LOOKBACK_DAYS,
 ): AvailabilityDay {
   const employees = appData.employees || [];
   const testUserIds = new Set(employees.filter(e => e.isTestUser).map(e => e.id));
@@ -177,21 +131,17 @@ export function buildAvailabilityDay(
   unassigned.sort((a, b) => (a.division || 'zz').localeCompare(b.division || 'zz') || a.name.localeCompare(b.name));
   away.sort((a, b) => a.name.localeCompare(b.name));
 
-  const typical = typicalCrewSizes(appData.schedules || {}, testUserIds, date, lookbackDays);
   const crews: CrewHeadcount[] = [];
   for (const crew of (appData.schedules || {})[date] || []) {
     if (!crew?.division || !crew?.crewNumber) continue;
     if (!inDivision(crew.division)) continue;
     const ids = (crew.employees || []).filter(id => !testUserIds.has(id));
-    const key = crewKey(crew.division, crew.crewNumber);
-    const t = typical.get(key) || null;
     crews.push({
-      key,
+      key: crewKey(crew.division, crew.crewNumber),
       division: crew.division,
       crewNumber: crew.crewNumber,
       today: ids.length,
-      typical: t,
-      delta: t ? ids.length - t.size : null,
+      canLend: ids.length >= LENDABLE_MIN_HEADCOUNT,
       people: ids.map(id => {
         const e = byId.get(id);
         return e ? row(e) : { id, name: 'Unknown', division: null };
