@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import { Calendar as CalendarIcon, Target, Clock, TrendingUp, Link2, Users, Truck, Hammer, Wrench, AlertCircle, AlertTriangle, CheckCircle, FileText } from 'lucide-react';
+import { Calendar as CalendarIcon, Target, Clock, TrendingUp, Link2, Users, Truck, Hammer, Wrench, AlertCircle, AlertTriangle, CheckCircle, FileText, StickyNote } from 'lucide-react';
 import { AppSettings, Crew, Employee, FleetItem, EquipmentSubtypeDefinition, PerformanceLog, PartialTimeOff, Inspection, HoursBankEntry } from '../types';
 import { formatTimeRange, addDaysToronto } from '../lib/dateUtils';
 import { personColorClass } from '../lib/personColor';
@@ -85,6 +85,45 @@ export default function MyCrewToday({
     const todaysCrews = schedules[today] || [];
     return todaysCrews.filter(c => (c.employees || []).includes(currentUserEmployee.id));
   }, [currentUserEmployee, schedules, today]);
+
+  // MANAGER NOTES for today, one per crew the viewer is on. Read straight off
+  // the same crew.notes the schedule board writes — no separate field, no copy.
+  //
+  // The byline states WHEN as well as who, because freshness changes how a note
+  // reads: "written this morning" is an instruction, the same words stamped
+  // three days ago are probably stale. Said in relative terms ("this morning",
+  // "yesterday") rather than a bare timestamp, since that is the distinction
+  // being made and it survives being read at a glance.
+  const crewNotes = useMemo(() => {
+    const out: { crewId: string; crewLabel: string; text: string; byline: string | null }[] = [];
+    for (const crew of myCrews) {
+      const text = (crew.notes || '').trim();
+      if (!text) continue;
+      let byline: string | null = null;
+      const who = crew.notesByName || null;
+      const at = crew.notesAt ? new Date(crew.notesAt) : null;
+      if (at && !Number.isNaN(at.getTime())) {
+        const stamped = at.toISOString().slice(0, 10);
+        const time = at.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        const when = stamped === today
+          ? (at.getHours() < 12 ? `this morning, ${time}` : `today, ${time}`)
+          : stamped === addDaysToronto(today, -1)
+            ? `yesterday, ${time}`
+            : at.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        byline = who ? `${who} · ${when}` : when;
+      } else if (who) {
+        // Notes written before the stamps existed carry an author only.
+        byline = who;
+      }
+      out.push({
+        crewId: crew.id,
+        crewLabel: `${crew.division} #${crew.crewNumber}`,
+        text,
+        byline,
+      });
+    }
+    return out;
+  }, [myCrews, today]);
 
   // 🔥/🔆 gamification (display-only, single-source approved math). testUserIds
   // matches the board so the crew sees the same numbers; streaks read only the
@@ -267,6 +306,43 @@ export default function MyCrewToday({
             <Wrench className="w-4 h-4 text-lime-400" />
             Report a Repair
           </button>
+        )}
+
+        {/* MANAGER NOTES — ABOVE everything else on this screen.
+            These were written on the schedule board for this crew on this day
+            and were previously invisible here: MyCrewToday never read
+            crew.notes at all, so "start at the Rosslyn job first, gate code
+            4471" reached nobody. They sit above the spotlight and the tab
+            toggle because the crew is about to leave and this is the only
+            thing on the screen that changes what they do.
+
+            One block per crew the viewer is on today (normally one). Scoped to
+            `today` by construction — myCrews is built from schedules[today]. */}
+        {crewNotes.length > 0 && (
+          <div className="mb-4 space-y-2">
+            {crewNotes.map(n => (
+              <div key={n.crewId}
+                className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3 shadow-sm">
+                <div className="flex items-center gap-1.5">
+                  <StickyNote className="w-4 h-4 shrink-0 text-amber-600" />
+                  <span className="text-[10px] font-black uppercase tracking-widest text-amber-800">
+                    Note from your manager
+                  </span>
+                  {myCrews.length > 1 && (
+                    <span className="text-[10px] font-bold text-amber-700/70">· {n.crewLabel}</span>
+                  )}
+                </div>
+                {/* whitespace-pre-wrap so the line breaks the manager typed
+                    survive — a note is often a short list, not a paragraph. */}
+                <p className="mt-1.5 whitespace-pre-wrap break-words text-[15px] font-bold leading-relaxed text-slate-900">
+                  {n.text}
+                </p>
+                {n.byline && (
+                  <p className="mt-1.5 text-[11px] font-bold text-amber-800/80">{n.byline}</p>
+                )}
+              </div>
+            ))}
+          </div>
         )}
 
         {/* TOP CREW SPOTLIGHT — the viewer's DIVISION leader for the

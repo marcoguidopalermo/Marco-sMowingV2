@@ -604,7 +604,17 @@ export interface Crew {
   fleet: string[];
   inventory: { id: string; qty: number }[];
   isAdHoc?: boolean;
+  // MANAGER NOTE for this crew on this day. Scoped per crew-day by the shape
+  // of the data itself: this Crew object lives in schedules[YYYY-MM-DD], so a
+  // note written on Tuesday exists only inside Tuesday's array and cannot be
+  // read from Wednesday's. The crew reads it on My Crew Today.
   notes?: string;
+  // Who last wrote the note and when — a note from three days ago reads
+  // differently from one written this morning, and the crew needs to be able
+  // to tell. Stamped on save; ISO string, matching equipmentClosedAt below.
+  notesAt?: string;
+  notesBy?: string;
+  notesByName?: string;
   supplies?: string[];
   dispatched?: boolean;
   dispatchOverrides?: OverrideRecord[];

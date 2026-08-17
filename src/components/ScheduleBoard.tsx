@@ -5,7 +5,7 @@ import {
   Filter, CloudSun, Cloud, Printer, Plus, Trash2, Users, Truck,
   ChevronDown, ChevronUp, X, Package, Hammer, Flame, CheckCircle, AlertTriangle, AlertCircle,
   TrendingUp, CreditCard as IdCard, Copy, ClipboardPaste, ShieldCheck,
-  Moon, Lock, Link2, ArrowLeft, Plane, CalendarRange, UserCheck
+  Moon, Lock, Link2, ArrowLeft, Plane, CalendarRange, UserCheck, StickyNote
 } from 'lucide-react';
 import { AppData, Crew, Employee, FleetItem, OverrideRecord, UserRole, JobberUser, MechanicTask, CapacityForecast, CapacityScope, CapacitySettings, HourlyEstimate } from '../types';
 import DispatchConfirmModal from './DispatchConfirmModal';
@@ -24,6 +24,7 @@ import OverrideModal from './OverrideModal';
 import EndDayModal from './EndDayModal';
 import BookedOffCalendar from './BookedOffCalendar';
 import AvailabilityView from './AvailabilityView';
+import CrewNoteModal from './CrewNoteModal';
 import CapacityCalendar from './CapacityCalendar';
 
 const getCrewColors = (div: string, num: number) => {
@@ -159,6 +160,10 @@ export default function ScheduleBoard({
   const [expandedAudit, setExpandedAudit] = useState<Record<string, boolean>>({});
   const [copyCrewCtx, setCopyCrewCtx] = useState<{ sourceDate: string; crewId: string; targetDate: string } | null>(null);
   const [endDayCtx, setEndDayCtx] = useState<{ dateString: string; crewId: string } | null>(null);
+  // Which crew-day's note is open. Held as ids rather than the Crew object so
+  // the modal always reads the CURRENT crew out of appData — a note left open
+  // while a sync lands must not save against a stale copy.
+  const [noteCtx, setNoteCtx] = useState<{ dateString: string; crewId: string } | null>(null);
   const [dispatchCtx, setDispatchCtx] = useState<{ dateString: string; crew: Crew; pendingOverrides: OverrideRecord[]; overrideKey: string } | null>(null);
   // "Booked off" mode swaps the whole board body for the monthly approved
   // time-off view. Off by default; toggling returns to the normal board.
@@ -344,7 +349,16 @@ export default function ScheduleBoard({
       fleet: [...source.fleet],
       inventory: source.inventory ? source.inventory.map(i => ({ ...i })) : [],
       isAdHoc: source.isAdHoc,
+      // Copying a crew to another day carries its note — that is the point of
+      // copying. The AUTHOR AND TIMESTAMP travel with it rather than being
+      // dropped: the words were written by someone at some time, and a note
+      // that arrives on the target day with no byline reads as though nobody
+      // wrote it. The original date showing is correct and useful — the crew
+      // can see the note was carried over rather than written for today.
       notes: source.notes || '',
+      notesAt: source.notesAt,
+      notesBy: source.notesBy,
+      notesByName: source.notesByName,
       supplies: source.supplies ? [...source.supplies] : [],
       // Reset run-time state — target day needs its own inspections / dispatch
       dispatched: false,
@@ -648,7 +662,38 @@ export default function ScheduleBoard({
         })}
 
         <div className="p-3 space-y-3 flex-1 flex flex-col">
-          <textarea className="w-full text-xs p-2 bg-gray-50 border border-gray-200 rounded-lg resize-none outline-none focus:bg-white focus:border-green-400 focus:ring-1 ring-green-400" placeholder="Manager notes / targets..." rows={2} defaultValue={crew.notes || ''} readOnly={!canEditSchedule} onBlur={(e) => { if (canEditSchedule) { const newSchedules = { ...appData.schedules }; newSchedules[dateString] = newSchedules[dateString].map(c => c.id === crew.id ? { ...c, notes: e.target.value } : c); syncToCloud({ ...appData, schedules: newSchedules }); } }} />
+          {/* CREW NOTE — a marker plus a preview, opening the full note in a
+              modal. Was a 2-row textarea, which showed about a line and a half
+              of something the crew is meant to act on. The card keeps the
+              at-a-glance signal; the writing happens with room. */}
+          <button
+            type="button"
+            onClick={() => setNoteCtx({ dateString, crewId: crew.id })}
+            title={crew.notes ? crew.notes : (canEditSchedule ? 'Add a note for this crew' : 'No note')}
+            className={`w-full text-left rounded-lg border p-2 transition-colors print:border-gray-300 ${crew.notes
+              ? 'bg-amber-50 border-amber-300 hover:bg-amber-100'
+              : 'bg-gray-50 border-gray-200 hover:bg-white border-dashed'}`}
+          >
+            <span className="flex items-start gap-1.5">
+              <StickyNote className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${crew.notes ? 'text-amber-600' : 'text-gray-400'}`} />
+              {crew.notes ? (
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs font-bold text-amber-900 line-clamp-2 whitespace-pre-wrap break-words">
+                    {crew.notes}
+                  </span>
+                  {crew.notesByName && (
+                    <span className="block text-[10px] font-bold text-amber-700/70 mt-0.5">
+                      {crew.notesByName}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                <span className="text-xs text-gray-400 font-medium">
+                  {canEditSchedule ? 'Add crew note…' : 'No note'}
+                </span>
+              )}
+            </span>
+          </button>
 
           {/* Personnel Section */}
           <div className="bg-slate-50 rounded-lg border border-slate-200 p-2 flex flex-col gap-1.5 min-h-[50px]">
@@ -1405,6 +1450,40 @@ export default function ScheduleBoard({
           setEndDayCtx(null);
         }}
       />
+
+      {/* CREW NOTE — reads the crew fresh out of appData by id, so the write
+          below can never be based on a copy captured before the last sync. */}
+      {noteCtx && (() => {
+        const crew = (appData.schedules[noteCtx.dateString] || []).find(c => c.id === noteCtx.crewId);
+        if (!crew) return null;
+        return (
+          <CrewNoteModal
+            crewLabel={`${crew.division} #${crew.crewNumber}`}
+            dateLabel={new Date(`${noteCtx.dateString}T12:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+            initial={crew.notes || ''}
+            authorName={crew.notesByName}
+            savedAt={crew.notesAt}
+            readOnly={!canEditSchedule}
+            onClose={() => setNoteCtx(null)}
+            onSave={(text) => {
+              const newSchedules = { ...appData.schedules };
+              newSchedules[noteCtx.dateString] = (newSchedules[noteCtx.dateString] || []).map(c =>
+                c.id === noteCtx.crewId
+                  ? (text
+                    // Stamp who and when so the crew can tell this morning's
+                    // note from one left three days ago.
+                    ? { ...c, notes: text, notesAt: new Date().toISOString(), notesBy: userEmail, notesByName: userName || userEmail }
+                    // Cleared — drop the metadata too rather than leave an
+                    // author hanging off an empty note.
+                    : { ...c, notes: '', notesAt: undefined, notesBy: undefined, notesByName: undefined })
+                  : c,
+              );
+              syncToCloud({ ...appData, schedules: newSchedules });
+              showToastMsg(text ? 'Note saved — the crew will see it.' : 'Note cleared.');
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }
