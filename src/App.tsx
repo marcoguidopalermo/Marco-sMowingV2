@@ -122,6 +122,7 @@ import {
   scanBlockingPartialJobs, remainingBHOf, rowBlocksApproval, voidLedger, carryLedger, completeLedger, BlockingPartialJob,
 } from './lib/multiDayResolution';
 import { buildMonthlySummary } from './lib/monthlySummary';
+import { decideAuthGate } from './lib/authGate';
 import { nextUnusedColorKey, nextPersonColorKey } from './lib/roleCategories';
 import { callGeminiWithRetry } from './lib/gemini';
 
@@ -254,6 +255,10 @@ export default function App() {
   // a genuine check. A ref (not state) so updating it never re-renders or
   // re-runs the snapshot effect.
   const sessionAuthorizedRef = useRef(false);
+  // Log the gate PASSING once per session, not on every snapshot — the facts
+  // are only useful the first time, and a per-snapshot log would bury the
+  // rejection we actually want to find.
+  const sessionGateLoggedRef = useRef(false);
   // Phase 1: multiDayJobs lives in its own subcollection, not the appData
   // doc. We keep the doc's (legacy, pre-removal) copy and the live
   // subcollection copy in refs and merge them into appData.multiDayJobs —
@@ -1017,6 +1022,7 @@ export default function App() {
     // New sign-in (or sign-out): the next authorization decision for this
     // user is a genuine first check, not a re-check of an active session.
     sessionAuthorizedRef.current = false;
+    sessionGateLoggedRef.current = false;
     // Re-wait for this user's first appData snapshot before rendering any
     // role/employee-dependent UI (keeps the loader up; the snapshot handler
     // sets dataLoaded=true). Reset here — not in onAuthStateChanged — so it
@@ -1201,27 +1207,53 @@ export default function App() {
         //     INDETERMINATE (don't eject) — never as "deny everyone".
         //     This also closes the old `[] is truthy` edge where an empty
         //     array bypassed the super-admin fallback and ejected everyone.
-        const userEmail = normalizeEmail(user.email);
-        const isSuper = userEmail === SUPER_ADMIN_EMAIL;
-        const allowed = (Array.isArray(data.authorizedEmails) ? data.authorizedEmails : [])
-          .map((e: string) => normalizeEmail(e))
-          .filter(Boolean);
-        const listKnown = allowed.length > 0; // empty/missing = indeterminate
-        const authorized = isSuper || (!!userEmail && allowed.includes(userEmail));
-        // Reject ONLY a confirmed, stable rejection: we have a definitive
-        // list, the user isn't on it, and this is their initial decision
-        // this session (not a re-check of an already-authorized session).
-        if (!authorized && listKnown && !sessionAuthorizedRef.current) {
-          setAuthRejected(`Your email (${userEmail || 'unknown'}) is not authorized to access CrewMaster. Contact your administrator.`);
-          signOut(auth).catch(() => { /* ignore — onAuthStateChanged will clear user regardless */ });
+        //   • NEVER decide on an UNSETTLED snapshot. A snapshot served from
+        //     the local cache, or one still carrying this client's own
+        //     un-acknowledged writes, is not evidence about the server's
+        //     list. Only a server-confirmed snapshot can reject somebody.
+        const gate = decideAuthGate({
+          email: user.email,
+          authorizedEmails: data.authorizedEmails,
+          fromCache: snapshot.metadata.fromCache,
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          sessionAlreadyAuthorized: sessionAuthorizedRef.current,
+          superAdminEmail: SUPER_ADMIN_EMAIL,
+        });
+        const userEmail = gate.emailCompared;
+
+        if (gate.decision === 'reject') {
+          // AUTH-LIST — the list arrived, server-confirmed, and this email is
+          // genuinely not in it. Distinct from AUTH-RULES in the error handler
+          // below, which means no list was received at all. The two used to
+          // print identical text and cost an entire investigation to separate.
+          console.error('[auth-gate] REJECTED — email not on the access list', gate);
+          setAuthRejected(
+            `Your email (${userEmail}) isn't on the CrewMaster access list. `
+            + 'Ask an administrator to add it. '
+            + `[AUTH-LIST · checked against ${gate.listLength} entries]`,
+          );
+          signOut(auth).catch(() => { /* ignore — onAuthStateChanged clears user regardless */ });
           setLoading(false);
           return;
         }
-        if (authorized) {
-          // Mark the session as having passed the gate so subsequent
-          // snapshots can't eject it on a transient miss.
-          sessionAuthorizedRef.current = true;
-          setAuthRejected(null);
+
+        if (gate.decision === 'hold') {
+          // Not enough evidence to decide. Keep `loading` true so the user
+          // sees the loader — never a rejection the data does not support.
+          console.warn('[auth-gate] indeterminate — holding, not rejecting', gate);
+          return;
+        }
+
+        // pass / lenient-pass
+        sessionAuthorizedRef.current = true;
+        setAuthRejected(null);
+        if (!sessionGateLoggedRef.current) {
+          sessionGateLoggedRef.current = true;
+          if (gate.decision === 'lenient-pass') {
+            console.warn('[auth-gate] lenient pass — session already authorized, current snapshot does not list this email', gate);
+          } else {
+            console.info('[auth-gate] passed', gate);
+          }
         }
 
         setAppData(newAppData);
@@ -1240,7 +1272,26 @@ export default function App() {
       const code = (error as { code?: string }).code || '';
       if (code === 'permission-denied') {
         const userEmail = normalizeEmail(user?.email);
-        setAuthRejected(`Your email (${userEmail || 'unknown'}) is not authorized to access CrewMaster. Contact your administrator.`);
+        // AUTH-RULES — a DIFFERENT failure from AUTH-LIST above, and the
+        // distinction is the whole point. Here we never received a list at
+        // all: the server refused the read. That happens when the rules'
+        // isAuthorized() check fails, which is ALSO how a genuine removal
+        // looks — but it is equally how a transient failure looks, and the
+        // old wording ("your email is not authorized") asserted the first
+        // when it could not tell the difference. It says less, on purpose.
+        console.error('[auth-gate] DENIED BY SERVER RULES — no list was received', {
+          emailOnCredential: userEmail || '(none)',
+          firestoreCode: code,
+          firestoreMessage: error.message,
+          sessionAlreadyAuthorized: sessionAuthorizedRef.current,
+          note: 'The client never saw authorizedEmails; the read was refused before any data arrived.',
+        });
+        setAuthRejected(
+          'CrewMaster couldn\'t confirm your access — the server refused the request. '
+          + 'This is often temporary; try signing in again in a moment. '
+          + 'If it keeps happening, an administrator needs to check the access list. '
+          + `[AUTH-RULES${userEmail ? ` · ${userEmail}` : ''}]`,
+        );
         signOut(auth).catch(() => { /* ignore */ });
       } else {
         setErrorMsg(`Cloud connection lost: ${error.message}`);
