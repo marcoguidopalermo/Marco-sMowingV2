@@ -2334,6 +2334,31 @@ export interface MarketingLink {
   addedAt: number;
 }
 
+// ── Music ──────────────────────────────────────────────────────────────
+// Tracks to use in videos. Deliberately the SAME shape and the same
+// paste-a-link-and-save interaction as MarketingLink above — a sound lives on
+// Spotify, in a TikTok sound page or on YouTube, and the app stores the pointer
+// and the conversation, never the audio.
+//
+// The only thing it adds over a reference link is `used`: a sound already used
+// in a video should stop competing for attention, without being deleted —
+// knowing what has been used is exactly what stops it being used twice.
+export interface MarketingTrack {
+  id: string;
+  url: string;
+  // Derived from the URL on save (same helper the links panel uses) and
+  // renameable in place, because a Spotify URL makes a poor track name.
+  title: string;
+  note?: string;
+  // Marked once the track has appeared in a posted video. Collapses the row
+  // into the dimmed "already used" section rather than removing it.
+  used?: boolean;
+  usedAt?: number;
+  usedBy?: { email: string; name: string };
+  addedBy: { email: string; name: string };
+  addedAt: number;
+}
+
 // ── Clip feedback ──────────────────────────────────────────────────────
 // The marketer drops numbered footage in Google Drive (#0058); Marco reviews
 // it THERE and writes feedback HERE. The app stores the words, never the
@@ -2363,15 +2388,15 @@ export type MarketingClipStatus = 'open' | 'addressed';
 // neither subject field, and commentSubject() in MarketingComments reads that
 // as {subjectType:'clip', subjectId: clipKey(clip)}. Nothing on disk is
 // migrated, rewritten or backfilled — the old docs simply keep working.
-export type MarketingFeedbackSubjectType = 'clip' | 'link' | 'todo';
+export type MarketingFeedbackSubjectType = 'clip' | 'link' | 'todo' | 'music';
 
 export interface MarketingFeedbackEntry {
   id: string;
   // What this message is about. Absent on pre-subject docs, which are clip
   // messages by definition.
   subjectType?: MarketingFeedbackSubjectType;
-  // The subject's id: a normalized clip key, a MarketingLink id, or a
-  // MarketingTodo id.
+  // The subject's id: a normalized clip key, a MarketingLink id, a
+  // MarketingTodo id, or a MarketingTrack id.
   subjectId?: string;
   // The NORMALIZED clip key (see clipKey) — "#0058", "0058" and "58" all land
   // on "58", so the thread survives however the number was typed. Still
@@ -2577,6 +2602,7 @@ export interface AppData {
   marketingContent?: Record<string, MarketingContentItem>;
   marketingShots?: Record<string, MarketingShot>;
   marketingLinks?: Record<string, MarketingLink>;
+  marketingMusic?: Record<string, MarketingTrack>;
   marketingFeedback?: Record<string, MarketingFeedbackEntry>;
   marketingClips?: Record<string, MarketingClipThread>;
   marketingPostQueue?: Record<string, MarketingPostQueueEntry>;

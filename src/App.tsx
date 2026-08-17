@@ -181,7 +181,7 @@ const SUBCOLLECTION_ONLY_FIELDS = [
   'contractingProjects', 'contractingTimeEntries', 'contractingProgressReports',
   'contractingInvoices', 'contractingWorkOrders', 'contractingShoppingList',
   'contractingPersonalItems', 'contractingPropertyDocs',
-  'marketingContent', 'marketingShots', 'marketingLinks', 'marketingFeedback',
+  'marketingContent', 'marketingShots', 'marketingLinks', 'marketingMusic', 'marketingFeedback',
   'marketingClips', 'marketingPostQueue', 'marketingTodos',
   'hoursBank',
 ] as const;
@@ -330,6 +330,7 @@ export default function App() {
   const subMarketingContentRef = useRef<Record<string, MarketingContentItem>>({});
   const subMarketingShotsRef = useRef<Record<string, MarketingShot>>({});
   const subMarketingLinksRef = useRef<Record<string, MarketingLink>>({});
+  const subMarketingMusicRef = useRef<Record<string, import('./types').MarketingTrack>>({});
   const subMarketingFeedbackRef = useRef<Record<string, MarketingFeedbackEntry>>({});
   const subMarketingClipsRef = useRef<Record<string, MarketingClipThread>>({});
   const subMarketingPostQueueRef = useRef<Record<string, MarketingPostQueueEntry>>({});
@@ -1153,6 +1154,7 @@ export default function App() {
           marketingContent: subMarketingContentRef.current,
           marketingShots: subMarketingShotsRef.current,
           marketingLinks: subMarketingLinksRef.current,
+          marketingMusic: subMarketingMusicRef.current,
           marketingFeedback: subMarketingFeedbackRef.current,
           marketingClips: subMarketingClipsRef.current,
           marketingPostQueue: subMarketingPostQueueRef.current,
@@ -1672,6 +1674,7 @@ export default function App() {
     const m5 = mk('marketingClips', subMarketingClipsRef, 'marketingClips');
     const m6 = mk('marketingPostQueue', subMarketingPostQueueRef, 'marketingPostQueue');
     const m7 = mk('marketingTodos', subMarketingTodosRef, 'marketingTodos');
+    const m8 = mk('marketingMusic', subMarketingMusicRef, 'marketingMusic');
     // Hours bank — one doc per ledger entry, appended forever. TOP-LEVEL
     // (outside artifacts/**) so its firestore rule can make the collection
     // genuinely append-only: create yes, update and delete never. Under
@@ -1683,7 +1686,7 @@ export default function App() {
       subHoursBankRef.current = map;
       setAppData((prev) => ({ ...prev, hoursBank: map }));
     }, (err) => { console.error('hoursBank listen error:', err); });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); hb1(); };
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); m8(); hb1(); };
   }, [user]);
 
   useEffect(() => {
@@ -3539,6 +3542,25 @@ export default function App() {
   // Deleting a link also detaches it from any content item holding its id —
   // the item is the only place attachment is stored, so this is the one place
   // that has to clean up after itself.
+  // MUSIC — same shape and same guard as the reference links above; the panel
+  // reuses that interaction, so the writers reuse it too.
+  const saveMarketingTrack = async (t: import('./types').MarketingTrack) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    const existing = appData.marketingMusic?.[t.id];
+    const rec: import('./types').MarketingTrack = {
+      ...t,
+      // First writer owns the byline — a later rename or a "used" toggle must
+      // not reassign who found the track.
+      addedBy: existing?.addedBy || t.addedBy || marketingUser,
+      addedAt: existing?.addedAt || t.addedAt || Date.now(),
+    };
+    await setDoc(doc(roleColl('marketingMusic'), t.id), cleanRM(rec));
+  };
+  const deleteMarketingTrack = async (id: string) => {
+    if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
+    await deleteDoc(doc(roleColl('marketingMusic'), id));
+  };
+
   const deleteMarketingLink = async (id: string) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
     await deleteDoc(doc(roleColl('marketingLinks'), id));
@@ -6392,6 +6414,9 @@ export default function App() {
           onDeleteShot={deleteMarketingShot}
           onSaveLink={saveMarketingLink}
           onDeleteLink={deleteMarketingLink}
+          music={appData.marketingMusic || {}}
+          onSaveTrack={saveMarketingTrack}
+          onDeleteTrack={deleteMarketingTrack}
           comments={appData.marketingFeedback || {}}
           clips={appData.marketingClips || {}}
           onSaveComment={saveMarketingComment}

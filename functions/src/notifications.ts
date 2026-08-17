@@ -556,7 +556,7 @@ async function marketingRecipients(actor: unknown): Promise<string[]> {
 // with no subject fields is a clip message keyed by `clip`, which is what every
 // message written before subjects existed looks like.
 function subjectOf(c: any): {type: string; id: string} {
-  const t = ["clip", "link", "todo"].includes(c?.subjectType) ? String(c.subjectType) : "clip";
+  const t = ["clip", "link", "todo", "music"].includes(c?.subjectType) ? String(c.subjectType) : "clip";
   const id = String((t === "clip" ? (c?.subjectId || c?.clip) : c?.subjectId) || "");
   return {type: t, id};
 }
@@ -574,6 +574,12 @@ async function describeSubject(c: any): Promise<{label: string; anchor: string}>
   if (type === "link") {
     const d = (await db.doc(`${PUB}/marketingLinks/${id}`).get()).data() as any;
     return {label: d?.title ? `"${snip(d.title, 40)}"` : "a reference link", anchor: `link-${id}`};
+  }
+  if (type === "music") {
+    // Named explicitly rather than left to the to-do fallback below, which
+    // would look the id up in marketingTodos and call a track "a to-do".
+    const d = (await db.doc(`${PUB}/marketingMusic/${id}`).get()).data() as any;
+    return {label: d?.title ? `"${snip(d.title, 40)}"` : "a track", anchor: `music-${id}`};
   }
   const d = (await db.doc(`${PUB}/marketingTodos/${id}`).get()).data() as any;
   return {label: d?.text ? `"${snip(d.text, 40)}"` : "a to-do", anchor: `todo-${id}`};

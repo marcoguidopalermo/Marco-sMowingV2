@@ -108,7 +108,7 @@ export async function runStorageMeasurement(
     "notificationCentre", "notificationLog", "pushTokens", "notificationPrefs",
     "roleMasterRoles", "roleMasterResponsibilities", "roleMasterTemplates",
     "roleMasterPolicies", "roleTaskInstances", "salesMasterQuotes",
-    "marketingContent", "marketingShots", "marketingLinks",
+    "marketingContent", "marketingShots", "marketingLinks", "marketingMusic",
   ];
   const collections: { name: string; docs: number; bytes: number }[] = [];
   for (const c of COLLECTIONS) {

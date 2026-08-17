@@ -30,12 +30,12 @@ import { useMemo, useRef, useState } from 'react';
 import {
   CalendarDays, Camera, Link2, ChevronLeft, ChevronRight, Plus, X, Trash2,
   ExternalLink, Check, Paperclip, Pencil, Megaphone, MessageSquare, Search,
-  RotateCcw, Send, ArrowUp, ArrowDown, ListChecks, Flag,
+  RotateCcw, Send, ArrowUp, ArrowDown, ListChecks, Flag, Music, ChevronDown,
 } from 'lucide-react';
 import type {
   MarketingClipStatus, MarketingClipThread, MarketingContentItem,
   MarketingContentStatus, MarketingFeedbackEntry, MarketingLink, MarketingShot,
-  MarketingPostQueueEntry, MarketingTodo, MarketingTodoPriority,
+  MarketingPostQueueEntry, MarketingTodo, MarketingTodoPriority, MarketingTrack,
 } from '../types';
 import {
   CommentCount, CommentThread, clipKey, clipLabel, groupComments,
@@ -67,6 +67,10 @@ interface Props {
   todos: Record<string, MarketingTodo>;
   onSaveTodo: (todo: MarketingTodo) => void;
   onDeleteTodo: (id: string) => void;
+  // Music — tracks for videos. Same subcollection-backed shape as links.
+  music: Record<string, MarketingTrack>;
+  onSaveTrack: (track: MarketingTrack) => void;
+  onDeleteTrack: (id: string) => void;
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -165,6 +169,7 @@ export default function MarketingMaster({
   onSaveComment, onDeleteComment, onSaveClip,
   onSavePostQueue, onDeletePostQueue,
   todos, onSaveTodo, onDeleteTodo,
+  music, onSaveTrack, onDeleteTrack,
 }: Props) {
   // `links` is normalized on the way in so every consumer below can treat it
   // as an array — a doc written before the field existed (or one whose empty
@@ -178,6 +183,10 @@ export default function MarketingMaster({
   const linkList = useMemo(
     () => Object.values(links).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)),
     [links],
+  );
+  const trackList = useMemo(
+    () => Object.values(music).sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0)),
+    [music],
   );
 
   // ONE grouping for the whole page: every comment, keyed by its subject. All
@@ -238,7 +247,21 @@ export default function MarketingMaster({
           />
         </div>
 
-        {/* (e) CLIP FEEDBACK — full width. The footage lives in Drive; this
+        {/* (e) MUSIC — sounds for videos. Sits after the links row because it
+            is the same act (save a pointer, discuss it) applied to audio, and
+            before the clip pipeline because the sound is usually chosen while
+            the clip is still being cut. */}
+        <MusicPanel
+          tracks={trackList}
+          threads={threads}
+          currentUser={currentUser}
+          onSaveTrack={onSaveTrack}
+          onDeleteTrack={onDeleteTrack}
+          onAddComment={addComment}
+          onDeleteComment={onDeleteComment}
+        />
+
+        {/* (f) CLIP FEEDBACK — full width. The footage lives in Drive; this
             holds only the conversation about it, keyed by clip number. */}
         <FeedbackPanel
           threads={threads}
@@ -250,7 +273,7 @@ export default function MarketingMaster({
           onSavePostQueue={onSavePostQueue}
         />
 
-        {/* (f) POST QUEUE — last, because it is the end of the pipeline: a
+        {/* (g) POST QUEUE — last, because it is the end of the pipeline: a
             clip only lands here once its feedback is done. It reaches back UP
             to the calendar: scheduling a queued clip writes a calendar entry,
             which is why the panel takes the content list and its writers. */}
@@ -1144,6 +1167,233 @@ function LinksPanel({
             );
           })}
         </div>
+      )}
+    </Panel>
+  );
+}
+
+/* ══════════════════════ MUSIC ═════════════════════════════════════════ */
+
+// Tracks to use in videos. Deliberately the SAME panel as reference links —
+// paste a URL, it saves with a derived title, rename in place, comment on it —
+// because it is the same act: saving a pointer to something that lives
+// elsewhere and talking about it here.
+//
+// The one thing it adds is USED. A sound already in a posted video should stop
+// competing for attention without being deleted: knowing what has been used is
+// precisely what stops it being used twice. So used tracks dim into a collapsed
+// section rather than leaving the board.
+function MusicPanel({
+  tracks, threads, currentUser, onSaveTrack, onDeleteTrack, onAddComment, onDeleteComment,
+}: {
+  tracks: MarketingTrack[];
+  threads: Map<string, MarketingFeedbackEntry[]>;
+  currentUser: { email: string; name: string };
+  onSaveTrack: (t: MarketingTrack) => void;
+  onDeleteTrack: (id: string) => void;
+  onAddComment: (s: MarketingSubject, text: string) => void;
+  onDeleteComment: (id: string) => void;
+}) {
+  const [url, setUrl] = useState('');
+  const [note, setNote] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [openThread, setOpenThread] = useState<string | null>(null);
+  const [showUsed, setShowUsed] = useState(false);
+  const urlRef = useRef<HTMLInputElement>(null);
+
+  const available = tracks.filter(t => !t.used);
+  const used = tracks.filter(t => t.used)
+    .sort((a, b) => (b.usedAt || 0) - (a.usedAt || 0));
+
+  const save = () => {
+    const clean = normalizeUrl(url);
+    if (!clean) return;
+    onSaveTrack({
+      id: newId('mmus'),
+      url: clean,
+      title: titleFromUrl(clean) || hostOf(clean),
+      note: note.trim() || undefined,
+      addedBy: currentUser,
+      addedAt: Date.now(),
+    });
+    setUrl('');
+    setNote('');
+    urlRef.current?.focus();
+  };
+
+  // Marking used stamps who and when; un-marking CLEARS both, so a track put
+  // back in rotation can't keep a stale "used on..." date.
+  const setUsed = (t: MarketingTrack, next: boolean) => onSaveTrack(
+    next
+      ? { ...t, used: true, usedAt: Date.now(), usedBy: currentUser }
+      : { ...t, used: false, usedAt: undefined, usedBy: undefined },
+  );
+
+  const guessed = url.trim() ? titleFromUrl(url) : '';
+
+  const card = (t: MarketingTrack, dim: boolean) => {
+    const subject: MarketingSubject = { subjectType: 'music', subjectId: t.id };
+    const entries = threads.get(subjectKey(subject)) || [];
+    const threadOpen = openThread === t.id;
+    return (
+      // Anchor target for a comment notification tap-through, same as links.
+      <div key={t.id} id={`music-${t.id}`}
+        className={`scroll-mt-24 bg-white rounded-xl border p-3 flex flex-col gap-2 ${dim ? 'border-gray-200 opacity-60' : 'border-gray-200'}`}>
+        <div className="flex items-start gap-2">
+          {editingId === t.id ? (
+            <input
+              autoFocus
+              value={editTitle}
+              onChange={e => setEditTitle(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { onSaveTrack({ ...t, title: editTitle.trim() || t.title }); setEditingId(null); }
+                if (e.key === 'Escape') setEditingId(null);
+              }}
+              onBlur={() => { onSaveTrack({ ...t, title: editTitle.trim() || t.title }); setEditingId(null); }}
+              className="min-w-0 flex-1 border border-gray-300 rounded-lg p-2 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400"
+            />
+          ) : (
+            <a
+              href={t.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="min-w-0 flex-1 text-sm font-bold text-fuchsia-700 hover:underline flex items-start gap-1.5"
+            >
+              <span className="min-w-0 break-words">{t.title || t.url}</span>
+              <ExternalLink className="w-3.5 h-3.5 shrink-0 mt-0.5 opacity-60" />
+            </a>
+          )}
+          <button
+            onClick={() => { setEditingId(t.id); setEditTitle(t.title); }}
+            aria-label="Rename track"
+            className="min-w-[36px] min-h-[36px] inline-flex items-center justify-center text-slate-300 hover:text-slate-600 shrink-0"
+          >
+            <Pencil className="w-4 h-4" />
+          </button>
+        </div>
+        {t.note && <div className="text-xs text-slate-600">{t.note}</div>}
+        <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+          {hostOf(t.url)} · {t.addedBy?.name || 'Someone'} · {new Date(t.addedAt).toLocaleDateString()}
+          {t.used && t.usedAt && (
+            <> · used {new Date(t.usedAt).toLocaleDateString()}{t.usedBy?.name ? ` by ${t.usedBy.name}` : ''}</>
+          )}
+        </div>
+        <div className="flex items-center gap-2 mt-auto pt-1">
+          <button
+            onClick={() => setUsed(t, !t.used)}
+            title={t.used ? 'Put back in rotation' : 'Mark as used in a video'}
+            className={`inline-flex items-center gap-1.5 min-h-[40px] px-2.5 rounded-lg border text-[10px] font-black uppercase tracking-widest ${
+              t.used
+                ? 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-white'
+                : 'border-lime-300 text-lime-700 hover:bg-lime-50'
+            }`}
+          >
+            <Check className="w-3.5 h-3.5" /> {t.used ? 'Used' : 'Mark used'}
+          </button>
+          <button
+            onClick={() => setOpenThread(threadOpen ? null : t.id)}
+            aria-label={threadOpen ? 'Hide comments' : 'Comments'}
+            title={entries.length ? `${entries.length} comment${entries.length === 1 ? '' : 's'}` : 'Add a comment'}
+            className={`min-w-[40px] min-h-[40px] ml-auto inline-flex items-center justify-center gap-1 rounded-lg shrink-0 text-[10px] font-black ${
+              threadOpen ? 'text-fuchsia-700 bg-fuchsia-50' : 'text-slate-300 hover:text-fuchsia-700'
+            }`}
+          >
+            <MessageSquare className="w-4 h-4" />
+            {entries.length > 0 && entries.length}
+          </button>
+          <button
+            onClick={() => onDeleteTrack(t.id)}
+            aria-label="Delete track"
+            className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center text-slate-300 hover:text-rose-600 shrink-0"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* The same thread component as clip feedback, links and to-dos. */}
+        {threadOpen && (
+          <div className="border-t border-slate-100 pt-2">
+            <CommentThread
+              entries={entries}
+              onAdd={text => onAddComment(subject, text)}
+              onDelete={onDeleteComment}
+              composer="always"
+              placeholder={`Comment on "${t.title || hostOf(t.url)}"`}
+              replyLabel="Comment"
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <Panel title="Music" Icon={Music} count={available.length}>
+      {/* Paste-and-save, identical to reference links. */}
+      <div className="p-3 border-b border-slate-100 space-y-2">
+        <div className="flex gap-2">
+          <input
+            ref={urlRef}
+            value={url}
+            onChange={e => setUrl(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') save(); }}
+            placeholder="Paste a track — Spotify, TikTok sound, YouTube"
+            inputMode="url"
+            className="flex-1 min-w-0 border border-gray-300 rounded-lg p-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-fuchsia-400"
+          />
+          <button
+            onClick={save}
+            disabled={!url.trim()}
+            className="min-h-[44px] px-4 bg-fuchsia-600 hover:bg-fuchsia-700 disabled:opacity-40 text-white rounded-lg text-xs font-black uppercase tracking-widest shadow inline-flex items-center gap-1.5"
+          >
+            <Plus className="w-4 h-4" /> Save
+          </button>
+        </div>
+        <input
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') save(); }}
+          placeholder={guessed ? `Note (optional) — saves as "${guessed}"` : 'Note (optional) — vibe, where it fits'}
+          className="w-full border border-gray-200 rounded-lg p-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-fuchsia-400"
+        />
+      </div>
+
+      {tracks.length === 0 ? (
+        <div className="p-8 text-center text-sm text-slate-400 font-bold">
+          No tracks yet. Paste one above.
+        </div>
+      ) : (
+        <>
+          {available.length === 0 ? (
+            <div className="p-6 text-center text-sm text-slate-400 font-bold">
+              Every track has been used. Put one back in rotation below.
+            </div>
+          ) : (
+            <div className="p-3 grid grid-cols-1 xl:grid-cols-2 gap-3 max-h-[560px] overflow-y-auto">
+              {available.map(t => card(t, false))}
+            </div>
+          )}
+
+          {/* ALREADY USED — collapsed by default and dimmed. Never deleted:
+              the record of what has been used is the point. */}
+          {used.length > 0 && (
+            <div className="border-t border-slate-100">
+              <button
+                onClick={() => setShowUsed(v => !v)}
+                className="w-full min-h-[44px] px-3 flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-slate-500"
+              >
+                <ChevronDown className={`w-4 h-4 transition-transform ${showUsed ? 'rotate-180' : ''}`} />
+                Already used · {used.length}
+              </button>
+              {showUsed && (
+                <div className="p-3 pt-0 grid grid-cols-1 xl:grid-cols-2 gap-3 max-h-[420px] overflow-y-auto">
+                  {used.map(t => card(t, true))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </Panel>
   );

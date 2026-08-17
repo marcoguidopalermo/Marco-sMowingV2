@@ -20,13 +20,13 @@ import { CornerDownRight, MessageSquare, Trash2 } from 'lucide-react';
 import type { MarketingFeedbackEntry } from '../types';
 
 // The three things you can talk about on this page.
-export type MarketingSubjectType = 'clip' | 'link' | 'todo';
+export type MarketingSubjectType = 'clip' | 'link' | 'todo' | 'music';
 export interface MarketingSubject {
   subjectType: MarketingSubjectType;
   subjectId: string;
 }
 
-const SUBJECT_TYPES: MarketingSubjectType[] = ['clip', 'link', 'todo'];
+const SUBJECT_TYPES: MarketingSubjectType[] = ['clip', 'link', 'todo', 'music'];
 
 // ── ids and stamps ─────────────────────────────────────────────────────
 export function newId(prefix: string): string {
