@@ -12,7 +12,7 @@ import { functions, db, appId } from '../lib/firebase';
 import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole, JobberBhConflict, BonusPayoutRecord, BonusExcludeReason, CrewDayFlag, CrewDayAudit, ManagedDivision } from '../types';
 import { logPerfActivity } from '../lib/perfAudit';
 import { monthsPresent, monthOfDate, monthSettlementStatus } from '../lib/performanceMonths';
-import { scanBlockingPartialJobs, monthResolutionSummary, BlockingPartialJob, totalBelowCredited, creditedBHOf } from '../lib/multiDayResolution';
+import { scanBlockingPartialJobs, scanOpenPartials, monthResolutionSummary, BlockingPartialJob, totalBelowCredited, creditedBHOf } from '../lib/multiDayResolution';
 import { crewDayRows, monthStats, sortCrewDayRows, CrewDayRow } from '../lib/monthAnalysis';
 import { scanOutstandingCrewDays, groupOutstandingByDivision, divisionNameToCode, OutstandingCrewDay } from '../lib/approvalOversight';
 import CompletionReviewModal from './CompletionReviewModal';
@@ -3117,6 +3117,93 @@ export default function PerformanceBoard({
               sheets so the main doc stays under the 1 MiB cap. Data is
               MOVED, not deleted: pushed months stay fully viewable here
               via the overlay. */}
+          {/* OPEN PARTIAL JOBS — every part-done visit with BH outstanding,
+              not only the ones holding up a month close. Those two are
+              deliberately NOT presented as equally urgent: a blocking partial
+              gates a push and is marked as such; a non-blocking one is just
+              open work somebody should decide about eventually.
+
+              This exists because the month-end scan only ever answered "what
+              is stopping me pushing?", so a partial whose crew-days were all
+              approved or waived could not be found or resolved anywhere. */}
+          {isAdmin && (() => {
+            const openPartials = scanOpenPartials(performance, multiDayJobs);
+            if (openPartials.length === 0) return null;
+            const blocking = openPartials.filter(p => p.blocksMonth);
+            const justOpen = openPartials.filter(p => !p.blocksMonth);
+            const row = (p: import('../lib/multiDayResolution').OpenPartialJob) => (
+              <div key={p.jobberVisitId}
+                className={`rounded-lg border px-3 py-2 ${p.blocksMonth ? 'border-rose-200 bg-rose-50' : 'border-slate-200 bg-white'}`}>
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-bold text-slate-800 truncate">{p.title}</div>
+                    <div className="text-[11px] text-slate-500">
+                      {p.creditedPct}% done · {p.creditedBH} of {p.totalBH} BH credited ·{' '}
+                      <span className="font-bold text-slate-700">{p.remainingBH} BH outstanding</span>
+                      {p.priorDate && <> · last credited {p.priorDate}</>}
+                    </div>
+                    {p.blocksMonth && (
+                      <div className="text-[11px] font-bold text-rose-700 mt-0.5">
+                        Holding up {p.blockingDays.length} crew-day{p.blockingDays.length === 1 ? '' : 's'} — a month cannot be pushed until this is resolved.
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button type="button"
+                      onClick={() => {
+                        if (!window.confirm(`Carry "${p.title}" forward?\n\n${p.remainingBH} BH stays live for a future day. Nothing already credited changes.`)) return;
+                        onResolveCarry(p.jobberVisitId, p.ym);
+                      }}
+                      className="text-[11px] font-bold px-2.5 py-1 rounded-md border border-slate-300 text-slate-700 hover:bg-slate-100">
+                      Carry forward
+                    </button>
+                    <button type="button"
+                      onClick={() => {
+                        const reason = window.prompt(`Void the remaining ${p.remainingBH} BH on "${p.title}"?\n\nAlready-credited BH is untouched. Reason (required):`, '');
+                        if (reason == null) return;
+                        if (!reason.trim()) { showToastMsg('A reason is required to void.'); return; }
+                        onResolveVoid([p.jobberVisitId], p.ym, reason.trim());
+                      }}
+                      className="text-[11px] font-bold px-2.5 py-1 rounded-md border border-slate-300 text-slate-700 hover:bg-slate-100">
+                      Void
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+            return (
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-4">
+                <div className="flex items-center gap-2 mb-1">
+                  <SplitIcon className="w-4 h-4 text-slate-500" />
+                  <span className="font-bold text-gray-700 text-sm">Open partial jobs</span>
+                  <span className="text-[11px] text-slate-400">
+                    — part-done visits with BH still outstanding.
+                  </span>
+                </div>
+                {blocking.length > 0 && (
+                  <div className="mt-2">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-rose-700 mb-1">
+                      {blocking.length} holding up a month close
+                    </div>
+                    <div className="space-y-1.5">{blocking.map(row)}</div>
+                  </div>
+                )}
+                {justOpen.length > 0 && (
+                  <div className="mt-3">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+                      {justOpen.length} open, not blocking anything
+                    </div>
+                    <div className="space-y-1.5">{justOpen.map(row)}</div>
+                  </div>
+                )}
+                <div className="text-[10px] text-slate-400 mt-2">
+                  To COMPLETE one — crediting the outstanding BH to a specific crew-day —
+                  use the month drill-through, which has the crew picker.
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Month Sheets — the PUSH flow (candidates) is admin-only; the
               ANALYSIS layer over already-pushed months is visible to managers
               too, scoped to their division (same scope as the live board). */}

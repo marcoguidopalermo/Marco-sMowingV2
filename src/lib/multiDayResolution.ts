@@ -113,6 +113,89 @@ export function scanBlockingPartialJobs(
   return out.sort((a, b) => a.title.localeCompare(b.title));
 }
 
+// ── EVERY open partial, not only the ones blocking a push ──────────────────
+//
+// scanBlockingPartialJobs above answers "what is stopping me pushing month
+// ym?" — which is the right question at month end, and the wrong one the rest
+// of the time. A partial whose crew-days are all approved or waived blocks
+// nothing, so it never appeared anywhere, could not be resolved through any
+// UI, and simply accumulated. A Loretta Cutbush ledger sat at 45% with 11 BH
+// outstanding for over a week that way; the only thing that mentioned it was
+// the carry-forward banner offering to continue it.
+//
+// That is the same shape as the sync's doc-base gap: a record no query reaches
+// is invisible by construction, because the only thing that would look at it
+// is scoped to the problem it is not currently causing. So this scan starts
+// from the LEDGERS and works outward, rather than starting from the rows that
+// hurt.
+//
+// It reports `blocksMonth` so the two stay distinguishable: a blocking partial
+// is holding up a month close; a non-blocking one is just open work.
+export interface OpenPartialJob extends BlockingPartialJob {
+  /** True when a crew-day carrying this visit still gates a month push. */
+  blocksMonth: boolean;
+  /** Month of the latest credited day — the month a resolution settles into. */
+  ym: string;
+}
+
+export function scanOpenPartials(
+  performance: PerfMap, multiDayJobs: Record<string, MultiDayJob> | undefined,
+): OpenPartialJob[] {
+  const out: OpenPartialJob[] = [];
+  for (const [visitId, ledger] of Object.entries(multiDayJobs || {})) {
+    if (!ledger) continue;
+    if (ledger.status === 'complete') continue;
+    // Already answered for — carried, voided, completed, or deliberately
+    // dropped from tracking. Same exclusions the blocking scan applies.
+    if (ledger.resolvedKind || ledger.voidedRemainder || ledger.dismissedCarryForward) continue;
+    // No history means no partial: nothing has been credited, so there is
+    // nothing part-done to resolve.
+    const hist = ledger.completionHistory || [];
+    if (hist.length === 0) continue;
+    const totalBH = Number(ledger.totalBH) || 0;
+    const creditedBH = creditedBHOf(ledger);
+    const remainingBH = round1(Math.max(0, totalBH - creditedBH));
+    if (remainingBH <= 0) continue;
+
+    let priorDate = '';
+    for (const h of hist) if (h.targetDate > priorDate) priorDate = h.targetDate;
+
+    // Walk every date, not just one month: the rows for a partial can straddle
+    // a month boundary, and the point of this scan is to miss nothing.
+    const blockingDays: BlockingDayRef[] = [];
+    let last: BlockingDayRef | null = null;
+    for (const [date, dayMap] of Object.entries(performance || {})) {
+      for (const [crewId, log] of Object.entries(dayMap || {})) {
+        const rows = (log.jobs || []).filter(r => r.jobberVisitId === visitId);
+        if (rows.length === 0) continue;
+        const ref: BlockingDayRef = {
+          date, crewId, crewLabel: `${log.division ?? '?'} #${log.crewNumber ?? '?'}`,
+        };
+        if (!last || date > last.date) last = ref;
+        const settled = log.approvalStatus === 'approved' || log.approvalStatus === 'waived';
+        if (!settled && rows.some(rowBlocksApproval)) blockingDays.push(ref);
+      }
+    }
+    blockingDays.sort((a, b) => (a.date < b.date ? -1 : 1));
+
+    out.push({
+      jobberVisitId: visitId,
+      jobberJobId: ledger.jobberJobId || '',
+      title: ledger.title || 'Job',
+      totalBH, creditedBH, remainingBH,
+      creditedPct: totalBH > 0 ? Math.round((creditedBH / totalBH) * 100) : 0,
+      priorDate,
+      blockingDays,
+      defaultTarget: last || blockingDays[blockingDays.length - 1] || null,
+      blocksMonth: blockingDays.length > 0,
+      ym: priorDate.slice(0, 7),
+    });
+  }
+  // Blocking first — they are the ones holding up a month close.
+  return out.sort((a, b) =>
+    Number(b.blocksMonth) - Number(a.blocksMonth) || a.title.localeCompare(b.title));
+}
+
 // ── Ledger updates (pure). The performance-row edits are applied by the caller
 // (App.tsx) using the same write shape as CompletionReviewModal. ──
 export interface Actor { email: string; name: string }
