@@ -1099,7 +1099,9 @@ async function runPerformanceSync(args: {
     //       even those with no visit in today's window;
     //   (b) the ledgers for visits in this sync window — these may be
     //       COMPLETE and are needed by the auto-move guard and the re-sync
-    //       short-circuit below.
+    //       short-circuit below;
+    //   (c) the ledgers for every id still on the doc-base, so a stale doc
+    //       copy is always corrected by its real record (see below).
     // During the one-time migration we also fold in any ledgers still on
     // the appData doc (doc-base), overlaid by the subcollection so fresh
     // writes win. After the removal pass strips the doc field, that base is
@@ -1116,6 +1118,38 @@ async function runPerformanceSync(args: {
       const v = docSnap.data() as MultiDayJob;
       if (v && v.jobberVisitId) multiDayJobs[v.jobberVisitId] = v;
     }
+    // (c) EVERY ledger still on the doc-base, by id. Neither query above can
+    // reach a doc-base entry whose real record is COMPLETE and whose visit is
+    // outside this sync window: (a) filters to in_progress, (b) only looks at
+    // today's visits. So the stale copy is never overlaid and wins by default.
+    //
+    // That is not a hypothetical. A Phil Davis ledger finished 2026-06-16 and
+    // was dismissed from carry-forward tracking, but a pre-migration doc-base
+    // copy still said in_progress at 60%, and the sync re-emitted it as a
+    // carry-forward candidate every run for two months. A stale copy that no
+    // query can reach is invisible by construction — nothing surfaces it,
+    // because the only thing that would look at it is the thing it defeats.
+    //
+    // Bounded: the doc-base is the shrinking migration remainder (1 entry at
+    // the time of writing), and it costs nothing once it reaches {}.
+    const docBaseLedgers =
+      (appDataEarly.multiDayJobs as
+        Record<string, MultiDayJob> | undefined) || {};
+    const docBaseIds = Object.keys(docBaseLedgers);
+    for (let i = 0; i < docBaseIds.length; i += 300) {
+      const chunk = docBaseIds.slice(i, i + 300);
+      if (chunk.length === 0) continue;
+      const refs = chunk.map((id) => mdjCollection.doc(mdjDocId(id)));
+      const snaps = await db.getAll(...refs);
+      for (const s of snaps) {
+        // No subcollection record means this ledger genuinely still lives on
+        // the doc — the migration fallback. Leave the doc-base copy in place.
+        if (!s.exists) continue;
+        const v = s.data() as MultiDayJob;
+        if (v && v.jobberVisitId) multiDayJobs[v.jobberVisitId] = v;
+      }
+    }
+
     const windowVisitIds = Array.from(new Set(rawVisits.map((v) => v.id)));
     for (let i = 0; i < windowVisitIds.length; i += 300) {
       const chunk = windowVisitIds.slice(i, i + 300);
