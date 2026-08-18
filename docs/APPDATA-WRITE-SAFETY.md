@@ -58,19 +58,21 @@ client can no longer carry them.
 | `timeEntries` | subcollection + doc-base ref | Phase 6 — creates/updates/deletes diffed; **pay** |
 | `authorizedEmails` | server-tracking ref + targeted `updateDoc` | edits go through `saveAuthorizedEmails`, audited to `authorizedEmailAudit` |
 | `employees` | server-tracking ref + targeted `updateDoc` | edits go through `saveEmployees` (`lib/rosterWrite`); refuses an empty roster or removing >half at once |
-| `settings` | server-tracking ref + **per-key** targeted `updateDoc` | edits go through `saveSettings` (`lib/settingsWrite`); dotted field paths, so only changed keys are written |
+| `settings` | server-tracking ref + **per-key** targeted `updateDoc` | `saveSettings` → `saveKeyedMapField` (`lib/keyedMapWrite`) |
+| `visitBHSplits` | server-tracking ref + **per-key** targeted `updateDoc` | `saveVisitBHSplits`; one visit per write. The nightly `syncPerformance` rebuild writes the whole map server-side from fresh data — it does not route through this module |
+| `mechanicPayChunks` | server-tracking ref + **per-key** targeted `updateDoc` | `saveMechanicPayChunks`; one chunk per write |
 | 28 marketing / contracting / RoleMaster / SalesMaster / rate-config fields | `SUBCOLLECTION_ONLY_FIELDS` — stripped from the doc payload entirely | read from their own subcollections |
 
 ### NOT yet protected
 
 Ordered by consequence. Planned next in this order.
 
-*(`employees` and `settings` moved to Protected on 2026-08-18.)*
+*(`employees`, `settings`, `visitBHSplits` and `mechanicPayChunks` moved to
+Protected on 2026-08-18. **Every pay-critical field is now protected.** What
+remains is the operational tier and the archive markers.)*
 
 | Field | Risk | Why it matters |
 |---|---|---|
-| `visitBHSplits` | **pay** | BH attribution across crews → efficiency and bonus |
-| `mechanicPayChunks` | **pay** | mechanic payouts |
 | `tasks`, `partsOrders`, `repairLog`, `mechanicTasks`, `timeOffRequests`, `dailyAbsences`, `partialTimeOff`, `fleet` | operational | recoverable; worst case is a confusing afternoon |
 | `pushedMonths`, `archivedDays`, `archivedScheduleMonths`, `unlockedDays` | markers | reverting one makes the archiver reprocess a month |
 | `bulletins`, `bulletinReads`, `supplies`, `inventory`, `equipmentSubtypes`, `routes`, `overrides`, `rolePermissions`, `cvorExpiry` | negligible | small, rarely edited concurrently |
@@ -89,8 +91,14 @@ Ordered by consequence. Planned next in this order.
    a delta against the baseline the editor started from and apply it to the
    server's current value, so two editors don't revert each other. Three
    variants exist: `saveAuthorizedEmails` (whole list), `saveEmployees`
-   (per-record, `lib/rosterWrite`), `saveSettings` (per-key dotted field paths,
-   `lib/settingsWrite`).
+   (per-record, `lib/rosterWrite`), and `saveKeyedMapField` (per-key,
+   `lib/keyedMapWrite`) which serves `settings`, `visitBHSplits` and
+   `mechanicPayChunks`.
+
+   Per-key writes address each key with `FieldPath(field, key)`, not a dotted
+   string. Two of these maps are keyed by ids that are **not valid unquoted path
+   segments** — Jobber visit gids are base64 and end in `=`, chunk ids contain
+   hyphens. `FieldPath` takes literal segments and parses nothing.
 
    **When you protect a field this way, sweep `src/components/` too.** A
    component still calling `syncToCloud({ ...appData, <field>: … })` becomes a

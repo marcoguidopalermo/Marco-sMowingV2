@@ -120,6 +120,11 @@ interface PerformanceBoardProps {
   multiDayJobs: Record<string, MultiDayJob>;
   appData: AppData;
   syncToCloud: (data: AppData) => Promise<boolean | undefined>;
+  // Threaded to SplitBHModal — BH splits are written per-visit through App's
+  // targeted path, not through the document. See saveVisitBHSplits in App.tsx.
+  saveVisitBHSplits: (
+    next: AppData['visitBHSplits'], baseline: AppData['visitBHSplits'],
+  ) => Promise<boolean>;
   canMarkMultiDay: boolean;
   canOverrideJobType: boolean;
   defaultDivisionFilter: 'all' | 'lawn' | 'small' | 'large';
@@ -220,6 +225,7 @@ export default function PerformanceBoard({
   multiDayJobs,
   appData,
   syncToCloud,
+  saveVisitBHSplits,
   canMarkMultiDay,
   canOverrideJobType,
   defaultDivisionFilter,
@@ -2890,6 +2896,7 @@ export default function PerformanceBoard({
               dailyLogs={dailyLogs}
               setDailyLogs={setDailyLogs}
               syncToCloud={syncToCloud}
+              saveVisitBHSplits={saveVisitBHSplits}
               showToastMsg={showToastMsg}
               currentUserId={currentUserId}
               currentUserName={currentUserName}

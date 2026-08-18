@@ -15,6 +15,11 @@ interface SplitBHModalProps {
   dailyLogs: Record<string, PerformanceLog>;
   setDailyLogs: Dispatch<SetStateAction<Record<string, PerformanceLog>>>;
   syncToCloud: (data: AppData) => Promise<boolean | undefined>;
+  // BH splits are written per-visit through App's targeted path — a
+  // whole-document save no longer carries them. See saveVisitBHSplits.
+  saveVisitBHSplits: (
+    next: AppData['visitBHSplits'], baseline: AppData['visitBHSplits'],
+  ) => Promise<boolean>;
   showToastMsg: (msg: string) => void;
   currentUserId: string;
   currentUserName: string;
@@ -68,7 +73,7 @@ function buildHeadcountSplit(
 
 export default function SplitBHModal({
   isOpen, onClose, visitId, visitTitle, visitTotalBH, date,
-  appData, dailyLogs, setDailyLogs, syncToCloud, showToastMsg,
+  appData, dailyLogs, setDailyLogs, syncToCloud, saveVisitBHSplits, showToastMsg,
   currentUserId, currentUserName, currentUserRole,
 }: SplitBHModalProps) {
   const existing: VisitBHSplit | undefined =
@@ -179,6 +184,12 @@ export default function SplitBHModal({
       ...(newAppData.performance || {}),
       [date]: perfDayAfter,
     };
+    // The split itself goes through the targeted per-visit write — this is pay
+    // attribution, and the other thirty-odd visits in the map must not be
+    // rewritten from this client's memory. The performance rows it patches
+    // alongside continue through the document. If the split is refused, the
+    // rows that would disagree with it are not written either.
+    if (!(await saveVisitBHSplits(newAppData.visitBHSplits, appData.visitBHSplits))) return;
     await syncToCloud(newAppData);
     logPerfActivity({
       type: 'multiday_split_added',

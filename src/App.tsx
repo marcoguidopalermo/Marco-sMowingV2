@@ -4,7 +4,7 @@ import logoBlack from '@/assets/logo/LOGOBLACK.png';
 import { LoginDemo } from './components/blocks/LoginDemo';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, sendPasswordResetEmail } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, deleteField, collection, deleteDoc } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, deleteField, collection, deleteDoc, FieldPath } from 'firebase/firestore';
 import {
   Calendar as CalendarIcon, ChevronLeft, ChevronRight, Users, Truck, Plus, Trash2, GripVertical,
   UserCircle, Wrench, Settings, Printer, AlertTriangle, Sun, Cloud, CloudRain, CloudLightning,
@@ -126,7 +126,7 @@ import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
 import { computeRosterUpdate } from './lib/rosterWrite';
-import { computeSettingsUpdate } from './lib/settingsWrite';
+import { applyKeyedMapUpdate, computeKeyedMapUpdate } from './lib/keyedMapWrite';
 import { nextUnusedColorKey, nextPersonColorKey } from './lib/roleCategories';
 import { callGeminiWithRetry } from './lib/gemini';
 
@@ -302,6 +302,15 @@ export default function App() {
   // Edits go through saveSettings() below — a PER-KEY delta as dotted field
   // paths, so Firestore merges only the keys the edit actually changed.
   const serverSettingsRef = useRef<Record<string, unknown> | null>(null);
+  // VISIT BH SPLITS, as the server last reported it. Keyed by Jobber visit id;
+  // each value is how one visit's billable hours were divided between crews,
+  // so this is pay attribution. The one client writer splits a SINGLE visit and
+  // spread the other thirty-three from memory.
+  const serverVisitBHSplitsRef = useRef<Record<string, unknown> | null>(null);
+  // MECHANIC PAY CHUNKS, as the server last reported it. Keyed by chunk id;
+  // each value is a $1,000 payout and its paid/unpaid stamp. Five call sites
+  // changed one chunk and rewrote the rest.
+  const serverMechanicPayChunksRef = useRef<Record<string, unknown> | null>(null);
   // Has this session ever received appData/main? A database does not
   // un-install itself, so once this is true the seed branch must never fire
   // however a later snapshot reports the document. See that branch.
@@ -1024,7 +1033,7 @@ export default function App() {
       );
     }
     if (merged !== chunks) {
-      syncToCloud({ ...appData, mechanicPayChunks: merged });
+      saveMechanicPayChunks(merged, appData.mechanicPayChunks);
     }
     // We intentionally exclude `appData` and `syncToCloud` from the
     // dep list to avoid re-running on every appData mutation — only
@@ -1132,6 +1141,11 @@ export default function App() {
         // copy, post-migration []).
         docTimeEntriesRef.current = (data.timeEntries || []) as TimeEntry[];
         docActivityLogRef.current = (data.activityLog || []) as TaskActivity[];
+        // Track the server's keyed pay maps verbatim for the doc write.
+        serverVisitBHSplitsRef.current = (data.visitBHSplits && typeof data.visitBHSplits === 'object')
+          ? data.visitBHSplits as Record<string, unknown> : {};
+        serverMechanicPayChunksRef.current = (data.mechanicPayChunks && typeof data.mechanicPayChunks === 'object')
+          ? data.mechanicPayChunks as Record<string, unknown> : {};
         // Track the server's settings map verbatim for the doc write.
         serverSettingsRef.current = (data.settings && typeof data.settings === 'object')
           ? data.settings as Record<string, unknown>
@@ -2651,8 +2665,11 @@ export default function App() {
       // to the payload only before the first snapshot, which is the seed path
       // writing an initial roster into a document that does not exist yet.
       employees: serverEmployeesRef.current ?? safeData.employees,
-      // Likewise: a whole-document save can no longer change any setting.
+      // Likewise: a whole-document save can no longer change any setting, any
+      // visit's BH split, or any pay chunk.
       settings: serverSettingsRef.current ?? safeData.settings,
+      visitBHSplits: serverVisitBHSplitsRef.current ?? safeData.visitBHSplits,
+      mechanicPayChunks: serverMechanicPayChunksRef.current ?? safeData.mechanicPayChunks,
       // (see the ignored-field warning below the payload)
       performance: docPerformance,
       schedules: docSchedules,
@@ -2687,6 +2704,8 @@ export default function App() {
     for (const [field, serverValue, saver] of [
       ['employees', serverEmployeesRef.current, 'saveEmployees()'],
       ['settings', serverSettingsRef.current, 'saveSettings()'],
+      ['visitBHSplits', serverVisitBHSplitsRef.current, 'saveVisitBHSplits()'],
+      ['mechanicPayChunks', serverMechanicPayChunksRef.current, 'saveMechanicPayChunks()'],
     ] as const) {
       if (serverValue === null) continue;
       const incoming = (safeData as unknown as Record<string, unknown>)[field];
@@ -3376,66 +3395,103 @@ export default function App() {
   // a whole array the admin's screen happened to hold: two admins editing at
   // once both get their changes, and neither wipes the other's. Each add and
   // each removal is audited individually to its own append-only collection.
-  // SETTINGS EDITS — the only path that may change any setting.
+  // KEYED-MAP EDITS — the only path that may change settings, visitBHSplits or
+  // mechanicPayChunks.
   //
-  // Takes the WHOLE intended settings map (which is how every call site
-  // already builds it: `{ ...appData.settings, oneKey: value }`) and writes
-  // only the keys that differ from the baseline, as dotted field paths. The
-  // seven keys the caller spread from memory are never written, so they cannot
-  // revert somebody else's edit.
+  // Each caller passes the WHOLE intended map, which is how every call site
+  // already builds it (`{ ...appData.<field>, oneKey: value }`), and only the
+  // keys that differ from the baseline are written. The keys the caller spread
+  // from memory are never written, so they cannot revert somebody else.
+  //
+  // Each key is addressed with FieldPath(field, key) rather than a dotted
+  // string. Two of these maps are keyed by ids that are not valid unquoted path
+  // segments — Jobber visit gids are base64 and end in '=', chunk ids contain
+  // hyphens — and FieldPath takes literal segments, so any key is safe.
   //
   // Returns false on refusal or failure WITHOUT mutating local state.
-  const saveSettings = async (
-    nextSettings: AppSettings,
-    baseline: AppSettings | undefined,
+  const saveKeyedMapField = async (
+    field: 'settings' | 'visitBHSplits' | 'mechanicPayChunks',
+    nextMap: Record<string, unknown> | undefined,
+    baseline: Record<string, unknown> | undefined,
+    serverRef: React.MutableRefObject<Record<string, unknown> | null>,
+    applyLocal: (merged: Record<string, unknown>) => void,
   ): Promise<boolean> => {
     if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
     // Before the first snapshot there is no server map to diff against.
-    if (serverSettingsRef.current === null) {
-      return (await syncToCloud({ ...appData, settings: nextSettings })) !== false;
+    if (serverRef.current === null) {
+      return (await syncToCloud({ ...appData, [field]: nextMap } as AppData)) !== false;
     }
-    const plan = computeSettingsUpdate({
-      server: serverSettingsRef.current,
-      baseline: (baseline || {}) as Record<string, unknown>,
-      next: (nextSettings || {}) as Record<string, unknown>,
+    const plan = computeKeyedMapUpdate({
+      server: serverRef.current,
+      baseline: baseline || {},
+      next: nextMap || {},
     });
     if (plan.refused) {
-      console.error('[settings] REFUSED', {
+      console.error(`[${field}] REFUSED`, {
         refusedBecause: plan.refused,
-        serverKeys: Object.keys(serverSettingsRef.current),
+        serverKeyCount: Object.keys(serverRef.current).length,
         removed: plan.removed,
-        unsafeKeys: plan.unsafeKeys,
+        unusableKeys: plan.unusableKeys,
       });
       showToastMsg(
-        plan.refused === 'unsafe-key'
-          ? `Refusing to save a setting with an unusable name (${plan.unsafeKeys.join(', ')}).`
-          : `Refusing to delete ${plan.removed.length} settings at once — nothing was changed.`,
+        plan.refused === 'unusable-key'
+          ? `Refusing to save ${field} — an entry has an unusable key.`
+          : `Refusing to delete ${plan.removedOnServer.length} of ${Object.keys(serverRef.current).length} ${field} entries at once — nothing was changed.`,
       );
       return false;
     }
     if (plan.noop) return true;
-    // A removal arrives as an undefined value; deleteField() is the only way to
-    // express "take this key off the map" in an updateDoc.
-    const patch: Record<string, unknown> = {};
-    for (const [path, value] of Object.entries(plan.patch)) {
-      patch[path] = value === undefined ? deleteField() : value;
-    }
+    // Pairs of (path, value) for updateDoc's varargs form. A removal uses
+    // deleteField(); replacing a whole record at its own path already drops
+    // any keys the caller left out of it.
+    const pairs: unknown[] = [];
+    for (const k of plan.changed) pairs.push(new FieldPath(field, k), (nextMap || {})[k]);
+    for (const k of plan.removedOnServer) pairs.push(new FieldPath(field, k), deleteField());
     try {
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'), patch);
+      await updateDoc(
+        doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'),
+        pairs[0] as FieldPath, pairs[1], ...pairs.slice(2),
+      );
     } catch (err: any) {
-      console.error('settings save failed', err);
-      showToastMsg(`Could not save settings: ${err?.message || String(err)}`);
+      console.error(`${field} save failed`, err);
+      showToastMsg(`Could not save ${field}: ${err?.message || String(err)}`);
       return false;
     }
-    // Keep the ref in step immediately; the snapshot confirms it shortly. Only
-    // the changed keys move — the rest stay as the server reported them.
-    const merged = { ...serverSettingsRef.current } as Record<string, unknown>;
-    for (const k of plan.changed) merged[k] = (nextSettings as Record<string, unknown>)[k];
-    for (const k of plan.removed) delete merged[k];
-    serverSettingsRef.current = merged;
-    setAppData(prev => ({ ...prev, settings: merged as AppSettings }));
+    // Keep the ref in step immediately; the snapshot confirms it shortly.
+    const merged = applyKeyedMapUpdate(serverRef.current, nextMap, plan);
+    serverRef.current = merged;
+    applyLocal(merged);
     return true;
   };
+
+  const saveSettings = (next: AppSettings, baseline: AppSettings | undefined) =>
+    saveKeyedMapField(
+      'settings',
+      next as Record<string, unknown>,
+      baseline as Record<string, unknown> | undefined,
+      serverSettingsRef,
+      m => setAppData(prev => ({ ...prev, settings: m as AppSettings })),
+    );
+
+  const saveVisitBHSplits = (
+    next: AppData['visitBHSplits'], baseline: AppData['visitBHSplits'],
+  ) => saveKeyedMapField(
+    'visitBHSplits',
+    next as Record<string, unknown>,
+    baseline as Record<string, unknown> | undefined,
+    serverVisitBHSplitsRef,
+    m => setAppData(prev => ({ ...prev, visitBHSplits: m as AppData['visitBHSplits'] })),
+  );
+
+  const saveMechanicPayChunks = (
+    next: AppData['mechanicPayChunks'], baseline: AppData['mechanicPayChunks'],
+  ) => saveKeyedMapField(
+    'mechanicPayChunks',
+    next as Record<string, unknown>,
+    baseline as Record<string, unknown> | undefined,
+    serverMechanicPayChunksRef,
+    m => setAppData(prev => ({ ...prev, mechanicPayChunks: m as AppData['mechanicPayChunks'] })),
+  );
 
   // ROSTER EDITS — the only path that may change employees.
   //
@@ -5724,7 +5780,7 @@ export default function App() {
         for (const id of toStamp) {
           nextChunks[id] = { ...nextChunks[id], paidAt: now, paidBy: displayEmail, paidByName: displayName };
         }
-        syncToCloud({ ...appData, mechanicPayChunks: nextChunks });
+        saveMechanicPayChunks(nextChunks, appData.mechanicPayChunks);
         const emp = appData.employees.find(e => e.id === mechanicId);
         const stamped = toStamp.map(id => nextChunks[id]);
         const starts = stamped.map(c => c.startTimestamp).filter(Boolean) as number[];
@@ -5760,7 +5816,7 @@ export default function App() {
         // record clean).
         const { paidAt: _pa, paidBy: _pb, paidByName: _pn, ...rest } = c;
         const nextChunks = { ...chunks, [chunkId]: rest };
-        syncToCloud({ ...appData, mechanicPayChunks: nextChunks });
+        saveMechanicPayChunks(nextChunks, appData.mechanicPayChunks);
         const emp = appData.employees.find(e => e.id === mechanicId);
         logPerfActivity({
           type: 'chunk_payment_reversed',
@@ -5871,6 +5927,7 @@ export default function App() {
 
   const renderPerformanceBoard = () => (
     <PerformanceBoard
+      saveVisitBHSplits={saveVisitBHSplits}
       performance={appData.performance}
       jobberBhConflicts={appData.jobberBhConflicts || {}}
       onApplyJobberBhConflict={applyJobberBhConflict}
@@ -6938,7 +6995,11 @@ export default function App() {
                 nextTimeEntries,
               );
             }
-            return syncToCloud({ ...next, mechanicPayChunks: mergedChunks });
+            // The chunk half goes through the targeted write (pay); the rest
+            // of the payload continues through the document, which no longer
+            // carries mechanicPayChunks at all.
+            await saveMechanicPayChunks(mergedChunks, appData.mechanicPayChunks);
+            return syncToCloud(next);
           }}
           userEmail={displayEmail}
           userName={displayName}
@@ -7496,7 +7557,7 @@ export default function App() {
             manualHoursOffset: hoursAlreadyWorked,
           };
           const nextChunks = { ...(appData.mechanicPayChunks || {}), [chunkId]: newChunk };
-          syncToCloud({ ...appData, mechanicPayChunks: nextChunks });
+          saveMechanicPayChunks(nextChunks, appData.mechanicPayChunks);
           showToastMsg(`First chunk opened for ${emp.name}.`);
         }}
         localInventory={localInventory}
