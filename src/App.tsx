@@ -126,6 +126,7 @@ import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
 import { computeRosterUpdate } from './lib/rosterWrite';
+import { computeSettingsUpdate } from './lib/settingsWrite';
 import { nextUnusedColorKey, nextPersonColorKey } from './lib/roleCategories';
 import { callGeminiWithRetry } from './lib/gemini';
 
@@ -290,6 +291,17 @@ export default function App() {
   // null until the first snapshot, which is what lets the seed path (no
   // document yet) still write its initial roster.
   const serverEmployeesRef = useRef<Employee[] | null>(null);
+  // SETTINGS, as the server last reported it. Same reasoning again, for a map
+  // of eight unrelated sub-settings that share nothing but a field name — the
+  // capacity calendar, the SalesMaster rate sheet, the ContractingMaster rate
+  // card and its audit trail, crewSizeAllowance (an input to the efficiency
+  // and bonus calculation, so this is a pay surface too). Twelve call sites
+  // wrote it and each spread the other seven keys from memory, so editing one
+  // reverted the rest to whatever that client was holding.
+  //
+  // Edits go through saveSettings() below — a PER-KEY delta as dotted field
+  // paths, so Firestore merges only the keys the edit actually changed.
+  const serverSettingsRef = useRef<Record<string, unknown> | null>(null);
   // Has this session ever received appData/main? A database does not
   // un-install itself, so once this is true the seed branch must never fire
   // however a later snapshot reports the document. See that branch.
@@ -1120,6 +1132,10 @@ export default function App() {
         // copy, post-migration []).
         docTimeEntriesRef.current = (data.timeEntries || []) as TimeEntry[];
         docActivityLogRef.current = (data.activityLog || []) as TaskActivity[];
+        // Track the server's settings map verbatim for the doc write.
+        serverSettingsRef.current = (data.settings && typeof data.settings === 'object')
+          ? data.settings as Record<string, unknown>
+          : {};
         // Track the server's roster verbatim for the doc write. RAW, not the
         // colour-backfilled copy below: this is what the document actually
         // holds, and writing it back must be a no-op.
@@ -2635,6 +2651,9 @@ export default function App() {
       // to the payload only before the first snapshot, which is the seed path
       // writing an initial roster into a document that does not exist yet.
       employees: serverEmployeesRef.current ?? safeData.employees,
+      // Likewise: a whole-document save can no longer change any setting.
+      settings: serverSettingsRef.current ?? safeData.settings,
+      // (see the ignored-field warning below the payload)
       performance: docPerformance,
       schedules: docSchedules,
       multiDayJobs: docMultiDayJobsRef.current,
@@ -2658,6 +2677,27 @@ export default function App() {
     // the write below is a full setDoc replace, so an absent key removes the
     // field from the document outright.
     for (const k of SUBCOLLECTION_ONLY_FIELDS) delete docPayload[k];
+    // A protected field in the payload is now IGNORED rather than written —
+    // that is the whole point. But a caller that still expects it to save gets
+    // no error and no effect, which is the quietest kind of bug. This turns
+    // that silence into a console warning naming the field and the fix, so the
+    // next person who writes `syncToCloud({ ...appData, settings })` finds out
+    // in a second rather than after a user reports a setting not sticking.
+    // (TimeMaster's pay-period inputs were exactly this, caught by hand.)
+    for (const [field, serverValue, saver] of [
+      ['employees', serverEmployeesRef.current, 'saveEmployees()'],
+      ['settings', serverSettingsRef.current, 'saveSettings()'],
+    ] as const) {
+      if (serverValue === null) continue;
+      const incoming = (safeData as unknown as Record<string, unknown>)[field];
+      if (incoming !== undefined && JSON.stringify(incoming) !== JSON.stringify(serverValue)) {
+        console.warn(
+          `[doc-write] '${field}' in this payload was IGNORED — it is written only `
+          + `through ${saver}. If this save was meant to change it, call that instead.`,
+        );
+      }
+    }
+
     // Scrubber: Firestore does not allow 'undefined'. Convert to null or remove.
     const cleanData = JSON.parse(JSON.stringify(docPayload, (key, value) =>
       value === undefined ? null : value
@@ -3152,14 +3192,14 @@ export default function App() {
     const cat = (d.category || '').trim();
     const map = appData.settings?.roleMasterCategoryColors || {};
     if (cat && !map[cat]) {
-      await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), roleMasterCategoryColors: { ...map, [cat]: nextUnusedColorKey(map) } } });
+      await saveSettings({ ...(appData.settings || {}), roleMasterCategoryColors: { ...map, [cat]: nextUnusedColorKey(map) } }, appData.settings);
     }
     showToastMsg('Duty saved.');
   };
   const setRoleCategoryColor = async (category: string, colorKey: string) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
     const map = appData.settings?.roleMasterCategoryColors || {};
-    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), roleMasterCategoryColors: { ...map, [category]: colorKey } } });
+    await saveSettings({ ...(appData.settings || {}), roleMasterCategoryColors: { ...map, [category]: colorKey } }, appData.settings);
   };
   const saveRoleMasterResponsibility = async (r: RoleMasterResponsibility) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
@@ -3336,6 +3376,67 @@ export default function App() {
   // a whole array the admin's screen happened to hold: two admins editing at
   // once both get their changes, and neither wipes the other's. Each add and
   // each removal is audited individually to its own append-only collection.
+  // SETTINGS EDITS — the only path that may change any setting.
+  //
+  // Takes the WHOLE intended settings map (which is how every call site
+  // already builds it: `{ ...appData.settings, oneKey: value }`) and writes
+  // only the keys that differ from the baseline, as dotted field paths. The
+  // seven keys the caller spread from memory are never written, so they cannot
+  // revert somebody else's edit.
+  //
+  // Returns false on refusal or failure WITHOUT mutating local state.
+  const saveSettings = async (
+    nextSettings: AppSettings,
+    baseline: AppSettings | undefined,
+  ): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    // Before the first snapshot there is no server map to diff against.
+    if (serverSettingsRef.current === null) {
+      return (await syncToCloud({ ...appData, settings: nextSettings })) !== false;
+    }
+    const plan = computeSettingsUpdate({
+      server: serverSettingsRef.current,
+      baseline: (baseline || {}) as Record<string, unknown>,
+      next: (nextSettings || {}) as Record<string, unknown>,
+    });
+    if (plan.refused) {
+      console.error('[settings] REFUSED', {
+        refusedBecause: plan.refused,
+        serverKeys: Object.keys(serverSettingsRef.current),
+        removed: plan.removed,
+        unsafeKeys: plan.unsafeKeys,
+      });
+      showToastMsg(
+        plan.refused === 'unsafe-key'
+          ? `Refusing to save a setting with an unusable name (${plan.unsafeKeys.join(', ')}).`
+          : `Refusing to delete ${plan.removed.length} settings at once — nothing was changed.`,
+      );
+      return false;
+    }
+    if (plan.noop) return true;
+    // A removal arrives as an undefined value; deleteField() is the only way to
+    // express "take this key off the map" in an updateDoc.
+    const patch: Record<string, unknown> = {};
+    for (const [path, value] of Object.entries(plan.patch)) {
+      patch[path] = value === undefined ? deleteField() : value;
+    }
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'), patch);
+    } catch (err: any) {
+      console.error('settings save failed', err);
+      showToastMsg(`Could not save settings: ${err?.message || String(err)}`);
+      return false;
+    }
+    // Keep the ref in step immediately; the snapshot confirms it shortly. Only
+    // the changed keys move — the rest stay as the server reported them.
+    const merged = { ...serverSettingsRef.current } as Record<string, unknown>;
+    for (const k of plan.changed) merged[k] = (nextSettings as Record<string, unknown>)[k];
+    for (const k of plan.removed) delete merged[k];
+    serverSettingsRef.current = merged;
+    setAppData(prev => ({ ...prev, settings: merged as AppSettings }));
+    return true;
+  };
+
   // ROSTER EDITS — the only path that may change employees.
   //
   // Everything else writes serverEmployeesRef straight back (see the doc
@@ -3609,14 +3710,14 @@ export default function App() {
   // admin-only, and the ONLY thing that view writes.
   const saveCapacitySettings = async (next: import('./types').CapacitySettings) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
-    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), capacity: next } });
+    await saveSettings({ ...(appData.settings || {}), capacity: next }, appData.settings);
     showToastMsg('Capacity settings saved.');
   };
 
   // SalesMaster rates — bounded, admin-only, stored in the settings doc.
   const saveSalesRates = async (r: import('./types').SalesRates) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
-    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), salesMaster: r } });
+    await saveSettings({ ...(appData.settings || {}), salesMaster: r }, appData.settings);
     showToastMsg('Rates saved.');
   };
   // SalesMaster saved quotes — own subcollection (grows). Admin + manager
@@ -3753,7 +3854,7 @@ export default function App() {
   };
   const setRoleMasterMaster = async (enabled: boolean) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
-    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), roleMasterGenerationEnabled: enabled } });
+    await saveSettings({ ...(appData.settings || {}), roleMasterGenerationEnabled: enabled }, appData.settings);
     showToastMsg(enabled ? 'Duty generation ON.' : 'Duty generation OFF.');
   };
 
@@ -4093,7 +4194,7 @@ export default function App() {
   const canManageProperties = canManageContracting || isPropertyManager;
   const saveContractingRates = async (r: ContractingRateCard) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
-    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingRates: r } });
+    await saveSettings({ ...(appData.settings || {}), contractingRates: r }, appData.settings);
     showToastMsg('Rate card saved.');
   };
   const saveContractingPropertyDoc = async (p: ContractingProperty) => {
@@ -4109,7 +4210,7 @@ export default function App() {
   };
   const saveContractingSuppliers = async (list: ContractingSupplier[]) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
-    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingSuppliers: list } });
+    await saveSettings({ ...(appData.settings || {}), contractingSuppliers: list }, appData.settings);
   };
   const saveContractingProject = async (p: ContractingProject) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
@@ -4119,7 +4220,7 @@ export default function App() {
   const appendContractingAudit = async (action: string, detail: string) => {
     const prev = appData.settings?.contractingAuditLog || [];
     const next = [...prev, { action, detail, by: displayName, at: Date.now() }].slice(-200);
-    await syncToCloud({ ...appData, settings: { ...(appData.settings || {}), contractingAuditLog: next } });
+    await saveSettings({ ...(appData.settings || {}), contractingAuditLog: next }, appData.settings);
   };
   // Tony's contractor-scoped time management — write/delete payroll entries for
   // CONTRACTING people ONLY (billing-role holders + contractors, incl. himself
@@ -4133,7 +4234,7 @@ export default function App() {
     const note = { author: displayEmail, authorName: displayName, timestamp: new Date().toISOString(), text: `[${exists ? 'Edit' : 'Manual entry'}] ${reason}` };
     return { ...entry, editedBy: displayEmail, editedAt: new Date().toISOString(), notes: [...(entry.notes || []), note] };
   };
-  const saveContractingTimeEntry = (entry: TimeEntry, reason: string) => {
+  const saveContractingTimeEntry = async (entry: TimeEntry, reason: string) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     if (!contractingWorkerEmailSet().has((entry.userEmail || '').toLowerCase())) { showToastMsg('Contracting people only.'); return; }
     const exists = (appData.timeEntries || []).some(e => e.id === entry.id);
@@ -4141,7 +4242,8 @@ export default function App() {
     const timeEntries = exists ? (appData.timeEntries || []).map(e => e.id === entry.id ? stamped : e) : [stamped, ...(appData.timeEntries || [])];
     const detail = `${exists ? 'Edited' : 'Added'} time for ${entry.userName} — ${reason}`;
     const auditNext = [...(appData.settings?.contractingAuditLog || []), { action: exists ? 'time.edit' : 'time.add', detail, by: displayName, at: Date.now() }].slice(-200);
-    syncToCloud({ ...appData, timeEntries, settings: { ...(appData.settings || {}), contractingAuditLog: auditNext } });
+    await saveSettings({ ...(appData.settings || {}), contractingAuditLog: auditNext }, appData.settings);
+    syncToCloud({ ...appData, timeEntries });
     showToastMsg(exists ? 'Time entry updated.' : 'Time entry added.');
   };
   // Contractor self-service — OWN entries only, identical audit stamp. No
@@ -4250,12 +4352,13 @@ export default function App() {
     syncToCloud({ ...appData, jobberBhConflicts: removeJobberBhConflict(appData.jobberBhConflicts, c) });
     showToastMsg('Kept the approved value.');
   };
-  const deleteContractingTimeEntry = (id: string) => {
+  const deleteContractingTimeEntry = async (id: string) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     const e = (appData.timeEntries || []).find(x => x.id === id);
     if (!e || !contractingWorkerEmailSet().has((e.userEmail || '').toLowerCase())) { showToastMsg('Contracting people only.'); return; }
     const auditNext = [...(appData.settings?.contractingAuditLog || []), { action: 'time.delete', detail: `Deleted time for ${e.userName}`, by: displayName, at: Date.now() }].slice(-200);
-    syncToCloud({ ...appData, timeEntries: (appData.timeEntries || []).filter(x => x.id !== id), settings: { ...(appData.settings || {}), contractingAuditLog: auditNext } });
+    await saveSettings({ ...(appData.settings || {}), contractingAuditLog: auditNext }, appData.settings);
+    syncToCloud({ ...appData, timeEntries: (appData.timeEntries || []).filter(x => x.id !== id) });
     showToastMsg('Time entry deleted.');
   };
   // Delete a project — ONLY when nothing is attached (guard mirrors phase
@@ -6807,6 +6910,7 @@ export default function App() {
         </>
       ) : currentView === 'timemaster' ? (
         <TimeMaster
+          saveSettings={saveSettings}
           appData={appData}
           // Wrap syncToCloud so any TimeMaster write that touches
           // timeEntries triggers the pay-chunk state machine for
@@ -7607,6 +7711,8 @@ export default function App() {
           // a concurrent edit to somebody this admin didn't touch survives.
           // A refusal aborts before the rest is written.
           if (!(await saveEmployees(normalizedEmployees, appData.employees))) return;
+          // Settings likewise: only the keys this screen actually changed.
+          if (!(await saveSettings(localSettings, appData.settings))) return;
           const success = await syncToCloud({
             ...appData,
             employees: normalizedEmployees,

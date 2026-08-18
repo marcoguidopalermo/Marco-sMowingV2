@@ -4,7 +4,7 @@ import {
   ChevronDown, ChevronUp, X, Save, ArrowLeft, Calendar as CalendarIcon,
   Plane, RotateCcw, Trash2, PiggyBank
 } from 'lucide-react';
-import { AppData, TimeEntry, TimeEntryNote, TimeOffRequest, UserRole, DeletionAuditEntry, HoursBankEntry } from '../types';
+import { AppData, AppSettings, TimeEntry, TimeEntryNote, TimeOffRequest, UserRole, DeletionAuditEntry, HoursBankEntry } from '../types';
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto } from '../lib/dateUtils';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, stepPeriod, periodOfYmd, periodRangeLabel, payDateLabel, PayPeriod } from '../lib/payPeriods';
 import { chunksForMechanic, computeHoursWorkedBetween } from '../lib/payChunkUtils';
@@ -15,6 +15,9 @@ import { entriesFor } from '../lib/hoursBank';
 interface TimeMasterProps {
   appData: AppData;
   syncToCloud: (data: AppData) => Promise<boolean | undefined>;
+  // Settings are written per-key through App's targeted path — a whole-document
+  // save no longer carries them. See saveSettings in App.tsx.
+  saveSettings: (next: AppSettings, baseline: AppSettings | undefined) => Promise<boolean>;
   userEmail: string;
   userName: string;
   // Role of the acting user — stamped onto the DeletionAuditEntry when a
@@ -83,6 +86,7 @@ const csvEscape = (cell: any) => {
 export default function TimeMaster({
   appData,
   syncToCloud,
+  saveSettings,
   userEmail,
   userName,
   currentUserRole,
@@ -686,11 +690,11 @@ export default function TimeMaster({
       {payEditOpen && isAdmin && (
         <div className="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-end gap-3">
           <label className="text-[10px] font-black uppercase tracking-widest text-gray-500">Anchor (period start, Mon)
-            <input type="date" defaultValue={payCfg.anchorStart} onChange={e => e.target.value && syncToCloud({ ...appData, settings: { ...(appData.settings || {}), payPeriod: { ...payCfg, anchorStart: e.target.value } } })} className="block mt-1 border border-gray-300 rounded p-1.5 text-sm font-normal normal-case tracking-normal" /></label>
+            <input type="date" defaultValue={payCfg.anchorStart} onChange={e => e.target.value && saveSettings({ ...(appData.settings || {}), payPeriod: { ...payCfg, anchorStart: e.target.value } }, appData.settings)} className="block mt-1 border border-gray-300 rounded p-1.5 text-sm font-normal normal-case tracking-normal" /></label>
           <label className="text-[10px] font-black uppercase tracking-widest text-gray-500">Length (days)
-            <input type="number" min={1} defaultValue={payCfg.lengthDays} onBlur={e => syncToCloud({ ...appData, settings: { ...(appData.settings || {}), payPeriod: { ...payCfg, lengthDays: Number(e.target.value) || 14 } } })} className="block mt-1 w-20 border border-gray-300 rounded p-1.5 text-sm font-normal tracking-normal" /></label>
+            <input type="number" min={1} defaultValue={payCfg.lengthDays} onBlur={e => saveSettings({ ...(appData.settings || {}), payPeriod: { ...payCfg, lengthDays: Number(e.target.value) || 14 } }, appData.settings)} className="block mt-1 w-20 border border-gray-300 rounded p-1.5 text-sm font-normal tracking-normal" /></label>
           <label className="text-[10px] font-black uppercase tracking-widest text-gray-500">Pay lag (days)
-            <input type="number" min={0} defaultValue={payCfg.payLagDays} onBlur={e => syncToCloud({ ...appData, settings: { ...(appData.settings || {}), payPeriod: { ...payCfg, payLagDays: Number(e.target.value) || 0 } } })} className="block mt-1 w-20 border border-gray-300 rounded p-1.5 text-sm font-normal tracking-normal" /></label>
+            <input type="number" min={0} defaultValue={payCfg.payLagDays} onBlur={e => saveSettings({ ...(appData.settings || {}), payPeriod: { ...payCfg, payLagDays: Number(e.target.value) || 0 } }, appData.settings)} className="block mt-1 w-20 border border-gray-300 rounded p-1.5 text-sm font-normal tracking-normal" /></label>
           <div className="text-[11px] text-gray-500">Pay date = period end (Sun) + lag.</div>
         </div>
       )}

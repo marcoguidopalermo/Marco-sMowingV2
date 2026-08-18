@@ -58,17 +58,17 @@ client can no longer carry them.
 | `timeEntries` | subcollection + doc-base ref | Phase 6 — creates/updates/deletes diffed; **pay** |
 | `authorizedEmails` | server-tracking ref + targeted `updateDoc` | edits go through `saveAuthorizedEmails`, audited to `authorizedEmailAudit` |
 | `employees` | server-tracking ref + targeted `updateDoc` | edits go through `saveEmployees` (`lib/rosterWrite`); refuses an empty roster or removing >half at once |
+| `settings` | server-tracking ref + **per-key** targeted `updateDoc` | edits go through `saveSettings` (`lib/settingsWrite`); dotted field paths, so only changed keys are written |
 | 28 marketing / contracting / RoleMaster / SalesMaster / rate-config fields | `SUBCOLLECTION_ONLY_FIELDS` — stripped from the doc payload entirely | read from their own subcollections |
 
 ### NOT yet protected
 
 Ordered by consequence. Planned next in this order.
 
-*(`employees` moved to Protected on 2026-08-18.)*
+*(`employees` and `settings` moved to Protected on 2026-08-18.)*
 
 | Field | Risk | Why it matters |
 |---|---|---|
-| `settings` | **pay** | holds `crewSizeAllowance`, an input to the efficiency/bonus calculation |
 | `visitBHSplits` | **pay** | BH attribution across crews → efficiency and bonus |
 | `mechanicPayChunks` | **pay** | mechanic payouts |
 | `tasks`, `partsOrders`, `repairLog`, `mechanicTasks`, `timeOffRequests`, `dailyAbsences`, `partialTimeOff`, `fleet` | operational | recoverable; worst case is a confusing afternoon |
@@ -83,10 +83,21 @@ Ordered by consequence. Planned next in this order.
    the doc payload carries `[]`. See `scripts/migrate-timeentries.ts` for the
    pay-grade version: verification recomputes the real aggregate (hours per
    employee via `computeHoursWorkedBetween`), not a row count.
-2. **Server-tracking ref + targeted `updateDoc`** — for small fields edited from
-   one screen. See `saveAuthorizedEmails` in `App.tsx`: deltas computed against
-   the baseline the user started from, applied to the server's current value, so
-   two editors don't revert each other.
+2. **Server-tracking ref + targeted `updateDoc`** — for a field whose order
+   matters, or a map of independent keys. The doc payload takes the server's
+   last-reported value, so incidental saves are no-ops; deliberate edits compute
+   a delta against the baseline the editor started from and apply it to the
+   server's current value, so two editors don't revert each other. Three
+   variants exist: `saveAuthorizedEmails` (whole list), `saveEmployees`
+   (per-record, `lib/rosterWrite`), `saveSettings` (per-key dotted field paths,
+   `lib/settingsWrite`).
+
+   **When you protect a field this way, sweep `src/components/` too.** A
+   component still calling `syncToCloud({ ...appData, <field>: … })` becomes a
+   silent no-op — it saves nothing and reports success. TimeMaster's pay-period
+   inputs were exactly this. `syncToCloud` now `console.warn`s by name when a
+   payload carries a protected field that differs from the server's, so the next
+   one is found in seconds rather than by a bug report.
 
 ## Deliberately NOT done
 
