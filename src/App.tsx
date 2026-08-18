@@ -125,6 +125,7 @@ import { buildMonthlySummary } from './lib/monthlySummary';
 import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
+import { computeRosterUpdate } from './lib/rosterWrite';
 import { nextUnusedColorKey, nextPersonColorKey } from './lib/roleCategories';
 import { callGeminiWithRetry } from './lib/gemini';
 
@@ -275,6 +276,20 @@ export default function App() {
   // updateDoc on this one field. It is deliberately not editable via the
   // whole-document path at all.
   const serverAuthorizedEmailsRef = useRef<string[]>([]);
+  // THE ROSTER, as the server last reported it. Same reasoning as the allowlist
+  // above, and for the highest-consequence field on the document: employees
+  // carries payMode and hourlyRate (what somebody is paid) and linkedUserEmail
+  // (which signed-in account IS which person). It is read by nearly every
+  // screen, so it rode along in the ~80 saves that spread ...appData — none of
+  // which meant to touch it. A client holding a ten-minute-old roster reverted
+  // a pay change by logging a repair.
+  //
+  // The doc write now takes THIS, not the caller's copy, so an incidental save
+  // writes back exactly what is already there. Deliberate edits go through
+  // saveEmployees() below — a per-record delta via targeted updateDoc.
+  // null until the first snapshot, which is what lets the seed path (no
+  // document yet) still write its initial roster.
+  const serverEmployeesRef = useRef<Employee[] | null>(null);
   // Has this session ever received appData/main? A database does not
   // un-install itself, so once this is true the seed branch must never fire
   // however a later snapshot reports the document. See that branch.
@@ -1033,7 +1048,7 @@ export default function App() {
       // Identity colour — auto-assigned (cycling) like any new employee.
       color: nextPersonColorKey(appData.employees.map(e => e.color)),
     };
-    syncToCloud({ ...appData, employees: [...appData.employees, seed] });
+    saveEmployees([...appData.employees, seed], appData.employees);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appData.employees, user, loading]);
 
@@ -1105,6 +1120,10 @@ export default function App() {
         // copy, post-migration []).
         docTimeEntriesRef.current = (data.timeEntries || []) as TimeEntry[];
         docActivityLogRef.current = (data.activityLog || []) as TaskActivity[];
+        // Track the server's roster verbatim for the doc write. RAW, not the
+        // colour-backfilled copy below: this is what the document actually
+        // holds, and writing it back must be a no-op.
+        serverEmployeesRef.current = (Array.isArray(data.employees) ? data.employees : []) as Employee[];
         // Track the server's allowlist verbatim (normalized) for the doc write.
         serverAuthorizedEmailsRef.current = Array.from(
           new Set((Array.isArray(data.authorizedEmails) ? data.authorizedEmails : [])
@@ -1128,7 +1147,12 @@ export default function App() {
           // created before the colour existed (or any legacy record missing
           // it) is assigned one here, cycling by least-used so the directory
           // stays evenly distributed. Records that already have a colour are
-          // untouched. In-memory only — the next employees save persists it.
+          // untouched. In-memory only, and it no longer rides along on an
+          // unrelated save (the doc payload takes the server's roster now) —
+          // an assigned colour persists when that person is next edited
+          // through saveEmployees. Until then the assignment is stable
+          // anyway: every client backfills from the same server list in the
+          // same order, so they all land on the same colours.
           employees: (() => {
             const list = (data.employees || INITIAL_EMPLOYEES) as Employee[];
             if (list.every(e => e.color)) return list;
@@ -2606,6 +2630,11 @@ export default function App() {
     }
     const docPayload: Record<string, unknown> = {
       ...safeData,
+      // NOT from the caller. See serverEmployeesRef: a whole-document save can
+      // no longer change the roster, whatever state it is holding. Falls back
+      // to the payload only before the first snapshot, which is the seed path
+      // writing an initial roster into a document that does not exist yet.
+      employees: serverEmployeesRef.current ?? safeData.employees,
       performance: docPerformance,
       schedules: docSchedules,
       multiDayJobs: docMultiDayJobsRef.current,
@@ -3307,6 +3336,65 @@ export default function App() {
   // a whole array the admin's screen happened to hold: two admins editing at
   // once both get their changes, and neither wipes the other's. Each add and
   // each removal is audited individually to its own append-only collection.
+  // ROSTER EDITS — the only path that may change employees.
+  //
+  // Everything else writes serverEmployeesRef straight back (see the doc
+  // payload), so a save that didn't mean to touch the roster cannot. This one
+  // computes a per-record delta against the baseline the editor started from
+  // and applies it to the server's current array, so two admins editing
+  // different people both land and neither reverts the other.
+  //
+  // Returns false on refusal or failure WITHOUT mutating local state, so the
+  // caller treats it like any other failed save.
+  const saveEmployees = async (
+    nextList: Employee[],
+    baseline: Employee[],
+  ): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    // Before the first snapshot there is no server roster to diff against.
+    // Rather than guess, fall through to the whole-document path, which the
+    // seed branch and its guards already cover.
+    if (serverEmployeesRef.current === null) {
+      return (await syncToCloud({ ...appData, employees: nextList })) !== false;
+    }
+    const plan = computeRosterUpdate<Employee>({
+      serverList: serverEmployeesRef.current,
+      baseline,
+      next: nextList,
+    });
+    if (plan.refused) {
+      // Loud: this is pay and account-binding data, and a refusal here means
+      // something upstream handed us a roster it should not have.
+      console.error('[roster] REFUSED', {
+        refusedBecause: plan.refused,
+        serverCount: serverEmployeesRef.current.length,
+        baselineCount: baseline.length,
+        nextCount: nextList.length,
+        removed: plan.removed,
+      });
+      showToastMsg(
+        plan.refused === 'empty-result'
+          ? 'Refusing to save an empty employee list — nothing was changed.'
+          : `Refusing to remove ${plan.removed.length} of ${serverEmployeesRef.current.length} employees at once — nothing was changed.`,
+      );
+      return false;
+    }
+    if (plan.noop) return true;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'), {
+        employees: plan.finalList,
+      });
+    } catch (err: any) {
+      console.error('roster save failed', err);
+      showToastMsg(`Could not save employees: ${err?.message || String(err)}`);
+      return false;
+    }
+    // Keep the ref in step immediately; the snapshot confirms it shortly.
+    serverEmployeesRef.current = plan.finalList;
+    setAppData(prev => ({ ...prev, employees: plan.finalList }));
+    return true;
+  };
+
   const saveAuthorizedEmails = async (
     nextList: string[],
     baseline: string[],
@@ -4645,7 +4733,7 @@ export default function App() {
     return out;
   };
 
-  const approveTimeOffRequest = (id: string) => {
+  const approveTimeOffRequest = async (id: string) => {
     if (!can('canApproveTimeOff', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
     const existing = (appData.timeOffRequests || {})[id];
     if (!existing || existing.status !== 'pending') return;
@@ -4677,6 +4765,10 @@ export default function App() {
         reviewedBy: { email: displayEmail, name: displayName },
         appliedAwayDateRange: newRange,
       };
+      // The roster half goes through the targeted write (it changes awayDates
+      // on one person); the schedule + request half continues through the
+      // document, which no longer carries the roster at all.
+      await saveEmployees(nextEmployees, appData.employees);
       syncToCloud({
         ...appData,
         employees: nextEmployees,
@@ -4725,7 +4817,7 @@ export default function App() {
     showToastMsg('Request denied.');
   };
 
-  const revertTimeOffRequest = (id: string) => {
+  const revertTimeOffRequest = async (id: string) => {
     const existing = (appData.timeOffRequests || {})[id];
     if (!existing || existing.status !== 'approved') return;
     const me = (displayEmail || '').trim().toLowerCase();
@@ -4758,6 +4850,7 @@ export default function App() {
       // reviewedAt left as original approval time; record revert time
       // separately if a future audit needs to distinguish.
     };
+    await saveEmployees(nextEmployees, appData.employees);
     syncToCloud({
       ...appData,
       employees: nextEmployees,
@@ -7509,6 +7602,11 @@ export default function App() {
             const live = appData.fleet.find(p => p.id === u.id);
             return live ? { ...u, documents: live.documents } : u;
           });
+          // The roster is saved on its own first: it is the only field here
+          // that carries pay and account binding, and the targeted write means
+          // a concurrent edit to somebody this admin didn't touch survives.
+          // A refusal aborts before the rest is written.
+          if (!(await saveEmployees(normalizedEmployees, appData.employees))) return;
           const success = await syncToCloud({
             ...appData,
             employees: normalizedEmployees,
