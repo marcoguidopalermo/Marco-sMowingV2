@@ -19,6 +19,10 @@ import CompletionReviewModal from './CompletionReviewModal';
 import AHSplitModal from './AHSplitModal';
 import SplitBHModal from './SplitBHModal';
 import DailyAuditView from './DailyAuditView';
+import CrewDayFlagStrip from './CrewDayFlagStrip';
+import {
+  canFlagCrewDay, canResolveFlag, crewDayFlaggable, flagHistoryFor, openFlagFor,
+} from '../lib/crewDayFlags';
 import PerformanceActivityLog from './PerformanceActivityLog';
 import TrendsPage from './TrendsPage';
 import Stamp from './Stamp';
@@ -415,6 +419,18 @@ export default function PerformanceBoard({
   const [rowMenuDir, setRowMenuDir] = useState<'down' | 'up'>('down');
   // Open flags across every date — the tab badge. Counted here rather than in
   // the audit view so the number is visible without opening the tab.
+  // Can the OPEN date be flagged at all? A pushed month or a rolling-archived
+  // day is read-only, so a flag there could not unapprove anything — the card
+  // says so rather than offering a control that would do nothing.
+  const flagEligibility = useMemo(
+    () => crewDayFlaggable({
+      date: perfDate,
+      today: formatTodayInToronto(),
+      pushedMonths: appData.pushedMonths,
+      archivedDays: appData.archivedDays,
+    }),
+    [perfDate, appData.pushedMonths, appData.archivedDays],
+  );
   const openFlagCount = useMemo(
     () => (crewDayFlags || []).filter(f => f.status === 'open').length,
     [crewDayFlags],
@@ -1433,10 +1449,11 @@ export default function PerformanceBoard({
           flags={crewDayFlags}
           audits={crewDayAudits}
           role={currentUserRole}
-          managedDivision={managedDivision}
-          onFlag={onFlagCrewDay}
-          onResolve={onResolveCrewDayFlag}
           onMarkAudited={onMarkDateAudited}
+          // Tap-through reuses the same navigation the month-sheet drill-through
+          // uses: switch to Daily Entry, set the date, widen the division filter
+          // if it would hide the card, and focus the crew card itself.
+          onOpenCrewDay={(date, crewId, division) => goToCrewDay({ date, crewId, division })}
         />
       ) : perfTab === 'activity' ? (
         <PerformanceActivityLog setPerfTab={setPerfTab} setPerfDate={setPerfDate} showToastMsg={showToastMsg} />
@@ -2044,6 +2061,22 @@ export default function PerformanceBoard({
                         })()
                       )}
                     </div>
+
+                    {/* FLAG FOR REVIEW — the daily audit acts here, on the card
+                        being reviewed, rather than on a separate screen. Raising
+                        a flag unapproves the crew-day; the owning division's
+                        manager signs it off from the same strip. */}
+                    <CrewDayFlagStrip
+                      crewId={cId}
+                      division={log.division || 'Unassigned'}
+                      openFlag={openFlagFor(crewDayFlags || [], perfDate, cId)}
+                      flagCount={flagHistoryFor(crewDayFlags || [], perfDate, cId).length}
+                      canFlag={canFlagCrewDay(currentUserRole)}
+                      canResolveThis={canResolveFlag(currentUserRole, managedDivision, log.division || 'Unassigned')}
+                      blockedMessage={flagEligibility.allowed ? undefined : flagEligibility.message}
+                      onFlag={(crewId, reason) => onFlagCrewDay(perfDate, crewId, reason)}
+                      onResolve={onResolveCrewDayFlag}
+                    />
 
                     {/* 🔥/🔆 gamification strip — celebration only, shown only
                         when there's something to celebrate (no layout change

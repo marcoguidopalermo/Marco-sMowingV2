@@ -1,232 +1,120 @@
-// DAILY AUDIT — yesterday's crew-days, all divisions, in one place.
+// DAILY AUDIT — the flag RECORD, not a second place to review crew-days.
 //
-// James works through this every weekday morning. He audits DAILY rather than
-// weekly because whether a worker was actually on a crew is only verifiable
-// while it is fresh: a week later there is nothing left to check against.
+// Flags are raised on the daily entry board, against the crew-day card that
+// prompted them (see CrewDayFlagStrip). This screen is what the record is FOR:
 //
-// The layout follows what he is scanning for, in the order the errors matter:
-//   1. WHO ISN'T ACCOUNTED FOR — somebody who clocked hours but is on no crew.
-//      That is the error that becomes unverifiable, so it goes first and loudest.
-//   2. THE CREW-DAYS — crew, people, jobs, BH, AH, efficiency, side by side, so
-//      a short crew or an implausible number stands out by comparison.
-//   3. THE HISTORY — which days have been through this, so a MISSED day is
-//      visible rather than silently skipped.
+//   · Open flags first — those are the ones still costing a day its approval.
+//   · The per-manager rollup for the month. The individual flag is a
+//     correction; the pattern is the management information, and it is what a
+//     review conversation actually needs.
+//   · Every flag, newest first, filterable by status, division, manager and
+//     date range, with the reason and — where resolved — the answer.
+//   · Which weekdays have been through the audit, so a skipped day is visible.
+//   · Who clocked hours but was on no crew: the error class that becomes
+//     unverifiable a week later.
 //
-// Language is neutral throughout: "flagged for review", "needs attention",
-// "resolved". A flag is a question, not an accusation.
+// READ-ONLY. Tap a flag to jump to that crew-day on the entry board, which is
+// where flagging and signing off happen. The crew-day detail is deliberately
+// NOT duplicated here — the entry board already shows it.
 import { useMemo, useState } from 'react';
 import {
-  AlertCircle, Check, ChevronLeft, ChevronRight, Clock, Flag, MessageSquare, Users,
+  AlertCircle, Check, ChevronLeft, ChevronRight, Clock, Flag, Users,
 } from 'lucide-react';
-import type { AppData, CrewDayAudit, CrewDayFlag, UserRole, ManagedDivision } from '../types';
+import type { AppData, CrewDayAudit, CrewDayFlag, UserRole } from '../types';
 import { addDaysToronto, formatTodayInToronto } from '../lib/dateUtils';
-import { buildAuditHistory, buildDailyAudit, type AuditCrewRow } from '../lib/dailyAudit';
+import { buildAuditHistory, buildDailyAudit } from '../lib/dailyAudit';
+import { canFlagCrewDay, FLAG_LABELS } from '../lib/crewDayFlags';
 import {
-  canFlagCrewDay, canResolveFlag, crewDayFlaggable, FLAG_LABELS, noteIsUsable,
-} from '../lib/crewDayFlags';
+  buildFlagRows, buildManagerRollup, divisionsInRecord, filterFlagRows,
+  managersInRecord, type FlagFilters, type FlagRow,
+} from '../lib/flagRecord';
 
-const pct = (v: number | null) => (v === null ? '—' : `${v}%`);
+const dayLabel = (d: string) => new Date(`${d}T12:00:00Z`).toLocaleDateString(undefined, {
+  weekday: 'short', month: 'short', day: 'numeric',
+});
 
-// ── One crew-day ───────────────────────────────────────────────────────────
-function CrewCard({
-  row, canFlag, canResolveThis, onFlag, onResolve, blockedMessage,
-}: {
-  row: AuditCrewRow;
-  canFlag: boolean;
-  canResolveThis: boolean;
-  onFlag: (crewId: string, reason: string) => Promise<boolean>;
-  onResolve: (flagId: string, note: string) => Promise<boolean>;
-  blockedMessage?: string;
-}) {
-  const [open, setOpen] = useState<'flag' | 'resolve' | null>(null);
-  const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
-  const flag = row.openFlag;
-
-  const submit = async () => {
-    if (busy) return;
-    setBusy(true);
-    const ok = flag
-      ? await onResolve(flag.id, note)
-      : await onFlag(row.crewId, note);
-    setBusy(false);
-    if (ok) { setOpen(null); setNote(''); }
-  };
-
+// ── One row in the record ──────────────────────────────────────────────────
+function FlagCard({ row, onOpen }: { row: FlagRow; onOpen: () => void }) {
+  const f = row.flag;
+  const open = f.status === 'open';
   return (
-    <div className={`rounded-xl border bg-white ${flag ? 'border-amber-400 ring-1 ring-amber-200' : 'border-slate-200'}`}>
-      <div className="px-4 py-3 border-b border-slate-100 flex items-start justify-between gap-3 flex-wrap">
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`Open ${f.crewLabel} on ${f.date} on the daily entry board`}
+      className={`w-full text-left rounded-xl border px-4 py-3 hover:ring-2 hover:ring-slate-300 ${open ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white'}`}
+    >
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
-          <div className="text-sm font-bold text-slate-800">{row.crewLabel}</div>
+          <div className="text-sm font-bold text-slate-800">{f.crewLabel}</div>
           <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-            {row.headcount} on crew · {row.jobCount} job{row.jobCount === 1 ? '' : 's'}
-            {row.isAdHoc && ' · ad-hoc'}
+            {dayLabel(f.date)}
+            {row.manager ? ` · ${row.manager.name}` : ' · no manager assigned'}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {flag && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-900 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider">
-              <Flag className="w-3 h-3" /> {FLAG_LABELS.flaggedBadge}
-            </span>
-          )}
-          {!flag && row.approvalStatus === 'approved' && (
-            <span className="rounded-full bg-emerald-50 text-emerald-700 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider">Approved</span>
-          )}
-          {!flag && row.approvalStatus === 'waived' && (
-            <span className="rounded-full bg-slate-100 text-slate-600 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider">Waived</span>
-          )}
-          {!flag && row.approvalStatus === 'pending' && (
-            <span className="rounded-full bg-slate-100 text-slate-600 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider">Not approved</span>
-          )}
-        </div>
+        <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-widest ${open ? 'bg-amber-200 text-amber-900' : 'bg-emerald-100 text-emerald-800'}`}>
+          {open ? FLAG_LABELS.open : FLAG_LABELS.resolved}
+        </span>
       </div>
 
-      {/* The four numbers, side by side — a short crew or an implausible
-          efficiency reads by comparison with its neighbours. */}
-      <div className="grid grid-cols-4 divide-x divide-slate-100 border-b border-slate-100">
-        {[
-          { label: 'BH', value: String(row.cBH) },
-          { label: 'AH', value: String(row.cAH) },
-          { label: 'Eff', value: pct(row.rawEfficiency) },
-          { label: 'Adj', value: pct(row.adjustedEfficiency) },
-        ].map(m => (
-          <div key={m.label} className="px-3 py-2.5 text-center">
-            <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">{m.label}</div>
-            <div className="text-base font-bold text-slate-800 font-mono">{m.value}</div>
-          </div>
-        ))}
+      <div className="mt-2 text-[13px] text-slate-800">{f.reason}</div>
+      <div className="text-[11px] text-slate-500 mt-0.5">
+        {f.raisedBy.name} · {new Date(f.raisedAt).toLocaleString()}
       </div>
-      {row.allowancePct > 0 && (
-        <div className="px-4 pt-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-          adj includes {row.allowancePct}% allowance
+
+      {f.status === 'resolved' && (
+        <div className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+          <div className="text-[10px] font-black uppercase tracking-widest text-emerald-700">
+            Signed off{f.resolvedBy ? ` · ${f.resolvedBy.name}` : ''}
+            {row.daysToResolve !== null && ` · ${row.daysToResolve}d`}
+          </div>
+          <div className="text-[13px] text-slate-800 mt-1">{f.resolutionNote}</div>
         </div>
       )}
-
-      <div className="px-4 py-3 flex flex-wrap gap-1.5">
-        {row.people.length === 0 && (
-          <span className="text-[13px] text-slate-400">Nobody recorded on this crew.</span>
-        )}
-        {row.people.map(p => (
-          <span key={p.id} className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 ${p.dropIn ? 'border-indigo-200 bg-indigo-50' : 'border-slate-200 bg-white'}`}>
-            <span className="text-[13px] font-bold text-slate-800">{p.name}</span>
-            <span className="text-[11px] font-mono text-slate-500">{p.ah}h</span>
-            {p.dropIn && (
-              <span className="text-[9px] font-black uppercase tracking-wider text-indigo-500">drop-in</span>
-            )}
-          </span>
-        ))}
-      </div>
-
-      {row.jobTitles.length > 0 && (
-        <div className="px-4 pb-3 text-[12px] text-slate-500 leading-relaxed">
-          {row.jobTitles.join(' · ')}
-        </div>
-      )}
-
-      {/* The open question and its answer */}
-      {flag && (
-        <div className="mx-4 mb-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
-          <div className="text-[10px] font-black uppercase tracking-widest text-amber-700">
-            {FLAG_LABELS.open}
-          </div>
-          <div className="text-[13px] text-slate-800 mt-1">{flag.reason}</div>
-          <div className="text-[11px] text-slate-500 mt-1">
-            {flag.raisedBy.name} · {new Date(flag.raisedAt).toLocaleString()}
-          </div>
-        </div>
-      )}
-
-      <div className="px-4 pb-3 flex items-center gap-2 flex-wrap">
-        {!flag && canFlag && !blockedMessage && (
-          <button
-            onClick={() => { setOpen(open === 'flag' ? null : 'flag'); setNote(''); }}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-[12px] font-bold text-slate-700 hover:bg-slate-50"
-          >
-            <Flag className="w-3.5 h-3.5" /> {FLAG_LABELS.action}
-          </button>
-        )}
-        {!flag && canFlag && blockedMessage && (
-          <span className="text-[12px] text-slate-500 leading-snug">{blockedMessage}</span>
-        )}
-        {flag && canResolveThis && (
-          <button
-            onClick={() => { setOpen(open === 'resolve' ? null : 'resolve'); setNote(''); }}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-[12px] font-bold text-white hover:bg-emerald-700"
-          >
-            <Check className="w-3.5 h-3.5" /> {FLAG_LABELS.resolveAction}
-          </button>
-        )}
-        {flag && !canResolveThis && (
-          <span className="text-[12px] text-slate-500">
-            {row.division} manager to sign off.
-          </span>
-        )}
-        {row.flagCount > (flag ? 1 : 0) && (
-          <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
-            <MessageSquare className="w-3 h-3" />
-            {row.flagCount} review{row.flagCount === 1 ? '' : 's'} on record
-          </span>
-        )}
-      </div>
-
       {open && (
-        <div className="px-4 pb-4">
-          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
-            {open === 'flag' ? FLAG_LABELS.reasonPrompt : FLAG_LABELS.resolutionPrompt}
-          </label>
-          <textarea
-            value={note}
-            onChange={e => setNote(e.target.value)}
-            rows={3}
-            autoFocus
-            className="w-full rounded-lg border border-slate-300 p-2 text-[13px]"
-            placeholder={open === 'flag'
-              ? 'e.g. Kyle has hours but is not on any crew.'
-              : 'e.g. Kyle was lent to #2 that afternoon — hours are correct.'}
-          />
-          <div className="mt-2 flex items-center gap-2">
-            <button
-              onClick={submit}
-              disabled={!noteIsUsable(note) || busy}
-              className="rounded-lg bg-slate-800 px-3 py-1.5 text-[12px] font-bold text-white disabled:opacity-40"
-            >
-              {busy ? 'Saving…' : open === 'flag' ? FLAG_LABELS.action : FLAG_LABELS.resolveAction}
-            </button>
-            <button
-              onClick={() => { setOpen(null); setNote(''); }}
-              className="rounded-lg px-3 py-1.5 text-[12px] font-bold text-slate-500"
-            >
-              Cancel
-            </button>
-            {!noteIsUsable(note) && (
-              <span className="text-[11px] text-slate-400">A note is required.</span>
-            )}
-          </div>
+        <div className="mt-2 text-[11px] font-semibold text-amber-800">
+          Not counting toward efficiency or bonus until signed off.
         </div>
       )}
-    </div>
+    </button>
   );
 }
 
 export default function DailyAuditView({
-  appData, flags, audits, role, managedDivision,
-  onFlag, onResolve, onMarkAudited,
+  appData, flags, audits, role, onMarkAudited, onOpenCrewDay,
 }: {
   appData: AppData;
   flags: CrewDayFlag[];
   audits: Record<string, CrewDayAudit>;
   role: UserRole | null | undefined;
-  managedDivision: ManagedDivision | null | undefined;
-  onFlag: (date: string, crewId: string, reason: string) => Promise<boolean>;
-  onResolve: (flagId: string, note: string) => Promise<boolean>;
   onMarkAudited: (date: string, crewDays: number, flagged: number) => Promise<boolean>;
+  /**
+   * Jump to a crew-day on the daily entry board — the division is passed so the
+   * board can widen a division filter that would otherwise hide the card.
+   */
+  onOpenCrewDay: (date: string, crewId: string, division: string) => void;
 }) {
   const today = formatTodayInToronto();
-  // Opens on YESTERDAY, because that is what the duty is about.
+  // The audited history and the unassigned list are per-date, so the strip
+  // doubles as the date selector. Opens on yesterday — the duty's subject.
   const [date, setDate] = useState(() => addDaysToronto(today, -1));
+  const [month, setMonth] = useState(() => today.slice(0, 7));
+  const [filters, setFilters] = useState<FlagFilters>({ status: 'all', division: 'all', managerId: 'all' });
   const [marking, setMarking] = useState(false);
 
-  const audit = useMemo(
+  const employees = appData.employees || [];
+  const rows = useMemo(() => buildFlagRows(flags, employees), [flags, employees]);
+  const openRows = useMemo(() => rows.filter(r => r.flag.status === 'open'), [rows]);
+  const filtered = useMemo(() => filterFlagRows(rows, filters), [rows, filters]);
+  const rollup = useMemo(
+    () => buildManagerRollup(flags, employees, month), [flags, employees, month],
+  );
+  const divisions = useMemo(() => divisionsInRecord(flags), [flags]);
+  const managers = useMemo(() => managersInRecord(flags, employees), [flags, employees]);
+
+  // Only for the audited stamp's counts and the unassigned list — the crew-day
+  // detail itself is not rendered here.
+  const day = useMemo(
     () => buildDailyAudit({ appData, date, flags, audits }),
     [appData, date, flags, audits],
   );
@@ -236,151 +124,132 @@ export default function DailyAuditView({
     }),
     [appData.performance, audits, today],
   );
-  const eligibility = crewDayFlaggable({
-    date, today,
-    pushedMonths: appData.pushedMonths, archivedDays: appData.archivedDays,
-  });
-  const canFlag = canFlagCrewDay(role);
+  const canMark = canFlagCrewDay(role);
+  const set = (patch: Partial<FlagFilters>) => setFilters(f => ({ ...f, ...patch }));
 
   return (
     <div className="space-y-4">
-      {/* Date stepper */}
-      <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5">
-        <button
-          onClick={() => setDate(addDaysToronto(date, -1))}
-          className="p-2 rounded-lg hover:bg-slate-100" aria-label="Previous day"
-        >
-          <ChevronLeft className="w-5 h-5 text-slate-600" />
-        </button>
-        <div className="text-center min-w-0">
-          <div className="text-sm font-bold text-slate-800">
-            {new Date(`${date}T12:00:00Z`).toLocaleDateString(undefined, {
-              weekday: 'long', month: 'short', day: 'numeric',
-            })}
-          </div>
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-            {audit.totals.crewDays} crew-day{audit.totals.crewDays === 1 ? '' : 's'}
-            {' · '}{audit.totals.cBH} BH / {audit.totals.cAH} AH
-          </div>
+      {/* ── OPEN FLAGS ─────────────────────────────────────────────────── */}
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <Flag className="w-4 h-4 text-amber-600" />
+          <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">
+            {openRows.length === 0
+              ? 'Nothing needs attention'
+              : `${openRows.length} needs attention`}
+          </span>
         </div>
-        <button
-          onClick={() => setDate(addDaysToronto(date, 1))}
-          disabled={date >= today}
-          className="p-2 rounded-lg hover:bg-slate-100 disabled:opacity-30" aria-label="Next day"
-        >
-          <ChevronRight className="w-5 h-5 text-slate-600" />
-        </button>
+        {openRows.length === 0 ? (
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-6 text-center text-[13px] text-slate-500">
+            No open flags. Every crew-day that was queried has been signed off.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {openRows.map(r => (
+              <FlagCard key={r.flag.id} row={r}
+                onOpen={() => onOpenCrewDay(r.flag.date, r.flag.crewId, r.flag.division)} />
+            ))}
+          </div>
+        )}
       </div>
 
-      {!eligibility.allowed && eligibility.reason !== 'future-date' && (
-        <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-[13px] text-slate-600">
-          {eligibility.message}
+      {/* ── PER-MANAGER ROLLUP ─────────────────────────────────────────── */}
+      <div className="rounded-xl border border-slate-200 bg-white">
+        <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+          <span className="text-[11px] font-black uppercase tracking-widest text-slate-500">
+            By manager
+          </span>
+          <input
+            type="month" value={month} onChange={e => setMonth(e.target.value)}
+            className="rounded-lg border border-slate-300 px-2 py-1 text-[12px]"
+          />
         </div>
-      )}
-
-      {/* 1 — WHO ISN'T ACCOUNTED FOR. First, because it is the error that
-          stops being checkable. */}
-      {audit.workedButUnassignedCount > 0 && (
-        <div className="rounded-xl border-2 border-rose-300 bg-rose-50 px-4 py-3">
-          <div className="flex items-center gap-2 text-rose-800">
-            <AlertCircle className="w-4 h-4" />
-            <span className="text-[11px] font-black uppercase tracking-widest">
-              {audit.workedButUnassignedCount} worked but on no crew
-            </span>
+        {rollup.length === 0 ? (
+          <div className="px-4 py-5 text-[13px] text-slate-500">
+            No flags on crew-days in this month.
           </div>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {audit.unassigned.filter(u => u.worked).map(u => (
-              <span key={u.id} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-2 py-1">
-                <span className="text-[13px] font-bold text-slate-800">{u.name}</span>
-                <span className="inline-flex items-center gap-1 text-[11px] font-mono text-rose-700">
-                  <Clock className="w-3 h-3" />{u.hoursWorked}h
-                </span>
-              </span>
-            ))}
-          </div>
-          <div className="mt-2 text-[12px] text-rose-700">
-            They clocked time but appear on no crew and in no crew-day's hours.
-          </div>
-        </div>
-      )}
-
-      {/* 2 — THE CREW-DAYS */}
-      {audit.crews.length === 0 ? (
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-8 text-center text-[13px] text-slate-500">
-          No crew-days with work recorded on this date.
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {audit.crews.map(row => (
-            <CrewCard
-              key={row.crewId}
-              row={row}
-              canFlag={canFlag}
-              canResolveThis={canResolveFlag(role, managedDivision, row.division)}
-              blockedMessage={eligibility.allowed ? undefined : eligibility.message}
-              onFlag={(crewId, reason) => onFlag(date, crewId, reason)}
-              onResolve={onResolve}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Unassigned who did NOT work — context, not an error. */}
-      {audit.unassigned.some(u => !u.worked) && (
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
-          <div className="flex items-center gap-2 text-slate-500">
-            <Users className="w-4 h-4" />
-            <span className="text-[11px] font-black uppercase tracking-widest">
-              Not on a crew, no hours recorded
-            </span>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {audit.unassigned.filter(u => !u.worked).map(u => (
-              <span key={u.id} className="rounded-lg border border-slate-200 px-2 py-1 text-[13px] font-semibold text-slate-600">
-                {u.name}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Mark the date audited */}
-      {canFlag && (
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
-          {audit.audited ? (
-            <div className="text-[13px] text-slate-600">
-              <span className="inline-flex items-center gap-1.5 font-bold text-emerald-700">
-                <Check className="w-4 h-4" /> Audited
-              </span>
-              {' — '}{audit.audited.auditedBy.name}
-              {', '}{new Date(audit.audited.auditedAt).toLocaleString()}
-            </div>
-          ) : (
-            <>
-              <div className="text-[13px] text-slate-600">
-                Been through this day?
-                {audit.totals.flagged > 0 && ` ${audit.totals.flagged} still needs attention.`}
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {rollup.map(r => (
+              <div key={r.managerId} className="px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap">
+                <div className="min-w-0">
+                  <div className="text-[13px] font-bold text-slate-800">{r.managerName}</div>
+                  <div className="text-[11px] text-slate-400">{r.divisions.join(' · ')}</div>
+                </div>
+                <div className="flex items-center gap-3 text-[12px] font-mono">
+                  <span className="text-slate-500">{r.total} total</span>
+                  <span className={r.open > 0 ? 'font-bold text-amber-700' : 'text-slate-400'}>
+                    {r.open} open
+                  </span>
+                  <span className="text-emerald-700">{r.resolved} resolved</span>
+                  {r.avgDaysToResolve !== null && (
+                    <span className="text-slate-400">{r.avgDaysToResolve}d avg</span>
+                  )}
+                </div>
               </div>
-              <button
-                onClick={async () => {
-                  setMarking(true);
-                  await onMarkAudited(date, audit.totals.crewDays, audit.totals.flagged);
-                  setMarking(false);
-                }}
-                disabled={marking}
-                className="rounded-lg bg-slate-800 px-3 py-1.5 text-[12px] font-bold text-white disabled:opacity-40"
-              >
-                {marking ? 'Saving…' : 'Mark audited'}
-              </button>
-            </>
-          )}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </div>
 
-      {/* 3 — THE HISTORY. A missed day is the point. */}
+      {/* ── THE RECORD ─────────────────────────────────────────────────── */}
+      <div className="rounded-xl border border-slate-200 bg-white">
+        <div className="px-4 py-3 border-b border-slate-100">
+          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">
+            All flags ({filtered.length})
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <select value={filters.status} onChange={e => set({ status: e.target.value as FlagFilters['status'] })}
+              className="rounded-lg border border-slate-300 px-2 py-1 text-[12px]">
+              <option value="all">Any status</option>
+              <option value="open">Open</option>
+              <option value="resolved">Resolved</option>
+            </select>
+            <select value={filters.division} onChange={e => set({ division: e.target.value })}
+              className="rounded-lg border border-slate-300 px-2 py-1 text-[12px]">
+              <option value="all">Any division</option>
+              {divisions.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+            <select value={filters.managerId} onChange={e => set({ managerId: e.target.value })}
+              className="rounded-lg border border-slate-300 px-2 py-1 text-[12px]">
+              <option value="all">Any manager</option>
+              {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+            <input type="date" value={filters.from || ''} onChange={e => set({ from: e.target.value })}
+              title="Crew-days from" className="rounded-lg border border-slate-300 px-2 py-1 text-[12px]" />
+            <input type="date" value={filters.to || ''} onChange={e => set({ to: e.target.value })}
+              title="Crew-days to" className="rounded-lg border border-slate-300 px-2 py-1 text-[12px]" />
+            {(filters.from || filters.to || filters.status !== 'all'
+              || filters.division !== 'all' || filters.managerId !== 'all') && (
+              <button
+                onClick={() => setFilters({ status: 'all', division: 'all', managerId: 'all' })}
+                className="rounded-lg px-2 py-1 text-[12px] font-bold text-slate-500"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+        {filtered.length === 0 ? (
+          <div className="px-4 py-8 text-center text-[13px] text-slate-500">
+            {rows.length === 0
+              ? 'No crew-day has been flagged yet.'
+              : 'No flags match these filters.'}
+          </div>
+        ) : (
+          <div className="p-3 space-y-2">
+            {filtered.map(r => (
+              <FlagCard key={r.flag.id} row={r}
+                onOpen={() => onOpenCrewDay(r.flag.date, r.flag.crewId, r.flag.division)} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── AUDITED / NOT AUDITED ──────────────────────────────────────── */}
       <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
         <div className="text-[11px] font-black uppercase tracking-widest text-slate-400 mb-2">
-          Recent weekdays
+          Weekdays audited
         </div>
         <div className="flex flex-wrap gap-1.5">
           {history.map(d => {
@@ -389,8 +258,7 @@ export default function DailyAuditView({
                 : 'bg-slate-50 text-slate-400 border-slate-200';
             return (
               <button
-                key={d.date}
-                onClick={() => setDate(d.date)}
+                key={d.date} onClick={() => setDate(d.date)}
                 title={d.audited ? `Audited by ${d.auditedByName}`
                   : d.noWork ? 'No work recorded' : 'Not audited'}
                 className={`rounded-lg border px-2 py-1 text-[11px] font-bold ${tone} ${d.date === date ? 'ring-2 ring-slate-800' : ''}`}
@@ -404,6 +272,100 @@ export default function DailyAuditView({
         <div className="mt-2 text-[11px] text-slate-400">
           Green audited · red not audited · grey no work recorded. Weekends excluded.
         </div>
+      </div>
+
+      {/* ── THE SELECTED DATE: who isn't accounted for, and sign-off ───── */}
+      <div className="rounded-xl border border-slate-200 bg-white">
+        <div className="px-4 py-2.5 border-b border-slate-100 flex items-center justify-between gap-2">
+          <button onClick={() => setDate(addDaysToronto(date, -1))}
+            className="p-1.5 rounded-lg hover:bg-slate-100" aria-label="Previous day">
+            <ChevronLeft className="w-4 h-4 text-slate-600" />
+          </button>
+          <div className="text-center">
+            <div className="text-[13px] font-bold text-slate-800">{dayLabel(date)}</div>
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              {day.totals.crewDays} crew-day{day.totals.crewDays === 1 ? '' : 's'}
+              {day.totals.flagged > 0 && ` · ${day.totals.flagged} flagged`}
+            </div>
+          </div>
+          <button onClick={() => setDate(addDaysToronto(date, 1))} disabled={date >= today}
+            className="p-1.5 rounded-lg hover:bg-slate-100 disabled:opacity-30" aria-label="Next day">
+            <ChevronRight className="w-4 h-4 text-slate-600" />
+          </button>
+        </div>
+
+        {day.workedButUnassignedCount > 0 && (
+          <div className="m-3 rounded-xl border-2 border-rose-300 bg-rose-50 px-4 py-3">
+            <div className="flex items-center gap-2 text-rose-800">
+              <AlertCircle className="w-4 h-4" />
+              <span className="text-[11px] font-black uppercase tracking-widest">
+                {day.workedButUnassignedCount} worked but on no crew
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {day.unassigned.filter(u => u.worked).map(u => (
+                <span key={u.id} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-2 py-1">
+                  <span className="text-[13px] font-bold text-slate-800">{u.name}</span>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-mono text-rose-700">
+                    <Clock className="w-3 h-3" />{u.hoursWorked}h
+                  </span>
+                </span>
+              ))}
+            </div>
+            <div className="mt-2 text-[12px] text-rose-700">
+              They clocked time but appear on no crew and in no crew-day's hours.
+            </div>
+          </div>
+        )}
+
+        {day.unassigned.some(u => !u.worked) && (
+          <div className="px-4 py-3 border-t border-slate-100">
+            <div className="flex items-center gap-2 text-slate-500">
+              <Users className="w-4 h-4" />
+              <span className="text-[11px] font-black uppercase tracking-widest">
+                Not on a crew, no hours recorded
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {day.unassigned.filter(u => !u.worked).map(u => (
+                <span key={u.id} className="rounded-lg border border-slate-200 px-2 py-1 text-[13px] font-semibold text-slate-600">
+                  {u.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {canMark && (
+          <div className="px-4 py-3 border-t border-slate-100 flex items-center justify-between gap-3 flex-wrap">
+            {day.audited ? (
+              <div className="text-[13px] text-slate-600">
+                <span className="inline-flex items-center gap-1.5 font-bold text-emerald-700">
+                  <Check className="w-4 h-4" /> Audited
+                </span>
+                {' — '}{day.audited.auditedBy.name}
+                {', '}{new Date(day.audited.auditedAt).toLocaleString()}
+              </div>
+            ) : (
+              <>
+                <div className="text-[13px] text-slate-600">
+                  Been through this day on the entry board?
+                </div>
+                <button
+                  onClick={async () => {
+                    setMarking(true);
+                    await onMarkAudited(date, day.totals.crewDays, day.totals.flagged);
+                    setMarking(false);
+                  }}
+                  disabled={marking}
+                  className="rounded-lg bg-slate-800 px-3 py-1.5 text-[12px] font-bold text-white disabled:opacity-40"
+                >
+                  {marking ? 'Saving…' : 'Mark audited'}
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,10 +1,11 @@
-// Renders the daily audit view and asserts what James actually reads.
+// Renders the Daily Audit RECORD and asserts what a review conversation reads.
 //   npm test -- dailyAuditRender
 //
-// Beyond "it doesn't crash": the error this view exists to catch (somebody who
-// clocked hours but is on no crew) has to be visible, the flag controls have to
-// respect who is allowed to use them, and the language has to stay neutral —
-// this is a question about a crew-day, not an accusation.
+// This screen is a record, not a review surface: flagging happens on the daily
+// entry board. So the tests check that the flag action is GONE from here, that
+// open flags lead, that the per-manager rollup attributes correctly, and that
+// the two things worth keeping — the audited weekday history and the
+// clocked-but-unassigned list — are still present.
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createElement as h } from 'react';
@@ -13,11 +14,12 @@ import DailyAuditView from './DailyAuditView';
 import type { AppData, CrewDayFlag, Employee } from '../types';
 
 const TODAY = new Date().toISOString().slice(0, 10);
-const yesterday = (() => {
+const shift = (n: number) => {
   const d = new Date(`${TODAY}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() - 1);
+  d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
-})();
+};
+const yesterday = shift(-1);
 
 const emp = (o: Partial<Employee> & { id: string; name: string }): Employee => ({
   status: 'Active', hasLicense: false, hasClassA: false, hasHeavyMachinery: false,
@@ -25,7 +27,10 @@ const emp = (o: Partial<Employee> & { id: string; name: string }): Employee => (
 } as Employee);
 
 const appData = (o: Partial<AppData> = {}): AppData => ({
-  employees: [emp({ id: 'e1', name: 'Ana' }), emp({ id: 'e2', name: 'Ben' })],
+  employees: [
+    emp({ id: 'e1', name: 'Ana' }), emp({ id: 'e2', name: 'Ben' }),
+    emp({ id: 'm-lawn', name: 'Lena', managedDivision: 'lawn' }),
+  ],
   schedules: {
     [yesterday]: [{
       id: 'crew-1', division: 'Lawn Division', crewNumber: 3,
@@ -37,8 +42,7 @@ const appData = (o: Partial<AppData> = {}): AppData => ({
       'crew-1': {
         division: 'Lawn Division', crewNumber: 3, isAdHoc: false,
         jobs: [{ bh: 12, title: 'Mow Elm St' }],
-        employeeAH: { e1: 8, e2: 8 }, deductions: {},
-        approvalStatus: 'approved',
+        employeeAH: { e1: 8, e2: 8 }, deductions: {}, approvalStatus: 'approved',
       },
     },
   },
@@ -46,47 +50,105 @@ const appData = (o: Partial<AppData> = {}): AppData => ({
   ...o,
 } as unknown as AppData);
 
+const flag = (o: Partial<CrewDayFlag> = {}): CrewDayFlag => ({
+  id: 'f1', date: yesterday, crewId: 'crew-1', crewLabel: 'Lawn Division #3',
+  division: 'Lawn Division', reason: 'Cara has hours but is on no crew.',
+  raisedBy: { email: 'james@x.test', name: 'James' }, raisedAt: Date.now(),
+  status: 'open', previousApprovalStatus: 'approved', ...o,
+});
+
 const render = (o: {
-  data?: AppData; flags?: CrewDayFlag[]; audits?: Record<string, any>;
-  role?: any; managedDivision?: any;
+  data?: AppData; flags?: CrewDayFlag[]; audits?: Record<string, any>; role?: any;
 } = {}) => renderToStaticMarkup(h(DailyAuditView, {
   appData: o.data || appData(),
   flags: o.flags || [],
   audits: o.audits || {},
   role: o.role ?? 'admin',
-  managedDivision: o.managedDivision ?? null,
-  onFlag: async () => true,
-  onResolve: async () => true,
   onMarkAudited: async () => true,
+  onOpenCrewDay: () => {},
 } as any));
 
-const openFlag: CrewDayFlag = {
-  id: 'f1', date: yesterday, crewId: 'crew-1', crewLabel: 'Lawn Division #3',
-  division: 'Lawn Division', reason: 'Cara has hours but is on no crew.',
-  raisedBy: { email: 'james@x.test', name: 'James' }, raisedAt: Date.now(),
-  status: 'open', previousApprovalStatus: 'approved',
-};
-
-console.log('\nThe crew-day is legible');
-test('crew, people, jobs and all four numbers are on the page', () => {
-  const html = render();
-  assert.ok(html.includes('Lawn Division #3'));
-  assert.ok(html.includes('Ana') && html.includes('Ben'));
-  assert.ok(html.includes('Mow Elm St'));
-  assert.ok(html.includes('>12<'), 'BH');
-  assert.ok(html.includes('>16<'), 'AH');
-  assert.ok(html.includes('75%'), 'efficiency');
+console.log('\nThis is a record, not a review surface');
+test('the flag action is GONE — flagging happens on the daily entry board', () => {
+  const html = render({ flags: [flag()] });
+  assert.ok(!html.includes('Flag for review'), 'no flag control here');
+  assert.ok(!html.includes('Sign off'), 'no sign-off control here either');
 });
-test('the view opens on YESTERDAY, which is what the duty is about', () => {
+test('crew-day detail is not duplicated — no job titles, no BH/AH columns', () => {
+  const html = render({ flags: [flag()] });
+  assert.ok(!html.includes('Mow Elm St'), 'the entry board shows the jobs');
+  assert.ok(!html.includes('>Adj<'), 'no efficiency columns');
+});
+
+console.log('\nOpen flags lead');
+test('an open flag appears with its reason and the cost of leaving it', () => {
+  const html = render({ flags: [flag()] });
+  assert.ok(html.includes('1 needs attention'));
+  assert.ok(html.includes('Cara has hours but is on no crew.'));
+  assert.ok(html.includes('Not counting toward efficiency or bonus until signed off.'));
+});
+test('with nothing open, it says so rather than showing an empty box', () => {
   const html = render();
-  const label = new Date(`${yesterday}T12:00:00Z`).toLocaleDateString(undefined, {
-    weekday: 'long', month: 'short', day: 'numeric',
+  assert.ok(html.includes('Nothing needs attention'));
+  assert.ok(html.includes('No crew-day has been flagged yet.'));
+});
+test('a resolved flag shows the answer, not just the question', () => {
+  const html = render({
+    flags: [flag({
+      status: 'resolved', resolvedBy: { email: 'l@x.test', name: 'Lena' },
+      resolvedAt: Date.now(), resolutionNote: 'Cara was lent to #2 — hours are correct.',
+    })],
   });
-  assert.ok(html.includes(label), `expected the header to show ${label}`);
+  assert.ok(html.includes('Signed off'));
+  assert.ok(html.includes('Lena'));
+  assert.ok(html.includes('Cara was lent to #2 — hours are correct.'));
+  assert.ok(html.includes('Nothing needs attention'), 'and it is not in the open list');
 });
 
-console.log('\nTHE ERROR: worked, but on no crew');
-test('somebody who clocked hours off-crew is called out with their hours', () => {
+console.log('\nThe per-manager rollup');
+test('flags are attributed to the accountable manager, with open vs resolved', () => {
+  const thisMonth = TODAY.slice(0, 7);
+  const html = render({
+    flags: [
+      flag({ id: 'a', date: `${thisMonth}-02`, status: 'open' }),
+      flag({ id: 'b', date: `${thisMonth}-03`, status: 'resolved', resolvedAt: Date.now(), resolutionNote: 'ok' }),
+    ],
+  });
+  assert.ok(html.includes('By manager'));
+  assert.ok(html.includes('Lena'));
+  assert.ok(html.includes('2 total'));
+  assert.ok(html.includes('1 open'));
+  assert.ok(html.includes('1 resolved'));
+});
+test('a division with no manager is shown as unattributed, not hidden', () => {
+  const thisMonth = TODAY.slice(0, 7);
+  const html = render({
+    data: appData({ employees: [emp({ id: 'e1', name: 'Ana' })] } as any),
+    flags: [flag({ date: `${thisMonth}-02`, division: 'Large Projects' })],
+  });
+  assert.ok(html.includes('No manager assigned'));
+});
+test('an empty month says so rather than rendering a blank table', () => {
+  assert.ok(render().includes('No flags on crew-days in this month.'));
+});
+
+console.log('\nFilters are offered from real values');
+test('the division and manager dropdowns list only what is in the record', () => {
+  const html = render({ flags: [flag({ division: 'Small Projects' })] });
+  assert.ok(html.includes('Any status'));
+  assert.ok(html.includes('Any division'));
+  assert.ok(html.includes('Any manager'));
+  assert.ok(html.includes('Small Projects'));
+  assert.ok(!html.includes('>Large Projects<'), 'a division with no flags is not offered');
+});
+
+console.log('\nWhat was kept from the old view');
+test('the audited weekday history is still here, with its legend', () => {
+  const html = render();
+  assert.ok(html.includes('Weekdays audited'));
+  assert.ok(html.includes('Weekends excluded'));
+});
+test('the clocked-but-unassigned list is still here — the unverifiable error', () => {
   const html = render({
     data: appData({
       employees: [emp({ id: 'e1', name: 'Ana' }), emp({ id: 'e2', name: 'Ben' }),
@@ -99,55 +161,13 @@ test('somebody who clocked hours off-crew is called out with their hours', () =>
   });
   assert.ok(html.includes('1 worked but on no crew'));
   assert.ok(html.includes('Cara'));
-  assert.ok(html.includes('8h'), 'their hours are shown, not just their name');
+  assert.ok(html.includes('8h'));
 });
-test('an unassigned person with NO hours is listed separately, not as an error', () => {
-  const html = render({
-    data: appData({
-      employees: [emp({ id: 'e1', name: 'Ana' }), emp({ id: 'e2', name: 'Ben' }),
-        emp({ id: 'e3', name: 'Cara' })],
-    } as any),
-  });
-  assert.ok(!html.includes('worked but on no crew'));
-  assert.ok(html.includes('Not on a crew, no hours recorded'));
-  assert.ok(html.includes('Cara'));
-});
-
-console.log('\nFlagging respects who may do it');
-test('an admin sees the flag control', () => {
-  assert.ok(render({ role: 'admin' }).includes('Flag for review'));
-});
-test('a manager does NOT see the flag control — flagging is an admin act', () => {
-  assert.ok(!render({ role: 'manager', managedDivision: 'lawn' }).includes('Flag for review'));
-});
-test('a flagged crew-day shows the question and who asked it', () => {
-  const html = render({ flags: [openFlag] });
-  assert.ok(html.includes('Flagged for review'));
-  assert.ok(html.includes('Cara has hours but is on no crew.'));
-  assert.ok(html.includes('James'));
-});
-test("the OWNING division's manager sees Sign off; another division's does not", () => {
-  const mine = render({ flags: [openFlag], role: 'manager', managedDivision: 'lawn' });
-  assert.ok(mine.includes('Sign off'));
-  const theirs = render({ flags: [openFlag], role: 'manager', managedDivision: 'small' });
-  assert.ok(!theirs.includes('Sign off'));
-  assert.ok(theirs.includes('Lawn Division manager to sign off.'));
-});
-
-console.log('\nA pushed month says so instead of offering a flag');
-test('the flag control is replaced by an explanation, not silently missing', () => {
-  const html = render({
-    data: appData({ pushedMonths: [yesterday.slice(0, 7)] } as any),
-  });
-  assert.ok(!html.includes('Flag for review'));
-  assert.ok(html.includes('read-only'));
-});
-
-console.log('\nThe audited marker and the history');
-test('an unaudited day offers to be marked audited', () => {
+test('marking a date audited is still available to an admin', () => {
   assert.ok(render().includes('Mark audited'));
+  assert.ok(!render({ role: 'manager' }).includes('Mark audited'));
 });
-test('an audited day names who signed it off instead', () => {
+test('an audited date names who signed it off', () => {
   const html = render({
     audits: { [yesterday]: {
       date: yesterday, auditedBy: { email: 'j@x.test', name: 'James' },
@@ -156,17 +176,11 @@ test('an audited day names who signed it off instead', () => {
   });
   assert.ok(!html.includes('Mark audited'));
   assert.ok(html.includes('Audited'));
-  assert.ok(html.includes('James'));
-});
-test('the history legend explains what the colours mean', () => {
-  const html = render();
-  assert.ok(html.includes('Recent weekdays'));
-  assert.ok(html.includes('Weekends excluded'));
 });
 
 console.log('\nLanguage stays neutral');
-test('nothing on the page calls this an error or a violation', () => {
-  const html = render({ flags: [openFlag] });
+test('nothing calls this an error or a violation', () => {
+  const html = render({ flags: [flag()] });
   for (const word of ['violation', 'offence', 'guilty', 'blame', 'fault']) {
     assert.ok(!new RegExp(word, 'i').test(html), `"${word}" must not appear`);
   }
