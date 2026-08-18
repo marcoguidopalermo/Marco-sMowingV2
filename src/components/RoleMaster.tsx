@@ -510,7 +510,7 @@ function DutyEditor({ duty, roles, responsibilities, categoryColors, onSetCatego
       <Field label="Recurrence (how often)">
         <div className="flex gap-2 flex-wrap items-center">
           <select value={rec.kind} onChange={e => setRec({ kind: e.target.value as RoleRecurrence['kind'] })} className="inp w-auto">
-            <option value="weekly">Weekly</option><option value="biweekly">Biweekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option>
+            <option value="weekdays">Every weekday</option><option value="weekly">Weekly</option><option value="biweekly">Biweekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option>
           </select>
           {(rec.kind === 'weekly') && <select value={rec.dayOfWeek ?? 1} onChange={e => setRec({ dayOfWeek: Number(e.target.value) })} className="inp w-auto">{DOW.map((n, i) => <option key={i} value={i}>{n}</option>)}</select>}
           {rec.kind === 'biweekly' && <input type="date" value={rec.anchorDate || ''} onChange={e => setRec({ anchorDate: e.target.value })} className="inp w-auto" title="Anchor date (every 14 days from here)" />}

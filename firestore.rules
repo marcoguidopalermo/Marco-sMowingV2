@@ -102,6 +102,47 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // CREW-DAY FLAGS — a question raised about a crew-day during the daily
+    // audit, and the manager's answer. PERMANENT: a flag and its resolution
+    // stay on the crew-day's record forever, so a year later you can still see
+    // it was queried and why the answer was what it was.
+    //
+    // Kept OUTSIDE artifacts/** for the same reason hoursBank is: that rule
+    // grants full write to every authorized user and its OR-semantics cannot be
+    // narrowed, so "never deleted" would be a UI convention.
+    //
+    // UPDATE is allowed because resolving a flag is an update — but the RAISED
+    // half of the record is immutable here. A resolution can add who signed it
+    // off and what they found; it can never rewrite the question, who asked it,
+    // when, or which crew-day it was about. That is the difference between a
+    // record and a draft.
+    //
+    // WHO may create (admin) and WHO may resolve (the division's manager, or an
+    // admin) is enforced at the app layer — see canFlagCrewDay / canResolveFlag
+    // in lib/crewDayFlags. Rules cannot cheaply resolve a role or a division.
+    // An authorized user bypassing the UI could raise a spurious flag, but they
+    // could not alter or hide a real one, and every flag carries who raised it.
+    match /crewDayFlags/{flagId} {
+      allow read: if isAuthorized() || isSuperAdmin();
+      allow create: if isAuthorized() || isSuperAdmin();
+      allow update: if (isAuthorized() || isSuperAdmin())
+        && request.resource.data.date == resource.data.date
+        && request.resource.data.crewId == resource.data.crewId
+        && request.resource.data.reason == resource.data.reason
+        && request.resource.data.raisedAt == resource.data.raisedAt
+        && request.resource.data.raisedBy.email == resource.data.raisedBy.email;
+      allow delete: if false;
+    }
+
+    // DAILY AUDIT MARKERS — "somebody has been through this date". One doc per
+    // date (the date IS the id). Never deleted: the whole point is that a
+    // MISSED day stays visible rather than being quietly tidied away.
+    match /crewDayAudits/{auditDate} {
+      allow read: if isAuthorized() || isSuperAdmin();
+      allow create, update: if isAuthorized() || isSuperAdmin();
+      allow delete: if false;
+    }
+
     match /hoursBank/{entryId} {
       allow read: if isAuthorized() || isSuperAdmin();
       allow create: if isAuthorized() || isSuperAdmin();

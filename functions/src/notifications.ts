@@ -25,7 +25,12 @@ export type Category =
   // Crew/scheduling messages TO a manager. Today that is a worker reporting
   // they are not on a crew; it is its own category so a manager can mute
   // marketing chatter without muting somebody telling them they are stranded.
-  | "crew";
+  | "crew"
+  // DAILY AUDIT. A crew-day flagged for review goes to the division's manager;
+  // the sign-off goes back to whoever raised it. Its own category because it
+  // carries a consequence (a flagged day stops counting toward pay until it is
+  // resolved) and must not be lost inside general crew chatter.
+  | "audit";
 
 // Global kill switches + per-trigger sub-toggles. Defaults: all ON except the
 // dormant policy sign-off. Enforced SERVER-SIDE here.
@@ -448,11 +453,98 @@ const TEST_SAMPLES: Record<Category, {title: string; body: string; url: string}>
   workorders: {title: "🏠 New work order", body: "Sample work order · a property · HIGH.", url: "/#contracting"},
   leases: {title: "📄 Lease expiry in 60 days", body: "Sample property · Unit 1 · tenant.", url: "/#contracting"},
   fleet: {title: "🚚 Registration expiring in 30 days", body: "Sample fleet unit.", url: "/#mechanic"},
+  audit: {
+    title: "🔍 Crew-day flagged for review — Lawn Division #3",
+    body: "Sample crew-day. It won't count toward efficiency or bonus until it's signed off.",
+    url: "/",
+  },
   policies: {title: "📝 Policy sign-off", body: "Sample policy acknowledgement.", url: "/"},
   storage: {title: "⚠️ Storage warning", body: "Sample — main data document nearing its size limit.", url: "/"},
   marketing: {title: "💬 Sample commented on clip #0058", body: "Sample — trim the intro, the drone shot is the hook.", url: "/#marketing"},
   crew: {title: "🙋 Sample is available", body: "Sample — not on a crew today, available to work.", url: "/#schedule"},
 };
+// ── DAILY AUDIT ────────────────────────────────────────────────────────────
+// A crew-day flagged for review. Recipients are resolved SERVER-SIDE from the
+// crew-day's division, never passed in by the caller: the client says which
+// crew-day it flagged, and the server decides who needs to know. A flagged day
+// stops counting toward efficiency, bonus and month totals until it is signed
+// off, so silence here would strand real money.
+export const pushCrewDayFlagged = onCall({region: REGION}, async (req) => {
+  const email = normEmail(req.auth?.token?.email);
+  if (!email) throw new HttpsError("unauthenticated", "Sign in required.");
+  const date = String(req.data?.date || "");
+  const crewLabel = String(req.data?.crewLabel || "a crew-day");
+  const division = String(req.data?.division || "");
+  const reason = String(req.data?.reason || "").slice(0, 500);
+  if (!date) throw new HttpsError("invalid-argument", "date is required.");
+
+  const emps = await loadEmployees();
+  const active = (e: any): boolean => {
+    const v = String(e.status || "").toLowerCase();
+    return !e.isTestUser && !(v.includes("away") || v.includes("inactive") ||
+      v.includes("archive") || v.includes("terminat"));
+  };
+  const addr = (e: any): string => {
+    const em = empEmail(e);
+    return em && em !== email ? em : "";       // never notify the flagger
+  };
+  // Map the crew-day's division name ("Lawn Division") onto the managedDivision
+  // code an Employee carries ("lawn"). Mirrors divisionNameToCode in
+  // lib/approvalOversight — kept in step by the shape of the strings, since the
+  // functions codebase cannot import src/.
+  const d = division.toLowerCase();
+  const code = d.includes("lawn") ? "lawn"
+    : d.includes("small") ? "small"
+      : d.includes("large") ? "large" : null;
+
+  let recips: string[] = [];
+  if (code) {
+    recips = emps
+      .filter((e) => active(e) &&
+        String(e.managedDivision || "").toLowerCase() === code)
+      .map(addr).filter(Boolean);
+  }
+  // FALLBACK TO ADMIN when the division has no manager, or the crew-day has no
+  // division to route by. An unanswered flag holds a day out of pay, so it must
+  // always reach somebody who can close it.
+  if (recips.length === 0) {
+    recips = emps
+      .filter((e) => active(e) && (e.systemRole === "admin" ||
+        String(e.managedDivision || "").toLowerCase() === "all"))
+      .map(addr).filter(Boolean);
+  }
+  recips = [...new Set(recips)];
+  if (recips.length === 0) return {sent: 0, routedTo: "nobody"};
+
+  await sendNotification(recips, "audit", {
+    // Neutral throughout: a flag is a question about a crew-day, not a finding.
+    title: `Crew-day flagged for review — ${crewLabel}`,
+    body: `${date}: ${reason} It won't count toward efficiency or bonus until it's signed off.`,
+    url: "/",
+  });
+  return {sent: recips.length};
+});
+
+// The sign-off coming back, so the person who raised the flag sees the answer
+// without chasing it.
+export const pushCrewDayFlagResolved = onCall({region: REGION}, async (req) => {
+  const email = normEmail(req.auth?.token?.email);
+  if (!email) throw new HttpsError("unauthenticated", "Sign in required.");
+  const date = String(req.data?.date || "");
+  const crewLabel = String(req.data?.crewLabel || "a crew-day");
+  const note = String(req.data?.note || "").slice(0, 500);
+  const raisedBy = normEmail(req.data?.raisedByEmail);
+  if (!raisedBy) throw new HttpsError("invalid-argument", "raisedByEmail is required.");
+  if (raisedBy === email) return {sent: 0};     // resolved their own flag
+
+  await sendNotification([raisedBy], "audit", {
+    title: `Flag signed off — ${crewLabel}`,
+    body: `${date}: ${note}`,
+    url: "/",
+  });
+  return {sent: 1};
+});
+
 export const sendTestNotification = onCall({region: REGION}, async (req) => {
   const email = normEmail(req.auth?.token?.email);
   if (!email) throw new HttpsError("unauthenticated", "Sign in required.");

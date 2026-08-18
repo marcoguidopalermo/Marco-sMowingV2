@@ -117,6 +117,22 @@ remains is the operational tier and the archive markers.)*
   once, with no incremental verification, on the surfaces where a mistake costs
   pay.
 
+## Not on the main document at all
+
+Some surfaces were deliberately built outside `appData/main`, so they never
+enter this problem in the first place:
+
+| Collection | Why it is top-level |
+|---|---|
+| `hoursBank` | append-only ledger; rules forbid update and delete |
+| `authorizedEmailAudit` | append-only; rules forbid update and delete |
+| `crewDayFlags` | daily-audit flags. Rules forbid delete and make the *raised* half immutable — a resolution can add an answer, never rewrite the question |
+| `crewDayAudits` | one marker per audited date; rules forbid delete, so a missed day stays visible |
+
+The `artifacts/**` rule grants full write to every authorized user and its
+OR-semantics cannot be narrowed, which is why anything needing a real
+append-only or no-delete guarantee lives at the root instead.
+
 ## Database-level protections
 
 - Point-in-time recovery: **enabled**, 7-day window. This is what recovered

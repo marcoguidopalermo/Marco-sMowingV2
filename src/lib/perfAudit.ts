@@ -61,6 +61,9 @@ export const ACTIVITY_TYPE_LABELS: Record<PerfActivityEntry['type'], string> = {
   visit_auto_moved_on_completion: 'Visit moved on completion',
   bh_filled_in_manually: 'BH filled in manually',
   approval_waived: 'Approval waived (no approval needed)',
+  crew_day_flagged: 'Flagged for review',
+  crew_day_flag_resolved: 'Flag resolved',
+  crew_day_audited: 'Day audited',
   chunk_marked_paid: 'Pay chunk marked paid',
   chunk_payment_reversed: 'Pay chunk payment reversed',
   partial_resolved_complete: 'Partial job completed (month-end)',
@@ -111,6 +114,11 @@ export const ACTIVITY_CATEGORY: Record<PerfActivityEntry['type'], 'green' | 'amb
   visit_auto_moved_on_completion: 'amber',
   bh_filled_in_manually: 'amber',
   approval_waived: 'slate',
+  // Amber, not rose: a flag is a question about a crew-day, not a fault
+  // finding. The resolution is green because the loop closed.
+  crew_day_flagged: 'amber',
+  crew_day_flag_resolved: 'green',
+  crew_day_audited: 'slate',
   chunk_marked_paid: 'green',
   chunk_payment_reversed: 'rose',
   performance_month_pushed: 'slate',

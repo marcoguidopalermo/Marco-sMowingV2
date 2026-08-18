@@ -23,6 +23,8 @@ export {
   pushRepairAssigned,
   // A worker with no crew today telling their manager they are available.
   pushAvailableForWork,
+  pushCrewDayFlagged,
+  pushCrewDayFlagResolved,
   sendTestNotification,
   onWorkOrderWrite,
   // Marketing: comments (clips, links, to-dos), post-queue additions and

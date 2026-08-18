@@ -750,6 +750,9 @@ export type PerfActivityType =
   | 'visit_auto_moved_on_completion'
   | 'bh_filled_in_manually'
   | 'approval_waived'
+  | 'crew_day_flagged'
+  | 'crew_day_flag_resolved'
+  | 'crew_day_audited'
   | 'chunk_marked_paid'
   | 'chunk_payment_reversed'
   | 'performance_month_pushed'
@@ -891,6 +894,71 @@ export interface MultiDayJob {
   // Void metadata (resolvedKind === 'voided'). The uncredited remainder is
   // closed; credited BH on prior days is untouched.
   voidedRemainder?: { bh: number; reason: string; byEmail: string; byName: string; at: number };
+}
+
+// ── CREW-DAY FLAG (daily audit) ────────────────────────────────────────────
+// A flag is LIVE STATE with a resolution loop, not history. "Is this crew-day
+// currently flagged?" must be answerable by reading one record, not by
+// reconstructing it from an append-only log — which is why this exists
+// alongside logPerfActivity rather than inside it. Both are written on every
+// flag and every resolution; they answer different questions.
+//
+// Own subcollection crewDayFlags/{id} — never in the main doc, and NEVER
+// deleted: the flag and its resolution stay on the crew-day's record
+// permanently, so a year later you can still see it was queried and why the
+// answer was what it was.
+//
+// CONSEQUENCE: raising a flag UNAPPROVES the crew-day, so it stops counting
+// toward efficiency, bonus and month totals until somebody signs it off. That
+// is what gives the audit teeth. It changes approval STATE only — no BH, AH,
+// deduction or pay number is ever touched by flagging or resolving.
+//
+// Language is deliberately neutral throughout: "flagged for review", "needs
+// attention", "resolved". A flag is a question, not an accusation.
+export interface CrewDayFlag {
+  id: string;                    // `flag-<ms>-<rand>`
+  date: string;                  // YYYY-MM-DD — the crew-day flagged
+  crewId: string;
+  crewLabel: string;             // "Lawn Division #3", denormalized for lists
+  division: string;              // PerformanceLog.division, for manager routing
+  // WHY. Required at the point of flagging — a flag with no reason is just an
+  // unapproval, and the manager receiving it has nothing to act on.
+  reason: string;
+  raisedBy: { email: string; name: string };
+  raisedAt: number;
+  status: 'open' | 'resolved';
+  // The approval state the crew-day held BEFORE the flag, so resolving can put
+  // it back rather than inventing one. A waived day returns to waived: waived
+  // is excluded from bonus by construction, and silently converting it to
+  // approved would change what the day counts for — a pay consequence a flag
+  // must never have.
+  previousApprovalStatus?: 'pending' | 'approved' | 'waived';
+  // RESOLUTION. The note is required too: a manager may resolve by EXPLAINING
+  // ("this is correct because the second crew arrived at noon") as well as by
+  // changing something. An answer is the point; a change is one kind of answer.
+  resolvedBy?: { email: string; name: string };
+  resolvedAt?: number;
+  resolutionNote?: string;
+}
+
+// ── CREW-DAY AUDIT MARKER ──────────────────────────────────────────────────
+// "James has been through this date." One record per audited DATE (not per
+// crew): he audits a day as a whole, and the point of the marker is that a
+// MISSED day is visible rather than silently skipped.
+//
+// Own subcollection crewDayAudits/{date}. Deliberately separate from
+// approvalStatus: auditing is a review pass, approval is a pay gate, and
+// conflating them would make one imply the other.
+export interface CrewDayAudit {
+  date: string;                  // YYYY-MM-DD, also the document id
+  auditedBy: { email: string; name: string };
+  auditedAt: number;
+  // What the day looked like when it was signed off — so the history can say
+  // "8 crew-days, 2 flagged" without re-deriving it from a month that may
+  // since have been pushed to a sheet.
+  crewDayCount: number;
+  flaggedCount: number;
+  note?: string;
 }
 
 export interface PerformanceLog {
@@ -2008,7 +2076,12 @@ export interface BulletinPost {
 // unbounded enters the 1 MiB-capped appData doc. Terminal instances are
 // retained forever as the accountability record.
 
-export type RoleRecurrenceKind = 'weekly' | 'biweekly' | 'monthly' | 'yearly';
+// 'weekdays' fires every Mon–Fri. Added for duties that are genuinely daily
+// work rather than a weekly checkpoint — the daily crew-day audit, where a
+// day skipped is a day that can no longer be verified. Deliberately Mon–Fri
+// rather than all seven: a weekend with no audit is not a gap, and generating
+// an instance nobody is expected to do would train people to ignore overdue.
+export type RoleRecurrenceKind = 'weekdays' | 'weekly' | 'biweekly' | 'monthly' | 'yearly';
 export interface RoleRecurrence {
   kind: RoleRecurrenceKind;
   // weekly / biweekly: 0=Sun..6=Sat.

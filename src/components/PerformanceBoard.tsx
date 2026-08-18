@@ -3,12 +3,13 @@ import type { Dispatch, SetStateAction } from 'react';
 import {
   TrendingUp, CalendarDays, BarChart, Save, Calendar as CalendarIcon,
   Target, FileSignature, Map, Plus, Clock, X,
-  Filter, Award, Truck, Users, CheckCircle, Unlock, Link2, AlertTriangle, RefreshCw, Trash2, MoreVertical, Split as SplitIcon, ChevronLeft, ChevronRight, X as XIcon, Ban, Archive
+  Filter, Award, Truck, Users, CheckCircle, Unlock, Link2, AlertTriangle, RefreshCw, Trash2, MoreVertical, Split as SplitIcon, ChevronLeft, ChevronRight, X as XIcon, Ban, Archive,
+  ShieldCheck, Flag,
 } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { functions, db, appId } from '../lib/firebase';
-import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole, JobberBhConflict, BonusPayoutRecord, BonusExcludeReason } from '../types';
+import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole, JobberBhConflict, BonusPayoutRecord, BonusExcludeReason, CrewDayFlag, CrewDayAudit, ManagedDivision } from '../types';
 import { logPerfActivity } from '../lib/perfAudit';
 import { monthsPresent, monthOfDate, monthSettlementStatus } from '../lib/performanceMonths';
 import { scanBlockingPartialJobs, monthResolutionSummary, BlockingPartialJob, totalBelowCredited, creditedBHOf } from '../lib/multiDayResolution';
@@ -17,6 +18,7 @@ import { scanOutstandingCrewDays, groupOutstandingByDivision, divisionNameToCode
 import CompletionReviewModal from './CompletionReviewModal';
 import AHSplitModal from './AHSplitModal';
 import SplitBHModal from './SplitBHModal';
+import DailyAuditView from './DailyAuditView';
 import PerformanceActivityLog from './PerformanceActivityLog';
 import TrendsPage from './TrendsPage';
 import Stamp from './Stamp';
@@ -125,6 +127,14 @@ interface PerformanceBoardProps {
   saveVisitBHSplits: (
     next: AppData['visitBHSplits'], baseline: AppData['visitBHSplits'],
   ) => Promise<boolean>;
+  // Daily audit — see DailyAuditView. Flags are live state in their own
+  // top-level collection, not part of appData.
+  crewDayFlags: CrewDayFlag[];
+  crewDayAudits: Record<string, CrewDayAudit>;
+  managedDivision: ManagedDivision | null | undefined;
+  onFlagCrewDay: (date: string, crewId: string, reason: string) => Promise<boolean>;
+  onResolveCrewDayFlag: (flagId: string, note: string) => Promise<boolean>;
+  onMarkDateAudited: (date: string, crewDays: number, flagged: number) => Promise<boolean>;
   canMarkMultiDay: boolean;
   canOverrideJobType: boolean;
   defaultDivisionFilter: 'all' | 'lawn' | 'small' | 'large';
@@ -226,6 +236,12 @@ export default function PerformanceBoard({
   appData,
   syncToCloud,
   saveVisitBHSplits,
+  crewDayFlags,
+  crewDayAudits,
+  managedDivision,
+  onFlagCrewDay,
+  onResolveCrewDayFlag,
+  onMarkDateAudited,
   canMarkMultiDay,
   canOverrideJobType,
   defaultDivisionFilter,
@@ -397,6 +413,12 @@ export default function PerformanceBoard({
   // position at click time so bottom-of-list rows flip the menu upward
   // instead of clipping below the viewport.
   const [rowMenuDir, setRowMenuDir] = useState<'down' | 'up'>('down');
+  // Open flags across every date — the tab badge. Counted here rather than in
+  // the audit view so the number is visible without opening the tab.
+  const openFlagCount = useMemo(
+    () => (crewDayFlags || []).filter(f => f.status === 'open').length,
+    [crewDayFlags],
+  );
   const [shiftPickerCtx, setShiftPickerCtx] = useState<{
     sourceCrewId: string;
     sourceJobIdx: number;
@@ -1396,13 +1418,27 @@ export default function PerformanceBoard({
           {(isAdmin || isManager) && (
             <button onClick={() => setPerfTab('trends')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${perfTab === 'trends' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}><TrendingUp className="w-4 h-4" /> Trends</button>
           )}
+          {(isAdmin || isManager) && (
+            <button onClick={() => setPerfTab('audit')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${perfTab === 'audit' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}><ShieldCheck className="w-4 h-4" /> Daily Audit{openFlagCount > 0 ? ` (${openFlagCount})` : ''}</button>
+          )}
           {can('canViewPerfActivityLog', currentUserRole) && (
             <button onClick={() => setPerfTab('activity')} className={`flex items-center gap-2 px-4 py-1.5 text-sm font-bold rounded-md ${perfTab === 'activity' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-700'}`}><Clock className="w-4 h-4" /> Activity Log</button>
           )}
         </div>
       </div>
 
-      {perfTab === 'activity' ? (
+      {perfTab === 'audit' ? (
+        <DailyAuditView
+          appData={appData}
+          flags={crewDayFlags}
+          audits={crewDayAudits}
+          role={currentUserRole}
+          managedDivision={managedDivision}
+          onFlag={onFlagCrewDay}
+          onResolve={onResolveCrewDayFlag}
+          onMarkAudited={onMarkDateAudited}
+        />
+      ) : perfTab === 'activity' ? (
         <PerformanceActivityLog setPerfTab={setPerfTab} setPerfDate={setPerfDate} showToastMsg={showToastMsg} />
       ) : perfTab === 'trends' ? (
         <TrendsPage
@@ -1587,6 +1623,18 @@ export default function PerformanceBoard({
             if (outstanding.length === 0) return null;
             const byDiv = groupOutstandingByDivision(outstanding);
             const dayCount = new Set(outstanding.map(o => o.date)).size;
+            // A FLAGGED crew-day is unapproved (raising a flag unapproves it),
+            // so it is already in this list. It reads differently because the
+            // action differs: an ordinary outstanding day needs approving, a
+            // flagged one needs a manager to answer a question first.
+            // A plain record, not a Map: lucide-react's `Map` icon is imported
+            // into this file and shadows the global.
+            const flagByKey: Record<string, CrewDayFlag> = {};
+            for (const f of (crewDayFlags || [])) {
+              if (f.status === 'open') flagByKey[`${f.date}|${f.crewId}`] = f;
+            }
+            const flaggedCount = outstanding
+              .filter(o => !!flagByKey[`${o.date}|${o.crewId}`]).length;
             return (
               <div className="mb-4 bg-rose-50 border border-rose-300 rounded-xl px-4 py-3">
                 <div className="flex items-center gap-2 text-sm text-rose-900 mb-2">
@@ -1594,6 +1642,13 @@ export default function PerformanceBoard({
                   <span className="font-bold">{outstanding.length} crew-day{outstanding.length === 1 ? '' : 's'} outstanding</span>
                   <span className="text-rose-700">across {dayCount} day{dayCount === 1 ? '' : 's'} — not yet approved or waived. Click one to open it.</span>
                 </div>
+                {flaggedCount > 0 && (
+                  <div className="flex items-center gap-2 text-[12px] text-amber-800 mb-2">
+                    <Flag className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    <span className="font-bold">{flaggedCount} flagged for review</span>
+                    <span className="text-amber-700">— a question was raised on the daily audit. Sign it off to put the day back.</span>
+                  </div>
+                )}
                 {byDiv.length > 1 && (
                   <div className="flex flex-wrap gap-2 mb-2">
                     {byDiv.map(d => (
@@ -1604,17 +1659,25 @@ export default function PerformanceBoard({
                   </div>
                 )}
                 <div className="flex flex-wrap gap-2">
-                  {outstanding.map(o => (
-                    <button
-                      key={`${o.date}|${o.crewId}`}
-                      type="button"
-                      onClick={() => goToOutstanding(o)}
-                      title={`Open ${o.crewLabel} on ${o.date} to approve or waive`}
-                      className="text-[11px] font-bold bg-white border border-rose-200 text-rose-800 px-2.5 py-1 rounded-full hover:bg-rose-100 hover:border-rose-400 cursor-pointer"
-                    >
-                      {new Date(`${o.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · {o.crewLabel}
-                    </button>
-                  ))}
+                  {outstanding.map(o => {
+                    const flag = flagByKey[`${o.date}|${o.crewId}`];
+                    return (
+                      <button
+                        key={`${o.date}|${o.crewId}`}
+                        type="button"
+                        onClick={() => goToOutstanding(o)}
+                        title={flag
+                          ? `Flagged for review by ${flag.raisedBy.name}: ${flag.reason}`
+                          : `Open ${o.crewLabel} on ${o.date} to approve or waive`}
+                        className={`text-[11px] font-bold px-2.5 py-1 rounded-full cursor-pointer border ${flag
+                          ? 'bg-amber-100 border-amber-400 text-amber-900 hover:bg-amber-200'
+                          : 'bg-white border-rose-200 text-rose-800 hover:bg-rose-100 hover:border-rose-400'}`}
+                      >
+                        {flag && <Flag className="w-3 h-3 inline mr-1 -mt-0.5" />}
+                        {new Date(`${o.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · {o.crewLabel}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             );

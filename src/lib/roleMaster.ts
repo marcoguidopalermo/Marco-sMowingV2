@@ -56,7 +56,14 @@ export function computeOccurrences(
   const toMs = dateToMs(toDate);
   if (!(fromMs <= toMs)) return out;
 
-  if (rec.kind === 'weekly' || rec.kind === 'biweekly') {
+  if (rec.kind === 'weekdays') {
+    // Mon–Fri. dayOfWeek is ignored: the whole point is "every working day".
+    for (let ms = fromMs; ms <= toMs; ms += MS_DAY) {
+      const d = msToDate(ms);
+      const dow = dowOf(d);
+      if (dow >= 1 && dow <= 5) out.push(d);
+    }
+  } else if (rec.kind === 'weekly' || rec.kind === 'biweekly') {
     if (rec.kind === 'weekly') {
       const target = rec.dayOfWeek ?? 1;
       for (let ms = fromMs; ms <= toMs; ms += MS_DAY) {
@@ -223,6 +230,7 @@ export function dutySeason(duty: RoleMasterDuty): RoleSeason | null {
 // Duration is described separately by describeDuration().
 export function describeRecurrence(duty: RoleMasterDuty): string {
   const r = duty.recurrence;
+  if (r.kind === 'weekdays') return 'Every weekday · Mon–Fri';
   if (r.kind === 'weekly') return `Weekly · ${DOW_NAMES[r.dayOfWeek ?? 1]}`;
   if (r.kind === 'biweekly') return `Biweekly${r.anchorDate ? ` · from ${r.anchorDate}` : ''}`;
   if (r.kind === 'monthly') return `Monthly · ${r.dayOfMonth === 'last' ? 'last day' : `day ${r.dayOfMonth ?? 1}`}`;

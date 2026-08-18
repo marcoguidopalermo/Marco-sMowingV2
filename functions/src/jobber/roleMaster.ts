@@ -13,7 +13,7 @@ const HORIZON_DAYS = 31;
 const MISSED_AFTER_DAYS = 14;
 
 type Recurrence = {
-  kind: "weekly" | "biweekly" | "monthly" | "yearly";
+  kind: "weekdays" | "weekly" | "biweekly" | "monthly" | "yearly";
   dayOfWeek?: number;
   anchorDate?: string;
   dayOfMonth?: number | "last";
@@ -39,7 +39,14 @@ function computeOccurrences(rec: Recurrence, fromDate: string, toDate: string): 
   const fromMs = dateToMs(fromDate);
   const toMs = dateToMs(toDate);
   if (!(fromMs <= toMs)) return out;
-  if (rec.kind === "weekly") {
+  if (rec.kind === "weekdays") {
+    // Mon-Fri. Mirrors the 'weekdays' branch in src/lib/roleMaster.ts.
+    for (let ms = fromMs; ms <= toMs; ms += MS_DAY) {
+      const d = msToDate(ms);
+      const dow = dowOf(d);
+      if (dow >= 1 && dow <= 5) out.push(d);
+    }
+  } else if (rec.kind === "weekly") {
     const target = rec.dayOfWeek ?? 1;
     for (let ms = fromMs; ms <= toMs; ms += MS_DAY) {
       const d = msToDate(ms);

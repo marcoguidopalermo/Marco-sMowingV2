@@ -28,7 +28,8 @@ import {
   CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract,
   MarketingContentItem, MarketingShot, MarketingLink,
   MarketingFeedbackEntry, MarketingClipThread, MarketingClipStatus,
-  MarketingPostQueueEntry, MarketingTodo, HoursBankEntry
+  MarketingPostQueueEntry, MarketingTodo, HoursBankEntry,
+  CrewDayFlag, CrewDayAudit,
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
@@ -126,6 +127,10 @@ import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
 import { computeRosterUpdate } from './lib/rosterWrite';
+import {
+  applyFlagToLog, applyResolutionToLog, canFlagCrewDay, canResolveFlag,
+  crewDayFlaggable, noteIsUsable, openFlagFor,
+} from './lib/crewDayFlags';
 import { applyKeyedMapUpdate, computeKeyedMapUpdate } from './lib/keyedMapWrite';
 import { nextUnusedColorKey, nextPersonColorKey } from './lib/roleCategories';
 import { callGeminiWithRetry } from './lib/gemini';
@@ -311,6 +316,17 @@ export default function App() {
   // each value is a $1,000 payout and its paid/unpaid stamp. Five call sites
   // changed one chunk and rewrote the rest.
   const serverMechanicPayChunksRef = useRef<Record<string, unknown> | null>(null);
+  // DAILY AUDIT — crew-day flags and the per-date audited markers. Both live in
+  // TOP-LEVEL collections (outside artifacts/**) so their firestore rules can
+  // forbid deletion outright: a flag, its answer, and the record of which days
+  // were reviewed are permanent. Under artifacts/** the blanket rule grants
+  // full write to every authorized user and cannot be narrowed.
+  //
+  // Held in component state rather than on appData: nothing in the pay or
+  // performance model reads them, and putting them on appData would put them
+  // in the path of every whole-document save.
+  const [crewDayFlags, setCrewDayFlags] = useState<CrewDayFlag[]>([]);
+  const [crewDayAudits, setCrewDayAudits] = useState<Record<string, CrewDayAudit>>({});
   // Has this session ever received appData/main? A database does not
   // un-install itself, so once this is true the seed branch must never fire
   // however a later snapshot reports the document. See that branch.
@@ -1849,7 +1865,20 @@ export default function App() {
       subHoursBankRef.current = map;
       setAppData((prev) => ({ ...prev, hoursBank: map }));
     }, (err) => { console.error('hoursBank listen error:', err); });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); m8(); hb1(); };
+    // Crew-day flags — live state with a resolution loop, so this listens for
+    // updates too (a resolution is an update), not just creations.
+    const cf1 = onSnapshot(collection(db, 'crewDayFlags'), (snap) => {
+      const list: CrewDayFlag[] = [];
+      snap.forEach((d) => { const v = d.data() as CrewDayFlag; if (v && v.id) list.push(v); });
+      setCrewDayFlags(list);
+    }, (err) => { console.error('crewDayFlags listen error:', err); });
+    // Audited markers — one doc per date, the date being the id.
+    const ca1 = onSnapshot(collection(db, 'crewDayAudits'), (snap) => {
+      const map: Record<string, CrewDayAudit> = {};
+      snap.forEach((d) => { const v = d.data() as CrewDayAudit; if (v && v.date) map[v.date] = v; });
+      setCrewDayAudits(map);
+    }, (err) => { console.error('crewDayAudits listen error:', err); });
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); m8(); hb1(); cf1(); ca1(); };
   }, [user]);
 
   useEffect(() => {
@@ -3395,6 +3424,213 @@ export default function App() {
   // a whole array the admin's screen happened to hold: two admins editing at
   // once both get their changes, and neither wipes the other's. Each add and
   // each removal is audited individually to its own append-only collection.
+  // ── DAILY AUDIT: FLAG / RESOLVE / MARK AUDITED ───────────────────────────
+  // James audits yesterday's crew-days daily, because whether a worker was
+  // actually on a crew is only verifiable while it is fresh.
+  //
+  // Every one of these moves approval STATE and writes a record. None of them
+  // reads or writes a BH, AH, deduction or pay number — see lib/crewDayFlags,
+  // where the two transitions live and are tested for exactly that.
+
+  // Write one crew-day back into performance, merging per-crew so a flag can
+  // never clobber another crew or another date. Mirrors onPersistCrewDay.
+  const persistCrewDayLog = async (
+    date: string, crewId: string, log: PerformanceLog,
+  ): Promise<boolean> => {
+    const newPerf = { ...appData.performance };
+    newPerf[date] = { ...(newPerf[date] || {}), [crewId]: log };
+    // Keep the open board in step when it is showing the same date.
+    if (date === perfDate) setDailyLogs(prev => ({ ...prev, [crewId]: log }));
+    return (await syncToCloud({ ...appData, performance: newPerf })) !== false;
+  };
+
+  // RAISE A FLAG. Unapproves the crew-day (so it stops counting toward
+  // efficiency, bonus and month totals), records the question permanently, and
+  // tells the division's manager.
+  const raiseCrewDayFlag = async (
+    date: string, crewId: string, reason: string,
+  ): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!canFlagCrewDay(effectiveRole)) { showToastMsg(PERMISSION_DENIED); return false; }
+    if (!noteIsUsable(reason)) {
+      showToastMsg('Add a note saying what the manager should look at.');
+      return false;
+    }
+    const eligibility = crewDayFlaggable({
+      date, today: formatTodayInToronto(),
+      pushedMonths: appData.pushedMonths, archivedDays: appData.archivedDays,
+    });
+    if (!eligibility.allowed) { showToastMsg(eligibility.message || 'That day cannot be flagged.'); return false; }
+    const log = (appData.performance || {})[date]?.[crewId];
+    if (!log) { showToastMsg('That crew-day no longer exists.'); return false; }
+    if (openFlagFor(crewDayFlags, date, crewId)) {
+      showToastMsg('That crew-day is already flagged for review.');
+      return false;
+    }
+
+    const now = Date.now();
+    const flag: CrewDayFlag = {
+      id: `flag-${now}-${Math.random().toString(36).slice(2, 7)}`,
+      date,
+      crewId,
+      crewLabel: `${log.division || 'Unassigned'} #${log.crewNumber ?? 0}`,
+      division: log.division || 'Unassigned',
+      reason: reason.trim(),
+      raisedBy: { email: displayEmail, name: displayName || displayEmail },
+      raisedAt: now,
+      status: 'open',
+      // Remembered so resolving can put the day back where it was rather than
+      // inventing a state — a waived day must return to waived.
+      previousApprovalStatus: (log.approvalStatus || 'pending') as CrewDayFlag['previousApprovalStatus'],
+    };
+
+    // The RECORD first: if the unapproval landed and the flag did not, the day
+    // would be silently unapproved with nothing saying why.
+    try {
+      await setDoc(doc(collection(db, 'crewDayFlags'), flag.id), flag);
+    } catch (err: any) {
+      console.error('crew-day flag write failed', err);
+      showToastMsg(`Could not flag that day: ${err?.message || String(err)}`);
+      return false;
+    }
+    const ok = await persistCrewDayLog(date, crewId, applyFlagToLog(log));
+    if (!ok) {
+      showToastMsg('Flag saved, but the day could not be unapproved — try again.');
+      return false;
+    }
+
+    // History as well as state: they answer different questions.
+    logPerfActivity({
+      type: 'crew_day_flagged',
+      targetDate: date,
+      crewId,
+      crewLabel: flag.crewLabel,
+      userId: user?.uid || displayEmail,
+      userName: displayName,
+      userRole: effectiveRole,
+      reasonNote: flag.reason,
+    });
+    // Non-fatal: a failed push must not make a saved flag look unsaved.
+    try {
+      await httpsCallable(functions, 'pushCrewDayFlagged')({
+        date, crewId, crewLabel: flag.crewLabel, division: flag.division, reason: flag.reason,
+      });
+    } catch (err) {
+      console.error('crew-day flag push failed', err);
+      showToastMsg('Flagged — but the manager could not be notified automatically.');
+      return true;
+    }
+    showToastMsg(`Flagged for review — ${flag.crewLabel} manager notified.`);
+    return true;
+  };
+
+  // RESOLVE. Signing off puts the day back and answers the question, then tells
+  // the person who raised it so they see the response without chasing it.
+  const resolveCrewDayFlag = async (
+    flagId: string, note: string,
+  ): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    const flag = crewDayFlags.find(f => f.id === flagId);
+    if (!flag) { showToastMsg('That flag no longer exists.'); return false; }
+    if (flag.status !== 'open') { showToastMsg('That flag is already resolved.'); return false; }
+    if (!canResolveFlag(effectiveRole, currentUserEmployee?.managedDivision, flag.division)) {
+      showToastMsg(`Only the ${flag.division} manager (or an admin) can sign this off.`);
+      return false;
+    }
+    if (!noteIsUsable(note)) {
+      showToastMsg('Add a note saying what you found — a change, or why it is correct.');
+      return false;
+    }
+    const log = (appData.performance || {})[flag.date]?.[flag.crewId];
+    if (!log) { showToastMsg('That crew-day no longer exists.'); return false; }
+
+    const now = Date.now();
+    const resolver = { email: displayEmail, name: displayName || displayEmail };
+    const resolved: CrewDayFlag = {
+      ...flag,
+      status: 'resolved',
+      resolvedBy: resolver,
+      resolvedAt: now,
+      resolutionNote: note.trim(),
+    };
+    try {
+      await setDoc(doc(collection(db, 'crewDayFlags'), flag.id), resolved);
+    } catch (err: any) {
+      console.error('crew-day flag resolution write failed', err);
+      showToastMsg(`Could not sign that off: ${err?.message || String(err)}`);
+      return false;
+    }
+    const ok = await persistCrewDayLog(
+      flag.date, flag.crewId,
+      applyResolutionToLog(log, flag, resolver, new Date(now).toISOString()),
+    );
+    if (!ok) {
+      showToastMsg('Signed off, but the day could not be re-approved — try again.');
+      return false;
+    }
+
+    logPerfActivity({
+      type: 'crew_day_flag_resolved',
+      targetDate: flag.date,
+      crewId: flag.crewId,
+      crewLabel: flag.crewLabel,
+      userId: user?.uid || displayEmail,
+      userName: displayName,
+      userRole: effectiveRole,
+      reasonNote: resolved.resolutionNote,
+    });
+    try {
+      await httpsCallable(functions, 'pushCrewDayFlagResolved')({
+        date: flag.date, crewLabel: flag.crewLabel,
+        raisedByEmail: flag.raisedBy.email, note: resolved.resolutionNote,
+      });
+    } catch (err) {
+      console.error('crew-day resolution push failed', err);
+      showToastMsg('Signed off — but the flagger could not be notified automatically.');
+      return true;
+    }
+    showToastMsg(`Signed off — ${flag.raisedBy.name} notified.`);
+    return true;
+  };
+
+  // MARK A DATE AUDITED. Deliberately separate from approval: auditing is a
+  // review pass, approval is a pay gate, and conflating them would make one
+  // imply the other. The counts are stamped so the history can report what the
+  // day looked like even after its month is pushed to a sheet.
+  const markDateAudited = async (
+    date: string, crewDayCount: number, flaggedCount: number, note?: string,
+  ): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!canFlagCrewDay(effectiveRole)) { showToastMsg(PERMISSION_DENIED); return false; }
+    const record: CrewDayAudit = {
+      date,
+      auditedBy: { email: displayEmail, name: displayName || displayEmail },
+      auditedAt: Date.now(),
+      crewDayCount,
+      flaggedCount,
+      ...(note && note.trim() ? { note: note.trim() } : {}),
+    };
+    try {
+      await setDoc(doc(collection(db, 'crewDayAudits'), date), record);
+    } catch (err: any) {
+      console.error('crew-day audit marker write failed', err);
+      showToastMsg(`Could not mark that day audited: ${err?.message || String(err)}`);
+      return false;
+    }
+    logPerfActivity({
+      type: 'crew_day_audited',
+      targetDate: date,
+      crewId: 'daily-audit',
+      crewLabel: `${crewDayCount} crew-day${crewDayCount === 1 ? '' : 's'}`,
+      userId: user?.uid || displayEmail,
+      userName: displayName,
+      userRole: effectiveRole,
+      reasonNote: flaggedCount > 0 ? `${flaggedCount} flagged for review` : 'nothing flagged',
+    });
+    showToastMsg(`${date} marked audited.`);
+    return true;
+  };
+
   // KEYED-MAP EDITS — the only path that may change settings, visitBHSplits or
   // mechanicPayChunks.
   //
@@ -5928,6 +6164,12 @@ export default function App() {
   const renderPerformanceBoard = () => (
     <PerformanceBoard
       saveVisitBHSplits={saveVisitBHSplits}
+      crewDayFlags={crewDayFlags}
+      crewDayAudits={crewDayAudits}
+      managedDivision={currentUserEmployee?.managedDivision}
+      onFlagCrewDay={raiseCrewDayFlag}
+      onResolveCrewDayFlag={resolveCrewDayFlag}
+      onMarkDateAudited={markDateAudited}
       performance={appData.performance}
       jobberBhConflicts={appData.jobberBhConflicts || {}}
       onApplyJobberBhConflict={applyJobberBhConflict}

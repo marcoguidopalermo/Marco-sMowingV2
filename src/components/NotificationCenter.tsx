@@ -12,7 +12,7 @@ const norm = (e: string) => (e || '').trim().toLowerCase();
 const K = (email: string) => encodeURIComponent(norm(email));
 const PUB = (name: string) => collection(db, 'artifacts', appId, 'public', 'data', name);
 
-export type NCategory = 'announcements' | 'repairs' | 'workorders' | 'leases' | 'fleet' | 'policies' | 'storage' | 'marketing';
+export type NCategory = 'announcements' | 'repairs' | 'workorders' | 'leases' | 'fleet' | 'policies' | 'storage' | 'marketing' | 'crew' | 'audit';
 export const NOTIF_CATEGORIES: { key: NCategory; label: string; dormant?: boolean; audience?: string }[] = [
   { key: 'announcements', label: 'Announcements' },
   { key: 'repairs', label: 'Repairs' },
@@ -22,6 +22,14 @@ export const NOTIF_CATEGORIES: { key: NCategory; label: string; dormant?: boolea
   // Its own category so the marketing board can be muted on its own — it is
   // chatty by nature (comments) and only concerns the people working it.
   { key: 'marketing', label: 'Marketing', audience: 'Marketing board' },
+  // Crew/scheduling messages TO a manager — today, a worker reporting they are
+  // not on a crew. Its own category so a manager can mute marketing chatter
+  // without muting somebody telling them they are stranded.
+  { key: 'crew', label: 'Crew messages', audience: "The worker's division manager" },
+  // Daily audit: a crew-day flagged for review, and the sign-off coming back.
+  // Separate from 'crew' because the audience is the other way round — these
+  // go to the division's manager and back to whoever raised the flag.
+  { key: 'audit', label: 'Crew-day review', audience: "The division's manager, and the flag's author" },
   { key: 'storage', label: 'Storage (super admin)', audience: 'Super admin only' },
   { key: 'policies', label: 'Policy sign-off', dormant: true },
 ];
@@ -29,7 +37,7 @@ interface CentreItem { id: string; category: NCategory; title: string; body: str
 interface Prefs { master?: boolean; categories?: Partial<Record<NCategory, boolean>> }
 
 const ago = (ms: number) => { const s = (Date.now() - ms) / 1000; if (s < 60) return 'now'; if (s < 3600) return `${Math.floor(s / 60)}m`; if (s < 86400) return `${Math.floor(s / 3600)}h`; return `${Math.floor(s / 86400)}d`; };
-const CHIP: Record<NCategory, string> = { announcements: '#B7950B', repairs: '#C0392B', workorders: '#2E4053', leases: '#8E44AD', fleet: '#E67E22', policies: '#7F8C8D', storage: '#34495E', marketing: '#A93A8C' };
+const CHIP: Record<NCategory, string> = { announcements: '#B7950B', repairs: '#C0392B', workorders: '#2E4053', leases: '#8E44AD', fleet: '#E67E22', policies: '#7F8C8D', storage: '#34495E', marketing: '#A93A8C', crew: '#1F8A70', audit: '#B8651B' };
 
 export default function NotificationCenter({ userEmail, isAdmin, onNavigate, showToast, employees = [] }: { userEmail: string; isAdmin: boolean; onNavigate: (url: string) => void; showToast: (m: string) => void; employees?: any[] }) {
   const [open, setOpen] = useState(false);
