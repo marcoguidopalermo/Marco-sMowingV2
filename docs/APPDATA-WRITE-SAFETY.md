@@ -57,15 +57,17 @@ client can no longer carry them.
 | `deletionAuditLog` | subcollection + doc-base ref | Phase 5 |
 | `timeEntries` | subcollection + doc-base ref | Phase 6 — creates/updates/deletes diffed; **pay** |
 | `authorizedEmails` | server-tracking ref + targeted `updateDoc` | edits go through `saveAuthorizedEmails`, audited to `authorizedEmailAudit` |
+| `employees` | server-tracking ref + targeted `updateDoc` | edits go through `saveEmployees` (`lib/rosterWrite`); refuses an empty roster or removing >half at once |
 | 28 marketing / contracting / RoleMaster / SalesMaster / rate-config fields | `SUBCOLLECTION_ONLY_FIELDS` — stripped from the doc payload entirely | read from their own subcollections |
 
 ### NOT yet protected
 
 Ordered by consequence. Planned next in this order.
 
+*(`employees` moved to Protected on 2026-08-18.)*
+
 | Field | Risk | Why it matters |
 |---|---|---|
-| `employees` | **pay + access** | carries `payMode`, `hourlyRate`, `linkedUserEmail` (binds an auth account to a record) |
 | `settings` | **pay** | holds `crewSizeAllowance`, an input to the efficiency/bonus calculation |
 | `visitBHSplits` | **pay** | BH attribution across crews → efficiency and bonus |
 | `mechanicPayChunks` | **pay** | mechanic payouts |
