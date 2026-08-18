@@ -123,6 +123,7 @@ import {
 } from './lib/multiDayResolution';
 import { buildMonthlySummary } from './lib/monthlySummary';
 import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
+import { seedRefusalReason } from './lib/seedGuard';
 import { nextUnusedColorKey, nextPersonColorKey } from './lib/roleCategories';
 import { callGeminiWithRetry } from './lib/gemini';
 
@@ -273,6 +274,10 @@ export default function App() {
   // updateDoc on this one field. It is deliberately not editable via the
   // whole-document path at all.
   const serverAuthorizedEmailsRef = useRef<string[]>([]);
+  // Has this session ever received appData/main? A database does not
+  // un-install itself, so once this is true the seed branch must never fire
+  // however a later snapshot reports the document. See that branch.
+  const docEverExistedRef = useRef(false);
   // Phase 1: multiDayJobs lives in its own subcollection, not the appData
   // doc. We keep the doc's (legacy, pre-removal) copy and the live
   // subcollection copy in refs and merge them into appData.multiDayJobs —
@@ -1046,7 +1051,12 @@ export default function App() {
     if (!user) return;
     const dataRef = doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main');
     return onSnapshot(dataRef, (snapshot) => {
+      // Captured before the exists() split: that call narrows `snapshot` to
+      // `never` in the else branch, and the seed guard there needs these.
+      const snapFromCache = snapshot.metadata.fromCache;
+      const snapPendingWrites = snapshot.metadata.hasPendingWrites;
       if (snapshot.exists()) {
+        docEverExistedRef.current = true;
         const data = snapshot.data();
 
         // Phase 1: remember the doc's (legacy) multiDayJobs copy; the live
@@ -1236,8 +1246,8 @@ export default function App() {
         const gate = decideAuthGate({
           email: user.email,
           authorizedEmails: data.authorizedEmails,
-          fromCache: snapshot.metadata.fromCache,
-          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapFromCache,
+          hasPendingWrites: snapPendingWrites,
           sessionAlreadyAuthorized: sessionAuthorizedRef.current,
           superAdminEmail: SUPER_ADMIN_EMAIL,
         });
@@ -1280,8 +1290,48 @@ export default function App() {
 
         setAppData(newAppData);
       } else {
-        console.warn("No remote data found, initializing with defaults.");
-        setDoc(dataRef, appData).catch((err: any) => console.error("Init err:", err));
+        // ── FIRST-INSTALL SEED — GUARDED ───────────────────────────────────
+        // This branch writes the app's in-memory DEFAULTS over appData/main.
+        // On 2026-08-18 it fired against a live database and replaced 477 KB
+        // of production data — 38 employees, 16 days of performance, 17 days
+        // of schedule and a 36-address access list — with the demo seed
+        // (John Doe, Sarah Smith, fleet f1-f3) and a one-entry allowlist,
+        // locking 35 people out. Recovered from point-in-time recovery.
+        //
+        // Seeding is a FIRST-INSTALL action. Every condition below must hold,
+        // and each one alone would have prevented that:
+        //   1. SERVER-CONFIRMED absence. A cached or pending-write snapshot is
+        //      not evidence that the document does not exist.
+        //   2. NEVER SEEN IT EXIST. If this session has ever received the
+        //      document, its absence now is a transient read, not a fresh
+        //      install — a database does not un-install itself.
+        //   3. NO KNOWN ALLOWLIST. If we have ever seen a populated access
+        //      list, there is real data here and the seed must never replace
+        //      it. This is the specific field whose loss locks people out.
+        //   4. SUPER ADMIN ONLY. Bootstrapping a new database is an owner
+        //      action; nobody else's browser should ever create one.
+        // Refusing costs an empty screen on a genuinely new database until
+        // the owner opens it. Writing wrongly costs the company its data.
+        const seedFacts = {
+          fromCache: snapFromCache,
+          hasPendingWrites: snapPendingWrites,
+          docEverExisted: docEverExistedRef.current,
+          knownAllowlistSize: serverAuthorizedEmailsRef.current.length,
+          isSuperAdmin: normalizeEmail(user.email) === SUPER_ADMIN_EMAIL,
+        };
+        const refusal = seedRefusalReason(seedFacts);
+        if (refusal === null) {
+          console.warn('[seed] no remote data found — initializing a NEW database with defaults', seedFacts);
+          setDoc(dataRef, appData).catch((err: any) => console.error('Init err:', err));
+        } else {
+          // Loud on purpose: this is the branch that destroyed production, so
+          // a refusal must never be silent.
+          console.error(
+            '[seed] REFUSED to write defaults over appData/main — the document '
+            + 'is absent from this snapshot but the conditions for a first '
+            + 'install are not met. No write attempted.', { refusedBecause: refusal, ...seedFacts },
+          );
+        }
       }
       // First snapshot applied — role/employee now derive from real data,
       // so it's safe to drop the loader and let the landing redirect run.

@@ -1,0 +1,811 @@
+{
+  "name": "projects/crewmaster-73f31/databases/(default)/documents/artifacts/crewmaster/public/data/appData/main",
+  "fields": {
+    "activityLog": {
+      "arrayValue": {}
+    },
+    "__multiDayKeyVersion": {
+      "integerValue": "2"
+    },
+    "supplies": {
+      "arrayValue": {
+        "values": [
+          {
+            "stringValue": "Blower"
+          },
+          {
+            "stringValue": "Trimmer"
+          },
+          {
+            "stringValue": "Mower (Push)"
+          },
+          {
+            "stringValue": "Rake"
+          },
+          {
+            "stringValue": "Shovel"
+          },
+          {
+            "stringValue": "Wheelbarrow"
+          },
+          {
+            "stringValue": "Fuel Can (Mix)"
+          },
+          {
+            "stringValue": "Fuel Can (Gas)"
+          }
+        ]
+      }
+    },
+    "deletionAuditLog": {
+      "arrayValue": {}
+    },
+    "pushedMonths": {
+      "arrayValue": {}
+    },
+    "mechanicPayChunks": {
+      "mapValue": {}
+    },
+    "equipmentSubtypes": {
+      "arrayValue": {
+        "values": [
+          {
+            "mapValue": {
+              "fields": {
+                "name": {
+                  "stringValue": "Stand On Mower"
+                },
+                "id": {
+                  "stringValue": "stand_on_mower"
+                },
+                "sortOrder": {
+                  "integerValue": "1"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "sortOrder": {
+                  "integerValue": "2"
+                },
+                "id": {
+                  "stringValue": "rider_mower"
+                },
+                "name": {
+                  "stringValue": "Rider Mower"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "name": {
+                  "stringValue": "Single Blade Mower"
+                },
+                "sortOrder": {
+                  "integerValue": "3"
+                },
+                "id": {
+                  "stringValue": "single_blade"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "id": {
+                  "stringValue": "dual_blade"
+                },
+                "sortOrder": {
+                  "integerValue": "4"
+                },
+                "name": {
+                  "stringValue": "Dual Blade Mower"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "id": {
+                  "stringValue": "grass_trimmer"
+                },
+                "name": {
+                  "stringValue": "Grass Trimmer"
+                },
+                "sortOrder": {
+                  "integerValue": "5"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "sortOrder": {
+                  "integerValue": "6"
+                },
+                "id": {
+                  "stringValue": "hedge_trimmer"
+                },
+                "name": {
+                  "stringValue": "Hedge Trimmer"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "sortOrder": {
+                  "integerValue": "7"
+                },
+                "name": {
+                  "stringValue": "Backpack Blower"
+                },
+                "id": {
+                  "stringValue": "backpack_blower"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "sortOrder": {
+                  "integerValue": "8"
+                },
+                "name": {
+                  "stringValue": "Handheld Blower"
+                },
+                "id": {
+                  "stringValue": "handheld_blower"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "name": {
+                  "stringValue": "Chainsaw"
+                },
+                "id": {
+                  "stringValue": "chainsaw"
+                },
+                "sortOrder": {
+                  "integerValue": "9"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "timeEntries": {
+      "arrayValue": {}
+    },
+    "inventory": {
+      "arrayValue": {
+        "values": [
+          {
+            "mapValue": {
+              "fields": {
+                "name": {
+                  "stringValue": "Premium Fertilizer (50lb)"
+                },
+                "stock": {
+                  "integerValue": "120"
+                },
+                "unit": {
+                  "stringValue": "Bags"
+                },
+                "lastAudit": {
+                  "stringValue": "2026-03-01"
+                },
+                "id": {
+                  "stringValue": "inv1"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "id": {
+                  "stringValue": "inv2"
+                },
+                "unit": {
+                  "stringValue": "Bags"
+                },
+                "name": {
+                  "stringValue": "Kentucky Bluegrass Seed"
+                },
+                "lastAudit": {
+                  "stringValue": "2026-02-15"
+                },
+                "stock": {
+                  "integerValue": "45"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "name": {
+                  "stringValue": "2-Cycle Mix Oil"
+                },
+                "unit": {
+                  "stringValue": "Bottles"
+                },
+                "stock": {
+                  "integerValue": "24"
+                },
+                "id": {
+                  "stringValue": "inv3"
+                },
+                "lastAudit": {
+                  "stringValue": "2026-03-10"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "repairLog": {
+      "arrayValue": {}
+    },
+    "performance": {
+      "mapValue": {
+        "fields": {
+          "2026-08-18": {
+            "mapValue": {}
+          }
+        }
+      }
+    },
+    "archivedScheduleMonths": {
+      "arrayValue": {
+        "values": [
+          {
+            "stringValue": "2026-05"
+          },
+          {
+            "stringValue": "2026-06"
+          },
+          {
+            "stringValue": "2026-07"
+          }
+        ]
+      }
+    },
+    "partsOrders": {
+      "mapValue": {}
+    },
+    "settings": {
+      "mapValue": {
+        "fields": {
+          "endOfDayReminder": {
+            "stringValue": "Lock trailers and sea cans, charge any equipment batteries."
+          }
+        }
+      }
+    },
+    "authorizedEmails": {
+      "arrayValue": {
+        "values": [
+          {
+            "stringValue": "marcoguidopalermo@gmail.com"
+          }
+        ]
+      }
+    },
+    "overrides": {
+      "mapValue": {}
+    },
+    "partialTimeOff": {
+      "mapValue": {}
+    },
+    "archivedDays": {
+      "mapValue": {}
+    },
+    "bulletins": {
+      "arrayValue": {
+        "values": [
+          {
+            "mapValue": {
+              "fields": {
+                "author": {
+                  "stringValue": "System"
+                },
+                "date": {
+                  "stringValue": "2026-08-18"
+                },
+                "content": {
+                  "stringValue": "The new system is live. Check out the Daily View and the new Inventory tracking!"
+                },
+                "title": {
+                  "stringValue": "Welcome to Marco's Mowing ERP"
+                },
+                "id": {
+                  "stringValue": "b1"
+                },
+                "isAdminOnly": {
+                  "booleanValue": false
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "schedules": {
+      "mapValue": {}
+    },
+    "employees": {
+      "arrayValue": {
+        "values": [
+          {
+            "mapValue": {
+              "fields": {
+                "timeMasterEnabled": {
+                  "booleanValue": true
+                },
+                "name": {
+                  "stringValue": "Test User"
+                },
+                "systemRole": {
+                  "stringValue": "mechanic"
+                },
+                "status": {
+                  "stringValue": "Active"
+                },
+                "email": {
+                  "stringValue": "testuser@crewmaster.local"
+                },
+                "color": {
+                  "stringValue": "indigo"
+                },
+                "linkedUserEmail": {
+                  "stringValue": "testuser@crewmaster.local"
+                },
+                "awayDates": {
+                  "arrayValue": {}
+                },
+                "isTestUser": {
+                  "booleanValue": true
+                },
+                "hasClassA": {
+                  "booleanValue": false
+                },
+                "hasHeavyMachinery": {
+                  "booleanValue": false
+                },
+                "id": {
+                  "stringValue": "test-user"
+                },
+                "hasLicense": {
+                  "booleanValue": false
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "awayDates": {
+                  "arrayValue": {}
+                },
+                "color": {
+                  "stringValue": "emerald"
+                },
+                "id": {
+                  "stringValue": "e1"
+                },
+                "hasClassA": {
+                  "booleanValue": true
+                },
+                "hasLicense": {
+                  "booleanValue": true
+                },
+                "status": {
+                  "stringValue": "Active"
+                },
+                "hasHeavyMachinery": {
+                  "booleanValue": true
+                },
+                "name": {
+                  "stringValue": "John Doe"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "status": {
+                  "stringValue": "Active"
+                },
+                "hasLicense": {
+                  "booleanValue": true
+                },
+                "awayDates": {
+                  "arrayValue": {}
+                },
+                "color": {
+                  "stringValue": "sky"
+                },
+                "id": {
+                  "stringValue": "e2"
+                },
+                "hasClassA": {
+                  "booleanValue": false
+                },
+                "name": {
+                  "stringValue": "Sarah Smith"
+                },
+                "hasHeavyMachinery": {
+                  "booleanValue": true
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "status": {
+                  "stringValue": "Active"
+                },
+                "awayDates": {
+                  "arrayValue": {}
+                },
+                "color": {
+                  "stringValue": "violet"
+                },
+                "hasHeavyMachinery": {
+                  "booleanValue": false
+                },
+                "hasClassA": {
+                  "booleanValue": false
+                },
+                "name": {
+                  "stringValue": "Mike Johnson"
+                },
+                "id": {
+                  "stringValue": "e3"
+                },
+                "hasLicense": {
+                  "booleanValue": false
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "status": {
+                  "stringValue": "Active"
+                },
+                "id": {
+                  "stringValue": "e4"
+                },
+                "awayDates": {
+                  "arrayValue": {}
+                },
+                "hasHeavyMachinery": {
+                  "booleanValue": false
+                },
+                "color": {
+                  "stringValue": "teal"
+                },
+                "hasClassA": {
+                  "booleanValue": false
+                },
+                "hasLicense": {
+                  "booleanValue": false
+                },
+                "name": {
+                  "stringValue": "Emma Davis"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "hasHeavyMachinery": {
+                  "booleanValue": false
+                },
+                "awayDates": {
+                  "arrayValue": {}
+                },
+                "id": {
+                  "stringValue": "e5"
+                },
+                "name": {
+                  "stringValue": "Dave Wilson"
+                },
+                "hasClassA": {
+                  "booleanValue": true
+                },
+                "hasLicense": {
+                  "booleanValue": true
+                },
+                "color": {
+                  "stringValue": "fuchsia"
+                },
+                "status": {
+                  "stringValue": "Active"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "id": {
+                  "stringValue": "e6"
+                },
+                "color": {
+                  "stringValue": "cyan"
+                },
+                "awayDates": {
+                  "arrayValue": {}
+                },
+                "status": {
+                  "stringValue": "Active"
+                },
+                "hasLicense": {
+                  "booleanValue": true
+                },
+                "hasHeavyMachinery": {
+                  "booleanValue": false
+                },
+                "hasClassA": {
+                  "booleanValue": false
+                },
+                "name": {
+                  "stringValue": "Lisa Brown"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "tasks": {
+      "mapValue": {}
+    },
+    "mechanicTasks": {
+      "arrayValue": {}
+    },
+    "timeOffRequests": {
+      "mapValue": {}
+    },
+    "rolePermissions": {
+      "mapValue": {}
+    },
+    "bulletinReads": {
+      "mapValue": {
+        "fields": {
+          "marcoguidopalermo@gmail.com": {
+            "integerValue": "1787025600000"
+          }
+        }
+      }
+    },
+    "cvorExpiry": {
+      "nullValue": null
+    },
+    "fleet": {
+      "arrayValue": {
+        "values": [
+          {
+            "mapValue": {
+              "fields": {
+                "name": {
+                  "stringValue": "Truck 1 (F-150)"
+                },
+                "odometer": {
+                  "integerValue": "120500"
+                },
+                "type": {
+                  "stringValue": "truck"
+                },
+                "id": {
+                  "stringValue": "f1"
+                },
+                "color": {
+                  "stringValue": "bg-green-500"
+                },
+                "serialNumber": {
+                  "stringValue": "SN-TRK1-998"
+                },
+                "weightClass": {
+                  "stringValue": "Under 4500kg"
+                },
+                "repairTags": {
+                  "arrayValue": {}
+                },
+                "status": {
+                  "stringValue": "Active"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "color": {
+                  "stringValue": "bg-blue-600"
+                },
+                "status": {
+                  "stringValue": "Active"
+                },
+                "repairTags": {
+                  "arrayValue": {}
+                },
+                "id": {
+                  "stringValue": "f2"
+                },
+                "weightClass": {
+                  "stringValue": "10999kg+ (Class A)"
+                },
+                "serialNumber": {
+                  "stringValue": "SN-HDUMP-044"
+                },
+                "type": {
+                  "stringValue": "truck"
+                },
+                "name": {
+                  "stringValue": "Heavy Dump Truck"
+                },
+                "odometer": {
+                  "integerValue": "245000"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "color": {
+                  "stringValue": "bg-orange-500"
+                },
+                "odometer": {
+                  "integerValue": "1450"
+                },
+                "status": {
+                  "stringValue": "Active"
+                },
+                "serialNumber": {
+                  "stringValue": "S-SS01-X"
+                },
+                "name": {
+                  "stringValue": "Skid Steer 01"
+                },
+                "repairTags": {
+                  "arrayValue": {}
+                },
+                "weightClass": {
+                  "stringValue": "N/A"
+                },
+                "modelNumber": {
+                  "stringValue": "CAT-242D"
+                },
+                "type": {
+                  "stringValue": "equipment"
+                },
+                "id": {
+                  "stringValue": "f3"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "id": {
+                  "stringValue": "f4"
+                },
+                "serialNumber": {
+                  "stringValue": "S-ZT04-Y"
+                },
+                "color": {
+                  "stringValue": "bg-yellow-400"
+                },
+                "odometer": {
+                  "integerValue": "320"
+                },
+                "type": {
+                  "stringValue": "equipment"
+                },
+                "repairTags": {
+                  "arrayValue": {}
+                },
+                "status": {
+                  "stringValue": "Active"
+                },
+                "modelNumber": {
+                  "stringValue": "SCAG-Z72"
+                },
+                "weightClass": {
+                  "stringValue": "N/A"
+                },
+                "name": {
+                  "stringValue": "Zero Turn Mower"
+                }
+              }
+            }
+          },
+          {
+            "mapValue": {
+              "fields": {
+                "isYellowSticker": {
+                  "booleanValue": true
+                },
+                "name": {
+                  "stringValue": "Flatbed Trailer A"
+                },
+                "status": {
+                  "stringValue": "Out of Service"
+                },
+                "type": {
+                  "stringValue": "trailer"
+                },
+                "repairTags": {
+                  "arrayValue": {
+                    "values": [
+                      {
+                        "stringValue": "priority"
+                      }
+                    ]
+                  }
+                },
+                "weightClass": {
+                  "stringValue": "Up to 10999kg (Yellow)"
+                },
+                "id": {
+                  "stringValue": "f5"
+                },
+                "color": {
+                  "stringValue": "bg-gray-500"
+                },
+                "serialNumber": {
+                  "stringValue": "SN-FLAT-002"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "multiDayJobs": {
+      "mapValue": {}
+    },
+    "unlockedDays": {
+      "mapValue": {}
+    },
+    "visitBHSplits": {
+      "mapValue": {}
+    },
+    "inspections": {
+      "arrayValue": {}
+    },
+    "routes": {
+      "arrayValue": {}
+    },
+    "dailyAbsences": {
+      "mapValue": {}
+    }
+  },
+  "createTime": "2026-05-01T19:14:20.956952Z",
+  "updateTime": "2026-08-18T13:00:19.525786Z"
+}
