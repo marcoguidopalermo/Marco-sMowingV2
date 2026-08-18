@@ -124,6 +124,7 @@ import {
 import { buildMonthlySummary } from './lib/monthlySummary';
 import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { seedRefusalReason } from './lib/seedGuard';
+import { checkDocWrite } from './lib/docWriteGuard';
 import { nextUnusedColorKey, nextPersonColorKey } from './lib/roleCategories';
 import { callGeminiWithRetry } from './lib/gemini';
 
@@ -278,6 +279,9 @@ export default function App() {
   // un-install itself, so once this is true the seed branch must never fire
   // however a later snapshot reports the document. See that branch.
   const docEverExistedRef = useRef(false);
+  // The SERVER's document shape, refreshed on every snapshot. The write guard
+  // compares each outgoing payload against this — see checkDocWrite.
+  const serverDocShapeRef = useRef<{ bytes: number; employeeCount: number; allowlistCount: number } | null>(null);
   // Phase 1: multiDayJobs lives in its own subcollection, not the appData
   // doc. We keep the doc's (legacy, pre-removal) copy and the live
   // subcollection copy in refs and merge them into appData.multiDayJobs —
@@ -1079,6 +1083,13 @@ export default function App() {
       if (snapshot.exists()) {
         docEverExistedRef.current = true;
         const data = snapshot.data();
+        try {
+          serverDocShapeRef.current = {
+            bytes: JSON.stringify(data).length,
+            employeeCount: Array.isArray(data.employees) ? data.employees.length : 0,
+            allowlistCount: Array.isArray(data.authorizedEmails) ? data.authorizedEmails.length : 0,
+          };
+        } catch { /* shape is advisory; never let it break the snapshot */ }
 
         // Phase 1: remember the doc's (legacy) multiDayJobs copy; the live
         // value is the subcollection overlaid on top (see the subcollection
@@ -2622,6 +2633,41 @@ export default function App() {
     const cleanData = JSON.parse(JSON.stringify(docPayload, (key, value) =>
       value === undefined ? null : value
     ));
+
+    // ── WHOLE-DOCUMENT WRITE GUARD ─────────────────────────────────────────
+    // The last thing between ~96 call sites and the document. Refuses payloads
+    // with the SHAPE of a catastrophe — a document discarded wholesale, the
+    // demo roster reaching a populated database, an access list collapsing —
+    // rather than trying to judge whether a write is correct. See
+    // lib/docWriteGuard for why it is biased toward allowing.
+    const verdict = checkDocWrite(
+      {
+        bytes: JSON.stringify(cleanData).length,
+        employees: Array.isArray(cleanData.employees) ? cleanData.employees : [],
+        allowlist: Array.isArray(cleanData.authorizedEmails) ? cleanData.authorizedEmails : [],
+      },
+      serverDocShapeRef.current,
+      SUPER_ADMIN_EMAIL,
+    );
+    if (!verdict.ok) {
+      // Loud, and never silent: this is the net under the failure that cost a
+      // production database, so a refusal must be visible in both the console
+      // and the UI. Returning false leaves local state untouched — the caller
+      // treats it as a failed save, which is what it is.
+      console.error('[doc-write] REFUSED — payload has the shape of a catastrophic write', {
+        refusedBecause: verdict.reason,
+        detail: verdict.detail,
+        server: serverDocShapeRef.current,
+        payloadBytes: JSON.stringify(cleanData).length,
+        payloadEmployees: Array.isArray(cleanData.employees) ? cleanData.employees.length : 0,
+        payloadAllowlist: Array.isArray(cleanData.authorizedEmails) ? cleanData.authorizedEmails.length : 0,
+      });
+      showToastMsg(
+        `⚠️ Save blocked — it would have wiped data (${verdict.reason}). `
+        + 'Nothing was changed. Reload the page and try again.',
+      );
+      return false;
+    }
 
     try {
       await setDoc(doc(doc(db, 'artifacts', appId), 'public', 'data', 'appData', 'main'), cleanData);
