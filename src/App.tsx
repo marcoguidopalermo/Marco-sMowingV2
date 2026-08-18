@@ -296,6 +296,14 @@ export default function App() {
   // first. The log is APPEND-ONLY (a "deleted" entry is a new record of a
   // deletion, never a removal), which is why the write path below only ever
   // creates docs and never deletes them, and why the merge needs no tombstones.
+  // Phase 6: timeEntries lives in its own subcollection. Same overlay model as
+  // activityLog, and the most important of the set: punches are PAY, and this
+  // array was written by four separate surfaces (App clock-in/out, the
+  // TimeMaster widget, TimeMaster's editor) as whole-array replacements. Two
+  // people clocking in inside the same save window meant one punch was
+  // silently overwritten — lost pay, no trace.
+  const docTimeEntriesRef = useRef<TimeEntry[]>([]);
+  const subTimeEntriesRef = useRef<TimeEntry[]>([]);
   const docActivityLogRef = useRef<TaskActivity[]>([]);
   const subActivityLogRef = useRef<TaskActivity[]>([]);
   // Phase 5: deletionAuditLog lives in its own subcollection. Same overlay
@@ -371,6 +379,19 @@ export default function App() {
   // prepend convention every reader assumes. MechanicPerformance, MyMechanic
   // and the pay-chunk completion counts all read this merged array, so it must
   // contain the FULL history — nothing here trims.
+  // Merge the doc-base punches with the live subcollection. Subcollection wins
+  // on id, newest clock-in first — the order every reader assumes. Unlike the
+  // append-only logs this surface UPDATES (clock-out, edits) and DELETES, so
+  // the write path below diffs all three, not just creations.
+  const mergeTimeEntries = (base: TimeEntry[], sub: TimeEntry[]): TimeEntry[] => {
+    const byId: Record<string, TimeEntry> = {};
+    for (const e of base) if (e && e.id) byId[e.id] = e;
+    for (const e of sub) if (e && e.id) byId[e.id] = e;   // subcollection wins
+    return Object.values(byId).sort(
+      (a, b) => String(b.clockIn || '').localeCompare(String(a.clockIn || '')),
+    );
+  };
+
   const mergeActivityLog = (base: TaskActivity[], sub: TaskActivity[]): TaskActivity[] => {
     const byId: Record<string, TaskActivity> = {};
     for (const a of base) if (a && a.id) byId[a.id] = a;
@@ -1071,6 +1092,7 @@ export default function App() {
         // Phase 4: same for the activity log — the doc's legacy copy, with the
         // subcollection overlaid on top (pre-migration this is the frozen doc
         // copy, post-migration []).
+        docTimeEntriesRef.current = (data.timeEntries || []) as TimeEntry[];
         docActivityLogRef.current = (data.activityLog || []) as TaskActivity[];
         // Track the server's allowlist verbatim (normalized) for the doc write.
         serverAuthorizedEmailsRef.current = Array.from(
@@ -1181,7 +1203,8 @@ export default function App() {
           mechanicTasks: data.mechanicTasks || [],
           // Doc-base overlaid by the live subcollection (Phase 4).
           activityLog: mergeActivityLog(docActivityLogRef.current, subActivityLogRef.current),
-          timeEntries: data.timeEntries || [],
+          // Doc-base overlaid by the live subcollection (Phase 6).
+          timeEntries: mergeTimeEntries(docTimeEntriesRef.current, subTimeEntriesRef.current),
           overrides: data.overrides || {},
           rolePermissions: (data.rolePermissions && typeof data.rolePermissions === 'object' && !('foreman' in data.rolePermissions && 'canEditSchedule' in (data.rolePermissions as any).foreman))
             ? (data.rolePermissions as RolePermissionsOverride)
@@ -1550,6 +1573,31 @@ export default function App() {
         }));
       },
       (err) => { console.error('activityLog subcollection listen error:', err); },
+    );
+  }, [user]);
+
+  // Phase 6: live timeEntries subcollection listener. Rebuilds TimeEntry[]
+  // from one-doc-per-punch and merges it OVER the doc's legacy copy, so
+  // TimeMaster, the widget, the pay-chunk math and MyMechanic all keep reading
+  // appData.timeEntries and never learn where it came from.
+  useEffect(() => {
+    if (!user) return;
+    const teCol = collection(db, 'artifacts', appId, 'public', 'data', 'timeEntries');
+    return onSnapshot(
+      teCol,
+      (snap) => {
+        const list: TimeEntry[] = [];
+        snap.forEach((d) => {
+          const v = d.data() as TimeEntry;
+          if (v && v.id) list.push(v);
+        });
+        subTimeEntriesRef.current = list;
+        setAppData((prev) => ({
+          ...prev,
+          timeEntries: mergeTimeEntries(docTimeEntriesRef.current, list),
+        }));
+      },
+      (err) => { console.error('timeEntries subcollection listen error:', err); },
     );
   }, [user]);
 
@@ -2450,6 +2498,45 @@ export default function App() {
       }
     }
 
+    // PHASE 6 — route timeEntries changes to the subcollection (one doc per
+    // punch id). Unlike the append-only logs this diffs CREATES, UPDATES and
+    // DELETES, because a punch is clocked out, edited and occasionally removed.
+    //
+    // This is the fix for the concurrency hazard, not just a size move: the
+    // array was previously replaced wholesale by whichever client saved last,
+    // so a punch created on one device could be erased by a save from another
+    // that had loaded a moment earlier. Writing one document per punch means
+    // two people clocking in at once touch two different documents.
+    //
+    // PAY DATA, so a failed write is not swallowed: the entries fall back into
+    // the DOC (where they used to live) and a toast is raised.
+    let timeEntriesDocFallback: TimeEntry[] = [];
+    {
+      const nextTe = newData.timeEntries || [];
+      const prevById: Record<string, TimeEntry> = {};
+      for (const e of (appData.timeEntries || [])) if (e && e.id) prevById[e.id] = e;
+      const nextIds: Record<string, true> = {};
+      for (const e of nextTe) if (e && e.id) nextIds[e.id] = true;
+      const changed = nextTe.filter(
+        e => e && e.id && JSON.stringify(prevById[e.id]) !== JSON.stringify(e),
+      );
+      const removed = Object.keys(prevById).filter(id => !nextIds[id]);
+      if (changed.length > 0 || removed.length > 0) {
+        const teColRef = collection(db, 'artifacts', appId, 'public', 'data', 'timeEntries');
+        try {
+          for (const e of changed) {
+            const clean = JSON.parse(JSON.stringify(e, (_k, v) => (v === undefined ? null : v)));
+            await setDoc(doc(teColRef, encodeURIComponent(e.id)), clean);
+          }
+          for (const id of removed) await deleteDoc(doc(teColRef, encodeURIComponent(id)));
+        } catch (err: any) {
+          console.error('timeEntries subcollection write error:', err);
+          timeEntriesDocFallback = changed;
+          showToastMsg('⚠️ Punch saved to the main record only — check connection.');
+        }
+      }
+    }
+
     // PHASE 5 — route NEW deletionAuditLog entries to the subcollection (one
     // doc per entry id). Append-only, so creates only: no delete pass, and a
     // doc-base shed can never remove the subcollection copy.
@@ -2515,6 +2602,10 @@ export default function App() {
       // Trimmed legacy bases, plus anything the subcollection writes above
       // failed to persist (normally empty).
       activityLog: [...activityDocFallback, ...trimmedDocActivityBase],
+      // Frozen legacy base, plus anything the subcollection write above failed
+      // to persist (normally empty). After the migration empties the base this
+      // writes [] and the punches live only in the subcollection.
+      timeEntries: [...timeEntriesDocFallback, ...docTimeEntriesRef.current],
       deletionAuditLog: [...auditDocFallback, ...normalizedAuditLog],
     };
     // Every field in SUBCOLLECTION_ONLY_FIELDS is READ from its own
