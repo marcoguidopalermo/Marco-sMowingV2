@@ -609,6 +609,8 @@ export default function App() {
   // datetime-local string. Empty = post now (the default, and how the board
   // has always behaved).
   const [bulletinPostAt, setBulletinPostAt] = useState('');
+  // Named recipients (employee ids). Unions with the role audience.
+  const [bulletinRecipients, setBulletinRecipients] = useState<string[]>([]);
 
   // Core App Data Structure
   const [appData, setAppData] = useState<AppData>({
@@ -6474,6 +6476,10 @@ export default function App() {
       setNewContent={setNewContent}
       audience={bulletinAudience}
       setAudience={setBulletinAudience}
+      recipientIds={bulletinRecipients}
+      setRecipientIds={setBulletinRecipients}
+      employees={appData.employees || []}
+      viewerEmployeeId={currentUserEmployee?.id || null}
       sendPush={bulletinSendPush}
       setSendPush={setBulletinSendPush}
       postAt={bulletinPostAt}
@@ -6506,6 +6512,7 @@ export default function App() {
           author: displayEmail,
         };
         if (bulletinAudience.length > 0) newBulletin.audience = bulletinAudience;
+        if (bulletinRecipients.length > 0) newBulletin.recipientIds = bulletinRecipients;
         // SCHEDULED: hold the bulletin (and its notification) until the chosen
         // moment. A time in the past posts immediately rather than being
         // treated as queued — the clock decides, so a past timestamp is just
@@ -6537,12 +6544,17 @@ export default function App() {
             ? `Scheduled for ${new Date(postAtMs).toLocaleString()} — notification will arrive at 8:00 AM.`
             : `Scheduled for ${new Date(postAtMs).toLocaleString()}.`);
           setNewTitle(''); setNewContent(''); setBulletinAudience([]);
-          setBulletinSendPush(false); setBulletinPostAt('');
+          setBulletinSendPush(false); setBulletinPostAt(''); setBulletinRecipients([]);
           return;
         }
         if (bulletinSendPush) {
           const payload: any = { bulletinId: bid, title: newTitle, body: newContent.slice(0, 160) };
+          // Union targeting: roles and/or named people. The function resolves
+          // ids to current addresses server-side, so a stale client cannot
+          // send to somebody who has since been removed.
+          if (bulletinRecipients.length > 0) payload.recipientIds = bulletinRecipients;
           if (bulletinAudience.length > 0) { payload.audience = 'role'; payload.roleGroup = bulletinAudience; }
+          else if (bulletinRecipients.length > 0) { payload.audience = 'people'; }
           else { payload.audience = 'everyone'; }
           // Quiet hours → a deliberate choice: deliver now (pierce) or hold to 8 AM.
           if (isQuietNow()) {
@@ -6553,7 +6565,7 @@ export default function App() {
             .then(() => showToastMsg(heldMsg))
             .catch(() => showToastMsg('Bulletin posted · push could not be sent'));
         }
-        setNewTitle(''); setNewContent(''); setBulletinAudience([]); setBulletinSendPush(false); setBulletinPostAt('');
+        setNewTitle(''); setNewContent(''); setBulletinAudience([]); setBulletinSendPush(false); setBulletinPostAt(''); setBulletinRecipients([]);
       }}
       onDelete={(id) => {
         const target: any = (appData.bulletins || []).find((x: any) => x.id === id);

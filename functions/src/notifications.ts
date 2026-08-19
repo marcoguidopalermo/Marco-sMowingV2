@@ -291,9 +291,20 @@ export async function runScheduledBulletins(
     try {
       // Same audience rules as posting live: a role group when one was picked,
       // everyone otherwise.
-      const targets = Array.isArray(b.audience) && b.audience.length > 0 ?
-        await emailsForRole(b.audience) :
-        emps.map(empEmail);
+      // Same union as posting live: roles and/or named people, both resolved
+      // against the roster as it stands NOW rather than at scheduling time —
+      // the gap between writing and landing is exactly when a roster changes.
+      const roles = Array.isArray(b.audience) ? b.audience : [];
+      const named = new Set((Array.isArray(b.recipientIds) ? b.recipientIds : []).map(String));
+      let targets: string[] = [];
+      if (roles.length > 0) targets = await emailsForRole(roles);
+      else if (named.size === 0) targets = emps.map(empEmail);
+      if (named.size > 0) {
+        targets = targets.concat(
+          emps.filter((e) => named.has(String(e.id)) && !e.isTestUser).map(empEmail),
+        );
+      }
+      targets = [...new Set(targets)];
       await sendNotification(
         targets.filter(Boolean), "announcements",
         {
@@ -406,17 +417,31 @@ export const pushAnnouncement = onCall({region: REGION}, async (req) => {
   if (!["admin", "manager"].includes(role) && email !== "marcoguidopalermo@gmail.com") {
     throw new HttpsError("permission-denied", "Managers/admins only.");
   }
-  const {audience, division, roleGroup, title, body, bulletinId, deliverNow} = (req.data || {}) as any;
+  const {audience, division, roleGroup, title, body, bulletinId, deliverNow,
+    recipientIds} = (req.data || {}) as any;
   let targets: string[] = [];
   if (audience === "division" && division) {
     targets = emps.filter((e) => (e.managedDivision === division || e.primaryCrew?.toLowerCase?.().includes(division))).map(empEmail);
   } else if (audience === "role" && roleGroup) {
     targets = await emailsForRole(Array.isArray(roleGroup) ? roleGroup : [roleGroup]);
+  } else if (audience === "people") {
+    targets = [];        // named-only — filled in below
   } else {
     targets = emps.map(empEmail); // everyone
   }
+  // NAMED RECIPIENTS union onto whatever the audience resolved to. Ids are
+  // resolved to addresses HERE, against the current roster, so a client
+  // holding a stale employee list cannot send to somebody since removed —
+  // and a renamed or re-addressed person still gets it.
+  if (Array.isArray(recipientIds) && recipientIds.length > 0) {
+    const named = new Set(recipientIds.map(String));
+    targets = targets.concat(
+      emps.filter((e) => named.has(String(e.id)) && !e.isTestUser).map(empEmail),
+    );
+  }
+  targets = [...new Set(targets.filter(Boolean))];
   // deliverNow = the poster chose to pierce quiet hours for this bulletin.
-  const res = await sendNotification(targets.filter(Boolean), "announcements",
+  const res = await sendNotification(targets, "announcements",
     {title: title || "Announcement", body: body || "", url: bulletinId ? `/#bulletins` : "/#bulletins"},
     undefined, {deliverNow: !!deliverNow});
   return res;

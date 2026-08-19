@@ -2073,6 +2073,14 @@ export interface BulletinPost {
   date: string;
   author: string;
   audience?: BulletinAudienceRole[];
+  // NAMED RECIPIENTS — employee ids. Combines with `audience` by UNION: you
+  // see the bulletin if your role is in the audience OR you are named. Both
+  // empty = everyone, which is what the board has always done.
+  //
+  // Ids rather than emails, so "To: Cody, Diego" still reads correctly after a
+  // rename or an address change, and so the send layer resolves the current
+  // address rather than one frozen at posting time.
+  recipientIds?: string[];
   isAdminOnly?: boolean;
   // ── SCHEDULED POSTING ───────────────────────────────────────────────────
   // When set and still in the future, the bulletin is QUEUED: hidden from the

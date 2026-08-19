@@ -12,6 +12,12 @@ import BulletinBoard from './BulletinBoard';
 const H = 3_600_000;
 const now = () => Date.now();
 
+const emp = (id: string, name: string, o: Record<string, unknown> = {}) => ({
+  id, name, status: 'Active', hasLicense: false, hasClassA: false,
+  hasHeavyMachinery: false, awayDates: [], linkedUserEmail: `${id}@x.test`, ...o,
+});
+const ROSTER = [emp('e-marco', 'Marco'), emp('e-cody', 'Cody Hubert'), emp('e-diego', 'Diego Galvez')];
+
 const b = (o: Record<string, unknown>) => ({
   title: 'T', content: 'C', date: '2026-08-19', author: 'marco@x.test', ...o,
 });
@@ -25,6 +31,9 @@ const render = (o: Record<string, unknown> = {}) => renderToStaticMarkup(h(Bulle
   newTitle: '', setNewTitle: () => {},
   newContent: '', setNewContent: () => {},
   audience: [], setAudience: () => {},
+  recipientIds: (o.recipientIds as string[]) || [], setRecipientIds: () => {},
+  employees: (o.employees as any[]) || ROSTER,
+  viewerEmployeeId: (o.viewerEmployeeId as string) ?? 'e-marco',
   sendPush: (o.sendPush as boolean) ?? false, setSendPush: () => {},
   postAt: (o.postAt as string) ?? '', setPostAt: () => {},
   viewerEmail: (o.viewerEmail as string) ?? 'marco@x.test',
@@ -118,4 +127,74 @@ test('no quiet-hours warning without a notification — nothing would be held', 
 test('no warning for a daytime post time', () => {
   const html = render({ postAt: '2026-08-21T09:00', sendPush: true });
   assert.ok(!html.includes('quiet hours'));
+});
+
+console.log('\nTargeting specific people');
+test('a named recipient sees the bulletin on their board', () => {
+  const html = render({
+    bulletins: [b({ id: 't1', title: 'Truck window repair', recipientIds: ['e-cody'] })],
+    viewerEmployeeId: 'e-cody', viewerEmail: 'cody@x.test',
+  });
+  assert.ok(html.includes('Truck window repair'));
+});
+test('somebody not named sees nothing — including an admin', () => {
+  const forCody = [b({ id: 't1', title: 'Truck window repair', recipientIds: ['e-cody'] })];
+  const other = render({ bulletins: forCody, viewerEmployeeId: 'e-diego', viewerEmail: 'd@x.test' });
+  assert.ok(!other.includes('Truck window repair'));
+  const admin = render({ bulletins: forCody, viewerEmployeeId: 'e-marco', isAdmin: true });
+  assert.ok(!admin.includes('Truck window repair'), 'admins get no blanket pass');
+});
+test('the bulletin shows WHO it went to', () => {
+  const html = render({
+    bulletins: [b({ id: 't1', recipientIds: ['e-cody', 'e-diego'] })],
+    viewerEmployeeId: 'e-cody',
+  });
+  assert.ok(html.includes('To: Cody Hubert · Diego Galvez'));
+});
+test('an untargeted bulletin shows no To: line', () => {
+  const html = render({ bulletins: [b({ id: 'plain', title: 'General notice' })] });
+  assert.ok(html.includes('General notice'));
+  assert.ok(!html.includes('To:'));
+});
+test('roles and people together are both shown', () => {
+  const html = render({
+    bulletins: [b({ id: 'mix', audience: ['manager'], recipientIds: ['e-cody'] })],
+    viewerEmployeeId: 'e-cody',
+  });
+  assert.ok(html.includes('To: Managers · Cody Hubert'));
+});
+
+console.log('\nTargeted AND scheduled');
+test('a queued targeted bulletin shows its recipients in the Scheduled section', () => {
+  const html = render({
+    bulletins: [b({ id: 'q', title: 'Truck window repair', publishAt: now() + 2 * H, recipientIds: ['e-cody'], notifyOnPublish: true })],
+    viewerEmail: 'marco@x.test', viewerEmployeeId: 'e-marco',
+  });
+  assert.ok(html.includes('Scheduled · 1'));
+  assert.ok(html.includes('To: Cody Hubert'));
+  assert.ok(html.includes('will notify'));
+});
+test('the named recipient does NOT see it before it lands', () => {
+  const html = render({
+    bulletins: [b({ id: 'q', title: 'Truck window repair', publishAt: now() + 2 * H, recipientIds: ['e-cody'] })],
+    viewerEmail: 'cody@x.test', viewerEmployeeId: 'e-cody', isAdmin: false,
+  });
+  assert.ok(!html.includes('Truck window repair'));
+});
+test('once it lands the named recipient sees it and others still do not', () => {
+  const landed = [b({ id: 'q', title: 'Truck window repair', publishAt: now() - H, recipientIds: ['e-cody'] })];
+  assert.ok(render({ bulletins: landed, viewerEmployeeId: 'e-cody', viewerEmail: 'cody@x.test' }).includes('Truck window repair'));
+  assert.ok(!render({ bulletins: landed, viewerEmployeeId: 'e-diego', viewerEmail: 'd@x.test' }).includes('Truck window repair'));
+});
+
+console.log('\nThe person picker');
+test('the picker offers employees by name', () => {
+  const html = render();
+  assert.ok(html.includes('specific people'));
+  assert.ok(html.includes('Cody Hubert'));
+  assert.ok(html.includes('Diego Galvez'));
+});
+test('selecting people says nobody else will see it', () => {
+  const html = render({ recipientIds: ['e-cody'] });
+  assert.ok(html.includes('Goes to these people only'));
 });

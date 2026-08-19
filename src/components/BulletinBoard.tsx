@@ -1,6 +1,9 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { Megaphone, PenTool, Users, Trash2, Calendar as CalendarIcon, Bell, Clock } from 'lucide-react';
-import type { BulletinAudienceRole, BulletinPost, UserRole } from '../types';
+import type { BulletinAudienceRole, BulletinPost, Employee, UserRole } from '../types';
+import {
+  canSeeBulletin, describeAudience, isForEveryone, pickableRecipients,
+} from '../lib/bulletinAudience';
 import { localHourOf, quietHoursNotice, splitBulletins } from '../lib/scheduledBulletins';
 
 // A ms timestamp as a <input type="datetime-local"> value, in the viewer's own
@@ -32,6 +35,11 @@ interface BulletinBoardProps {
   setNewContent: Dispatch<SetStateAction<string>>;
   audience: BulletinAudienceRole[];
   setAudience: Dispatch<SetStateAction<BulletinAudienceRole[]>>;
+  // Named recipients (employee ids). Combines with `audience` by union.
+  recipientIds: string[];
+  setRecipientIds: Dispatch<SetStateAction<string[]>>;
+  employees: Employee[];
+  viewerEmployeeId: string | null;
   sendPush: boolean;
   setSendPush: Dispatch<SetStateAction<boolean>>;
   // Scheduled posting. Empty string = post now, which is the default and the
@@ -57,6 +65,10 @@ export default function BulletinBoard({
   setNewContent,
   audience,
   setAudience,
+  recipientIds,
+  setRecipientIds,
+  employees,
+  viewerEmployeeId,
   sendPush,
   setSendPush,
   postAt,
@@ -82,12 +94,9 @@ export default function BulletinBoard({
     : null;
   const { live: publishedBulletins, scheduled } =
     splitBulletins(bulletins as BulletinPost[], nowMs, viewerEmail, isAdmin);
-  const visibleBulletins = publishedBulletins.filter(b => {
-    // Legacy posts with no audience field: respect admin-only flag, otherwise visible to all.
-    if (!b.audience || b.audience.length === 0) return isAdmin ? true : !b.isAdminOnly;
-    // New audience-targeted posts: visible only if user's role is in the audience array.
-    return (b.audience as BulletinAudienceRole[]).includes(effectiveRole as BulletinAudienceRole);
-  });
+  const visibleBulletins = publishedBulletins.filter(b =>
+    canSeeBulletin(b, { role: effectiveRole, employeeId: viewerEmployeeId }, isAdmin));
+  const pickable = pickableRecipients(employees);
 
   const everyoneSelected = audience.length === 0;
   const toggleRole = (role: BulletinAudienceRole) => {
@@ -132,10 +141,46 @@ export default function BulletinBoard({
               </div>
             </div>
 
+            <div className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">
+              <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">
+                …and / or specific people
+              </div>
+              <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
+                {pickable.map(e => {
+                  const on = recipientIds.includes(e.id);
+                  return (
+                    <button
+                      key={e.id} type="button"
+                      onClick={() => setRecipientIds(prev =>
+                        prev.includes(e.id) ? prev.filter(x => x !== e.id) : [...prev, e.id])}
+                      className={`text-xs font-bold px-2.5 py-1 rounded-lg border transition-colors ${on
+                        ? 'bg-slate-800 text-white border-slate-800'
+                        : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'}`}
+                    >
+                      {e.name}
+                    </button>
+                  );
+                })}
+                {pickable.length === 0 && (
+                  <span className="text-xs text-slate-400">No employees with an address to send to.</span>
+                )}
+              </div>
+              {recipientIds.length > 0 && (
+                <div className="text-[11px] text-slate-500 mt-1.5">
+                  {audience.length > 0
+                    ? 'Goes to the selected roles AND these people.'
+                    : 'Goes to these people only — nobody else will see it.'}
+                  <button onClick={() => setRecipientIds([])} className="ml-1.5 underline decoration-dotted font-bold">clear</button>
+                </div>
+              )}
+            </div>
+
             <label className="flex items-center gap-2.5 text-sm font-bold text-slate-700 cursor-pointer bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
               <input type="checkbox" checked={sendPush} onChange={e => setSendPush(e.target.checked)} className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500" />
               <Bell className="w-4 h-4 text-amber-500" />
-              Also send a push notification {audience.length > 0 ? 'to the selected roles' : 'to everyone'}
+              Also send a push notification {recipientIds.length > 0
+                ? (audience.length > 0 ? 'to the selected roles and people' : 'to the selected people')
+                : (audience.length > 0 ? 'to the selected roles' : 'to everyone')}
             </label>
 
             <div className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">
@@ -191,7 +236,7 @@ export default function BulletinBoard({
                       <div className="text-xs text-indigo-700 font-semibold mt-0.5">
                         Posts {new Date(b.publishAt!).toLocaleString()}
                         {b.notifyOnPublish ? ' · will notify' : ' · no notification'}
-                        {b.audience && b.audience.length > 0 ? ` · ${b.audience.join(' · ')}` : ''}
+                        {isForEveryone(b) ? '' : ` · To: ${describeAudience(b, employees)}`}
                       </div>
                       <div className="text-xs text-slate-400 mt-0.5">By {b.author}</div>
                     </div>
@@ -222,8 +267,11 @@ export default function BulletinBoard({
           {visibleBulletins.length === 0 ? <div className="text-center p-10 text-slate-400 font-medium">No bulletins to display.</div> :
             visibleBulletins.map(b => (
               <div key={b.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden relative">
-                {b.audience && b.audience.length > 0 ? (
-                  <div className="absolute top-0 right-0 bg-slate-700 text-white text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-bl-lg flex items-center gap-1 shadow-sm"><Users className="w-3 h-3" /> {b.audience.join(' · ')}</div>
+                {!isForEveryone(b) ? (
+                  <div className="absolute top-0 right-0 bg-slate-700 text-white text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-bl-lg flex items-center gap-1 shadow-sm max-w-[60%]" title={`To: ${describeAudience(b, employees)}`}>
+                    <Users className="w-3 h-3 shrink-0" />
+                    <span className="truncate">To: {describeAudience(b, employees)}</span>
+                  </div>
                 ) : b.isAdminOnly ? (
                   <div className="absolute top-0 right-0 bg-rose-500 text-white text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-bl-lg flex items-center gap-1 shadow-sm"><Users className="w-3 h-3" /> Admin Only</div>
                 ) : null}
