@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { AppData, AppSettings, TimeEntry, TimeEntryNote, TimeOffRequest, UserRole, DeletionAuditEntry, HoursBankEntry } from '../types';
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto } from '../lib/dateUtils';
+import { timeEntryLock } from '../lib/timeEntryLock';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, stepPeriod, periodOfYmd, periodRangeLabel, payDateLabel, PayPeriod } from '../lib/payPeriods';
 import { chunksForMechanic, computeHoursWorkedBetween } from '../lib/payChunkUtils';
 import TimeOffApprovalPage from './TimeOffApprovalPage';
@@ -373,8 +374,24 @@ export default function TimeMaster({
     return hrs >= open.hoursThreshold;
   };
 
+  // LOCKED PUNCHES. A punch whose crew-day is approved or waived, or whose
+  // month has been pushed, is read-only — editing it would move payroll while
+  // leaving the crew-day's employeeAH untouched (the sync skips locked days),
+  // so the two would silently disagree about the same work. See lib/timeEntryLock.
+  const lockFor = (clockIn: string, forEmail: string) => timeEntryLock({
+    clockIn,
+    userEmail: forEmail,
+    employees: appData.employees,
+    performance: appData.performance,
+    pushedMonths: appData.pushedMonths,
+    archivedDays: appData.archivedDays,
+  });
+  const entryLock = (entry: TimeEntry) => lockFor(entry.clockIn, entry.userEmail);
+
   // Admin/any edit
   const openEdit = (entry: TimeEntry) => {
+    const lk = entryLock(entry);
+    if (lk.locked) { showToastMsg(lk.message || 'That day is locked.'); return; }
     setEditingEntry(entry);
     setEditForm({
       // Hours-only entries default to the hours editor (their clock
@@ -412,6 +429,10 @@ export default function TimeMaster({
     const { employeeEmail, employeeName, date, entryMode, clockInTime, clockOutTime, hours, note } = manualForm;
     if (!employeeEmail) { showToastMsg('Pick an employee.'); return; }
     if (!date) { showToastMsg('Date is required.'); return; }
+    // A missed punch cannot be filed onto a locked day either — it would add
+    // payroll hours the crew-day can never pick up.
+    const manualLock = lockFor(`${date}T12:00:00`, employeeEmail);
+    if (manualLock.locked) { showToastMsg(manualLock.message || 'That day is locked.'); return; }
 
     let clockIn: Date;
     let clockOut: Date;
@@ -481,6 +502,10 @@ export default function TimeMaster({
   const saveEdit = () => {
     if (!editingEntry) return;
     if (!editForm.reason.trim()) { showToastMsg('Reason is required for edits.'); return; }
+    // Re-checked on save: the crew-day may have been approved while this form
+    // was open.
+    const editLock = entryLock(editingEntry);
+    if (editLock.locked) { showToastMsg(editLock.message || 'That day is locked.'); return; }
     if (!editForm.clockIn) { showToastMsg('Clock In time is required.'); return; }
 
     // Resolve the new clockIn/clockOut + manualHoursOnly flag from the
@@ -598,6 +623,8 @@ export default function TimeMaster({
       setPendingAction(null);
       showToastMsg('Entry deleted.');
     };
+    const delLock = entryLock(entry);
+    if (delLock.locked) { showToastMsg(delLock.message || 'That day is locked.'); return; }
     const warnings: string[] = [];
     if (overlapsPaidChunk(entry.userEmail, entry.clockIn, entry.clockOut)) {
       warnings.push('This entry falls in a PAID pay period (a closed pay chunk). Deleting it rewrites settled pay records.');
@@ -749,7 +776,11 @@ export default function TimeMaster({
     const expanded = expandedEntryId === entry.id;
     const inMapsUrl = entry.inLocation ? `https://www.google.com/maps?q=${entry.inLocation.lat},${entry.inLocation.lng}` : null;
     const outMapsUrl = entry.outLocation ? `https://www.google.com/maps?q=${entry.outLocation.lat},${entry.outLocation.lng}` : null;
-    const canEdit = canModify(entry);
+    // A locked punch stays visible and still takes notes — only the two
+    // actions that would move payroll are withdrawn, with the reason shown
+    // rather than a button that fails when pressed.
+    const rowLock = entryLock(entry);
+    const canEdit = canModify(entry) && !rowLock.locked;
     const canNote = canAddNoteToEntry(entry);
     const editorName = entry.editedBy
       ? (allUsers.find(u => u.email.toLowerCase() === (entry.editedBy || '').toLowerCase())?.name || entry.editedBy)
@@ -812,6 +843,16 @@ export default function TimeMaster({
               </span>
             )}
             <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusClass}`}>{status}</span>
+            {rowLock.locked && (
+              <span
+                className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-slate-100 text-slate-600 border-slate-300"
+                title={rowLock.message}
+              >
+                🔒 {rowLock.reason === 'month-pushed' ? 'Month pushed'
+                  : rowLock.reason === 'day-archived' ? 'Day archived'
+                    : `Locked · ${rowLock.crewLabel}`}
+              </span>
+            )}
             {canEdit && (
               <button onClick={() => openEdit(entry)} title="Edit entry" className="p-1.5 bg-slate-50 border border-slate-200 rounded hover:bg-slate-100 text-slate-600">
                 <Edit className="w-3.5 h-3.5" />

@@ -16,7 +16,7 @@ export const formatDate = (date: Date) => {
 // regardless of the browser's local timezone. Uses formatToParts to avoid
 // locale-specific separators or bidi marks that can appear in some
 // browsers' `format()` output for the en-CA short date.
-const formatYmdInToronto = (d: Date): string => {
+export const formatYmdInToronto = (d: Date): string => {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Toronto',
     year: 'numeric',

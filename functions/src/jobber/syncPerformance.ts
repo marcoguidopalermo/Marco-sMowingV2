@@ -33,6 +33,7 @@ const APP_DATA_DOC = `artifacts/${APP_ID}/public/data/appData/main`;
 // in doc IDs, so the id is percent-encoded for the doc path (the raw id is
 // still stored in the doc's jobberVisitId field and used as the map key).
 const MULTIDAY_COLLECTION = `artifacts/${APP_ID}/public/data/multiDayJobs`;
+const TIMEENTRIES_COLLECTION = `artifacts/${APP_ID}/public/data/timeEntries`;
 const mdjDocId = (visitId: string): string => encodeURIComponent(visitId);
 const SYNC_LOG_COLLECTION = `artifacts/${APP_ID}/private/data/syncLog`;
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
@@ -1708,7 +1709,42 @@ async function runPerformanceSync(args: {
       string,
       Array<{ startAt: string; endAt: string | null }>
     >();
-    for (const te of appData.timeEntries || []) {
+    // PUNCHES COME FROM THE SUBCOLLECTION, NOT THE DOC.
+    //
+    // These used to be read from appData.timeEntries. That field was emptied
+    // when punches moved to their own subcollection (one document per punch),
+    // so from that moment this loop iterated an empty array and NO call-in
+    // crew member got AH or timesheet intervals written — their employeeAH
+    // silently kept whatever stale value it already held, while TimeMaster and
+    // payroll went on showing the real hours. Efficiency read one number and
+    // pay read another.
+    //
+    // Bounded by the day window rather than loading the whole collection:
+    // clockIn is a sortable ISO string, so the same Toronto boundaries the
+    // in-memory filter uses can be pushed into the query. An open shift that
+    // STARTED before the window and is still running is not caught by this
+    // range — the same was true of the in-memory filter it replaces, which
+    // bucketed strictly by clock-in date, so behaviour is unchanged.
+    //
+    // The range is deliberately widened by a day either side and the EXACT
+    // in-memory filter below is left to decide. clockIn is written by clients
+    // as an ISO string whose precision is not guaranteed to match the
+    // boundaries' ("…:00Z" sorts after "…:00.000Z" lexicographically), so a
+    // tight string range could drop a punch sitting exactly on midnight. A
+    // slightly wide query costs a handful of extra documents; a narrow one
+    // loses hours.
+    const punchSnap = await db
+      .collection(TIMEENTRIES_COLLECTION)
+      .where("clockIn", ">=", shiftYmd(targetDate, -1))
+      .where("clockIn", "<", `${shiftYmd(targetDate, 2)}T`)
+      .get();
+    const punches: TimeEntryDoc[] = punchSnap.docs.map(
+      (d) => d.data() as TimeEntryDoc,
+    );
+    logger.info("timemaster_punches_loaded", {
+      date: targetDate, count: punches.length,
+    });
+    for (const te of punches) {
       const email = (te.userEmail || "").toLowerCase();
       if (!email) continue;
       const inMs = Date.parse(te.clockIn);
