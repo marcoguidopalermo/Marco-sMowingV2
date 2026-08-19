@@ -1697,6 +1697,12 @@ export interface ContractingProgressReport {
   endAt?: number;
   status: 'open' | 'invoiced';
   reportNumber: number;
+  // OVERRIDE for the client-facing invoice number this report will mint with.
+  // Absent = use the sequence (nextProgNumber), which stays the default for
+  // every new report. Set when a specific number is needed: matching one
+  // already sent on paper, or repairing a mis-sequence. See
+  // lib/contractingEdits.reportMintNumber.
+  numberOverride?: string;
   receipts: ContractingReceipt[];
   manualTime: ContractingTimeEntry[];   // manual billable time lines on this report
   snapshot?: ContractingReportSnapshot;  // frozen at invoicing

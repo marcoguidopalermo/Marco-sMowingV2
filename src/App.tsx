@@ -127,6 +127,7 @@ import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
 import { computeRosterUpdate } from './lib/rosterWrite';
+import { duplicateInvoiceNumber, normalizeInvoiceNumber, reportMintNumber, describeNumberChange } from './lib/contractingEdits';
 import {
   applyFlagToLog, applyResolutionToLog, canFlagCrewDay, canResolveFlag,
   crewDayFlaggable, noteIsUsable, openFlagFor,
@@ -4769,6 +4770,28 @@ export default function App() {
     await appendContractingAudit('report.delete', `Report #${report.reportNumber} deleted${guard.blockedBy ? '' : ' (no live invoice)'}`);
     showToastMsg(`Report #${report.reportNumber} deleted.`);
   };
+  // RENUMBER A MINTED INVOICE. That number is what the client sees and what
+  // Dave reconciles against, so unlike an open report's override this is
+  // audited every time — who, when, old → new.
+  const renumberContractingInvoice = async (invoiceId: string, nextNumber: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return false; }
+    const inv = subContractingInvoicesRef.current[invoiceId];
+    if (!inv) { showToastMsg('Invoice not found.'); return false; }
+    const want = normalizeInvoiceNumber(nextNumber);
+    if (!want) { showToastMsg('A number is required.'); return false; }
+    if (want === normalizeInvoiceNumber(inv.number)) return true;   // nothing to do
+    const clash = duplicateInvoiceNumber(want, Object.values(subContractingInvoicesRef.current), invoiceId);
+    const stage = inv.paid ? 'paid' : inv.sentAt ? 'sent' : 'minted';
+    await setDoc(doc(roleColl('contractingInvoices'), inv.id), cleanRM({ ...inv, number: want }));
+    await appendContractingAudit('invoice.renumber',
+      describeNumberChange(inv.number, want, `invoice (${stage})`)
+      + (clash ? ` — DUPLICATE of ${clash.number}` : ''));
+    showToastMsg(clash
+      ? `⚠️ Renumbered to ${want} — but ${clash.number} already uses it.`
+      : `Invoice renumbered to ${want}.`);
+    return true;
+  };
+
   // Light-touch edit log for open-report workbench actions (who/what/when).
   const logContractingEdit = async (detail: string) => {
     if (!canManageContracting) return;
@@ -4787,7 +4810,19 @@ export default function App() {
     // clock-in was removed in v1.8 — nothing to auto-attach or freeze.
     const labour = labourForReport(ended);
     const snapshot = computeReportTotals(labour, report.receipts, contractingRates, rateMapFor(appData.employees || [], contractingRates));
-    const number = nextProgNumber(Object.values(subContractingInvoicesRef.current));
+    // The sequence is the default; a report may carry an override for the
+    // cases it cannot know about (a number already sent on paper, or a
+    // mis-sequence being repaired). See lib/contractingEdits.
+    const allInvoices = Object.values(subContractingInvoicesRef.current);
+    const number = reportMintNumber(report, nextProgNumber(allInvoices));
+    // Not silent: the UI warns when the override is typed, but the clash can
+    // also appear afterwards if another invoice takes the number in between.
+    const clash = duplicateInvoiceNumber(number, allInvoices);
+    if (clash) {
+      showToastMsg(`⚠️ ${number} is already used by another invoice — minted anyway, check the numbering.`);
+      await appendContractingAudit('invoice.number.duplicate',
+        `Report #${report.reportNumber} minted as ${number}, which duplicates invoice ${clash.number}`);
+    }
     const project = subContractingProjectsRef.current[report.projectId];
     const phase = project?.phases.find(ph => ph.id === report.phaseId);
     const invoice: ContractingInvoice = {
@@ -7453,6 +7488,7 @@ export default function App() {
           onEndReport={endContractingReport}
           onSaveReport={saveContractingReport}
           onSaveInvoice={saveContractingInvoice}
+          onRenumberInvoice={renumberContractingInvoice}
           onVoidInvoice={voidContractingInvoice}
           onSaveWorkOrder={saveContractingWorkOrder}
           onDeleteWorkOrder={deleteContractingWorkOrder}

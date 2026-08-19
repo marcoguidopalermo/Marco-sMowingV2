@@ -3,6 +3,10 @@
 // Marco's performance/BH/bonus/pay. All billing math comes from lib/contracting.
 import { useEffect, useMemo, useState } from 'react';
 import {
+  dateOutsidePeriod, describeDateChange, duplicateInvoiceNumber,
+  invoiceNumberIsUsable, normalizeInvoiceNumber, reportMintNumber,
+} from '../lib/contractingEdits';
+import {
   ContractingProject, ContractingPhase, ContractingChecklistItem, ContractingTimeEntry,
   ContractingProgressReport, ContractingReceipt, ContractingInvoice, ContractingWorkOrder,
   ContractingShoppingItem, ContractingRateCard, ContractingBillingRole, ContractingStatus,
@@ -21,7 +25,7 @@ import {
   PALERMO, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor,
   projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
   projectBillables, projectCompletionPct, woAssignees, woIsAssignedTo,
-  reportIsDeletable, woStatus, woIsOverdue, compareWorkOrders, woWeekStats,
+  reportIsDeletable, woStatus, woIsOverdue, compareWorkOrders, woWeekStats, nextProgNumber,
   isContractingWorker,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
@@ -67,6 +71,9 @@ interface Props {
   onEndReport: (reportId: string) => void;
   onSaveReport: (r: ContractingProgressReport) => void;
   onSaveInvoice: (inv: ContractingInvoice) => void;
+  // Renumbering a minted invoice is audited server-side in App (who, when,
+  // old → new) — it is the number the client sees. See renumberContractingInvoice.
+  onRenumberInvoice: (invoiceId: string, nextNumber: string) => Promise<boolean>;
   onVoidInvoice: (id: string, reason: string) => void;
   onSaveWorkOrder: (w: ContractingWorkOrder) => void;
   onDeleteWorkOrder: (id: string) => void;
@@ -1144,7 +1151,7 @@ function PunchBreakdownForm({ report, contractor, rates, rateOverrides, currentU
   );
 }
 
-function OpenReport(p: Ctx & { report: ContractingProgressReport; project: ContractingProject; phase: ContractingPhase; rates: ContractingRateCard; timeEntries: ContractingTimeEntry[]; reports: ContractingProgressReport[]; contractors: Employee[]; rateOverrides: Record<string, number>; nav: Nav }) {
+function OpenReport(p: Ctx & { report: ContractingProgressReport; project: ContractingProject; phase: ContractingPhase; rates: ContractingRateCard; timeEntries: ContractingTimeEntry[]; reports: ContractingProgressReport[]; invoices: ContractingInvoice[]; contractors: Employee[]; rateOverrides: Record<string, number>; nav: Nav }) {
   const { report, canManage } = p;
   const rc = ratesOrDefault(p.rates);
   const labour = labourForReport(report);
@@ -1158,6 +1165,10 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
   const [addingMaterial, setAddingMaterial] = useState(false);
   const [editReceipt, setEditReceipt] = useState<ContractingReceipt | null>(null);
   const [editingStart, setEditingStart] = useState(false);
+  const [editingNumber, setEditingNumber] = useState(false);
+  // What this report will mint with — the override if set, else the sequence.
+  // Shown on the open report so the number is known BEFORE the invoice exists.
+  const mintNumber = reportMintNumber(report, nextProgNumber(p.invoices || []));
   const [reviewing, setReviewing] = useState(false);
   const [viewPhotos, setViewPhotos] = useState<StoredFile[] | null>(null);
   // End of the previous invoiced period on this phase (for gap/overlap check).
@@ -1170,7 +1181,18 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
   return (
     <div className="mt-2 border-t pt-2">
       <div className="flex items-end justify-between">
-        <span className="text-xs text-gray-500">Report #{report.reportNumber}</span>
+        <span className="text-xs text-gray-500">
+          Report #{report.reportNumber}
+          {canManage && (
+            <>
+              {' · will mint as '}
+              <button onClick={() => setEditingNumber(true)} className="underline decoration-dotted font-semibold" style={{ color: PALERMO.slate }}>
+                {mintNumber}
+              </button>
+              {report.numberOverride ? <span className="ml-1 text-[9px] px-1 rounded bg-amber-100 text-amber-700">override</span> : null}
+            </>
+          )}
+        </span>
         {/* Billing-period start — prominent, readable at a glance on phone. */}
         <span className="text-right">
           <span className="block text-[10px] text-gray-400 uppercase tracking-wide leading-none">Open since</span>
@@ -1238,7 +1260,34 @@ function OpenReport(p: Ctx & { report: ContractingProgressReport; project: Contr
       {breakdownCid && (() => { const c = p.contractors.find(x => x.id === breakdownCid); if (!c) return null; return (
         <PunchBreakdownForm report={report} contractor={c} rates={rc} rateOverrides={p.rateOverrides} currentUser={p.currentUser} payrollTimeEntries={p.payrollTimeEntries} onClose={() => setBreakdownCid(null)} onSave={rows => { saveReport({ manualTime: [...report.manualTime, ...rows] }); p.onLogEdit(`Added ${rows.length} day line(s) for ${c.name} from punched hours to report #${report.reportNumber}`); setBreakdownCid(null); }} />
       ); })()}
-      {editManual && <ManualLineEditForm line={editManual} rates={rc} rateOverrides={p.rateOverrides} onClose={() => setEditManual(null)} onSave={upd => { saveReport({ manualTime: report.manualTime.map(x => x.id === upd.id ? upd : x) }); p.onLogEdit(`Edited ${upd.contractorName} hours line on report #${report.reportNumber}`); setEditManual(null); }} />}
+      {editingNumber && (
+        <ReportNumberForm
+          report={report} invoices={p.invoices || []} current={mintNumber}
+          onClose={() => setEditingNumber(false)}
+          onSave={v => {
+            const next = normalizeInvoiceNumber(v);
+            saveReport({ numberOverride: next || undefined });
+            p.onLogEdit(next
+              ? `Invoice number override set to ${next} on report #${report.reportNumber}`
+              : `Invoice number override cleared on report #${report.reportNumber} (back to the sequence)`);
+            setEditingNumber(false);
+          }}
+        />
+      )}
+      {editManual && <ManualLineEditForm line={editManual} rates={rc} rateOverrides={p.rateOverrides} period={{ startAt: report.startAt, endAt: report.endAt }} onClose={() => setEditManual(null)} onSave={upd => {
+        const before = editManual;
+        saveReport({ manualTime: report.manualTime.map(x => x.id === upd.id ? upd : x) });
+        // The DATE change is called out separately with old → new. "Edited a
+        // line" answers nothing later; which day it moved from and to is the
+        // whole question when a period's totals are queried.
+        if (dateInputVal(before.clockIn) !== dateInputVal(upd.clockIn)) {
+          p.onLogEdit(describeDateChange(upd.contractorName, before.clockIn, upd.clockIn, report.reportNumber)
+            + (dateOutsidePeriod({ dateMs: upd.clockIn, startAt: report.startAt, endAt: report.endAt }).outside
+              ? ' — OUTSIDE the billed period' : ''));
+        }
+        p.onLogEdit(`Edited ${upd.contractorName} hours line on report #${report.reportNumber}`);
+        setEditManual(null);
+      }} />}
       {addingMaterial && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} addAnother onClose={() => setAddingMaterial(false)} onSave={rc2 => saveReport({ receipts: [...report.receipts, rc2] })} />}
       {editReceipt && <ReceiptForm project={p.project} uploadedBy={p.uploadedBy} currentUser={p.currentUser} initial={editReceipt} onClose={() => setEditReceipt(null)} onSave={rc2 => { saveReport({ receipts: report.receipts.map(x => x.id === rc2.id ? rc2 : x) }); p.onLogEdit(`Edited material "${rc2.description}" on report #${report.reportNumber}`); setEditReceipt(null); }} />}
       {reviewing && <ReviewConfirm report={report} project={p.project} phase={p.phase} snap={snap} onClose={() => setReviewing(false)} onConfirm={() => { p.onEndReport(report.id); setReviewing(false); }} />}
@@ -1380,16 +1429,62 @@ function BatchHoursForm({ report, contractors, rates, rateOverrides, currentUser
 }
 
 // Edit one manual/batch time line (date, hours, rate).
-function ManualLineEditForm({ line, rates, rateOverrides, onClose, onSave }: { line: ContractingTimeEntry; rates: ContractingRateCard; rateOverrides: Record<string, number>; onClose: () => void; onSave: (t: ContractingTimeEntry) => void }) {
+// Override the invoice number an OPEN report will mint with. Free to change
+// here — no invoice exists yet, so nothing client-facing has moved; the change
+// is still logged to the report's edit trail. Clearing it returns to the
+// sequence, which stays the default for every new report.
+function ReportNumberForm({ report, invoices, current, onClose, onSave }: {
+  report: ContractingProgressReport; invoices: ContractingInvoice[];
+  current: string; onClose: () => void; onSave: (v: string) => void;
+}) {
+  const [num, setNum] = useState(report.numberOverride || '');
+  const sequential = nextProgNumber(invoices);
+  const effective = num.trim() ? normalizeInvoiceNumber(num) : sequential;
+  const clash = duplicateInvoiceNumber(effective, invoices);
+  return (
+    <Modal title={`Invoice number · report #${report.reportNumber}`} onClose={onClose}>
+      <div className="text-xs text-gray-500 mb-2">
+        Next in sequence is <b>{sequential}</b>. Leave blank to use it. Set a number
+        only to match one already sent, or to repair a mis-sequence.
+      </div>
+      <Field label="Override (blank = use the sequence)">
+        <input className="inp" value={num} autoFocus placeholder={sequential}
+          onChange={e => setNum(e.target.value)} />
+      </Field>
+      <div className="text-sm mb-2">Will mint as <b style={{ color: PALERMO.slate }}>{effective}</b></div>
+      {clash && (
+        <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FDEDEC', color: '#C0392B' }}>
+          ⚠ {effective} is already used by invoice {clash.number}
+          {clash.voided ? ' (voided — its number is still reserved)' : ''}. Two invoices
+          would share one reference.
+        </div>
+      )}
+      <ModalActions onClose={onClose} onSave={() => onSave(num)} />
+    </Modal>
+  );
+}
+
+function ManualLineEditForm({ line, rates, rateOverrides, period, onClose, onSave }: { line: ContractingTimeEntry; rates: ContractingRateCard; rateOverrides: Record<string, number>; period: { startAt: number; endAt?: number }; onClose: () => void; onSave: (t: ContractingTimeEntry) => void }) {
   const def = rateOverrides[line.contractorId] ?? rateFor(line.billingRole, rates);
   const [date, setDate] = useState(dateInputVal(line.clockIn));
   const [hours, setHours] = useState(String(line.hours ?? ''));
   const [rate, setRate] = useState(String(line.rateOverride ?? def));
   const [desc, setDesc] = useState(line.description || '');
   const amt = (Number(hours) || 0) * (Number(rate) || 0);
+  // A date pushed outside the period it is billed in is a warning, not a block:
+  // the period's own boundaries are editable, and work that ran past midnight
+  // is a real case. Refusing would send Tony to delete and re-enter the line,
+  // losing its history, to do exactly the same thing.
+  const outside = dateOutsidePeriod({ dateMs: dateFromInput(date), startAt: period.startAt, endAt: period.endAt });
   return (
     <Modal title={`Edit ${line.contractorName}'s hours`} onClose={onClose}>
       <Field label="Date"><input className="inp" type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+      {outside.outside && (
+        <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FEF9E7', color: PALERMO.gold }}>
+          ⚠ {outside.message} Saved anyway if that is what you mean — the period's
+          own dates are editable too.
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-2">
         <Field label="Hours"><input className="inp" type="number" step="0.25" min="0" value={hours} onChange={e => setHours(e.target.value)} /></Field>
         <Field label="Rate ($/hr)"><input className="inp" type="number" step="5" value={rate} onChange={e => setRate(e.target.value)} /></Field>
@@ -1451,6 +1546,39 @@ function ReviewConfirm({ report, project, phase, snap, onClose, onConfirm }: { r
 }
 
 // ─────────────────────────────────────────────────────────── INVOICES ──────
+// Renumber a minted invoice. The number is what the client sees and what Dave
+// reconciles against, so the change is audited in App with old → new — and a
+// clash is WARNED about rather than blocked: matching a number already sent on
+// paper is exactly why this exists, and only Marco/Tony can reach it.
+function RenumberInvoiceForm({ invoice, invoices, onClose, onSave }: {
+  invoice: ContractingInvoice; invoices: ContractingInvoice[];
+  onClose: () => void; onSave: (next: string) => void;
+}) {
+  const [num, setNum] = useState(invoice.number || '');
+  const clash = duplicateInvoiceNumber(num, invoices, invoice.id);
+  const stage = invoice.paid ? 'paid' : invoice.sentAt ? 'sent' : 'minted';
+  return (
+    <Modal title={`Renumber ${invoice.number}`} onClose={onClose}>
+      <div className="text-xs text-gray-500 mb-2">
+        This invoice is <b>{stage}</b>. The change is recorded in the audit trail
+        with who, when and the old number.
+      </div>
+      <Field label="Invoice number">
+        <input className="inp" value={num} autoFocus onChange={e => setNum(e.target.value)} />
+      </Field>
+      {clash && (
+        <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FDEDEC', color: '#C0392B' }}>
+          ⚠ {normalizeInvoiceNumber(num)} is already used by another invoice
+          {clash.voided ? ' (voided — its number is still reserved)' : ''}. Two invoices
+          would share one reference.
+        </div>
+      )}
+      <ModalActions onClose={onClose} disabled={!invoiceNumberIsUsable(num)}
+        onSave={() => onSave(num)} />
+    </Modal>
+  );
+}
+
 function InvoicesTab(p: Ctx & { invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; projects: ContractingProject[]; nav: Nav; initialFilter: { projectId?: string; phaseId?: string } }) {
   const { canManage, nav } = p;
   const [adding, setAdding] = useState(false);
@@ -1463,6 +1591,7 @@ function InvoicesTab(p: Ctx & { invoices: ContractingInvoice[]; reports: Contrac
   const matches = (inv: ContractingInvoice) => (!projectId || inv.projectId === projectId) && (!phaseId || inv.phaseId === phaseId);
   const list = [...p.invoices].filter(inv => !inv.voided && matches(inv)).sort((a, b) => (b.issuedAt || b.createdAt || 0) - (a.issuedAt || a.createdAt || 0));
   const voidedList = [...p.invoices].filter(inv => inv.voided && matches(inv)).sort((a, b) => (b.voidedAt || 0) - (a.voidedAt || 0));
+  const [renumbering, setRenumbering] = useState<ContractingInvoice | null>(null);
   const voidInvoice = (inv: ContractingInvoice) => { const reason = prompt(`Void ${inv.number}? This releases its work back to billable. Reason:`); if (reason && reason.trim()) p.onVoidInvoice(inv.id, reason.trim()); };
 
   return (
@@ -1511,6 +1640,7 @@ function InvoicesTab(p: Ctx & { invoices: ContractingInvoice[]; reports: Contrac
                 <button onClick={() => nav.openInvoice(inv.id)} className="text-xs px-2 py-1 rounded border">View</button>
                 {canManage && stage === 'minted' && <button onClick={() => p.onSaveInvoice({ ...inv, awaitingSend: false, sentAt: Date.now(), sentBy: p.currentUser.name, dueAt: Date.now() + 14 * 86400000 })} className="text-xs px-2 py-1 rounded text-white" style={{ backgroundColor: PALERMO.slate }}>Mark sent</button>}
                 {canManage && !inv.paid && <button onClick={() => p.onSaveInvoice({ ...inv, paid: true, paidAt: Date.now(), paidBy: p.currentUser.name })} className="text-xs px-2 py-1 rounded text-white" style={{ backgroundColor: PALERMO.gold }}>Mark paid</button>}
+                {canManage && !inv.voided && <button onClick={() => setRenumbering(inv)} className="text-xs px-2 py-1 rounded border" title="Change the invoice number (audited)">Renumber</button>}
                 {canManage && <button onClick={() => voidInvoice(inv)} className="text-xs px-2 py-1 rounded text-red-500">Void</button>}
               </div>
             </div>
@@ -1538,6 +1668,7 @@ function InvoicesTab(p: Ctx & { invoices: ContractingInvoice[]; reports: Contrac
           )}
         </div>
       )}
+      {renumbering && <RenumberInvoiceForm invoice={renumbering} invoices={p.invoices} onClose={() => setRenumbering(null)} onSave={async next => { const ok = await p.onRenumberInvoice(renumbering.id, next); if (ok) setRenumbering(null); }} />}
       {adding && <CreateInvoiceForm projects={p.projects} currentUser={p.currentUser} onClose={() => setAdding(false)} onSave={inv => { p.onSaveInvoice(inv); setAdding(false); }} />}
     </div>
   );
