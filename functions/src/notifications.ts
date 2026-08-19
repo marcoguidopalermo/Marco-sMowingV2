@@ -239,6 +239,79 @@ export async function alreadySent(marker: string): Promise<boolean> {
 export async function markSent(marker: string): Promise<void> {
   await db.doc(`${PRIV}/notificationDedupe/${encodeURIComponent(marker)}`).set({at: Date.now()});
 }
+// ── SCHEDULED BULLETINS ────────────────────────────────────────────────────
+// Publish any bulletin whose post time has arrived, and send its announcement
+// if one was asked for. Runs from the scheduled pass alongside the quiet-hours
+// flush.
+//
+// MISSED WINDOWS SELF-HEAL. The condition is "post time has passed and we have
+// not notified yet" — not "post time is within this run's window". So if the
+// function fails, or nothing runs overnight, the bulletin publishes on the
+// next pass. Late, never skipped. That also means no catch-up bookkeeping is
+// needed: the query IS the catch-up.
+//
+// Board visibility does not depend on this function at all. The client derives
+// it from publishAt against the clock, so a bulletin appears the moment its
+// time comes even if this has not run yet; what this adds is the notification
+// and the published stamp.
+export async function runScheduledBulletins(
+  nowMs: number, warnings: string[],
+): Promise<void> {
+  const ref = db.doc(`${PUB}/appData/main`);
+  const snap = await ref.get();
+  const bulletins = ((snap.data() as any)?.bulletins || []) as any[];
+  if (!Array.isArray(bulletins) || bulletins.length === 0) return;
+
+  const due = bulletins.filter((b) =>
+    b && typeof b.publishAt === "number" && Number.isFinite(b.publishAt) &&
+    b.publishAt <= nowMs && !b.published);
+  if (due.length === 0) return;
+
+  // Stamp them published FIRST, with a targeted field update so no other part
+  // of the document is touched. The stamp is informational — the client reads
+  // the clock — but it keeps the Scheduled section honest.
+  const next = bulletins.map((b) => (due.some((d) => d.id === b.id) ?
+    {...b, published: true, publishedAt: nowMs} : b));
+  try {
+    await ref.update({bulletins: next});
+  } catch (err) {
+    warnings.push(`scheduled_bulletin_stamp_failed ${String(err)}`);
+    // Fall through: the notification still matters more than the stamp, and
+    // the dedupe marker below is what actually prevents a repeat.
+  }
+
+  const emps = await loadEmployees();
+  for (const b of due) {
+    if (!b.notifyOnPublish) continue;
+    // The durable guard against sending twice — independent of the document,
+    // so a stale whole-document save that reverts `published` cannot cause a
+    // second push.
+    const marker = `bulletin-publish-${b.id}`;
+    if (await alreadySent(marker)) continue;
+    try {
+      // Same audience rules as posting live: a role group when one was picked,
+      // everyone otherwise.
+      const targets = Array.isArray(b.audience) && b.audience.length > 0 ?
+        await emailsForRole(b.audience) :
+        emps.map(empEmail);
+      await sendNotification(
+        targets.filter(Boolean), "announcements",
+        {
+          title: String(b.title || "Announcement"),
+          body: String(b.content || "").slice(0, 160),
+          url: "/#bulletins",
+        },
+      );
+      await markSent(marker);
+      warnings.push(`scheduled_bulletin_published id=${b.id}`);
+    } catch (err) {
+      // No marker written — the next pass tries again. A missed bulletin is
+      // worse than a late one.
+      warnings.push(`scheduled_bulletin_push_failed id=${b.id} ${String(err)}`);
+    }
+  }
+}
+
 // Called from the scheduled pass: trim old dedupe markers + old log entries.
 export async function cleanupNotifications(): Promise<void> {
   const cutoff = Date.now() - 400 * 24 * 3600 * 1000;

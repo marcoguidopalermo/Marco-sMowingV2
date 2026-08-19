@@ -127,6 +127,7 @@ import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
 import { computeRosterUpdate } from './lib/rosterWrite';
+import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './lib/scheduledBulletins';
 import { duplicateInvoiceNumber, normalizeInvoiceNumber, reportMintNumber, describeNumberChange } from './lib/contractingEdits';
 import {
   applyFlagToLog, applyResolutionToLog, canFlagCrewDay, canResolveFlag,
@@ -605,6 +606,9 @@ export default function App() {
   const [newContent, setNewContent] = useState('');
   const [bulletinAudience, setBulletinAudience] = useState<BulletinAudienceRole[]>([]);
   const [bulletinSendPush, setBulletinSendPush] = useState(false);
+  // datetime-local string. Empty = post now (the default, and how the board
+  // has always behaved).
+  const [bulletinPostAt, setBulletinPostAt] = useState('');
 
   // Core App Data Structure
   const [appData, setAppData] = useState<AppData>({
@@ -797,7 +801,11 @@ export default function App() {
     const list: any[] = appData.bulletins || [];
     const reads = appData.bulletinReads || {};
     const lastReadAt = reads[bulletinReadKey] || 0;
+    const nowMs = Date.now();
     return list.filter((b: any) => {
+      // A queued bulletin is not unread — it has not happened yet. Time-derived
+      // like every other read of publishAt.
+      if (isScheduled(b, nowMs)) return false;
       // Same audience filter the Bulletin Board view itself uses.
       const aud = (b.audience || []) as string[];
       if (aud.length === 0) {
@@ -6468,6 +6476,20 @@ export default function App() {
       setAudience={setBulletinAudience}
       sendPush={bulletinSendPush}
       setSendPush={setBulletinSendPush}
+      postAt={bulletinPostAt}
+      setPostAt={setBulletinPostAt}
+      viewerEmail={displayEmail}
+      onReschedule={(id, next) => {
+        if (!can('canPostBulletins', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+        const ms = next ? new Date(next).getTime() : NaN;
+        if (!Number.isFinite(ms)) { showToastMsg('Pick a valid date and time.'); return; }
+        syncToCloud({
+          ...appData,
+          bulletins: appData.bulletins.map((x: any) =>
+            x.id === id ? { ...x, publishAt: ms } : x),
+        });
+        showToastMsg(`Rescheduled for ${new Date(ms).toLocaleString()}.`);
+      }}
       onPost={() => {
         if (!can('canPostBulletins', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
         if (!newTitle || !newContent) return;
@@ -6484,6 +6506,18 @@ export default function App() {
           author: displayEmail,
         };
         if (bulletinAudience.length > 0) newBulletin.audience = bulletinAudience;
+        // SCHEDULED: hold the bulletin (and its notification) until the chosen
+        // moment. A time in the past posts immediately rather than being
+        // treated as queued — the clock decides, so a past timestamp is just
+        // "now" (see lib/scheduledBulletins).
+        const postAtMs = bulletinPostAt ? new Date(bulletinPostAt).getTime() : NaN;
+        const isScheduledPost = Number.isFinite(postAtMs) && postAtMs > nowMs;
+        if (isScheduledPost) {
+          newBulletin.publishAt = postAtMs;
+          // The notify choice is carried on the record and honoured when it
+          // fires, not now — that is the whole point of scheduling it.
+          newBulletin.notifyOnPublish = bulletinSendPush;
+        }
         // Bump the poster's own lastReadAt to this bulletin's timestamp so
         // they don't briefly see "1 unread" for their own post before the
         // on-view effect resolves it.
@@ -6493,6 +6527,19 @@ export default function App() {
         syncToCloud({ ...appData, bulletins: [newBulletin, ...appData.bulletins], bulletinReads: nextReads });
         // Optional web push — fan out to the same audience that can see the
         // post. Best-effort; a push failure never blocks the bulletin itself.
+        if (isScheduledPost) {
+          // Nothing is sent now. The scheduled pass publishes it and sends the
+          // announcement then, so quiet hours are evaluated at DELIVERY time.
+          const notice = quietHoursNotice({
+            publishAt: postAtMs, notify: bulletinSendPush, hour: localHourOf(postAtMs),
+          });
+          showToastMsg(notice
+            ? `Scheduled for ${new Date(postAtMs).toLocaleString()} — notification will arrive at 8:00 AM.`
+            : `Scheduled for ${new Date(postAtMs).toLocaleString()}.`);
+          setNewTitle(''); setNewContent(''); setBulletinAudience([]);
+          setBulletinSendPush(false); setBulletinPostAt('');
+          return;
+        }
         if (bulletinSendPush) {
           const payload: any = { bulletinId: bid, title: newTitle, body: newContent.slice(0, 160) };
           if (bulletinAudience.length > 0) { payload.audience = 'role'; payload.roleGroup = bulletinAudience; }
@@ -6506,11 +6553,21 @@ export default function App() {
             .then(() => showToastMsg(heldMsg))
             .catch(() => showToastMsg('Bulletin posted · push could not be sent'));
         }
-        setNewTitle(''); setNewContent(''); setBulletinAudience([]); setBulletinSendPush(false);
+        setNewTitle(''); setNewContent(''); setBulletinAudience([]); setBulletinSendPush(false); setBulletinPostAt('');
       }}
       onDelete={(id) => {
-        if (!can('canDeleteBulletins', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+        const target: any = (appData.bulletins || []).find((x: any) => x.id === id);
+        // Cancelling something you queued and that nobody has seen is not the
+        // same act as deleting a posted bulletin, so it does not need the
+        // delete permission — only authorship (or admin), and only until it
+        // goes. Afterwards it is an ordinary bulletin under the ordinary rule.
+        const cancellable = target
+          && canEditScheduled(target, Date.now(), displayEmail, isAdmin);
+        if (!cancellable && !can('canDeleteBulletins', effectiveRole)) {
+          showToastMsg(PERMISSION_DENIED); return;
+        }
         syncToCloud({ ...appData, bulletins: appData.bulletins.filter(x => x.id !== id) });
+        if (cancellable) showToastMsg('Scheduled bulletin cancelled.');
       }}
     />
   );

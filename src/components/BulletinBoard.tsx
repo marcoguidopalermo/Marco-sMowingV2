@@ -1,6 +1,16 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { Megaphone, PenTool, Users, Trash2, Calendar as CalendarIcon, Bell } from 'lucide-react';
-import type { BulletinAudienceRole, UserRole } from '../types';
+import { Megaphone, PenTool, Users, Trash2, Calendar as CalendarIcon, Bell, Clock } from 'lucide-react';
+import type { BulletinAudienceRole, BulletinPost, UserRole } from '../types';
+import { localHourOf, quietHoursNotice, splitBulletins } from '../lib/scheduledBulletins';
+
+// A ms timestamp as a <input type="datetime-local"> value, in the viewer's own
+// clock — the same clock they picked it in.
+const toLocalInput = (ms: number): string => {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    + `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
 
 const ROLE_OPTIONS: { value: BulletinAudienceRole; label: string }[] = [
   { value: 'admin', label: 'Admins' },
@@ -24,8 +34,15 @@ interface BulletinBoardProps {
   setAudience: Dispatch<SetStateAction<BulletinAudienceRole[]>>;
   sendPush: boolean;
   setSendPush: Dispatch<SetStateAction<boolean>>;
+  // Scheduled posting. Empty string = post now, which is the default and the
+  // behaviour the board has always had.
+  postAt: string;
+  setPostAt: Dispatch<SetStateAction<string>>;
+  viewerEmail: string;
   onPost: () => void;
   onDelete: (id: string) => void;
+  /** Reschedule a queued bulletin (datetime-local string). */
+  onReschedule: (id: string, postAt: string) => void;
 }
 
 export default function BulletinBoard({
@@ -42,10 +59,30 @@ export default function BulletinBoard({
   setAudience,
   sendPush,
   setSendPush,
+  postAt,
+  setPostAt,
+  viewerEmail,
   onPost,
   onDelete,
+  onReschedule,
 }: BulletinBoardProps) {
-  const visibleBulletins = bulletins.filter(b => {
+  // Re-derived each render so a queued bulletin flips to live on the next
+  // render after its moment, without waiting for the server. Visibility is
+  // the clock's business, not a flag's — see lib/scheduledBulletins.
+  const nowMs = Date.now();
+  // Warned at compose time, not discovered at 6am: a push scheduled inside
+  // quiet hours still holds to 8:00 AM, and the poster should know before they
+  // rely on it.
+  const quietNotice = postAt
+    ? quietHoursNotice({
+      publishAt: new Date(postAt).getTime(),
+      notify: sendPush,
+      hour: localHourOf(new Date(postAt).getTime()),
+    })
+    : null;
+  const { live: publishedBulletins, scheduled } =
+    splitBulletins(bulletins as BulletinPost[], nowMs, viewerEmail, isAdmin);
+  const visibleBulletins = publishedBulletins.filter(b => {
     // Legacy posts with no audience field: respect admin-only flag, otherwise visible to all.
     if (!b.audience || b.audience.length === 0) return isAdmin ? true : !b.isAdminOnly;
     // New audience-targeted posts: visible only if user's role is in the audience array.
@@ -101,8 +138,82 @@ export default function BulletinBoard({
               Also send a push notification {audience.length > 0 ? 'to the selected roles' : 'to everyone'}
             </label>
 
+            <div className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">
+              <label className="flex items-center gap-2.5 text-sm font-bold text-slate-700">
+                <Clock className="w-4 h-4 text-slate-500" />
+                Post at
+                <input
+                  type="datetime-local" value={postAt}
+                  onChange={e => setPostAt(e.target.value)}
+                  className="border border-slate-300 rounded-lg px-2 py-1 text-sm font-normal"
+                />
+                {postAt && (
+                  <button onClick={() => setPostAt('')} className="text-xs font-bold text-slate-500 underline decoration-dotted">
+                    clear
+                  </button>
+                )}
+              </label>
+              <div className="text-[11px] text-slate-500 mt-1">
+                {postAt
+                  ? 'Held until then. Only you and admins can see it before it goes.'
+                  : 'Leave blank to post now.'}
+              </div>
+              {postAt && quietNotice && (
+                <div className="text-[11px] mt-1.5 px-2 py-1 rounded bg-amber-50 border border-amber-200 text-amber-800">
+                  ⚠ {quietNotice}
+                </div>
+              )}
+            </div>
+
             <div className="flex justify-end items-center mt-2">
               <button onClick={onPost} disabled={!newTitle || !newContent} className="bg-lime-500 hover:bg-lime-600 text-slate-900 px-6 py-2 rounded-xl font-bold transition-colors shadow-sm disabled:opacity-50">Post Bulletin</button>
+            </div>
+          </div>
+        )}
+
+        {scheduled.length > 0 && (
+          <div className="mb-5">
+            <div className="flex items-center gap-2 mb-2">
+              <Clock className="w-4 h-4 text-indigo-500" />
+              <span className="text-[11px] font-black uppercase tracking-widest text-indigo-600">
+                Scheduled · {scheduled.length}
+              </span>
+              <span className="text-[11px] text-slate-400">
+                not visible to anyone else yet
+              </span>
+            </div>
+            <div className="space-y-2">
+              {scheduled.map(b => (
+                <div key={b.id} className="bg-indigo-50/60 rounded-2xl border border-indigo-200 p-4">
+                  <div className="flex items-start justify-between gap-3 flex-wrap">
+                    <div className="min-w-0">
+                      <h3 className="font-bold text-slate-800">{b.title}</h3>
+                      <div className="text-xs text-indigo-700 font-semibold mt-0.5">
+                        Posts {new Date(b.publishAt!).toLocaleString()}
+                        {b.notifyOnPublish ? ' · will notify' : ' · no notification'}
+                        {b.audience && b.audience.length > 0 ? ` · ${b.audience.join(' · ')}` : ''}
+                      </div>
+                      <div className="text-xs text-slate-400 mt-0.5">By {b.author}</div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <input
+                        type="datetime-local"
+                        value={toLocalInput(b.publishAt!)}
+                        onChange={e => onReschedule(b.id, e.target.value)}
+                        className="border border-indigo-300 rounded-lg px-2 py-1 text-xs bg-white"
+                        title="Change when this posts"
+                      />
+                      <button
+                        onClick={() => onDelete(b.id)}
+                        className="text-xs font-bold text-rose-500 hover:text-rose-700 flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-rose-50"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> Cancel
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed mt-2">{b.content}</div>
+                </div>
+              ))}
             </div>
           </div>
         )}

@@ -2074,6 +2074,25 @@ export interface BulletinPost {
   author: string;
   audience?: BulletinAudienceRole[];
   isAdminOnly?: boolean;
+  // ── SCHEDULED POSTING ───────────────────────────────────────────────────
+  // When set and still in the future, the bulletin is QUEUED: hidden from the
+  // board except for its author and admins, who see it in a "Scheduled"
+  // section and can edit or cancel it until it goes.
+  //
+  // Visibility is derived from this timestamp, NOT from the `published` flag
+  // below. That is deliberate: bulletins live on the main appData doc, which
+  // every whole-document save rewrites, so a stale client could revert a flag
+  // — but it cannot revert the passage of time. The worst a lost flag can
+  // cause is a duplicate notification, and even that is guarded server-side by
+  // a dedupe marker. A bulletin that silently never appears would be the one
+  // failure this feature cannot have.
+  publishAt?: number;
+  // Send the announcement push when it publishes (the notify checkbox, kept
+  // until the moment it fires rather than at the moment it was written).
+  notifyOnPublish?: boolean;
+  // Stamped by the scheduled publisher. Informational — see the note above.
+  published?: boolean;
+  publishedAt?: number;
 }
 
 // ── RoleMaster ──────────────────────────────────────────────────────────

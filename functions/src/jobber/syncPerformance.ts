@@ -15,7 +15,9 @@ import {makeJobberClient, JobberClient, sleep} from "./client.js";
 import {BH_REGEX, ParsedBh, parseBh, stripBhTag} from "./bhParser.js";
 import {runArchivePass} from "./archive.js";
 import {runRoleGeneration} from "./roleMaster.js";
-import {runNotificationScan, runQuietFlush} from "../notifications.js";
+import {
+  runNotificationScan, runQuietFlush, runScheduledBulletins,
+} from "../notifications.js";
 import {runStorageMeasurement} from "./storageMeasure.js";
 
 if (!admin.apps.length) {
@@ -2974,6 +2976,19 @@ async function runPerformanceSync(args: {
           error: err instanceof Error ? err.message : String(err),
         });
         summary.warnings.push("quiet_flush_error");
+      }
+      // Scheduled bulletins — publish anything whose post time has arrived and
+      // send its announcement. Isolated: never fails the sync. Self-healing by
+      // construction: the condition is "time has passed and not yet notified",
+      // so a failed or skipped run publishes on the next pass rather than
+      // dropping the bulletin.
+      try {
+        await runScheduledBulletins(Date.now(), summary.warnings);
+      } catch (err) {
+        logger.warn("scheduled bulletins failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        summary.warnings.push("scheduled_bulletin_error");
       }
       // Storage-health measurement (bounded: main-doc read + count()/sampled
       // collection sizes, no full scans). Isolated: never fails the sync.
