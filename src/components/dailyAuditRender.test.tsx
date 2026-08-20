@@ -186,3 +186,39 @@ test('nothing calls this an error or a violation', () => {
   }
   assert.ok(html.includes('Needs attention'));
 });
+
+console.log('\nApproval notes in the audit view');
+const withNote = (note: string, by?: string) => appData({
+  performance: {
+    [yesterday]: {
+      'crew-1': {
+        division: 'Lawn Division', crewNumber: 3, isAdHoc: false,
+        jobs: [{ bh: 12, title: 'Mow Elm St' }],
+        employeeAH: { e1: 8, e2: 8 }, deductions: {}, approvalStatus: 'approved',
+        approvalNote: note,
+        ...(by ? { approvalNoteBy: { email: 'j@x.test', name: by } } : {}),
+      },
+    },
+  },
+} as any);
+
+test("the manager's explanation appears with the numbers it answers", () => {
+  const html = render({ data: withNote('Truck broke down, 2 hrs waiting on a tow.', 'Jonah Lahtinen') });
+  assert.ok(html.includes('Explained by the manager · 1'));
+  assert.ok(html.includes('Truck broke down, 2 hrs waiting on a tow.'));
+  assert.ok(html.includes('Lawn Division #3'));
+  assert.ok(html.includes('12 BH'), 'the figure the note explains is beside it');
+  assert.ok(html.includes('16 AH'));
+  assert.ok(html.includes('75%'));
+  assert.ok(html.includes('Jonah Lahtinen'));
+});
+test('a date with no notes shows no Explained section', () => {
+  assert.ok(!render().includes('Explained by the manager'));
+});
+test('the crew-day detail itself is still NOT duplicated here', () => {
+  // The note plus its figures — not the full card. Job titles stay on the
+  // entry board, which is where the day is reviewed.
+  const html = render({ data: withNote('Trainee first week.') });
+  assert.ok(html.includes('Trainee first week.'));
+  assert.ok(!html.includes('Mow Elm St'));
+});

@@ -236,3 +236,40 @@ test('an audited day carries who signed it off and what they saw', () => {
 test('today is never in the history — it is not yesterday yet', () => {
   assert.ok(!hist().some(d => d.date === '2026-08-18'));
 });
+
+console.log('\nApproval notes reach the auditor');
+test('a crew-day with a note is surfaced with the numbers it explains', () => {
+  const a = buildDailyAudit(base({
+    appData: { performance: { [DATE]: { 'crew-1': log({
+      approvalNote: 'Truck broke down, 2 hrs waiting on a tow.',
+      approvalNoteBy: { email: 'jonah@x.test', name: 'Jonah Lahtinen' },
+      approvalNoteAt: 1,
+    }) } } },
+  }));
+  assert.equal(a.explained.length, 1);
+  assert.equal(a.explained[0].approvalNote, 'Truck broke down, 2 hrs waiting on a tow.');
+  assert.equal(a.explained[0].approvalNoteBy, 'Jonah Lahtinen');
+  // The point is the note ARRIVES WITH the figures that prompted the question.
+  assert.equal(a.explained[0].cBH, 12);
+  assert.equal(a.explained[0].cAH, 16);
+  assert.equal(a.explained[0].rawEfficiency, 75);
+});
+test('a day with no notes has an empty explained list, not a stray row', () => {
+  assert.deepEqual(buildDailyAudit(base()).explained, []);
+});
+test('a blank or whitespace note does not count as an explanation', () => {
+  for (const n of ['', '   ']) {
+    const a = buildDailyAudit(base({
+      appData: { performance: { [DATE]: { 'crew-1': log({ approvalNote: n }) } } },
+    }));
+    assert.deepEqual(a.explained, [], `note=${JSON.stringify(n)}`);
+  }
+});
+test('the note falls back to the approver when no note author is stamped', () => {
+  const a = buildDailyAudit(base({
+    appData: { performance: { [DATE]: { 'crew-1': log({
+      approvalNote: 'Trainee first week.', approvedByName: 'Liam Asselstine',
+    }) } } },
+  }));
+  assert.equal(a.explained[0].approvalNoteBy, 'Liam Asselstine');
+});

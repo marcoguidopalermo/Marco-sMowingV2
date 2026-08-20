@@ -3,7 +3,7 @@
 //   npm test -- performanceMonths
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { monthSettlementStatus, logHasRealWork, logActualHours } from './performanceMonths';
+import { monthSettlementStatus, logHasRealWork, logActualHours, extractMonth } from './performanceMonths';
 import { scanOutstandingCrewDays } from './approvalOversight';
 
 const log = (o: any) => ({ division: 'Lawn Division', crewNumber: 1, isAdHoc: false, jobs: [], employeeAH: {}, ...o } as any);
@@ -66,4 +66,37 @@ test('the finalize gate and the outstanding banner agree on which days matter', 
   const banner = scanOutstandingCrewDays(perf, '2026-08-01').map(o => o.crewId);
   assert.deepEqual(gate, ['c1']);
   assert.deepEqual(banner, ['c1']); // placeholder c2 hidden from BOTH — reconciled
+});
+
+console.log('\nThe approval note survives the month push');
+test('extractMonth carries the note, its author and its timestamp onto the sheet', () => {
+  // The explanation must survive with the day it explains — a month sheet that
+  // kept the odd number and dropped the reason for it would be worse than
+  // useless to whoever reads it later.
+  const perf = {
+    '2026-08-14': {
+      c1: {
+        division: 'Lawn Division', crewNumber: 3, isAdHoc: false,
+        jobs: [{ bh: 12 }], employeeAH: { e1: 16 }, deductions: {},
+        approvalStatus: 'approved',
+        approvalNote: 'Truck broke down, 2 hrs waiting on a tow.',
+        approvalNoteBy: { email: 'jonah@x.test', name: 'Jonah Lahtinen' },
+        approvalNoteAt: 1787000000000,
+      },
+    },
+    '2026-09-02': { c2: { division: 'Lawn Division', crewNumber: 3, isAdHoc: false, jobs: [], employeeAH: {}, deductions: {} } },
+  } as any;
+  const sheet = extractMonth(perf, '2026-08');
+  const carried = sheet['2026-08-14'].c1 as any;
+  assert.equal(carried.approvalNote, 'Truck broke down, 2 hrs waiting on a tow.');
+  assert.equal(carried.approvalNoteBy.name, 'Jonah Lahtinen');
+  assert.equal(carried.approvalNoteAt, 1787000000000);
+  assert.ok(!sheet['2026-09-02'], 'only the pushed month goes to the sheet');
+});
+test('a day with no note pushes cleanly rather than carrying empty keys', () => {
+  const perf = {
+    '2026-08-14': { c1: { division: 'L', crewNumber: 1, isAdHoc: false, jobs: [], employeeAH: {}, deductions: {} } },
+  } as any;
+  const carried = extractMonth(perf, '2026-08')['2026-08-14'].c1 as any;
+  assert.equal('approvalNote' in carried, false);
 });

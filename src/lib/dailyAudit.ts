@@ -55,6 +55,9 @@ export interface AuditCrewRow {
   openFlag?: CrewDayFlag;
   /** Every flag ever raised here, open or resolved — the permanent record. */
   flagCount: number;
+  /** The manager's explanation of the day, written at approval. */
+  approvalNote?: string;
+  approvalNoteBy?: string;
 }
 
 export interface AuditUnassignedPerson {
@@ -85,6 +88,13 @@ export interface DailyAudit {
   };
   /** Set once somebody has signed the date off. */
   audited?: CrewDayAudit;
+  /**
+   * Crew-days carrying a manager's explanation. Surfaced separately so the
+   * auditor reads the reasons for a date without the full crew-day detail the
+   * entry board already shows — the explanation is what he needs here, with
+   * just enough of the numbers to know which figure it answers.
+   */
+  explained: AuditCrewRow[];
 }
 
 const round1 = (n: number): number => Math.round(n * 10) / 10;
@@ -182,6 +192,8 @@ export function buildDailyAudit(input: {
       approvalStatus: (log.approvalStatus || 'pending') as PerformanceLog['approvalStatus'] & string,
       openFlag,
       flagCount: flagHistoryFor(input.flags, date, crewId).length,
+      approvalNote: log.approvalNote,
+      approvalNoteBy: log.approvalNoteBy?.name || log.approvedByName,
     });
   }
 
@@ -224,6 +236,7 @@ export function buildDailyAudit(input: {
       unapproved: crews.filter(c => c.approvalStatus !== 'approved').length,
     },
     audited: input.audits[date],
+    explained: crews.filter(c => (c.approvalNote || '').trim().length > 0),
   };
 }
 

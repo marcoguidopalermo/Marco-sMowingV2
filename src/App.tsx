@@ -6282,16 +6282,24 @@ export default function App() {
         return ok !== false;
       }}
       isManager={isManager}
-      onApprove={(crewId, log) => {
+      onApprove={(crewId, log, approvalNote) => {
         if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
         if (isArchivedDate(perfDate)) { showToastMsg('Archived day — read only.'); return; }
         if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+        const trimmedNote = (approvalNote || '').trim();
         const approvedLog: PerformanceLog = {
           ...log,
           approvalStatus: 'approved',
           approvedAt: new Date().toISOString(),
           approvedBy: displayEmail,
           approvedByName: displayName,
+          // Optional. Stamped with who and when so it reads as somebody's
+          // account of the day rather than an anonymous label.
+          ...(trimmedNote ? {
+            approvalNote: trimmedNote,
+            approvalNoteBy: { email: displayEmail, name: displayName || displayEmail },
+            approvalNoteAt: Date.now(),
+          } : {}),
         };
         const newDailyLogs = { ...dailyLogs, [crewId]: approvedLog };
         setDailyLogs(newDailyLogs);
@@ -6308,6 +6316,42 @@ export default function App() {
           userRole: effectiveRole,
         });
         showToastMsg("Approved & locked.");
+      }}
+      onSaveApprovalNote={(crewId, note) => {
+        if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }
+        if (isArchivedDate(perfDate)) { showToastMsg('Archived day — read only.'); return; }
+        if (!can('canApprovePerformance', effectiveRole)) { showToastMsg(PERMISSION_DENIED); return; }
+        const log = dailyLogs[crewId];
+        if (!log) return;
+        const trimmed = (note || '').trim();
+        // PURE METADATA. The note is an explanation, not pay data, so editing
+        // it leaves approvalStatus and every number exactly where they were —
+        // an approved day stays approved, and nothing re-enters the sync.
+        // Clearing it removes the stamp too rather than leaving an author
+        // attached to nothing.
+        const nextLog: PerformanceLog = trimmed
+          ? {
+            ...log,
+            approvalNote: trimmed,
+            approvalNoteBy: { email: displayEmail, name: displayName || displayEmail },
+            approvalNoteAt: Date.now(),
+          }
+          : { ...log, approvalNote: undefined, approvalNoteBy: undefined, approvalNoteAt: undefined };
+        setDailyLogs(prev => ({ ...prev, [crewId]: nextLog }));
+        const newPerf = { ...appData.performance };
+        newPerf[perfDate] = { ...(newPerf[perfDate] || {}), [crewId]: nextLog };
+        syncToCloud({ ...appData, performance: newPerf });
+        logPerfActivity({
+          type: 'approval_note_saved',
+          targetDate: perfDate,
+          crewId,
+          crewLabel: `${log.division} #${log.crewNumber}`,
+          userId: user?.uid || displayEmail,
+          userName: displayName,
+          userRole: effectiveRole,
+          reasonNote: trimmed || '(cleared)',
+        });
+        showToastMsg(trimmed ? 'Approval note saved.' : 'Approval note cleared.');
       }}
       onUnapprove={(crewId) => {
         if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return; }

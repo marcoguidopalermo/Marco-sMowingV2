@@ -753,6 +753,7 @@ export type PerfActivityType =
   | 'crew_day_flagged'
   | 'crew_day_flag_resolved'
   | 'crew_day_audited'
+  | 'approval_note_saved'
   | 'chunk_marked_paid'
   | 'chunk_payment_reversed'
   | 'performance_month_pushed'
@@ -982,6 +983,22 @@ export interface PerformanceLog {
   // because isBonusEligible is strict === 'approved', it is excluded
   // from bonus/MTD by construction — a waived day never counts.
   approvalStatus?: 'pending' | 'approved' | 'waived';
+  // APPROVAL NOTE — the manager's explanation of an unusual day, written at
+  // approval time: "truck broke down, 2 hrs waiting on a tow", "trainee first
+  // week". OPTIONAL by design: most days need no explanation, and requiring
+  // one would train people to type "n/a", which is worse than silence because
+  // it looks like an answer.
+  //
+  // Its purpose is to reach the auditor BEFORE a flag does — an odd-looking
+  // number with an ordinary explanation beside it costs nobody a round-trip.
+  // It is pure metadata: writing or editing it never touches approval state,
+  // BH, AH, deductions or any pay figure.
+  //
+  // Rides into the month sheet with the rest of the log, so the explanation
+  // survives with the day it explains.
+  approvalNote?: string;
+  approvalNoteBy?: { email: string; name: string };
+  approvalNoteAt?: number;
   approvedAt?: string;
   approvedBy?: string;
   approvedByName?: string;

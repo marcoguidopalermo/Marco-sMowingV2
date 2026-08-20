@@ -99,7 +99,10 @@ interface PerformanceBoardProps {
   // all write immediately). Same merge path onSaveDaily uses.
   onPersistCrewDay: (crewId: string, log: PerformanceLog) => void | Promise<boolean>;
   isManager: boolean;
-  onApprove: (crewId: string, log: PerformanceLog) => void;
+  onApprove: (crewId: string, log: PerformanceLog, approvalNote?: string) => void;
+  // Edit or clear the approval note after the fact. Pure metadata — never
+  // touches approval state or any number.
+  onSaveApprovalNote: (crewId: string, note: string) => void;
   onUnapprove: (crewId: string) => void;
   // Waive: mark a crew-day as "doesn't require approval" with a
   // required reason. Terminal/locked like approve. onUnwaive reopens
@@ -193,6 +196,65 @@ export function ScopeHistoryLines({ ledger, className = '' }: { ledger: MultiDay
   );
 }
 
+// The approval dialog, and the same box again for editing the note later.
+//
+// The note is OPTIONAL and the confirm button never depends on it — requiring
+// an explanation for every day would train people to type "n/a", which reads
+// like an answer and is worse than an empty field. Most days need nothing said.
+function ApprovalNoteModal({
+  title, subtitle, warning, initial, confirmLabel, allowEmpty, onClose, onSave,
+}: {
+  title: string;
+  subtitle?: string;
+  warning?: string;
+  initial: string;
+  confirmLabel: string;
+  /** Saving an empty box clears the note rather than being a no-op. */
+  allowEmpty?: boolean;
+  onClose: () => void;
+  onSave: (note: string) => void;
+}) {
+  const [note, setNote] = useState(initial);
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5">
+        <h3 className="text-lg font-bold text-slate-800">{title}</h3>
+        {subtitle && <div className="text-[12px] text-slate-500 mt-0.5">{subtitle}</div>}
+        {warning && (
+          <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-[12px] text-amber-800">
+            ⚠️ {warning}
+          </div>
+        )}
+        <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mt-3 mb-1">
+          Approval note <span className="font-medium text-slate-400 normal-case tracking-normal">· optional</span>
+        </label>
+        <textarea
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          rows={3}
+          autoFocus
+          className="w-full rounded-lg border border-slate-300 p-2 text-[13px]"
+          placeholder="e.g. truck broke down, 2 hrs waiting on a tow"
+        />
+        <div className="text-[11px] text-slate-400 mt-1">
+          Anything unusual about the day. It shows with these numbers wherever they
+          are reviewed, so an odd figure arrives already explained.
+        </div>
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-[12px] font-bold text-slate-500">Cancel</button>
+          <button
+            onClick={() => onSave(note)}
+            disabled={!allowEmpty && false}
+            className="rounded-lg bg-emerald-600 hover:bg-emerald-700 px-4 py-1.5 text-[12px] font-black uppercase tracking-widest text-white"
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PerformanceBoard({
   performance,
   pushedMonths,
@@ -222,6 +284,7 @@ export default function PerformanceBoard({
   onPersistCrewDay,
   isManager,
   onApprove,
+  onSaveApprovalNote,
   onUnapprove,
   onWaive,
   onUnwaive,
@@ -417,6 +480,11 @@ export default function PerformanceBoard({
   // position at click time so bottom-of-list rows flip the menu upward
   // instead of clipping below the viewport.
   const [rowMenuDir, setRowMenuDir] = useState<'down' | 'up'>('down');
+  // Approve dialog — carries the optional explanation of an unusual day.
+  const [approving, setApproving] = useState<
+    { crewId: string; log: PerformanceLog; hasOpenShift: boolean } | null>(null);
+  // Editing an existing note on an already-approved day.
+  const [editingNote, setEditingNote] = useState<{ crewId: string; note: string } | null>(null);
   // Open flags across every date — the tab badge. Counted here rather than in
   // the audit view so the number is visible without opening the tab.
   // Can the OPEN date be flagged at all? A pushed month or a rolling-archived
@@ -2043,12 +2111,7 @@ export default function PerformanceBoard({
                               <button
                                 onClick={() => {
                                   if (blocked) return;
-                                  const openWarn = hasOpenShift
-                                    ? '⚠️ One or more workers may still be clocked in (open shift). Approving now locks out their remaining hours.\n\n'
-                                    : '';
-                                  if (confirm(`${openWarn}Approve this crew's performance for ${perfDate}? This will lock the BH/AH data.`)) {
-                                    onApprove(cId, log);
-                                  }
+                                  setApproving({ crewId: cId, log, hasOpenShift });
                                 }}
                                 disabled={blocked}
                                 title={tip}
@@ -2061,6 +2124,42 @@ export default function PerformanceBoard({
                         })()
                       )}
                     </div>
+
+                    {/* APPROVAL NOTE — the manager's account of an unusual day,
+                        sitting with the numbers it explains. Shown wherever the
+                        crew-day is reviewed, and carried into the month sheet
+                        with the rest of the log. */}
+                    {(log.approvalNote || (isManager && !readOnly && isApproved)) && (
+                      <div className="px-4 py-2.5 border-b border-slate-100 bg-sky-50/60">
+                        {log.approvalNote ? (
+                          <>
+                            <div className="text-[10px] font-black uppercase tracking-widest text-sky-700">
+                              Approval note
+                            </div>
+                            <div className="text-[13px] text-slate-800 mt-0.5">{log.approvalNote}</div>
+                            <div className="text-[11px] text-slate-500 mt-0.5">
+                              {log.approvalNoteBy?.name || log.approvedByName || 'manager'}
+                              {log.approvalNoteAt ? ` · ${new Date(log.approvalNoteAt).toLocaleString()}` : ''}
+                              {isManager && !readOnly && (
+                                <button
+                                  onClick={() => setEditingNote({ crewId: cId, note: log.approvalNote || '' })}
+                                  className="ml-2 underline decoration-dotted font-bold text-slate-600"
+                                >
+                                  edit
+                                </button>
+                              )}
+                            </div>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => setEditingNote({ crewId: cId, note: '' })}
+                            className="text-[11px] font-bold text-sky-700 underline decoration-dotted"
+                          >
+                            + Add an approval note
+                          </button>
+                        )}
+                      </div>
+                    )}
 
                     {/* FLAG FOR REVIEW — the daily audit acts here, on the card
                         being reviewed, rather than on a separate screen. Raising
@@ -2930,6 +3029,30 @@ export default function PerformanceBoard({
           />
 
           {/* --- MULTI-DAY % REVIEW MODAL --- */}
+          {approving && (
+            <ApprovalNoteModal
+              title={`Approve ${approving.log.division} #${approving.log.crewNumber}`}
+              subtitle={`${perfDate} — this locks the BH / AH data.`}
+              warning={approving.hasOpenShift
+                ? 'One or more workers may still be clocked in (open shift). Approving now locks out their remaining hours.'
+                : undefined}
+              initial=""
+              confirmLabel="Approve & Sign Off"
+              onClose={() => setApproving(null)}
+              onSave={note => { onApprove(approving.crewId, approving.log, note); setApproving(null); }}
+            />
+          )}
+          {editingNote && (
+            <ApprovalNoteModal
+              title="Approval note"
+              subtitle="An explanation of the day, for whoever reviews it later. Numbers and approval are untouched."
+              initial={editingNote.note}
+              confirmLabel="Save note"
+              allowEmpty
+              onClose={() => setEditingNote(null)}
+              onSave={note => { onSaveApprovalNote(editingNote.crewId, note); setEditingNote(null); }}
+            />
+          )}
           {reviewVisitId && reviewCrewId && multiDayJobs[reviewVisitId] && (() => {
             // Look up the row on the current crew/date so we can pass its
             // crew share as the credit basis (vs the visit total). For a

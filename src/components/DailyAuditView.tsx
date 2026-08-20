@@ -18,7 +18,7 @@
 // NOT duplicated here — the entry board already shows it.
 import { useMemo, useState } from 'react';
 import {
-  AlertCircle, Check, ChevronLeft, ChevronRight, Clock, Flag, Users,
+  AlertCircle, Check, ChevronLeft, ChevronRight, Clock, Flag, MessageSquare, Users,
 } from 'lucide-react';
 import type { AppData, CrewDayAudit, CrewDayFlag, UserRole } from '../types';
 import { addDaysToronto, formatTodayInToronto } from '../lib/dateUtils';
@@ -293,6 +293,38 @@ export default function DailyAuditView({
             <ChevronRight className="w-4 h-4 text-slate-600" />
           </button>
         </div>
+
+        {/* EXPLANATIONS — the manager's account of an odd day, with the figures
+            it answers, so a number that would prompt a flag arrives already
+            explained. Deliberately not the full crew-day detail (the entry
+            board has that) — the note plus the numbers it refers to. */}
+        {day.explained.length > 0 && (
+          <div className="m-3 rounded-xl border border-sky-200 bg-sky-50/60 px-4 py-3">
+            <div className="flex items-center gap-2 text-sky-800">
+              <MessageSquare className="w-4 h-4" />
+              <span className="text-[11px] font-black uppercase tracking-widest">
+                Explained by the manager · {day.explained.length}
+              </span>
+            </div>
+            <div className="mt-2 space-y-2">
+              {day.explained.map(c => (
+                <div key={c.crewId} className="rounded-lg bg-white border border-sky-200 px-3 py-2">
+                  <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                    <span className="text-[13px] font-bold text-slate-800">{c.crewLabel}</span>
+                    <span className="text-[11px] font-mono text-slate-500">
+                      {c.cBH} BH · {c.cAH} AH · {c.rawEfficiency === null ? '—' : `${c.rawEfficiency}%`}
+                      {c.adjustedEfficiency !== null && c.allowancePct > 0 ? ` (adj ${c.adjustedEfficiency}%)` : ''}
+                    </span>
+                  </div>
+                  <div className="text-[13px] text-slate-800 mt-1">{c.approvalNote}</div>
+                  {c.approvalNoteBy && (
+                    <div className="text-[11px] text-slate-400 mt-0.5">— {c.approvalNoteBy}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {day.workedButUnassignedCount > 0 && (
           <div className="m-3 rounded-xl border-2 border-rose-300 bg-rose-50 px-4 py-3">
