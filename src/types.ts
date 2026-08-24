@@ -1645,8 +1645,55 @@ export interface ContractingUnit {
   id: string;
   name: string;                    // "Main floor", "Unit 2", "Basement"
   notes?: string;
-  tenancy?: ContractingTenancy;    // at most one ACTIVE (absent = VACANT)
+  // ACTIVE TENANCIES — several per unit, each its own lease. Two people can
+  // share a unit on separate terms with separate end dates, which is a regular
+  // arrangement here, not an edge case: 333 Ambrose Main Floor and 1391
+  // Balmoral Lower Unit are both like this.
+  //
+  // Empty or absent = VACANT. Read through unitTenancies() in lib/propertyMgmt,
+  // never directly — it also folds in the legacy singular field below, so a
+  // unit written before this existed reads identically.
+  tenancies?: ContractingTenancy[];
+  // DEPRECATED (read-migrated → tenancies[0]). Kept so a document written
+  // before the move still reads correctly; the migration clears it.
+  tenancy?: ContractingTenancy;
   history?: ContractingTenancy[];  // ended tenancies (kept per unit)
+}
+
+// ── MORTGAGES ──────────────────────────────────────────────────────────────
+// A property may carry more than one (a first and a second). Reference data
+// for renewal planning — no payment tracking or ledger, same as the tenancy
+// layer.
+//
+// Stored in a TOP-LEVEL contractingMortgages collection, not on the property
+// document, so its firestore rule can restrict reads to Marco and Tony. Under
+// artifacts/** every authorized user can read everything, which would put
+// lender and balance in front of the property manager and the contractor.
+export type ContractingRateType = 'fixed' | 'variable';
+export type ContractingPaymentFrequency =
+  'monthly' | 'semi_monthly' | 'biweekly' | 'accelerated_biweekly' | 'weekly';
+export interface ContractingMortgage {
+  id: string;
+  propertyId: string;
+  lender: string;
+  principal?: number;              // original advance
+  currentBalance?: number;
+  rate?: number;                   // annual %, e.g. 4.89
+  rateType?: ContractingRateType;
+  termStart?: string;              // YYYY-MM-DD
+  termEnd?: string;                // renewal date — what the countdown watches
+  amortizationYears?: number;
+  paymentAmount?: number;
+  paymentFrequency?: ContractingPaymentFrequency;
+  notes?: string;
+  createdAt?: number;
+  createdBy?: { email: string; name: string };
+  updatedAt?: number;
+  updatedBy?: { email: string; name: string };
+  // Append-only field-level trail. Rates and balances are exactly the numbers
+  // somebody reconciles against a statement months later, so every change
+  // keeps what it was before.
+  audit?: { at: number; by: string; field: string; from: string; to: string }[];
 }
 export interface ContractingProperty { id: string; name: string; corp?: boolean; notes?: string; active?: boolean; units?: ContractingUnit[]; }
 export interface ContractingSupplier { id: string; name: string; active?: boolean; }

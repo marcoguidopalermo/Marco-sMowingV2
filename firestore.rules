@@ -122,6 +122,30 @@ service cloud.firestore {
     // in lib/crewDayFlags. Rules cannot cheaply resolve a role or a division.
     // An authorized user bypassing the UI could raise a spurious flag, but they
     // could not alter or hide a real one, and every flag carries who raised it.
+    // MORTGAGES — lender, balance, rate and renewal date per property.
+    //
+    // Kept OUTSIDE artifacts/** for the reason that rule exists to make
+    // obvious: it grants read to EVERY authorized user, and its OR-semantics
+    // mean nothing beneath it can take that away. The property manager and the
+    // contractor both read the property record; mortgage terms are not
+    // operational data and must not travel with it.
+    //
+    // Restricted to Marco and Tony BY ADDRESS, deliberately narrower than
+    // admin — Dave and James are admins too. Widening this means adding an
+    // address here AND to MORTGAGE_VIEWERS in lib/mortgages; the rule is what
+    // actually enforces it, the constant only decides what the UI renders.
+    function isMortgageViewer() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() in [
+          'marcoguidopalermo@gmail.com',
+          'anthonypalermo23@hotmail.com'
+        ];
+    }
+    match /contractingMortgages/{mortgageId} {
+      allow read, write: if isMortgageViewer();
+    }
+
     match /crewDayFlags/{flagId} {
       allow read: if isAuthorized() || isSuperAdmin();
       allow create: if isAuthorized() || isSuperAdmin();

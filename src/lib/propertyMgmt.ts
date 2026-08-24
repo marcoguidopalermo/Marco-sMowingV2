@@ -32,7 +32,56 @@ export function tenantsStarredFirst(t?: ContractingTenancy | null): ContractingT
   if (!star) return list;
   return [star, ...list.filter(x => x !== star)];
 }
-export function unitIsVacant(u: ContractingUnit): boolean { return !u.tenancy; }
+// EVERY read of a unit's active tenancies goes through here. It folds in the
+// legacy singular `tenancy` field, so a unit written before multi-tenancy
+// reads identically to one written after and no flag day was needed.
+export function unitTenancies(u: ContractingUnit): ContractingTenancy[] {
+  if (Array.isArray(u.tenancies)) return u.tenancies.filter(Boolean);
+  return u.tenancy ? [u.tenancy] : [];
+}
+
+export function unitIsVacant(u: ContractingUnit): boolean {
+  return unitTenancies(u).length === 0;
+}
+
+// ── UNIT STATUS ────────────────────────────────────────────────────────────
+// Three states, because two stopped being enough once a unit could hold more
+// than one lease. A unit with one tenancy ending and another running is
+// neither vacant nor quietly fully let — somebody has a room to fill.
+export type UnitStatus = 'vacant' | 'let' | 'turning';
+
+export function unitStatus(u: ContractingUnit, nowMs: number): UnitStatus {
+  const ts = unitTenancies(u);
+  if (ts.length === 0) return 'vacant';
+  const anyEnding = ts.some(t => {
+    const c = tenancyCountdown(t, nowMs);
+    return c.level === 'amber' || c.level === 'red' || c.kind === 'moveout';
+  });
+  return anyEnding ? 'turning' : 'let';
+}
+
+export const UNIT_STATUS_LABEL: Record<UnitStatus, string> = {
+  vacant: 'Vacant',
+  let: 'Let',
+  turning: 'Partly turning over',
+};
+
+/**
+ * The unit's headline countdown: the SOONEST-ending tenancy, because that is
+ * the one needing action first. Month-to-month tenancies have no end and never
+ * win. Returns undefined for a vacant unit, or one where nothing has a date.
+ */
+export function unitHeadlineCountdown(
+  u: ContractingUnit, nowMs: number,
+): Countdown | undefined {
+  let best: Countdown | undefined;
+  for (const t of unitTenancies(u)) {
+    const c = tenancyCountdown(t, nowMs);
+    if (!Number.isFinite(c.endMs)) continue;          // open-ended
+    if (!best || c.endMs < best.endMs) best = c;
+  }
+  return best;
+}
 
 // The ACTUAL move-out date (read-migrates the legacy computedEnd).
 export function tenancyMoveOut(t: ContractingTenancy): string | undefined { return t.moveOutAt || t.computedEnd; }
@@ -69,19 +118,115 @@ export function tenancyCountdown(t: ContractingTenancy, nowMs: number): Countdow
   return { kind: 'open', endMs: Infinity, level: 'neutral', label: 'month-to-month' };
 }
 
-// Every unit across the properties, with its countdown — for occupancy views.
-export interface UnitRow { property: ContractingProperty; unit: ContractingUnit; countdown?: Countdown; }
+// Every unit across the properties, with its HEADLINE countdown and status —
+// for occupancy views that summarise a unit in one line.
+export interface UnitRow {
+  property: ContractingProperty;
+  unit: ContractingUnit;
+  countdown?: Countdown;
+  status: UnitStatus;
+  tenancyCount: number;
+}
 export function allUnitRows(properties: ContractingProperty[], nowMs: number): UnitRow[] {
   const rows: UnitRow[] = [];
-  for (const p of properties) for (const u of (p.units || [])) {
-    rows.push({ property: p, unit: u, countdown: u.tenancy ? tenancyCountdown(u.tenancy, nowMs) : undefined });
+  for (const p of properties || []) for (const u of (p.units || [])) {
+    rows.push({
+      property: p, unit: u,
+      countdown: unitHeadlineCountdown(u, nowMs),
+      status: unitStatus(u, nowMs),
+      tenancyCount: unitTenancies(u).length,
+    });
   }
   return rows;
 }
 
-// Leases needing attention — amber/red or a scheduled move-out, soonest-first.
-export function leasesNeedingAttention(properties: ContractingProperty[], nowMs: number): UnitRow[] {
-  return allUnitRows(properties, nowMs)
-    .filter(r => r.countdown && (r.countdown.level === 'amber' || r.countdown.level === 'red' || r.countdown.kind === 'moveout'))
-    .sort((a, b) => (a.countdown!.endMs) - (b.countdown!.endMs));
+// ── WHAT NEEDS ATTENTION ───────────────────────────────────────────────────
+// A TENANCY, not a unit. "1391 Balmoral Lower — 12 days" cannot be acted on
+// without knowing whose lease it is, and once a unit holds several the unit
+// alone no longer identifies one.
+export interface TenancyRow {
+  property: ContractingProperty;
+  unit: ContractingUnit;
+  tenancy: ContractingTenancy;
+  countdown: Countdown;
+  /** The starred tenant, or the first — who this lease is with, in one name. */
+  who: string;
+}
+
+export function allTenancyRows(
+  properties: ContractingProperty[], nowMs: number,
+): TenancyRow[] {
+  const rows: TenancyRow[] = [];
+  for (const p of properties || []) for (const u of (p.units || [])) {
+    for (const t of unitTenancies(u)) {
+      const lead = starredTenant(t) || t.tenants?.[0];
+      rows.push({
+        property: p, unit: u, tenancy: t,
+        countdown: tenancyCountdown(t, nowMs),
+        who: lead?.name || 'unnamed tenancy',
+      });
+    }
+  }
+  return rows;
+}
+
+/** Amber/red or a scheduled move-out, soonest-first. One row per LEASE. */
+export function leasesNeedingAttention(
+  properties: ContractingProperty[], nowMs: number,
+): TenancyRow[] {
+  return allTenancyRows(properties, nowMs)
+    .filter(r => r.countdown.level === 'amber' || r.countdown.level === 'red'
+      || r.countdown.kind === 'moveout')
+    .sort((a, b) => a.countdown.endMs - b.countdown.endMs);
+}
+
+// ── SPLITTING A TENANCY ────────────────────────────────────────────────────
+// Three people on one lease turn out to be on three. Which tenant belongs to
+// which lease, and on what terms, is knowledge only Tony has — so this moves
+// the CHOSEN tenants into a new tenancy and leaves the terms for him to enter.
+// It never guesses a date.
+export function splitTenancy(input: {
+  unit: ContractingUnit;
+  tenancyId: string;
+  /** Tenant names to move out into a tenancy of their own. */
+  moveNames: string[];
+  newTenancyId: string;
+  nowMs: number;
+  by: string;
+}): { unit: ContractingUnit; error?: string } {
+  const ts = unitTenancies(input.unit);
+  const src = ts.find(t => t.id === input.tenancyId);
+  if (!src) return { unit: input.unit, error: 'Tenancy not found.' };
+  const move = new Set(input.moveNames);
+  const moving = (src.tenants || []).filter(t => move.has(t.name));
+  const staying = (src.tenants || []).filter(t => !move.has(t.name));
+  if (moving.length === 0) return { unit: input.unit, error: 'Pick at least one tenant to split out.' };
+  if (staying.length === 0) {
+    return { unit: input.unit, error: 'At least one tenant must stay on the original lease.' };
+  }
+  const stamp = { at: input.nowMs, by: input.by, action: '' };
+  const updatedSrc: ContractingTenancy = {
+    ...src,
+    tenants: staying,
+    audit: [...(src.audit || []), { ...stamp, action: `split out ${moving.map(m => m.name).join(', ')}` }],
+  };
+  // The new lease inherits only the STATUS, deliberately. Copying dates would
+  // assert a term nobody entered, and the whole point of splitting is that the
+  // terms differ — a blank end date reads as "needs entering", a wrong one does
+  // not read as anything.
+  const created: ContractingTenancy = {
+    id: input.newTenancyId,
+    status: src.status,
+    tenants: moving,
+    createdAt: input.nowMs,
+    notes: `Split from the lease with ${staying.map(t => t.name).join(', ')}.`,
+    audit: [{ ...stamp, action: `split from tenancy ${src.id}` }],
+  };
+  return {
+    unit: {
+      ...input.unit,
+      tenancies: ts.map(t => (t.id === src.id ? updatedSrc : t)).concat([created]),
+      tenancy: undefined,
+    },
+  };
 }

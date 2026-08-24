@@ -890,7 +890,16 @@ export async function runNotificationScan(nowMs: number, warnings: string[]): Pr
       const p = doc.data() as any;
       if (p.active === false) continue;
       for (const u of (p.units || [])) {
-        const t = u.tenancy; if (!t) continue;
+        // PER TENANCY. A unit can hold several leases with different end dates,
+        // so one row per unit would warn about "the unit" while naming nobody
+        // — and would silently drop every lease after the first. The dedupe
+        // marker is already keyed by tenancy id, so each lease warns once on
+        // its own schedule. Falls back to the legacy singular field for any
+        // document not yet migrated.
+        const tenancies: any[] = Array.isArray(u.tenancies) ?
+          u.tenancies.filter(Boolean) :
+          (u.tenancy ? [u.tenancy] : []);
+        for (const t of tenancies) {
         const moveOut = t.moveOutAt || t.computedEnd;
         const endYmd = moveOut || (t.status === "fixed_term" ? t.leaseEnd : undefined);
         if (!endYmd) continue;
@@ -910,6 +919,7 @@ export async function runNotificationScan(nowMs: number, warnings: string[]): Pr
             await sendNotification(recips, "leases", {title: `${label} reached`, body: `${p.name} · ${u.name} · ${tenant}`, url: "/#contracting"});
             await markSent(marker);
           }
+        }
         }
       }
     }

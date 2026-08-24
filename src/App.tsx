@@ -28,7 +28,7 @@ import {
   CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract,
   MarketingContentItem, MarketingShot, MarketingLink,
   MarketingFeedbackEntry, MarketingClipThread, MarketingClipStatus,
-  MarketingPostQueueEntry, MarketingTodo, HoursBankEntry,
+  MarketingPostQueueEntry, MarketingTodo, HoursBankEntry, ContractingMortgage,
   CrewDayFlag, CrewDayAudit,
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
@@ -129,6 +129,7 @@ import { checkDocWrite } from './lib/docWriteGuard';
 import { computeRosterUpdate } from './lib/rosterWrite';
 import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './lib/scheduledBulletins';
 import { timeEntryLock } from './lib/timeEntryLock';
+import { canSeeMortgages, mortgageAuditDiff } from './lib/mortgages';
 import {
   applyOnBehalfStop, buildOnBehalfStart, canClockFor, guardStart, guardStop,
   isBackdated, reasonIsUsable, runningPunchFor, validateStartTime, validateStopTime,
@@ -332,6 +333,10 @@ export default function App() {
   // Held in component state rather than on appData: nothing in the pay or
   // performance model reads them, and putting them on appData would put them
   // in the path of every whole-document save.
+  // MORTGAGES — top-level collection, read only by Marco and Tony (enforced by
+  // the firestore rule, not by this listener). The listener is not even
+  // attached for anyone else, so a denied read never fires.
+  const [contractingMortgages, setContractingMortgages] = useState<ContractingMortgage[]>([]);
   const [crewDayFlags, setCrewDayFlags] = useState<CrewDayFlag[]>([]);
   const [crewDayAudits, setCrewDayAudits] = useState<Record<string, CrewDayAudit>>({});
   // Has this session ever received appData/main? A database does not
@@ -1883,6 +1888,16 @@ export default function App() {
     }, (err) => { console.error('hoursBank listen error:', err); });
     // Crew-day flags — live state with a resolution loop, so this listens for
     // updates too (a resolution is an update), not just creations.
+    // Only attached when the viewer may read them. Everyone else never
+    // subscribes, so the rule is never exercised in anger and no permission
+    // error appears in their console.
+    const mg1 = canSeeMortgages(displayEmail)
+      ? onSnapshot(collection(db, 'contractingMortgages'), (snap) => {
+        const list: ContractingMortgage[] = [];
+        snap.forEach((d) => { const v = d.data() as ContractingMortgage; if (v && v.id) list.push(v); });
+        setContractingMortgages(list);
+      }, (err) => { console.error('contractingMortgages listen error:', err); })
+      : () => {};
     const cf1 = onSnapshot(collection(db, 'crewDayFlags'), (snap) => {
       const list: CrewDayFlag[] = [];
       snap.forEach((d) => { const v = d.data() as CrewDayFlag; if (v && v.id) list.push(v); });
@@ -1894,7 +1909,7 @@ export default function App() {
       snap.forEach((d) => { const v = d.data() as CrewDayAudit; if (v && v.date) map[v.date] = v; });
       setCrewDayAudits(map);
     }, (err) => { console.error('crewDayAudits listen error:', err); });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); m8(); hb1(); cf1(); ca1(); };
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); m8(); hb1(); mg1(); cf1(); ca1(); };
   }, [user]);
 
   useEffect(() => {
@@ -3548,6 +3563,49 @@ export default function App() {
     });
     if (ok === false) { showToastMsg('Could not stop that clock.'); return false; }
     showToastMsg(`${target.name} clocked out.`);
+    return true;
+  };
+
+  // MORTGAGE WRITES. Marco and Tony only — checked here AND by the firestore
+  // rule, which is what actually stops anybody else. Every save diffs the
+  // fields and appends what moved: rates and balances are exactly the numbers
+  // somebody reconciles against a statement months later, and "edited the
+  // mortgage" answers nothing then.
+  const saveContractingMortgage = async (m: ContractingMortgage): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!canSeeMortgages(displayEmail)) { showToastMsg(PERMISSION_DENIED); return false; }
+    const before = contractingMortgages.find(x => x.id === m.id);
+    const now = Date.now();
+    const who = { email: displayEmail, name: displayName || displayEmail };
+    const diff = mortgageAuditDiff(before, m, now, who.name);
+    const next: ContractingMortgage = {
+      ...m,
+      createdAt: before?.createdAt ?? now,
+      createdBy: before?.createdBy ?? who,
+      updatedAt: now,
+      updatedBy: who,
+      audit: [...(before?.audit || []), ...diff].slice(-200),
+    };
+    try {
+      await setDoc(doc(collection(db, 'contractingMortgages'), m.id), cleanRM(next));
+    } catch (err: any) {
+      console.error('mortgage save failed', err);
+      showToastMsg(`Could not save that mortgage: ${err?.message || String(err)}`);
+      return false;
+    }
+    showToastMsg(diff.length > 0 ? `Mortgage saved — ${diff.length} field${diff.length === 1 ? '' : 's'} changed.` : 'Mortgage saved.');
+    return true;
+  };
+  const deleteContractingMortgage = async (id: string): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!canSeeMortgages(displayEmail)) { showToastMsg(PERMISSION_DENIED); return false; }
+    try {
+      await deleteDoc(doc(collection(db, 'contractingMortgages'), id));
+    } catch (err: any) {
+      showToastMsg(`Could not remove that mortgage: ${err?.message || String(err)}`);
+      return false;
+    }
+    showToastMsg('Mortgage removed.');
     return true;
   };
 
@@ -7660,6 +7718,10 @@ export default function App() {
         />
       ) : currentView === 'contracting' ? (
         <ContractingMaster
+          mortgages={contractingMortgages}
+          canSeeMortgages={canSeeMortgages(displayEmail)}
+          onSaveMortgage={saveContractingMortgage}
+          onDeleteMortgage={deleteContractingMortgage}
           projects={appData.contractingProjects || {}}
           timeEntries={appData.contractingTimeEntries || {}}
           reports={appData.contractingProgressReports || {}}

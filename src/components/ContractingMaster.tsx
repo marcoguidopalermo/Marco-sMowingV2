@@ -12,12 +12,17 @@ import {
   ContractingShoppingItem, ContractingRateCard, ContractingBillingRole, ContractingStatus,
   ContractingProperty, ContractingSupplier, ContractingPersonalItem, ContractingPhaseType, Employee, StoredFile, TimeEntry,
   ContractingUnit, ContractingTenancy, ContractingTenant, ContractingTenancyStatus,
+  ContractingMortgage,
 } from '../types';
 import {
   tenancyCountdown, tenancyMonthlyTotal, unitIsVacant, leasesNeedingAttention,
   tenancyMoveOut, tenancyDeposit, moveOutIsShortNotice,
   fmtYmd, msToYmd, Countdown, UnitRow, starredTenant, tenantsStarredFirst,
+  unitTenancies, unitStatus, unitHeadlineCountdown, UNIT_STATUS_LABEL, splitTenancy,
 } from '../lib/propertyMgmt';
+import {
+  mortgageRollup, mortgagesForProperty, renewalCountdown, RENEWAL_AMBER_DAYS,
+} from '../lib/mortgages';
 import type { ContractingDeposit } from '../types';
 import {
   HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled,
@@ -47,6 +52,12 @@ interface Props {
   canManage: boolean;
   canManageProperties: boolean;   // admin + Tony + Linda (property manager)
   isPropertyManager: boolean;     // Linda — restricted surface
+  // MORTGAGES — empty for anyone who may not see them; the firestore rule is
+  // what enforces that, this only decides what is drawn.
+  mortgages: ContractingMortgage[];
+  canSeeMortgages: boolean;
+  onSaveMortgage: (m: ContractingMortgage) => Promise<boolean>;
+  onDeleteMortgage: (id: string) => Promise<boolean>;
   noticeDays: number;
   uploadedBy: { email: string; name: string };
   onSaveRates: (r: ContractingRateCard) => void;
@@ -205,7 +216,7 @@ export default function ContractingMaster(props: Props) {
         {tab === 'home' && <HomeTab {...props} hoursCards={props.hoursCards} personalItems={props.personalItems} shoppingList={props.shoppingList} workOrders={props.workOrders} onGoToMyWorkOrders={goToMyWorkOrders} />}
         {tab === 'workorders' && <WorkOrdersTab {...props} mineOnly={woMineOnly} setMineOnly={setWoMineOnly} propFilter={woProperty} setPropFilter={setWoProperty} priorityFilter={woPriority} setPriorityFilter={setWoPriority} />}
         {tab === 'shopping' && <ShoppingTab {...props} />}
-        {tab === 'properties' && canManageProperties && <PropertyManagementTab properties={props.properties} noticeDays={props.noticeDays} currentUser={currentUser} onSaveProperty={props.onSavePropertyDoc} onDeleteProperty={props.onDeletePropertyDoc} />}
+        {tab === 'properties' && canManageProperties && <PropertyManagementTab properties={props.properties} noticeDays={props.noticeDays} currentUser={currentUser} mortgages={props.mortgages} canSeeMortgages={props.canSeeMortgages} onSaveMortgage={props.onSaveMortgage} onDeleteMortgage={props.onDeleteMortgage} onSaveProperty={props.onSavePropertyDoc} onDeleteProperty={props.onDeletePropertyDoc} />}
         {tab === 'propertycontacts' && !canManageProperties && <PropertyContactsTab properties={props.properties} />}
         {tab === 'time' && canManage && <ContractingTimeTab employees={props.employees} payrollTimeEntries={props.payrollTimeEntries} currentUser={currentUser} onSave={props.onSaveContractingTime} onDelete={props.onDeleteContractingTime} />}
         {tab === 'rates' && canManage && <RatesTab rates={rates} onSaveRates={props.onSaveRates} />}
@@ -1876,11 +1887,21 @@ function WorkOrderCard(p: Props & { wo: ContractingWorkOrder; contractors: Emplo
   const woContacts: { unitName?: string; tenant: ContractingTenant }[] = [];
   if (canSeeTenant && prop) {
     if (wo.unitId) {
-      const st = unit?.tenancy ? starredTenant(unit.tenancy) : undefined;
-      if (st) woContacts.push({ unitName: unit!.name, tenant: st });
+      // One contact per LEASE — a unit with two leases has two people to reach,
+      // and picking either one arbitrarily would send the tradesman to the
+      // wrong door.
+      for (const t of (unit ? unitTenancies(unit) : [])) {
+        const st = starredTenant(t);
+        if (st) woContacts.push({ unitName: unit!.name, tenant: st });
+      }
     } else {
       const us = prop.units || [];
-      for (const u of us) { if (u.tenancy) { const st = starredTenant(u.tenancy); if (st) woContacts.push({ unitName: us.length > 1 ? u.name : undefined, tenant: st }); } }
+      for (const u of us) {
+        for (const t of unitTenancies(u)) {
+          const st = starredTenant(t);
+          if (st) woContacts.push({ unitName: us.length > 1 ? u.name : undefined, tenant: st });
+        }
+      }
     }
   }
   const done = woStatus(wo) === 'done';
@@ -2225,15 +2246,27 @@ function PropertyContactsTab({ properties }: { properties: ContractingProperty[]
 }
 
 function UnitContactRow({ unit }: { unit: ContractingUnit }) {
-  const ordered = tenantsStarredFirst(unit.tenancy).filter(t => t.name || t.phone || t.email);
-  const star = starredTenant(unit.tenancy);
+  // Contact-only surface (Kris): every lease on the unit, each with its own
+  // starred contact. No dates, no rent, no mortgage — unchanged in what it
+  // shows, only in how many tenancies it can show.
+  const tenancies = unitTenancies(unit);
   return (
     <div className="p-3">
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold" style={{ color: PALERMO.slate }}>{unit.name}</span>
-        {!unit.tenancy && <span className="text-[11px] font-black px-2 py-0.5 rounded" style={{ backgroundColor: '#EAECEE', color: '#7F8C8D' }}>vacant</span>}
+        {tenancies.length === 0 && <span className="text-[11px] font-black px-2 py-0.5 rounded" style={{ backgroundColor: '#EAECEE', color: '#7F8C8D' }}>vacant</span>}
       </div>
-      {unit.tenancy && (
+      {tenancies.map(ten => <UnitContactTenancy key={ten.id} tenancy={ten} multi={tenancies.length > 1} />)}
+    </div>
+  );
+}
+
+function UnitContactTenancy({ tenancy, multi }: { tenancy: ContractingTenancy; multi: boolean }) {
+  const ordered = tenantsStarredFirst(tenancy).filter(t => t.name || t.phone || t.email);
+  const star = starredTenant(tenancy);
+  return (
+    <div className={multi ? 'border-l-2 pl-2.5 mt-1.5' : ''} style={multi ? { borderColor: '#D5DBDB' } : {}}>
+      {true && (
         <div className="mt-1 space-y-1.5">
           {ordered.length === 0 && <div className="text-xs text-gray-400">Occupied</div>}
           {ordered.map((t, i) => (
@@ -2251,7 +2284,7 @@ function UnitContactRow({ unit }: { unit: ContractingUnit }) {
   );
 }
 
-function PropertyManagementTab({ properties, noticeDays, currentUser, onSaveProperty, onDeleteProperty }: { properties: ContractingProperty[]; noticeDays: number; currentUser: { id: string; name: string }; onSaveProperty: (p: ContractingProperty) => void; onDeleteProperty: (id: string) => void }) {
+function PropertyManagementTab({ properties, noticeDays, currentUser, mortgages, canSeeMortgages, onSaveMortgage, onDeleteMortgage, onSaveProperty, onDeleteProperty }: { properties: ContractingProperty[]; noticeDays: number; currentUser: { id: string; name: string }; mortgages: ContractingMortgage[]; canSeeMortgages: boolean; onSaveMortgage: (m: ContractingMortgage) => Promise<boolean>; onDeleteMortgage: (id: string) => Promise<boolean>; onSaveProperty: (p: ContractingProperty) => void; onDeleteProperty: (id: string) => void }) {
   const [adding, setAdding] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const now = Date.now();
@@ -2269,10 +2302,12 @@ function PropertyManagementTab({ properties, noticeDays, currentUser, onSaveProp
         <div className="bg-white rounded-lg border p-3 mb-3" style={{ borderColor: '#F5B7B1' }}>
           <div className="text-xs font-black uppercase tracking-widest mb-1" style={{ color: '#C0392B' }}>Leases needing attention</div>
           <div className="space-y-1">
+            {/* One row per LEASE. "1391 Balmoral Lower — 12 days" cannot be
+                acted on without knowing whose lease it is. */}
             {attention.map(r => (
-              <div key={r.unit.id} className="flex items-center justify-between text-sm gap-2">
-                <span className="truncate">{r.property.name} · {r.unit.name} <span className="text-gray-400">· {(r.unit.tenancy?.tenants || []).map(t => t.name).filter(Boolean).join(', ') || 'tenant'}</span></span>
-                {r.countdown && <CountdownBadge cd={r.countdown} />}
+              <div key={`${r.unit.id}:${r.tenancy.id}`} className="flex items-center justify-between text-sm gap-2">
+                <span className="truncate">{r.property.name} · {r.unit.name} <span className="text-gray-400">· {r.who}</span></span>
+                <CountdownBadge cd={r.countdown} />
               </div>
             ))}
           </div>
@@ -2280,8 +2315,11 @@ function PropertyManagementTab({ properties, noticeDays, currentUser, onSaveProp
       )}
 
       <div className="space-y-3">
-        {visible.map(pr => <PropertyCard key={pr.id} property={pr} noticeDays={noticeDays} currentUser={currentUser} onUpdate={onSaveProperty} onDelete={() => confirm(`Delete "${pr.name}" and all its units/tenancy history?`) && onDeleteProperty(pr.id)} />)}
+        {visible.map(pr => <PropertyCard mortgages={mortgages} canSeeMortgage={canSeeMortgages} onSaveMortgage={onSaveMortgage} onDeleteMortgage={onDeleteMortgage} key={pr.id} property={pr} noticeDays={noticeDays} currentUser={currentUser} onUpdate={onSaveProperty} onDelete={() => confirm(`Delete "${pr.name}" and all its units/tenancy history?`) && onDeleteProperty(pr.id)} />)}
       </div>
+      {/* THE ROLLUP — the picture worth having in one place: what is owed
+          across everything, what it costs on average, and what renews next. */}
+      {canSeeMortgages && <MortgageRollupCard mortgages={mortgages} properties={properties} />}
       {properties.some(p => p.active === false) && <button onClick={() => setShowInactive(s => !s)} className="text-xs mt-3 font-semibold text-gray-400 uppercase">{showInactive ? 'Hide' : 'Show'} inactive</button>}
 
       {adding && <AddPropertyForm onClose={() => setAdding(false)} onSave={p => { onSaveProperty(p); setAdding(false); }} />}
@@ -2302,7 +2340,67 @@ function AddPropertyForm({ onClose, onSave }: { onClose: () => void; onSave: (p:
   );
 }
 
-function PropertyCard({ property, noticeDays, currentUser, onUpdate, onDelete }: { property: ContractingProperty; noticeDays: number; currentUser: { id: string; name: string }; onUpdate: (p: ContractingProperty) => void; onDelete: () => void }) {
+// Debt across every property, in one place. Marco and Tony only.
+function MortgageRollupCard({ mortgages, properties }: {
+  mortgages: ContractingMortgage[]; properties: ContractingProperty[];
+}) {
+  const now = Date.now();
+  const r = mortgageRollup(mortgages, now);
+  const propName = (id: string) => properties.find(p => p.id === id)?.name || 'property';
+  if (r.count === 0) return null;
+  return (
+    <div className="bg-white rounded-lg border p-3 mb-3">
+      <div className="text-[11px] font-black uppercase tracking-widest text-gray-500 mb-2">
+        Mortgage rollup · {r.count} across {new Set(mortgages.map(m => m.propertyId)).size} propert{new Set(mortgages.map(m => m.propertyId)).size === 1 ? 'y' : 'ies'}
+      </div>
+      <div className="grid grid-cols-3 gap-2 mb-2">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-gray-400">Total debt</div>
+          <div className="text-lg font-black" style={{ color: PALERMO.slate }}>{money(r.totalBalance)}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-gray-400">Avg rate</div>
+          <div className="text-lg font-black" style={{ color: PALERMO.slate }}>
+            {r.weightedRate == null ? '—' : `${r.weightedRate}%`}
+          </div>
+          <div className="text-[9px] text-gray-400">weighted by balance</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-gray-400">Original</div>
+          <div className="text-lg font-black text-gray-500">{money(r.totalPrincipal)}</div>
+        </div>
+      </div>
+      {/* Honest about what the average covers — a rate-less mortgage is left
+          out of the weighting rather than counted as 0%, which would read as
+          cheap debt. */}
+      {r.ratedBalance < r.totalBalance && (
+        <div className="text-[11px] mb-2" style={{ color: PALERMO.gold }}>
+          ⚑ The average covers {money(r.ratedBalance)} of {money(r.totalBalance)} — the rest has no rate recorded.
+        </div>
+      )}
+      <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+        Renewals · next 12 months
+      </div>
+      {r.renewals.length === 0
+        ? <div className="text-xs text-gray-400">None in the next 12 months.</div>
+        : (
+          <div className="space-y-0.5">
+            {r.renewals.map(({ mortgage: m, countdown: cd }) => (
+              <div key={m.id} className="flex items-center justify-between text-sm gap-2">
+                <span className="truncate">{propName(m.propertyId)} · <span className="text-gray-500">{m.lender}</span>{m.currentBalance != null ? <span className="text-gray-400"> · {money(m.currentBalance)}</span> : null}</span>
+                <span className="text-[10px] font-black px-2 py-0.5 rounded uppercase shrink-0" style={cd.level === 'red' ? { backgroundColor: '#FADBD8', color: '#C0392B' } : cd.level === 'amber' ? { backgroundColor: '#FEF9E7', color: PALERMO.gold } : { backgroundColor: '#EAECEE', color: '#7F8C8D' }}>
+                  {cd.endYmd ? fmtYmd(cd.endYmd) : '—'} · {cd.label}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      <div className="text-[10px] text-gray-400 mt-1.5">Amber at {RENEWAL_AMBER_DAYS} days — a renewal needs shopping well before it lands.</div>
+    </div>
+  );
+}
+
+function PropertyCard({ property, noticeDays, currentUser, mortgages, canSeeMortgage, onSaveMortgage, onDeleteMortgage, onUpdate, onDelete }: { property: ContractingProperty; noticeDays: number; currentUser: { id: string; name: string }; mortgages: ContractingMortgage[]; canSeeMortgage: boolean; onSaveMortgage: (m: ContractingMortgage) => Promise<boolean>; onDeleteMortgage: (id: string) => Promise<boolean>; onUpdate: (p: ContractingProperty) => void; onDelete: () => void }) {
   const [editing, setEditing] = useState(false);
   const units = property.units || [];
   const updateUnit = (u: ContractingUnit) => onUpdate({ ...property, units: units.map(x => x.id === u.id ? u : x) });
@@ -2335,83 +2433,221 @@ function PropertyCard({ property, noticeDays, currentUser, onUpdate, onDelete }:
       <div className="divide-y">
         {units.map(u => <UnitRowCard key={u.id} unit={u} noticeDays={noticeDays} currentUser={currentUser} editing={editing} onUpdate={updateUnit} onRemove={() => (units.length > 1 ? removeUnit(u.id) : alert('A property keeps at least one unit.'))} />)}
       </div>
+      {/* MORTGAGES — rendered only for Marco and Tony. The firestore rule is
+          what enforces it; this decides what is drawn for someone who is
+          already allowed to read the documents. */}
+      {canSeeMortgage && (
+        <MortgagePanel
+          propertyId={property.id}
+          propertyName={property.name}
+          mortgages={mortgagesForProperty(mortgages, property.id)}
+          onSave={onSaveMortgage}
+          onDelete={onDeleteMortgage}
+        />
+      )}
     </div>
   );
 }
 
+// Mortgages on one property. A property may carry a first AND a second, so
+// this is a list, ordered by renewal date — soonest first, which is the order
+// they need shopping in.
+function MortgagePanel({ propertyId, propertyName, mortgages, onSave, onDelete }: {
+  propertyId: string; propertyName: string; mortgages: ContractingMortgage[];
+  onSave: (m: ContractingMortgage) => Promise<boolean>;
+  onDelete: (id: string) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState<ContractingMortgage | null>(null);
+  const [adding, setAdding] = useState(false);
+  const now = Date.now();
+  return (
+    <div className="border-t p-3" style={{ backgroundColor: '#FBFCFC' }}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-black uppercase tracking-widest text-gray-500">
+          Mortgages{mortgages.length > 0 ? ` · ${mortgages.length}` : ''}
+          <span className="ml-1.5 font-medium normal-case tracking-normal text-gray-400">Marco & Tony only</span>
+        </span>
+        <button onClick={() => setAdding(true)} className="text-xs px-2 py-0.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>+ Mortgage</button>
+      </div>
+      {mortgages.length === 0 && <div className="text-xs text-gray-400 mt-1">None recorded.</div>}
+      <div className="space-y-1.5 mt-1.5">
+        {mortgages.map(m => {
+          const cd = renewalCountdown(m, now);
+          const tone = cd.level === 'red' ? { bg: '#FADBD8', fg: '#C0392B' }
+            : cd.level === 'amber' ? { bg: '#FEF9E7', fg: PALERMO.gold }
+              : { bg: '#EAECEE', fg: '#7F8C8D' };
+          return (
+            <div key={m.id} className="border rounded p-2 bg-white">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="font-semibold text-sm" style={{ color: PALERMO.slate }}>{m.lender || 'Lender'}</span>
+                <span className="text-[10px] font-black px-2 py-0.5 rounded uppercase" style={{ backgroundColor: tone.bg, color: tone.fg }}>{cd.label}</span>
+              </div>
+              <div className="text-xs text-gray-600 mt-0.5 flex flex-wrap gap-x-3">
+                {m.currentBalance != null && <span><b>{money(m.currentBalance)}</b> balance</span>}
+                {m.rate != null && <span>{m.rate}% {m.rateType === 'variable' ? 'variable' : 'fixed'}</span>}
+                {m.paymentAmount != null && <span>{money(m.paymentAmount)} {String(m.paymentFrequency || 'monthly').replace(/_/g, ' ')}</span>}
+                {m.amortizationYears != null && <span>{m.amortizationYears}yr am.</span>}
+              </div>
+              <div className="text-[11px] text-gray-400 mt-0.5">
+                {m.termStart ? `Term ${fmtYmd(m.termStart)} – ` : 'Renews '}{m.termEnd ? fmtYmd(m.termEnd) : 'not set'}
+                {m.principal != null ? ` · ${money(m.principal)} original` : ''}
+              </div>
+              {m.notes && <div className="text-[11px] text-gray-500 italic mt-0.5">{m.notes}</div>}
+              <div className="flex gap-2 mt-1.5">
+                <button onClick={() => setEditing(m)} className="text-xs px-2 py-0.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>Edit</button>
+                <button onClick={() => confirm(`Remove the ${m.lender} mortgage on ${propertyName}?`) && onDelete(m.id)} className="text-xs px-2 py-0.5 rounded text-red-500 font-semibold ml-auto">Remove</button>
+                {(m.audit || []).length > 0 && <span className="text-[10px] text-gray-400 self-center">{m.audit!.length} change{m.audit!.length === 1 ? '' : 's'} logged</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {(adding || editing) && (
+        <MortgageForm
+          initial={editing || undefined}
+          propertyId={propertyId}
+          onClose={() => { setAdding(false); setEditing(null); }}
+          onSave={async m => { const ok = await onSave(m); if (ok) { setAdding(false); setEditing(null); } }}
+        />
+      )}
+    </div>
+  );
+}
+
+function MortgageForm({ initial, propertyId, onClose, onSave }: {
+  initial?: ContractingMortgage; propertyId: string;
+  onClose: () => void; onSave: (m: ContractingMortgage) => void;
+}) {
+  const [f, setF] = useState<ContractingMortgage>(initial || {
+    id: uid('cmtg'), propertyId, lender: '', rateType: 'fixed', paymentFrequency: 'monthly',
+  } as ContractingMortgage);
+  const set = (patch: Partial<ContractingMortgage>) => setF(x => ({ ...x, ...patch }));
+  const num = (v: string) => (v === '' ? undefined : Number(v));
+  const dateError = f.termStart && f.termEnd && f.termEnd <= f.termStart
+    ? 'The renewal date is on or before the term start.' : '';
+  return (
+    <Modal title={initial ? 'Edit mortgage' : 'Add mortgage'} onClose={onClose}>
+      <Field label="Lender"><input className="inp" value={f.lender} autoFocus onChange={e => set({ lender: e.target.value })} /></Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Original principal"><input className="inp" type="number" value={f.principal ?? ''} onChange={e => set({ principal: num(e.target.value) })} /></Field>
+        <Field label="Current balance"><input className="inp" type="number" value={f.currentBalance ?? ''} onChange={e => set({ currentBalance: num(e.target.value) })} /></Field>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Rate (%)"><input className="inp" type="number" step="0.01" value={f.rate ?? ''} onChange={e => set({ rate: num(e.target.value) })} /></Field>
+        <Field label="Rate type">
+          <div className="flex gap-2">
+            {(['fixed', 'variable'] as const).map(rt => (
+              <button key={rt} onClick={() => set({ rateType: rt })} className="flex-1 py-1.5 rounded border text-sm font-semibold" style={f.rateType === rt ? { backgroundColor: PALERMO.slate, color: 'white' } : {}}>{rt}</button>
+            ))}
+          </div>
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Term start"><input className="inp" type="date" value={f.termStart || ''} onChange={e => set({ termStart: e.target.value || undefined })} /></Field>
+        <Field label="Renewal date"><input className="inp" type="date" value={f.termEnd || ''} onChange={e => set({ termEnd: e.target.value || undefined })} /></Field>
+      </div>
+      {dateError && <div className="text-xs px-2 py-1 rounded mb-2" style={{ backgroundColor: '#FADBD8', color: '#C0392B' }}>{dateError}</div>}
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Amortization (years)"><input className="inp" type="number" value={f.amortizationYears ?? ''} onChange={e => set({ amortizationYears: num(e.target.value) })} /></Field>
+        <Field label="Payment amount"><input className="inp" type="number" value={f.paymentAmount ?? ''} onChange={e => set({ paymentAmount: num(e.target.value) })} /></Field>
+      </div>
+      <Field label="Payment frequency">
+        <select className="inp" value={f.paymentFrequency || 'monthly'} onChange={e => set({ paymentFrequency: e.target.value as any })}>
+          <option value="monthly">Monthly</option>
+          <option value="semi_monthly">Semi-monthly</option>
+          <option value="biweekly">Biweekly</option>
+          <option value="accelerated_biweekly">Accelerated biweekly</option>
+          <option value="weekly">Weekly</option>
+        </select>
+      </Field>
+      <Field label="Notes"><input className="inp" value={f.notes || ''} onChange={e => set({ notes: e.target.value || undefined })} /></Field>
+      <ModalActions onClose={onClose} disabled={!f.lender.trim() || !!dateError} onSave={() => onSave({ ...f, lender: f.lender.trim() })} />
+    </Modal>
+  );
+}
+
+// A UNIT now holds SEVERAL active tenancies — two people in one unit on two
+// leases with two end dates is a regular arrangement here. The card is the
+// container: unit name, three-state status, the soonest-expiring countdown as
+// the headline, then each lease with its own dates beneath.
 function UnitRowCard({ unit, noticeDays, currentUser, editing, onUpdate, onRemove }: { unit: ContractingUnit; noticeDays: number; currentUser: { id: string; name: string }; editing: boolean; onUpdate: (u: ContractingUnit) => void; onRemove: () => void }) {
-  const [form, setForm] = useState<null | 'start' | 'edit' | 'renew' | 'moveout'>(null);
+  const [form, setForm] = useState<null | 'start'>(null);
   const [showHistory, setShowHistory] = useState(false);
   const now = Date.now();
-  const t = unit.tenancy;
-  const cd = t ? tenancyCountdown(t, now) : undefined;
-  const total = t ? tenancyMonthlyTotal(t) : 0;
-  const stamp = (action: string, base?: ContractingTenancy) => [...((base || t)?.audit || []), { at: Date.now(), by: currentUser.name, action }];
-  const setTenancy = (nt: ContractingTenancy | undefined) => onUpdate({ ...unit, tenancy: nt });
-  // ★ Main contact — exactly one starred; tapping a different tenant moves it.
-  const setMain = (tn: ContractingTenant) => t && setTenancy({ ...t, tenants: t.tenants.map(x => ({ ...x, main: x === tn })), audit: stamp(`main contact → ${tn.name || 'tenant'}`) });
-  const endTenancy = () => { if (!t) return; onUpdate({ ...unit, tenancy: undefined, history: [...(unit.history || []), { ...t, endedAt: Date.now(), endedBy: currentUser.name, audit: stamp('ended tenancy') }] }); };
-  const renew = (newEnd: string) => t && setTenancy({ ...t, status: 'fixed_term', leaseEnd: newEnd, moveOutAt: undefined, moveOutBy: undefined, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp(`renewed → ${newEnd}`) });
-  const convert = () => t && setTenancy({ ...t, status: 'month_to_month', leaseEnd: undefined, moveOutAt: undefined, moveOutBy: undefined, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp('converted to month-to-month') });
-  // MOVE OUT — the tenant's stated date (not computed). Works on both types.
-  const setMoveOut = (date: string) => t && setTenancy({ ...t, moveOutAt: date, moveOutBy: currentUser.name, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp(`move-out set ${date}`) });
-  const cancelMoveOut = () => t && setTenancy({ ...t, moveOutAt: undefined, moveOutBy: undefined, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp('move-out cancelled — tenant stays') });
-  const moveOut = tenancyMoveOut(t || ({} as ContractingTenancy));
-  const deposit = t ? tenancyDeposit(t) : {};
-  const shortNotice = moveOut ? moveOutIsShortNotice(moveOut, noticeDays, now) : false;
+  const tenancies = unitTenancies(unit);
+  const status = unitStatus(unit, now);
+  const headline = unitHeadlineCountdown(unit, now);
+
+  // Every write goes through the array; the legacy singular field is cleared on
+  // any touch so a half-migrated unit cannot linger.
+  const writeTenancies = (next: ContractingTenancy[]) =>
+    onUpdate({ ...unit, tenancies: next, tenancy: undefined });
+  const updateTenancy = (nt: ContractingTenancy) =>
+    writeTenancies(tenancies.map(t => (t.id === nt.id ? nt : t)));
+  const endTenancy = (t: ContractingTenancy) => onUpdate({
+    ...unit,
+    tenancies: tenancies.filter(x => x.id !== t.id),
+    tenancy: undefined,
+    history: [...(unit.history || []), {
+      ...t, endedAt: Date.now(), endedBy: currentUser.name,
+      audit: [...(t.audit || []), { at: Date.now(), by: currentUser.name, action: 'ended tenancy' }],
+    }],
+  });
+
+  const statusChip = status === 'vacant'
+    ? { bg: '#EAECEE', fg: '#7F8C8D' }
+    : status === 'turning' ? { bg: '#FEF9E7', fg: PALERMO.gold } : { bg: '#E9F7EF', fg: '#1E7E45' };
 
   return (
     <div className="p-3">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         {editing
           ? <input className="inp text-sm flex-1 font-semibold" defaultValue={unit.name} onBlur={e => e.target.value.trim() && onUpdate({ ...unit, name: e.target.value.trim() })} />
           : <span className="font-semibold" style={{ color: PALERMO.slate }}>{unit.name}</span>}
-        {t ? <CountdownBadge cd={cd!} /> : <span className="text-[11px] font-black px-2 py-0.5 rounded" style={{ backgroundColor: '#EAECEE', color: '#7F8C8D' }}>VACANT</span>}
+        <span className="flex items-center gap-1.5">
+          <span className="text-[11px] font-black px-2 py-0.5 rounded uppercase" style={{ backgroundColor: statusChip.bg, color: statusChip.fg }}>
+            {UNIT_STATUS_LABEL[status]}
+          </span>
+          {/* The HEADLINE is the soonest-ending lease — the one needing action
+              first. Each lease still shows its own date below. */}
+          {headline && <CountdownBadge cd={headline} />}
+        </span>
       </div>
-
-      {t ? (
-        <div className="mt-1.5">
-          <div className="flex items-baseline justify-between">
-            <span className="text-xs font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: t.status === 'fixed_term' ? '#FEF9E7' : '#EBF5FB', color: t.status === 'fixed_term' ? PALERMO.gold : '#2874A6' }}>{t.status === 'fixed_term' ? 'Fixed term' : 'Month-to-month'}</span>
-            <span className="text-lg font-black" style={{ color: PALERMO.slate }}>{money(total)}<span className="text-xs font-normal text-gray-400">/mo</span></span>
-          </div>
-          <div className="text-sm text-gray-700 mt-1">
-            {tenantsStarredFirst(t).map((tn, i) => {
-              const isMain = starredTenant(t) === tn;
-              return (
-                <div key={i} className="flex items-center justify-between gap-2">
-                  <span className="flex items-center gap-1.5 min-w-0">
-                    <button onClick={() => setMain(tn)} title="Set main contact" className="text-sm shrink-0" style={{ color: isMain ? PALERMO.gold : '#CACFD2' }}>{isMain ? '★' : '☆'}</button>
-                    <span className="truncate">{tn.name || <span className="text-gray-400">(unnamed)</span>}{tn.phone ? <span className="text-xs text-gray-400"> · <a href={`tel:${tn.phone}`} className="underline" style={{ color: '#1E7E45' }}>{tn.phone}</a></span> : ''}</span>
-                  </span>
-                  <span className="text-gray-500 shrink-0">{tn.rentAmount ? money(tn.rentAmount) : <span className="text-[10px] text-gray-400">contact only</span>}</span>
-                </div>
-              );
-            })}
-          </div>
-          {t.status === 'fixed_term' && t.leaseEnd && <div className="text-[11px] text-gray-400 mt-1">Lease {fmtYmd(t.leaseStart)} – {fmtYmd(t.leaseEnd)}</div>}
-          {moveOut && <div className="text-[11px] mt-1" style={{ color: '#C0392B' }}>Move out · {fmtYmd(moveOut)}{t.moveOutBy ? ` (by ${t.moveOutBy})` : ''}{shortNotice ? ` · less than ${noticeDays} days’ notice` : ''}</div>}
-          {/* Deposit — structured; quiet amber flag when not collected. */}
-          {deposit.collected
-            ? <div className="text-[11px] text-gray-400">Deposit {deposit.amount ? money(deposit.amount) : ''}{deposit.dateCollected ? ` · collected ${fmtYmd(deposit.dateCollected)}` : ''}{deposit.note ? ` · ${deposit.note}` : ''}</div>
-            : <div className="text-[11px]" style={{ color: '#B7950B' }}>⚑ Deposit not collected{deposit.note ? ` · ${deposit.note}` : ''}</div>}
-
-          {/* One-tap resolutions */}
-          <div className="flex flex-wrap gap-1.5 mt-2">
-            {t.status === 'fixed_term' && !moveOut && cd && cd.level !== 'neutral' && <>
-              <button onClick={() => setForm('renew')} className="text-xs px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>Renew</button>
-              <button onClick={convert} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Convert to M2M</button>
-            </>}
-            {!moveOut && <button onClick={() => setForm('moveout')} className="text-xs px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: '#C0392B' }}>Move out</button>}
-            {moveOut && <button onClick={cancelMoveOut} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Cancel move-out</button>}
-            <button onClick={() => setForm('edit')} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Edit</button>
-            <button onClick={() => confirm('End this tenancy? It moves to history and the unit becomes vacant.') && endTenancy()} className="text-xs px-2.5 py-1 rounded text-red-500 font-semibold ml-auto">End tenancy</button>
-          </div>
+      {tenancies.length > 1 && (
+        <div className="text-[11px] text-gray-400 mt-0.5">
+          {tenancies.length} separate leases on this unit
         </div>
-      ) : (
+      )}
+
+      {tenancies.length === 0 ? (
         <div className="mt-1.5 flex items-center gap-2">
           <button onClick={() => setForm('start')} className="text-xs px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.slate }}>Start tenancy</button>
           {editing && <button onClick={onRemove} className="text-xs px-2.5 py-1 rounded text-red-500 font-semibold ml-auto">Remove unit</button>}
+        </div>
+      ) : (
+        <div className="mt-1.5 space-y-2">
+          {tenancies.map(t => (
+            <TenancyCard
+              key={t.id}
+              tenancy={t}
+              unit={unit}
+              siblings={tenancies.length}
+              noticeDays={noticeDays}
+              currentUser={currentUser}
+              onUpdate={updateTenancy}
+              onEnd={() => endTenancy(t)}
+              onSplit={(moveNames, newId) => {
+                const r = splitTenancy({
+                  unit, tenancyId: t.id, moveNames, newTenancyId: newId,
+                  nowMs: Date.now(), by: currentUser.name,
+                });
+                if (r.error) { alert(r.error); return false; }
+                onUpdate(r.unit);
+                return true;
+              }}
+            />
+          ))}
+          <button onClick={() => setForm('start')} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>+ Add another lease on this unit</button>
         </div>
       )}
 
@@ -2424,10 +2660,156 @@ function UnitRowCard({ unit, noticeDays, currentUser, editing, onUpdate, onRemov
         </div>
       )}
 
-      {(form === 'start' || form === 'edit') && <TenancyForm initial={form === 'edit' ? t! : undefined} noticeDays={noticeDays} onClose={() => setForm(null)} onSave={nt => { setTenancy(form === 'edit' ? { ...nt, audit: stamp('edited tenancy', nt) } : { ...nt, createdAt: Date.now(), audit: [{ at: Date.now(), by: currentUser.name, action: 'started tenancy' }] }); setForm(null); }} />}
-      {form === 'renew' && <DatePickForm title="Renew lease" label="New lease end" initial={t?.leaseEnd} mustBeAfter={t?.leaseStart} onClose={() => setForm(null)} onSave={d => { renew(d); setForm(null); }} />}
-      {form === 'moveout' && <MoveOutForm initial={t?.leaseEnd || msToYmd(now)} noticeDays={noticeDays} now={now} onClose={() => setForm(null)} onSave={d => { setMoveOut(d); setForm(null); }} />}
+      {form === 'start' && (
+        <TenancyForm
+          noticeDays={noticeDays}
+          onClose={() => setForm(null)}
+          onSave={nt => {
+            writeTenancies([...tenancies, {
+              ...nt,
+              id: nt.id || `ten-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              createdAt: Date.now(),
+              audit: [{ at: Date.now(), by: currentUser.name, action: 'started tenancy' }],
+            }]);
+            setForm(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// ONE LEASE on a unit. Everything here acts on this tenancy alone — a move-out
+// set on one leaves every other lease on the unit untouched, which is the point
+// of the whole change.
+function TenancyCard({ tenancy: t, unit, siblings, noticeDays, currentUser, onUpdate, onEnd, onSplit }: {
+  tenancy: ContractingTenancy;
+  unit: ContractingUnit;
+  siblings: number;
+  noticeDays: number;
+  currentUser: { id: string; name: string };
+  onUpdate: (t: ContractingTenancy) => void;
+  onEnd: () => void;
+  onSplit: (moveNames: string[], newId: string) => boolean;
+}) {
+  const [form, setForm] = useState<null | 'edit' | 'renew' | 'moveout' | 'split'>(null);
+  const now = Date.now();
+  const cd = tenancyCountdown(t, now);
+  const total = tenancyMonthlyTotal(t);
+  const stamp = (action: string, base?: ContractingTenancy) => [...((base || t).audit || []), { at: Date.now(), by: currentUser.name, action }];
+  const setMain = (tn: ContractingTenant) => onUpdate({ ...t, tenants: t.tenants.map(x => ({ ...x, main: x === tn })), audit: stamp(`main contact → ${tn.name || 'tenant'}`) });
+  const renew = (newEnd: string) => onUpdate({ ...t, status: 'fixed_term', leaseEnd: newEnd, moveOutAt: undefined, moveOutBy: undefined, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp(`renewed → ${newEnd}`) });
+  const convert = () => onUpdate({ ...t, status: 'month_to_month', leaseEnd: undefined, moveOutAt: undefined, moveOutBy: undefined, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp('converted to month-to-month') });
+  const setMoveOut = (date: string) => onUpdate({ ...t, moveOutAt: date, moveOutBy: currentUser.name, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp(`move-out set ${date}`) });
+  const cancelMoveOut = () => onUpdate({ ...t, moveOutAt: undefined, moveOutBy: undefined, computedEnd: undefined, noticeGivenAt: undefined, audit: stamp('move-out cancelled — tenant stays') });
+  const moveOut = tenancyMoveOut(t);
+  const deposit = tenancyDeposit(t);
+  const shortNotice = moveOut ? moveOutIsShortNotice(moveOut, noticeDays, now) : false;
+
+  return (
+    <div className={siblings > 1 ? 'border-l-2 pl-2.5' : ''} style={siblings > 1 ? { borderColor: '#D5DBDB' } : {}}>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: t.status === 'fixed_term' ? '#FEF9E7' : '#EBF5FB', color: t.status === 'fixed_term' ? PALERMO.gold : '#2874A6' }}>{t.status === 'fixed_term' ? 'Fixed term' : 'Month-to-month'}</span>
+          {siblings > 1 && <CountdownBadge cd={cd} />}
+        </span>
+        <span className="text-lg font-black" style={{ color: PALERMO.slate }}>{money(total)}<span className="text-xs font-normal text-gray-400">/mo</span></span>
+      </div>
+      <div className="text-sm text-gray-700 mt-1">
+        {tenantsStarredFirst(t).map((tn, i) => {
+          const isMain = starredTenant(t) === tn;
+          return (
+            <div key={i} className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 min-w-0">
+                <button onClick={() => setMain(tn)} title="Set main contact" className="text-sm shrink-0" style={{ color: isMain ? PALERMO.gold : '#CACFD2' }}>{isMain ? '★' : '☆'}</button>
+                <span className="truncate">{tn.name || <span className="text-gray-400">(unnamed)</span>}{tn.phone ? <span className="text-xs text-gray-400"> · <a href={`tel:${tn.phone}`} className="underline" style={{ color: '#1E7E45' }}>{tn.phone}</a></span> : ''}</span>
+              </span>
+              <span className="text-gray-500 shrink-0">{tn.rentAmount ? money(tn.rentAmount) : <span className="text-[10px] text-gray-400">contact only</span>}</span>
+            </div>
+          );
+        })}
+      </div>
+      {t.status === 'fixed_term' && t.leaseEnd && <div className="text-[11px] text-gray-400 mt-1">Lease {fmtYmd(t.leaseStart)} – {fmtYmd(t.leaseEnd)}</div>}
+      {t.status === 'fixed_term' && !t.leaseEnd && <div className="text-[11px] mt-1" style={{ color: PALERMO.gold }}>⚑ Fixed term with no end date set</div>}
+      {moveOut && <div className="text-[11px] mt-1" style={{ color: '#C0392B' }}>Move out · {fmtYmd(moveOut)}{t.moveOutBy ? ` (by ${t.moveOutBy})` : ''}{shortNotice ? ` · less than ${noticeDays} days’ notice` : ''}</div>}
+      {deposit.collected
+        ? <div className="text-[11px] text-gray-400">Deposit {deposit.amount ? money(deposit.amount) : ''}{deposit.dateCollected ? ` · collected ${fmtYmd(deposit.dateCollected)}` : ''}{deposit.note ? ` · ${deposit.note}` : ''}</div>
+        : <div className="text-[11px]" style={{ color: '#B7950B' }}>⚑ Deposit not collected{deposit.note ? ` · ${deposit.note}` : ''}</div>}
+
+      <div className="flex flex-wrap gap-1.5 mt-2">
+        {t.status === 'fixed_term' && !moveOut && cd.level !== 'neutral' && <>
+          <button onClick={() => setForm('renew')} className="text-xs px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>Renew</button>
+          <button onClick={convert} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Convert to M2M</button>
+        </>}
+        {!moveOut && <button onClick={() => setForm('moveout')} className="text-xs px-2.5 py-1 rounded text-white font-semibold" style={{ backgroundColor: '#C0392B' }}>Move out</button>}
+        {moveOut && <button onClick={cancelMoveOut} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Cancel move-out</button>}
+        <button onClick={() => setForm('edit')} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>Edit</button>
+        {/* SPLIT — only offered when there is somebody to split off. */}
+        {(t.tenants || []).length > 1 && (
+          <button onClick={() => setForm('split')} className="text-xs px-2.5 py-1 rounded border font-semibold" style={{ color: '#2874A6' }} title="These tenants are on separate leases — separate them">Split lease</button>
+        )}
+        <button onClick={() => confirm(`End this tenancy? It moves to history.${siblings > 1 ? ' The other lease(s) on this unit are untouched.' : ' The unit becomes vacant.'}`) && onEnd()} className="text-xs px-2.5 py-1 rounded text-red-500 font-semibold ml-auto">End tenancy</button>
+      </div>
+
+      {form === 'edit' && <TenancyForm initial={t} noticeDays={noticeDays} onClose={() => setForm(null)} onSave={nt => { onUpdate({ ...nt, id: t.id, audit: stamp('edited tenancy', nt) }); setForm(null); }} />}
+      {form === 'renew' && <DatePickForm title="Renew lease" label="New lease end" initial={t.leaseEnd} mustBeAfter={t.leaseStart} onClose={() => setForm(null)} onSave={d => { renew(d); setForm(null); }} />}
+      {form === 'moveout' && <MoveOutForm initial={t.leaseEnd || msToYmd(now)} noticeDays={noticeDays} now={now} onClose={() => setForm(null)} onSave={d => { setMoveOut(d); setForm(null); }} />}
+      {form === 'split' && (
+        <SplitTenancyForm
+          tenancy={t}
+          unitName={unit.name}
+          onClose={() => setForm(null)}
+          onSplit={names => {
+            const ok = onSplit(names, `ten-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+            if (ok) setForm(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// SPLIT a shared lease into two. Which tenant belongs to which lease, and on
+// what terms, is knowledge only Tony has — so this asks WHO moves and leaves
+// the new lease's dates blank for him to enter. A copied date would assert a
+// term nobody agreed, and the reason for splitting is that the terms differ.
+function SplitTenancyForm({ tenancy, unitName, onClose, onSplit }: {
+  tenancy: ContractingTenancy; unitName: string;
+  onClose: () => void; onSplit: (moveNames: string[]) => void;
+}) {
+  const [picked, setPicked] = useState<string[]>([]);
+  const names = (tenancy.tenants || []).map(t => t.name).filter(Boolean) as string[];
+  const staying = names.filter(n => !picked.includes(n));
+  return (
+    <Modal title={`Split the lease · ${unitName}`} onClose={onClose}>
+      <div className="text-sm text-gray-600 mb-2">
+        These {names.length} people are on one lease. Pick whoever is actually on a
+        SEPARATE lease — they move to a new tenancy on this unit, and you enter
+        its dates afterwards.
+      </div>
+      <div className="space-y-1 mb-2">
+        {names.map(n => (
+          <label key={n} className="flex items-center gap-2 text-sm border rounded px-2 py-1.5">
+            <input
+              type="checkbox" checked={picked.includes(n)}
+              onChange={e => setPicked(p => e.target.checked ? [...p, n] : p.filter(x => x !== n))}
+            />
+            <span>{n}</span>
+          </label>
+        ))}
+      </div>
+      <div className="text-xs text-gray-500 mb-2">
+        {picked.length === 0 ? 'Nobody selected yet.'
+          : staying.length === 0 ? '⚠ At least one tenant must stay on the original lease.'
+            : `${picked.join(', ')} → a new lease. ${staying.join(', ')} stay${staying.length === 1 ? 's' : ''} on this one.`}
+      </div>
+      <div className="text-[11px] text-gray-400 mb-2">
+        The new lease starts with no dates — enter its term next. Rent and contact
+        details move with the person.
+      </div>
+      <ModalActions onClose={onClose} disabled={picked.length === 0 || staying.length === 0}
+        onSave={() => onSplit(picked)} />
+    </Modal>
   );
 }
 
