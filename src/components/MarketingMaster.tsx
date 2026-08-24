@@ -203,13 +203,24 @@ export default function MarketingMaster({
           <h1 className="text-lg md:text-xl font-black uppercase tracking-widest text-slate-800">Marketing</h1>
         </div>
 
-        {/* (a) CLIP FEEDBACK — FIRST, because it is the section in daily use.
-            The footage lives in Drive; this holds only the conversation about
-            it, keyed by clip number. Everything below is the pipeline around
-            it, which is consulted rather than worked in.
+        {/* (a) CONTENT CALENDAR — the anchor, and first. Widest, and on a wide
+            screen it carries its scan-list in a column beside the grid; below
+            xl that column drops underneath.
 
             The page is one stacked flow, so this order is the order on a phone
             as well — there is no separate mobile arrangement to keep in step. */}
+        <CalendarSection
+          items={contentList}
+          links={links}
+          currentUser={currentUser}
+          onSave={onSaveContent}
+          onDelete={onDeleteContent}
+          onSaveLink={onSaveLink}
+        />
+
+        {/* (b) CLIP FEEDBACK — second, directly under the calendar, because it
+            is the section in daily use. The footage lives in Drive; this holds
+            only the conversation about it, keyed by clip number. */}
         <FeedbackPanel
           threads={threads}
           clips={clips}
@@ -218,18 +229,6 @@ export default function MarketingMaster({
           onDeleteComment={onDeleteComment}
           onSaveClip={onSaveClip}
           onSavePostQueue={onSavePostQueue}
-        />
-
-        {/* (b) CONTENT CALENDAR — the anchor. Widest, and on a wide screen it
-            carries its scan-list in a column beside the grid; below xl that
-            column drops underneath. */}
-        <CalendarSection
-          items={contentList}
-          links={links}
-          currentUser={currentUser}
-          onSave={onSaveContent}
-          onDelete={onDeleteContent}
-          onSaveLink={onSaveLink}
         />
 
         {/* (c) TO-DO — one shared list, directly under the calendar: it is
