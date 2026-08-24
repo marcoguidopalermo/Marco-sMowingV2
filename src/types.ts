@@ -143,6 +143,17 @@ export interface TimeEntry {
   // same pay-chunk feeding); the flag is purely a record/UI marker.
   manualEntry?: boolean;
   enteredBy?: { email: string; name: string };
+  // ── CLOCKED ON SOMEBODY ELSE'S BEHALF ───────────────────────────────────
+  // Set when a manager or admin started or stopped this punch FOR the
+  // employee — a dead phone, a forgotten punch — rather than the employee
+  // tapping it themselves. Absent on a self-punch, which is the normal case.
+  //
+  // This is a manager creating pay data for another person, so it is never
+  // silent: the marker renders on the entry everywhere it appears, including
+  // the employee's own timesheet, and a reason is required at the time and
+  // kept as a note on the entry.
+  startedBy?: { email: string; name: string };
+  stoppedBy?: { email: string; name: string };
   // Optional "what was worked on" note captured at clock-out (contracting
   // punches) — surfaces on the entry, the report reference panel, and can be
   // carried into a billable line. Editable after the fact by Tony/Marco.

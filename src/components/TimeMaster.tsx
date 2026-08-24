@@ -7,6 +7,9 @@ import {
 import { AppData, AppSettings, TimeEntry, TimeEntryNote, TimeOffRequest, UserRole, DeletionAuditEntry, HoursBankEntry } from '../types';
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto } from '../lib/dateUtils';
 import { timeEntryLock } from '../lib/timeEntryLock';
+import {
+  canClockFor, onBehalfLabel, reasonIsUsable, runningPunchFor,
+} from '../lib/clockOnBehalf';
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, stepPeriod, periodOfYmd, periodRangeLabel, payDateLabel, PayPeriod } from '../lib/payPeriods';
 import { chunksForMechanic, computeHoursWorkedBetween } from '../lib/payChunkUtils';
 import TimeOffApprovalPage from './TimeOffApprovalPage';
@@ -19,6 +22,10 @@ interface TimeMasterProps {
   // Settings are written per-key through App's targeted path — a whole-document
   // save no longer carries them. See saveSettings in App.tsx.
   saveSettings: (next: AppSettings, baseline: AppSettings | undefined) => Promise<boolean>;
+  // Start / stop another employee's clock. Guarded and audited in App.
+  onClockForEmployee: (email: string, action: 'in' | 'out', reason: string) => Promise<boolean>;
+  // Who the viewer is, for the division check on the buttons.
+  currentUserManagedDivision?: string | null;
   userEmail: string;
   userName: string;
   // Role of the acting user — stamped onto the DeletionAuditEntry when a
@@ -88,6 +95,8 @@ export default function TimeMaster({
   appData,
   syncToCloud,
   saveSettings,
+  onClockForEmployee,
+  currentUserManagedDivision,
   userEmail,
   userName,
   currentUserRole,
@@ -132,6 +141,11 @@ export default function TimeMaster({
   const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
 
   const [editingEntry, setEditingEntry] = useState<TimeEntry | null>(null);
+  // Clocking somebody else in/out — the reason box.
+  const [clockFor, setClockFor] = useState<
+    { email: string; name: string; action: 'in' | 'out' } | null>(null);
+  const [clockReason, setClockReason] = useState('');
+  const [clockBusy, setClockBusy] = useState(false);
   // editMode: 'times' edits clock-in/out directly (hours derived);
   // 'hours' edits the total hours directly (clockOut synthesized from
   // clockIn + hours). `hours` holds the hours-mode input.
@@ -842,6 +856,18 @@ export default function TimeMaster({
                 Edited · {editorName}
               </span>
             )}
+            {/* Somebody else started or stopped this punch. Rendered on the
+                SHARED entry row, so it shows in the manager's view, in Dave's
+                payroll lens, and on the employee's own timesheet alike — a
+                punch you did not make is never something you have to discover. */}
+            {onBehalfLabel(entry) && (
+              <span
+                className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-violet-50 text-violet-700 border-violet-200"
+                title={(entry.notes || []).filter(n => n.text.startsWith('[Clocked')).map(n => n.text).join(' · ')}
+              >
+                {onBehalfLabel(entry)}
+              </span>
+            )}
             <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusClass}`}>{status}</span>
             {rowLock.locked && (
               <span
@@ -1077,6 +1103,7 @@ export default function TimeMaster({
               <th className="px-2 py-1.5 text-right bg-emerald-50 text-emerald-700" title={`Pays ${payDateLabel(curPeriod)}`}>Current<div className="normal-case font-normal text-[8px] tracking-normal">{periodRangeLabel(curPeriod)} · pays {payDateLabel(curPeriod)}</div></th>
               <th className="px-2 py-1.5 text-right">Today</th>
               <th className="px-2 py-1.5">Last Punch</th>
+              <th className="px-2 py-1.5 text-right">Clock</th>
               <th className="px-2 py-1.5 text-right">Status</th>
             </tr>
           </thead>
@@ -1094,6 +1121,32 @@ export default function TimeMaster({
                   <td className="px-2 py-1.5 text-right font-mono font-black text-emerald-700 text-xs bg-emerald-50/40">{formatHM(u.current)}</td>
                   <td className="px-2 py-1.5 text-right font-mono font-bold text-gray-500 text-xs">{formatHM(u.today)}</td>
                   <td className="px-2 py-1.5 text-[11px] text-slate-600 whitespace-nowrap">{u.lastPunchTs ? new Date(u.lastPunchTs).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'}</td>
+                  <td className="px-2 py-1.5 text-right" onClick={e => e.stopPropagation()}>
+                    {(() => {
+                      const target = (appData.employees || []).find(emp =>
+                        (emp.linkedUserEmail || emp.email || '').toLowerCase() === (u.email || '').toLowerCase());
+                      const perm = canClockFor(
+                        { role: currentUserRole, managedDivision: currentUserManagedDivision },
+                        target,
+                      );
+                      if (!perm.allowed) return null;
+                      const running = !!runningPunchFor(appData.timeEntries, u.email);
+                      return (
+                        <button
+                          onClick={() => {
+                            setClockReason('');
+                            setClockFor({ email: u.email, name: u.name, action: running ? 'out' : 'in' });
+                          }}
+                          title={running ? `Clock ${u.name} out` : `Clock ${u.name} in`}
+                          className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded border whitespace-nowrap ${running
+                            ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                            : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'}`}
+                        >
+                          {running ? 'Clock out' : 'Clock in'}
+                        </button>
+                      );
+                    })()}
+                  </td>
                   <td className="px-2 py-1.5 text-right">
                     {u.hasUnclosed ? (
                       <span className="text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border bg-rose-100 text-rose-700 border-rose-200 inline-flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Unclosed</span>
@@ -1329,6 +1382,53 @@ export default function TimeMaster({
             </>
           )}
         </>
+      )}
+
+      {/* CLOCK SOMEBODY ELSE IN / OUT — reason required. */}
+      {clockFor && (
+        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5">
+            <h3 className="text-lg font-bold text-slate-800">
+              Clock {clockFor.name} {clockFor.action === 'in' ? 'in' : 'out'}
+            </h3>
+            <div className="text-[12px] text-slate-500 mt-0.5">
+              {clockFor.action === 'in'
+                ? `Starts their clock now, at ${new Date().toLocaleTimeString()}.`
+                : `Stops their running clock now, at ${new Date().toLocaleTimeString()}.`}
+              {' '}It will be recorded as done by you, and they will see it on their own timesheet.
+            </div>
+            <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mt-3 mb-1">
+              Reason <span className="font-medium text-slate-400 normal-case tracking-normal">· required</span>
+            </label>
+            <textarea
+              value={clockReason}
+              onChange={e => setClockReason(e.target.value)}
+              rows={2}
+              autoFocus
+              className="w-full rounded-lg border border-slate-300 p-2 text-[13px]"
+              placeholder={clockFor.action === 'in' ? 'e.g. phone dead' : 'e.g. forgot to punch out'}
+            />
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button onClick={() => setClockFor(null)} className="px-3 py-1.5 text-[12px] font-bold text-slate-500">Cancel</button>
+              <button
+                onClick={async () => {
+                  if (clockBusy) return;
+                  setClockBusy(true);
+                  const ok = await onClockForEmployee(clockFor.email, clockFor.action, clockReason);
+                  setClockBusy(false);
+                  if (ok) { setClockFor(null); setClockReason(''); }
+                }}
+                disabled={!reasonIsUsable(clockReason) || clockBusy}
+                className="rounded-lg bg-slate-800 px-4 py-1.5 text-[12px] font-black uppercase tracking-widest text-white disabled:opacity-40"
+              >
+                {clockBusy ? 'Saving…' : `Clock ${clockFor.action}`}
+              </button>
+            </div>
+            {!reasonIsUsable(clockReason) && (
+              <div className="text-[11px] text-slate-400 mt-1 text-right">A reason is required.</div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* EDIT MODAL */}

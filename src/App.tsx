@@ -128,6 +128,11 @@ import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
 import { computeRosterUpdate } from './lib/rosterWrite';
 import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './lib/scheduledBulletins';
+import { timeEntryLock } from './lib/timeEntryLock';
+import {
+  applyOnBehalfStop, buildOnBehalfStart, canClockFor, guardStart, guardStop,
+  reasonIsUsable, runningPunchFor,
+} from './lib/clockOnBehalf';
 import { duplicateInvoiceNumber, normalizeInvoiceNumber, reportMintNumber, describeNumberChange } from './lib/contractingEdits';
 import {
   applyFlagToLog, applyResolutionToLog, canFlagCrewDay, canResolveFlag,
@@ -3458,6 +3463,76 @@ export default function App() {
   // a whole array the admin's screen happened to hold: two admins editing at
   // once both get their changes, and neither wipes the other's. Each add and
   // each removal is audited individually to its own append-only collection.
+  // CLOCK SOMEBODY ELSE IN / OUT. A dead phone or a forgotten punch, fixed with
+  // a real timestamp now rather than a reconstruction later.
+  //
+  // Every guard is here rather than only on the buttons: permission, division,
+  // the clock's actual state, and the same locked-day rule the edit flow uses.
+  // A manager creating pay data for another person is exactly the write that
+  // should not depend on the UI having hidden a control.
+  const clockForEmployee = async (
+    email: string, action: 'in' | 'out', reason: string,
+  ): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    const target = (appData.employees || []).find(e =>
+      (e.linkedUserEmail || e.email || '').trim().toLowerCase() === (email || '').trim().toLowerCase());
+    const perm = canClockFor(
+      { role: effectiveRole, managedDivision: currentUserEmployee?.managedDivision },
+      target,
+    );
+    if (!perm.allowed || !target) { showToastMsg(perm.message || PERMISSION_DENIED); return false; }
+    if (!reasonIsUsable(reason)) {
+      showToastMsg('A reason is required when clocking somebody else in or out.');
+      return false;
+    }
+    const entries = appData.timeEntries || [];
+    const nowIso = new Date().toISOString();
+
+    if (action === 'in') {
+      const guard = guardStart(entries, target, email);
+      if (!guard.ok) { showToastMsg(guard.message || 'Already clocked in.'); return false; }
+      // A punch starting NOW lands on today, which cannot already be approved
+      // — but the rule is applied rather than assumed, so a back-dated clock
+      // or an archived today is refused the same way an edit would be.
+      const lk = timeEntryLock({
+        clockIn: nowIso, userEmail: email, employees: appData.employees,
+        performance: appData.performance, pushedMonths: appData.pushedMonths,
+        archivedDays: appData.archivedDays,
+      });
+      if (lk.locked) { showToastMsg(lk.message || 'That day is locked.'); return false; }
+      const entry = buildOnBehalfStart({
+        target, email, actor: { email: displayEmail, name: displayName || displayEmail },
+        reason, nowIso, id: `te-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      });
+      const ok = await syncToCloud({ ...appData, timeEntries: [entry, ...entries] });
+      if (ok === false) { showToastMsg('Could not start that clock.'); return false; }
+      showToastMsg(`${target.name} clocked in.`);
+      return true;
+    }
+
+    const running = runningPunchFor(entries, email);
+    const guard = guardStop(entries, target, email);
+    if (!guard.ok || !running) { showToastMsg(guard.message || 'Not clocked in.'); return false; }
+    // Stopping edits an EXISTING punch, so it is checked against that punch's
+    // own day — which may well be yesterday if the clock ran overnight.
+    const lk = timeEntryLock({
+      clockIn: running.clockIn, userEmail: email, employees: appData.employees,
+      performance: appData.performance, pushedMonths: appData.pushedMonths,
+      archivedDays: appData.archivedDays,
+    });
+    if (lk.locked) { showToastMsg(lk.message || 'That day is locked.'); return false; }
+    const stopped = applyOnBehalfStop(
+      running, { email: displayEmail, name: displayName || displayEmail }, reason, nowIso,
+    );
+    const ok = await syncToCloud({
+      ...appData,
+      timeEntries: entries.map(e => (e.id === running.id ? stopped : e)),
+    });
+    if (ok === false) { showToastMsg('Could not stop that clock.'); return false; }
+    showToastMsg(`${target.name} clocked out.`);
+    return true;
+  };
+
   // ── DAILY AUDIT: FLAG / RESOLVE / MARK AUDITED ───────────────────────────
   // James audits yesterday's crew-days daily, because whether a worker was
   // actually on a crew is only verifiable while it is fresh.
@@ -7434,6 +7509,8 @@ export default function App() {
           myEmployeeId={currentUserEmployee?.id || null}
           // WRITES ARE ADMIN-ONLY. The handler enforces it again server-side
           // of this component; this is what decides whether the buttons exist.
+          onClockForEmployee={clockForEmployee}
+          currentUserManagedDivision={currentUserEmployee?.managedDivision}
           canManageBank={isAdmin}
           // The TAB is for people who look at other people's ledgers — an
           // admin at all of them, a manager at their division. An employee
