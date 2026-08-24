@@ -203,9 +203,26 @@ export default function MarketingMaster({
           <h1 className="text-lg md:text-xl font-black uppercase tracking-widest text-slate-800">Marketing</h1>
         </div>
 
-        {/* (a) CONTENT CALENDAR — the anchor. Widest, first, and on a wide
-            screen it carries its scan-list in a column beside the grid; below
-            xl that column drops underneath. */}
+        {/* (a) CLIP FEEDBACK — FIRST, because it is the section in daily use.
+            The footage lives in Drive; this holds only the conversation about
+            it, keyed by clip number. Everything below is the pipeline around
+            it, which is consulted rather than worked in.
+
+            The page is one stacked flow, so this order is the order on a phone
+            as well — there is no separate mobile arrangement to keep in step. */}
+        <FeedbackPanel
+          threads={threads}
+          clips={clips}
+          postQueue={postQueue}
+          onAddComment={addComment}
+          onDeleteComment={onDeleteComment}
+          onSaveClip={onSaveClip}
+          onSavePostQueue={onSavePostQueue}
+        />
+
+        {/* (b) CONTENT CALENDAR — the anchor. Widest, and on a wide screen it
+            carries its scan-list in a column beside the grid; below xl that
+            column drops underneath. */}
         <CalendarSection
           items={contentList}
           links={links}
@@ -215,7 +232,7 @@ export default function MarketingMaster({
           onSaveLink={onSaveLink}
         />
 
-        {/* (b) TO-DO — one shared list, directly under the calendar: it is
+        {/* (c) TO-DO — one shared list, directly under the calendar: it is
             the "what do I actually need to do" of this board, so it sits
             above the pipeline panels rather than beside them. */}
         <TodoPanel
@@ -227,7 +244,7 @@ export default function MarketingMaster({
           onDeleteComment={onDeleteComment}
         />
 
-        {/* (c) SHOT QUEUE and (d) LINKS — compact panels side by side on
+        {/* (d) SHOT QUEUE and (e) LINKS — compact panels side by side on
             desktop, stacked in that order on a phone. Adjacent on purpose:
             promoting a link to the shot queue moves it one panel left. */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
@@ -247,10 +264,8 @@ export default function MarketingMaster({
           />
         </div>
 
-        {/* (e) MUSIC — sounds for videos. Sits after the links row because it
-            is the same act (save a pointer, discuss it) applied to audio, and
-            before the clip pipeline because the sound is usually chosen while
-            the clip is still being cut. */}
+        {/* (f) MUSIC — sounds for videos. Sits after the links row because it
+            is the same act (save a pointer, discuss it) applied to audio. */}
         <MusicPanel
           tracks={trackList}
           threads={threads}
@@ -259,18 +274,6 @@ export default function MarketingMaster({
           onDeleteTrack={onDeleteTrack}
           onAddComment={addComment}
           onDeleteComment={onDeleteComment}
-        />
-
-        {/* (f) CLIP FEEDBACK — full width. The footage lives in Drive; this
-            holds only the conversation about it, keyed by clip number. */}
-        <FeedbackPanel
-          threads={threads}
-          clips={clips}
-          postQueue={postQueue}
-          onAddComment={addComment}
-          onDeleteComment={onDeleteComment}
-          onSaveClip={onSaveClip}
-          onSavePostQueue={onSavePostQueue}
         />
 
         {/* (g) POST QUEUE — last, because it is the end of the pipeline: a
