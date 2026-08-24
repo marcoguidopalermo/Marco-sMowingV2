@@ -131,7 +131,7 @@ import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './
 import { timeEntryLock } from './lib/timeEntryLock';
 import {
   applyOnBehalfStop, buildOnBehalfStart, canClockFor, guardStart, guardStop,
-  reasonIsUsable, runningPunchFor,
+  isBackdated, reasonIsUsable, runningPunchFor, validateStartTime, validateStopTime,
 } from './lib/clockOnBehalf';
 import { duplicateInvoiceNumber, normalizeInvoiceNumber, reportMintNumber, describeNumberChange } from './lib/contractingEdits';
 import {
@@ -3472,6 +3472,8 @@ export default function App() {
   // should not depend on the UI having hidden a control.
   const clockForEmployee = async (
     email: string, action: 'in' | 'out', reason: string,
+    /** The worked time. Omitted = now. */
+    atIso?: string,
   ): Promise<boolean> => {
     if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
     const target = (appData.employees || []).find(e =>
@@ -3487,32 +3489,47 @@ export default function App() {
     }
     const entries = appData.timeEntries || [];
     const nowIso = new Date().toISOString();
+    const nowMs = Date.parse(nowIso);
+    // The worked time — back-dated, or now. Validated below against the
+    // employee's own existing punches, not just against the clock.
+    const workedIso = atIso || nowIso;
+    const workedMs = Date.parse(workedIso);
+    if (!Number.isFinite(workedMs)) { showToastMsg('Pick a valid time.'); return false; }
 
     if (action === 'in') {
       const guard = guardStart(entries, target, email);
       if (!guard.ok) { showToastMsg(guard.message || 'Already clocked in.'); return false; }
+      const when = validateStartTime({ atMs: workedMs, nowMs, entries, email });
+      if (!when.ok) { showToastMsg(when.message || 'That time cannot be used.'); return false; }
       // A punch starting NOW lands on today, which cannot already be approved
       // — but the rule is applied rather than assumed, so a back-dated clock
       // or an archived today is refused the same way an edit would be.
+      // Checked against the WORKED day, which is what a back-dated punch
+      // lands on — a start set to yesterday is judged by yesterday's lock.
       const lk = timeEntryLock({
-        clockIn: nowIso, userEmail: email, employees: appData.employees,
+        clockIn: workedIso, userEmail: email, employees: appData.employees,
         performance: appData.performance, pushedMonths: appData.pushedMonths,
         archivedDays: appData.archivedDays,
       });
       if (lk.locked) { showToastMsg(lk.message || 'That day is locked.'); return false; }
       const entry = buildOnBehalfStart({
         target, email, actor: { email: displayEmail, name: displayName || displayEmail },
-        reason, nowIso, id: `te-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        reason, atIso: workedIso, nowIso,
+        id: `te-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       });
       const ok = await syncToCloud({ ...appData, timeEntries: [entry, ...entries] });
       if (ok === false) { showToastMsg('Could not start that clock.'); return false; }
-      showToastMsg(`${target.name} clocked in.`);
+      showToastMsg(isBackdated(workedMs, nowMs)
+        ? `${target.name} clocked in at ${new Date(workedMs).toLocaleTimeString()}.`
+        : `${target.name} clocked in.`);
       return true;
     }
 
     const running = runningPunchFor(entries, email);
     const guard = guardStop(entries, target, email);
     if (!guard.ok || !running) { showToastMsg(guard.message || 'Not clocked in.'); return false; }
+    const whenOut = validateStopTime({ atMs: workedMs, nowMs, running, entries, email });
+    if (!whenOut.ok) { showToastMsg(whenOut.message || 'That time cannot be used.'); return false; }
     // Stopping edits an EXISTING punch, so it is checked against that punch's
     // own day — which may well be yesterday if the clock ran overnight.
     const lk = timeEntryLock({
@@ -3522,7 +3539,8 @@ export default function App() {
     });
     if (lk.locked) { showToastMsg(lk.message || 'That day is locked.'); return false; }
     const stopped = applyOnBehalfStop(
-      running, { email: displayEmail, name: displayName || displayEmail }, reason, nowIso,
+      running, { email: displayEmail, name: displayName || displayEmail },
+      reason, workedIso, nowIso,
     );
     const ok = await syncToCloud({
       ...appData,

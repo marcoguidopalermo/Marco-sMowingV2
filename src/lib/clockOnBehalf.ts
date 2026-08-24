@@ -125,35 +125,175 @@ export const MIN_REASON_LENGTH = 3;
 export const reasonIsUsable = (v: string | null | undefined): boolean =>
   typeof v === 'string' && v.trim().length >= MIN_REASON_LENGTH;
 
+// ── BACK-DATING ────────────────────────────────────────────────────────────
+// Somebody forgot at 8:00 and is being clocked in at 8:20. The punch should
+// read 8:00, because that is when they started working and what they are owed
+// for — while the record still shows it was written at 8:20.
+//
+// More than this far back is more likely a mistyped hour than a correction, so
+// it WARNS. It does not block: a genuinely long gap (found at the end of the
+// day, or a stop nobody noticed until morning) is a real case, and refusing it
+// would push the manager into reconstructing the punch some other way.
+export const BACKDATE_WARN_HOURS = 4;
+
+export interface TimeChoice {
+  ok: boolean;
+  /** Hard failure — the time cannot be used. */
+  message?: string;
+  /** Usable, but worth a second look before saving. */
+  warning?: string;
+}
+
+const spanOf = (e: TimeEntry, nowMs: number): [number, number] => {
+  const a = Date.parse(e.clockIn);
+  const b = e.clockOut ? Date.parse(e.clockOut) : nowMs;
+  return [a, Number.isFinite(b) ? b : nowMs];
+};
+
+/**
+ * Is this a usable START time?
+ *
+ * Refuses the future, and refuses a start that would overlap the employee's
+ * own existing time — a new punch is open-ended, so it collides with anything
+ * that ends after it begins, which is exactly the "before the end of their
+ * previous punch" rule stated plainly.
+ */
+export function validateStartTime(input: {
+  atMs: number;
+  nowMs: number;
+  entries: TimeEntry[] | undefined;
+  email: string;
+}): TimeChoice {
+  if (!Number.isFinite(input.atMs)) return { ok: false, message: 'Pick a valid time.' };
+  if (input.atMs > input.nowMs) {
+    return { ok: false, message: 'A punch cannot start in the future.' };
+  }
+  const want = (input.email || '').trim().toLowerCase();
+  const mine = (input.entries || []).filter(e =>
+    (e.userEmail || '').trim().toLowerCase() === want);
+  // Anything of theirs that is still running at the proposed start — or that
+  // ends after it — would be overlapped by a new open punch.
+  let latestEnd = 0;
+  for (const e of mine) {
+    const [, end] = spanOf(e, input.nowMs);
+    if (end > input.atMs && end > latestEnd) latestEnd = end;
+  }
+  if (latestEnd > 0) {
+    return {
+      ok: false,
+      message: `That overlaps an existing punch, which runs to `
+        + `${new Date(latestEnd).toLocaleTimeString()}. Start at or after that.`,
+    };
+  }
+  const backMs = input.nowMs - input.atMs;
+  if (backMs > BACKDATE_WARN_HOURS * 3_600_000) {
+    return {
+      ok: true,
+      warning: `That is ${Math.round(backMs / 3_600_000)} hours back. Check the time `
+        + 'is right — a long gap is usually a mistyped hour.',
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Is this a usable STOP time for a running punch?
+ *
+ * Must be after the punch began, not in the future, and must not swallow a
+ * later punch of theirs — stopping at 6pm when they clocked in again at 3pm
+ * would put one span inside another.
+ */
+export function validateStopTime(input: {
+  atMs: number;
+  nowMs: number;
+  running: TimeEntry;
+  entries: TimeEntry[] | undefined;
+  email: string;
+}): TimeChoice {
+  if (!Number.isFinite(input.atMs)) return { ok: false, message: 'Pick a valid time.' };
+  if (input.atMs > input.nowMs) {
+    return { ok: false, message: 'A punch cannot end in the future.' };
+  }
+  const startMs = Date.parse(input.running.clockIn);
+  if (Number.isFinite(startMs) && input.atMs <= startMs) {
+    return {
+      ok: false,
+      message: `That is at or before the clock-in (${new Date(startMs).toLocaleTimeString()}).`,
+    };
+  }
+  const want = (input.email || '').trim().toLowerCase();
+  for (const e of (input.entries || [])) {
+    if (e.id === input.running.id) continue;
+    if ((e.userEmail || '').trim().toLowerCase() !== want) continue;
+    const [s] = spanOf(e, input.nowMs);
+    if (s > startMs && s < input.atMs) {
+      return {
+        ok: false,
+        message: `That would run past another of their punches, which starts at `
+          + `${new Date(s).toLocaleTimeString()}.`,
+      };
+    }
+  }
+  const backMs = input.nowMs - input.atMs;
+  if (backMs > BACKDATE_WARN_HOURS * 3_600_000) {
+    return {
+      ok: true,
+      warning: `That is ${Math.round(backMs / 3_600_000)} hours back. Check the time `
+        + 'is right — a long gap is usually a mistyped hour.',
+    };
+  }
+  return { ok: true };
+}
+
+/** Treat sub-minute differences as "now" — a manager tapping without editing. */
+export const BACKDATE_EPSILON_MS = 60_000;
+export const isBackdated = (atMs: number, nowMs: number): boolean =>
+  Number.isFinite(atMs) && (nowMs - atMs) > BACKDATE_EPSILON_MS;
+
 // ── BUILDING THE PUNCH ─────────────────────────────────────────────────────
 
 /** The note left on the entry, in the same shape the edit flow uses. */
 export const onBehalfNote = (
-  kind: 'in' | 'out', actorName: string, reason: string,
-): string => `[Clocked ${kind} by ${actorName}] ${reason.trim()}`;
+  kind: 'in' | 'out', actorName: string, reason: string, adjustedToIso?: string,
+): string => {
+  const at = adjustedToIso
+    ? ` (set to ${new Date(adjustedToIso).toLocaleTimeString()})`
+    : '';
+  return `[Clocked ${kind} by ${actorName}${at}] ${reason.trim()}`;
+};
 
 export function buildOnBehalfStart(input: {
   target: Employee;
   email: string;
   actor: { email: string; name: string };
   reason: string;
+  /** When the work actually began — back-dated, or the entry moment. */
+  atIso: string;
+  /** When the record was made. */
   nowIso: string;
   id: string;
 }): TimeEntry {
+  const backdated = isBackdated(Date.parse(input.atIso), Date.parse(input.nowIso));
   return {
     id: input.id,
     userEmail: input.email,
     userName: input.target.name,
-    clockIn: input.nowIso,
+    // The WORKED time. Pay is owed on when they started, not on when somebody
+    // got round to writing it down.
+    clockIn: input.atIso,
     notes: [{
       author: input.actor.email,
       authorName: input.actor.name,
       timestamp: input.nowIso,
-      text: onBehalfNote('in', input.actor.name, input.reason),
+      text: onBehalfNote('in', input.actor.name, input.reason, backdated ? input.atIso : undefined),
     }],
-    // NOT manualEntry: this is a real clock-in at a real time, just tapped by
-    // somebody else. Marking it manual would misreport it as a reconstruction.
+    // NOT manualEntry, even back-dated. manualEntry means nobody clocked and a
+    // human reconstructed the span; here a real shift began at a known time and
+    // its start is being recorded accurately by somebody else. The ADJUSTMENT
+    // is carried by startedEnteredAt, which says more than a boolean could —
+    // it gives the size of the gap, not just its existence.
     startedBy: { email: input.actor.email, name: input.actor.name },
+    ...(backdated ? { startedEnteredAt: input.nowIso } : {}),
   };
 }
 
@@ -161,25 +301,48 @@ export function applyOnBehalfStop(
   entry: TimeEntry,
   actor: { email: string; name: string },
   reason: string,
+  /** When they actually stopped. */
+  atIso: string,
+  /** When the record was made. */
   nowIso: string,
 ): TimeEntry {
+  const backdated = isBackdated(Date.parse(atIso), Date.parse(nowIso));
   return {
     ...entry,
-    clockOut: nowIso,
+    clockOut: atIso,
     stoppedBy: { email: actor.email, name: actor.name },
+    ...(backdated ? { stoppedEnteredAt: nowIso } : {}),
     notes: [...(entry.notes || []), {
       author: actor.email,
       authorName: actor.name,
       timestamp: nowIso,
-      text: onBehalfNote('out', actor.name, reason),
+      text: onBehalfNote('out', actor.name, reason, backdated ? atIso : undefined),
     }],
   };
 }
 
-/** "Started by Jonah" / "Started by Jonah · Stopped by Liam" — or null for a self-punch. */
-export function onBehalfLabel(e: Pick<TimeEntry, 'startedBy' | 'stoppedBy'>): string | null {
+/**
+ * "Started by Jonah at 8:00 (entered 8:20)" — or null for a self-punch.
+ *
+ * When the two times differ the label says both, because the distinction
+ * between when somebody worked and when the record was made is the reason the
+ * adjustment is allowed at all. When they match it stays short.
+ */
+export function onBehalfLabel(
+  e: Pick<TimeEntry, 'startedBy' | 'stoppedBy' | 'startedEnteredAt' | 'stoppedEnteredAt' | 'clockIn' | 'clockOut'>,
+): string | null {
+  const t = (iso: string | undefined) =>
+    (iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '');
   const parts: string[] = [];
-  if (e.startedBy?.name) parts.push(`Started by ${e.startedBy.name}`);
-  if (e.stoppedBy?.name) parts.push(`Stopped by ${e.stoppedBy.name}`);
+  if (e.startedBy?.name) {
+    parts.push(e.startedEnteredAt
+      ? `Started by ${e.startedBy.name} at ${t(e.clockIn)} (entered ${t(e.startedEnteredAt)})`
+      : `Started by ${e.startedBy.name}`);
+  }
+  if (e.stoppedBy?.name) {
+    parts.push(e.stoppedEnteredAt
+      ? `Stopped by ${e.stoppedBy.name} at ${t(e.clockOut)} (entered ${t(e.stoppedEnteredAt)})`
+      : `Stopped by ${e.stoppedBy.name}`);
+  }
   return parts.length > 0 ? parts.join(' · ') : null;
 }

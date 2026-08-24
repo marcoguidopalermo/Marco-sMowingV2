@@ -154,6 +154,16 @@ export interface TimeEntry {
   // kept as a note on the entry.
   startedBy?: { email: string; name: string };
   stoppedBy?: { email: string; name: string };
+  // BACK-DATED. When a manager sets the punch to the time the employee
+  // actually started or stopped, rather than the moment they noticed, these
+  // hold the moment the RECORD was made. clockIn / clockOut stay the worked
+  // times, because that is what pay is owed on.
+  //
+  // Present only when the two differ. The gap between them is the whole point:
+  // "Started by Jonah at 8:00 (entered 8:20)" says both when the work began
+  // and when somebody wrote it down, which a single timestamp cannot.
+  startedEnteredAt?: string;
+  stoppedEnteredAt?: string;
   // Optional "what was worked on" note captured at clock-out (contracting
   // punches) — surfaces on the entry, the report reference panel, and can be
   // carried into a billable line. Editable after the fact by Tony/Marco.

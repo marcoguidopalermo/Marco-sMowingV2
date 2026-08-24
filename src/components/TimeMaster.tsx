@@ -8,8 +8,18 @@ import { AppData, AppSettings, TimeEntry, TimeEntryNote, TimeOffRequest, UserRol
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto } from '../lib/dateUtils';
 import { timeEntryLock } from '../lib/timeEntryLock';
 import {
-  canClockFor, onBehalfLabel, reasonIsUsable, runningPunchFor,
+  canClockFor, isBackdated, onBehalfLabel, reasonIsUsable, runningPunchFor,
+  validateStartTime, validateStopTime,
 } from '../lib/clockOnBehalf';
+
+// A ms timestamp as a <input type="datetime-local"> value, in the manager's
+// own clock — the one they are reading the time off.
+const toLocalDateTimeInput = (ms: number): string => {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    + `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
 import { payPeriodSettings, currentPayPeriod, previousPayPeriod, stepPeriod, periodOfYmd, periodRangeLabel, payDateLabel, PayPeriod } from '../lib/payPeriods';
 import { chunksForMechanic, computeHoursWorkedBetween } from '../lib/payChunkUtils';
 import TimeOffApprovalPage from './TimeOffApprovalPage';
@@ -23,7 +33,7 @@ interface TimeMasterProps {
   // save no longer carries them. See saveSettings in App.tsx.
   saveSettings: (next: AppSettings, baseline: AppSettings | undefined) => Promise<boolean>;
   // Start / stop another employee's clock. Guarded and audited in App.
-  onClockForEmployee: (email: string, action: 'in' | 'out', reason: string) => Promise<boolean>;
+  onClockForEmployee: (email: string, action: 'in' | 'out', reason: string, atIso?: string) => Promise<boolean>;
   // Who the viewer is, for the division check on the buttons.
   currentUserManagedDivision?: string | null;
   userEmail: string;
@@ -145,6 +155,8 @@ export default function TimeMaster({
   const [clockFor, setClockFor] = useState<
     { email: string; name: string; action: 'in' | 'out' } | null>(null);
   const [clockReason, setClockReason] = useState('');
+  // datetime-local for the WORKED time; seeded to now when the dialog opens.
+  const [clockAt, setClockAt] = useState('');
   const [clockBusy, setClockBusy] = useState(false);
   // editMode: 'times' edits clock-in/out directly (hours derived);
   // 'hours' edits the total hours directly (clockOut synthesized from
@@ -1135,6 +1147,7 @@ export default function TimeMaster({
                         <button
                           onClick={() => {
                             setClockReason('');
+                            setClockAt(toLocalDateTimeInput(Date.now()));
                             setClockFor({ email: u.email, name: u.name, action: running ? 'out' : 'in' });
                           }}
                           title={running ? `Clock ${u.name} out` : `Clock ${u.name} in`}
@@ -1384,19 +1397,52 @@ export default function TimeMaster({
         </>
       )}
 
-      {/* CLOCK SOMEBODY ELSE IN / OUT — reason required. */}
-      {clockFor && (
+      {/* CLOCK SOMEBODY ELSE IN / OUT — reason required, time back-datable. */}
+      {clockFor && (() => {
+        const nowMs = Date.now();
+        const clockAtMs = clockAt ? new Date(clockAt).getTime() : nowMs;
+        const runningPunch = runningPunchFor(appData.timeEntries, clockFor.email);
+        const clockCheck: { ok: boolean; message?: string; warning?: string } =
+          clockFor.action === 'in'
+            ? validateStartTime({ atMs: clockAtMs, nowMs, entries: appData.timeEntries, email: clockFor.email })
+            : (runningPunch
+              ? validateStopTime({ atMs: clockAtMs, nowMs, running: runningPunch, entries: appData.timeEntries, email: clockFor.email })
+              : { ok: false, message: 'They are not clocked in right now.' });
+        const clockIsBackdated = isBackdated(clockAtMs, nowMs);
+        return (
         <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5">
             <h3 className="text-lg font-bold text-slate-800">
               Clock {clockFor.name} {clockFor.action === 'in' ? 'in' : 'out'}
             </h3>
             <div className="text-[12px] text-slate-500 mt-0.5">
-              {clockFor.action === 'in'
-                ? `Starts their clock now, at ${new Date().toLocaleTimeString()}.`
-                : `Stops their running clock now, at ${new Date().toLocaleTimeString()}.`}
-              {' '}It will be recorded as done by you, and they will see it on their own timesheet.
+              Recorded as done by you, and visible to them on their own timesheet.
             </div>
+            <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mt-3 mb-1">
+              {clockFor.action === 'in' ? 'Started at' : 'Stopped at'}
+              <span className="font-medium text-slate-400 normal-case tracking-normal"> · defaults to now</span>
+            </label>
+            <input
+              type="datetime-local" value={clockAt}
+              onChange={e => setClockAt(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 p-2 text-[13px]"
+            />
+            {clockCheck.message && (
+              <div className="text-[11px] mt-1 px-2 py-1 rounded bg-rose-50 border border-rose-200 text-rose-700">
+                {clockCheck.message}
+              </div>
+            )}
+            {clockCheck.warning && (
+              <div className="text-[11px] mt-1 px-2 py-1 rounded bg-amber-50 border border-amber-200 text-amber-800">
+                ⚠ {clockCheck.warning}
+              </div>
+            )}
+            {clockIsBackdated && clockCheck.ok && (
+              <div className="text-[11px] text-slate-500 mt-1">
+                Back-dated. The punch will read {new Date(clockAtMs).toLocaleTimeString()},
+                and the record will show it was entered now.
+              </div>
+            )}
             <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mt-3 mb-1">
               Reason <span className="font-medium text-slate-400 normal-case tracking-normal">· required</span>
             </label>
@@ -1414,11 +1460,14 @@ export default function TimeMaster({
                 onClick={async () => {
                   if (clockBusy) return;
                   setClockBusy(true);
-                  const ok = await onClockForEmployee(clockFor.email, clockFor.action, clockReason);
+                  const ok = await onClockForEmployee(
+                    clockFor.email, clockFor.action, clockReason,
+                    clockIsBackdated ? new Date(clockAtMs).toISOString() : undefined,
+                  );
                   setClockBusy(false);
-                  if (ok) { setClockFor(null); setClockReason(''); }
+                  if (ok) { setClockFor(null); setClockReason(''); setClockAt(''); }
                 }}
-                disabled={!reasonIsUsable(clockReason) || clockBusy}
+                disabled={!reasonIsUsable(clockReason) || clockBusy || !clockCheck.ok}
                 className="rounded-lg bg-slate-800 px-4 py-1.5 text-[12px] font-black uppercase tracking-widest text-white disabled:opacity-40"
               >
                 {clockBusy ? 'Saving…' : `Clock ${clockFor.action}`}
@@ -1429,7 +1478,8 @@ export default function TimeMaster({
             )}
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* EDIT MODAL */}
       {editingEntry && (
