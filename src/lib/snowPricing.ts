@@ -268,6 +268,59 @@ export function priceSnow(
   };
 }
 
+// ── ACTIVE MODIFIERS ───────────────────────────────────────────────────────
+// Everything applied to a quote, in one list, for display.
+//
+// DERIVED FROM THE SAME BREAKDOWN THE TOTAL IS. Not a parallel list of "which
+// toggles are on" — that would be a second description of the same fact, and
+// the two would eventually disagree about which one the price actually used.
+// If it is not in the breakdown it did not affect the price, and if it did
+// affect the price it appears here.
+export interface ActiveModifier {
+  key: keyof SnowAddBreakdown | 'drag';
+  label: string;
+  amount: number;          // signed, in dollars
+}
+
+export function activeModifiers(
+  b: SnowAddBreakdown, m: Pick<SnowMeasurement, 'dragCount'>, config: SnowConfig,
+): ActiveModifier[] {
+  const out: ActiveModifier[] = [];
+  if (b.drag) out.push({ key: 'drag', label: `Drag × ${m.dragCount}`, amount: b.drag });
+  if (b.premium) out.push({ key: 'premium', label: 'Premium', amount: b.premium });
+  if (b.busyRoad) out.push({ key: 'busyRoad', label: 'Busy road', amount: b.busyRoad });
+  if (b.danger) out.push({ key: 'danger', label: 'Danger', amount: b.danger });
+  if (b.noBoulevard) {
+    out.push({
+      key: 'noBoulevard',
+      label: `No boulevard (${b.noBoulevardLanes} lane${b.noBoulevardLanes === 1 ? '' : 's'})`,
+      amount: b.noBoulevard,
+    });
+  }
+  void config;
+  return out;
+}
+
+/**
+ * The breakdown for a SAVED quote, rebuilt through the SAME computeAdds the
+ * live price uses — so a reopened quote and the saved-list row cannot describe
+ * a different set of modifiers than the estimator saw. Resolved against the
+ * quote's OWN config version, never the current one.
+ */
+export function breakdownOfSaved(
+  q: {
+    dragCount?: number; lanes?: number;
+    premium?: boolean; busyRoad?: boolean; danger?: number; noBoulevard?: boolean;
+  },
+  config: SnowConfig,
+): SnowAddBreakdown {
+  return computeAdds(
+    { cars: 0, lanes: Number(q.lanes) || 0, depth: 0, dragCount: Number(q.dragCount) || 0 },
+    { premium: q.premium, busyRoad: q.busyRoad, danger: q.danger, noBoulevard: q.noBoulevard },
+    config,
+  );
+}
+
 // ── CONFIG VALIDATION + DIFF (for the rate sheet) ───────────────────────────
 // Human labels for audit + preview display.
 export const SNOW_FIELD_LABELS: Record<keyof SnowConfig, string> = {

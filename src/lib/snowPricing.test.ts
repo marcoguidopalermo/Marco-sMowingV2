@@ -6,7 +6,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   priceSnow, measureGrid, SNOW_PRICING_CONFIG, SNOW_CONFIG_V1, SNOW_PRICING_CONFIG_VERSION, SnowGrid, SnowConfig,
-  resolveSnowConfig, activeSnowVersionId, snowVersionId, validateSnowConfig, diffSnowConfig, StoredSnowVersion, noBoulevardRate,
+  resolveSnowConfig, activeSnowVersionId, snowVersionId, validateSnowConfig, diffSnowConfig, StoredSnowVersion, noBoulevardRate, activeModifiers, breakdownOfSaved,
 } from './snowPricing';
 
 const ROWS = 6;
@@ -246,4 +246,55 @@ test('a config version stored before the discount existed still prices', () => {
   const p = priceSnow(drive(2, 3), { noBoulevard: true }, legacy);
   assert.equal(Number.isFinite(p!.total!), true);
   assert.equal(p!.addBreakdown.noBoulevard, -100);
+});
+
+console.log('\nActive modifiers — derived from the breakdown, never a parallel list');
+test('only what actually affected the price appears', () => {
+  const p = priceSnow(drive(2, 3), { busyRoad: true, danger: 50, noBoulevard: true })!;
+  const mods = activeModifiers(p.addBreakdown, p, SNOW_CONFIG_V1);
+  const keys = mods.map(m => m.key).sort();
+  assert.deepEqual(keys, ['busyRoad', 'danger', 'noBoulevard']);
+  assert.ok(!keys.includes('premium'), 'an unused modifier does not appear at all');
+});
+test('nothing applied yields an empty list, not a row of zeroes', () => {
+  const p = priceSnow(drive(2, 3), {})!;
+  assert.deepEqual(activeModifiers(p.addBreakdown, p, SNOW_CONFIG_V1), []);
+});
+test('THE INVARIANT: the summary sums to exactly the adds the total used', () => {
+  // If these can drift, the quote can show one thing and charge another.
+  const p = priceSnow(drive(2, 4), { busyRoad: true, danger: 100, noBoulevard: true })!;
+  const mods = activeModifiers(p.addBreakdown, p, SNOW_CONFIG_V1);
+  assert.equal(mods.reduce((s, m) => s + m.amount, 0), p.adds);
+  assert.equal(p.basePrice + mods.reduce((s, m) => s + m.amount, 0), p.total);
+});
+test('signs are preserved — a discount is negative, a surcharge positive', () => {
+  const p = priceSnow(drive(2, 3), { busyRoad: true, noBoulevard: true })!;
+  const mods = activeModifiers(p.addBreakdown, p, SNOW_CONFIG_V1);
+  assert.ok(mods.find(m => m.key === 'noBoulevard')!.amount < 0);
+  assert.ok(mods.find(m => m.key === 'busyRoad')!.amount > 0);
+});
+test('the no-boulevard label names the lanes it was computed over', () => {
+  const p = priceSnow(drive(3, 3), { noBoulevard: true })!;
+  const m = activeModifiers(p.addBreakdown, p, SNOW_CONFIG_V1).find(x => x.key === 'noBoulevard')!;
+  assert.match(m.label, /3 lanes/);
+  assert.equal(m.amount, -150);
+});
+
+console.log('\nA SAVED quote rebuilds the same modifiers');
+test('breakdownOfSaved matches what the live price produced', () => {
+  const live = priceSnow(drive(2, 3), { busyRoad: true, danger: 50, noBoulevard: true })!;
+  // What the saved record carries.
+  const saved = { lanes: live.lanes, dragCount: live.dragCount, busyRoad: true, danger: 50, noBoulevard: true };
+  const rebuilt = breakdownOfSaved(saved, SNOW_CONFIG_V1);
+  assert.deepEqual(rebuilt, live.addBreakdown, 'a reopened quote cannot describe a different set');
+});
+test('a saved quote with no modifiers rebuilds to none', () => {
+  const rebuilt = breakdownOfSaved({ lanes: 2, dragCount: 0 }, SNOW_CONFIG_V1);
+  assert.deepEqual(activeModifiers(rebuilt, { dragCount: 0 }, SNOW_CONFIG_V1), []);
+});
+test('an older config version rebuilds against ITS rates, not the current ones', () => {
+  const cheap = { ...SNOW_CONFIG_V1, BUSY_ROAD: 40, NO_BOULEVARD_PER_LANE: 20 };
+  const rebuilt = breakdownOfSaved({ lanes: 2, dragCount: 0, busyRoad: true, noBoulevard: true }, cheap);
+  assert.equal(rebuilt.busyRoad, 40);
+  assert.equal(rebuilt.noBoulevard, -40);
 });

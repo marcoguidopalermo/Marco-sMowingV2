@@ -7,7 +7,7 @@ import StreetViewPanel from './StreetViewPanel';
 import type { PropertyMeasurement } from '../types';
 import {
   priceSnow, SnowConfig, SNOW_CONFIG_V1, SnowPrice, resolveSnowConfig,
-  noBoulevardRate,
+  noBoulevardRate, activeModifiers, breakdownOfSaved,
 } from '../lib/snowPricing';
 import SnowRateSheet from './SnowRateSheet';
 import SnowContractsModule from './SnowContractsModule';
@@ -48,6 +48,34 @@ const priceOf = (q: SnowQuote, cfg: SnowConfig): number =>
 // is lost and nothing on the server had to be rewritten.
 export const addressOf = (q: Pick<SnowQuote, 'address' | 'client' | 'name'>): string =>
   (q.address || '').trim() || (q.client || '').trim() || (q.name || '').trim();
+
+// One rendering of the active modifiers, used on the quote and on the saved
+// list. Signed and coloured by direction, so a discount never reads as a
+// surcharge at a glance.
+function ModifierChips({ mods, compact }: {
+  mods: { key: string; label: string; amount: number }[]; compact?: boolean;
+}) {
+  if (mods.length === 0) return null;
+  return (
+    <div className={`flex flex-wrap ${compact ? 'gap-1' : 'gap-1.5'}`}>
+      {mods.map(m => {
+        const down = m.amount < 0;
+        return (
+          <span
+            key={m.key}
+            className={`inline-flex items-center gap-1 rounded-md border font-bold ${compact ? 'text-[10px] px-1.5 py-0.5' : 'text-[11px] px-2 py-1'}`}
+            style={down
+              ? { backgroundColor: '#eef4f0', borderColor: '#cfe3d8', color: GREEN }
+              : { backgroundColor: '#FEF9E7', borderColor: '#F5E6B8', color: '#8A6D1F' }}
+          >
+            {m.label}
+            <span className="font-mono">{down ? '−' : '+'}{money(Math.abs(m.amount))}</span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 // Label an unnamed quote by its shape + price, e.g. "1×3 · 3 car · Tier 1 · $599".
 const shapeLabel = (q: SnowQuote, cfg: SnowConfig): string =>
@@ -146,6 +174,8 @@ export default function SnowMaster({
     () => priceSnow(grid, { premium: false, busyRoad, danger, noBoulevard }, viewConfig, viewVersion),
     [grid, busyRoad, danger, noBoulevard, viewConfig, viewVersion],
   );
+  // From the price's own breakdown — never a separate reading of the toggles.
+  const liveMods = price ? activeModifiers(price.addBreakdown, price, viewConfig) : [];
   const premiumAdd = viewConfig.PREMIUM;
   // Standard vs Premium totals (non-custom) / floors (custom). Derived from the
   // one Standard price + the version's PREMIUM value, so both respect the
@@ -165,8 +195,12 @@ export default function SnowMaster({
   const editNoBoulevard = () => { setDirty(true); setNoBoulevard(v => !v); };
   const editDanger = (d: number) => { setDirty(true); setDanger(d); };
 
-  const clearAll = () => {
-    if (price && !window.confirm('Clear the driveway and all inputs?')) return;
+  // A FRESH QUOTE — grid, every modifier, address and outline. Modifiers are
+  // reset explicitly because a surcharge inherited from the last driveway is
+  // worse than one forgotten: it prices work nobody agreed to, and it looks
+  // deliberate.
+  const clearAll = (opts?: { silent?: boolean }) => {
+    if (!opts?.silent && price && !window.confirm('Start a new quote? The traced driveway and all modifiers are cleared.')) return;
     setGrid(emptyGrid()); setBusyRoad(false); setDanger(0); setNoBoulevard(false);
     setAddress(''); setMeasurement(undefined);
     setLoadedId(null); setLoadedVersion(null); setDirty(false);
@@ -181,6 +215,7 @@ export default function SnowMaster({
     // search and every existing reader keep working — they are derived from
     // the address field, not entered separately.
     const label = address.trim();
+    const wasNew = !loadedId;
     const id = loadedId || `snow-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const q: SnowQuote = {
       id, name: label, client: label || undefined,
@@ -204,6 +239,11 @@ export default function SnowMaster({
       quotedAt: loaded?.quotedAt || Date.now(),
     };
     onSave(q);
+    // A NEW quote resets to a blank canvas: nothing is inherited by the next
+    // driveway, and a second Save cannot silently overwrite the one just made.
+    // EDITING a loaded quote stays loaded, so an immediate correction updates
+    // the same record rather than creating a duplicate.
+    if (wasNew) { clearAll({ silent: true }); return; }
     setLoadedId(id); setLoadedVersion(viewVersion); setDirty(false);
   };
 
@@ -420,6 +460,20 @@ export default function SnowMaster({
                   {chip('Drag', price.dragCount)}
                 </div>
 
+                {/* ACTIVE MODIFIERS — everything applied, right next to the
+                    price, so a toggle left on from the last quote is seen
+                    rather than discovered. Derived from the SAME breakdown the
+                    total is computed from, so the two cannot disagree. Nothing
+                    that is off appears at all. */}
+                {liveMods.length > 0 && (
+                  <div className="pt-1">
+                    <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1">
+                      Applied · {liveMods.length}
+                    </div>
+                    <ModifierChips mods={liveMods} />
+                  </div>
+                )}
+
                 {/* Breakdown: shared lines once, then Standard + Premium totals. */}
                 <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 pt-1">Breakdown</div>
                 <div className="space-y-1 text-sm">
@@ -448,9 +502,9 @@ export default function SnowMaster({
             )}
 
             <div className="grid grid-cols-2 gap-2">
-              <button onClick={clearAll}
+              <button onClick={() => clearAll()}
                 className="min-h-[48px] inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-black uppercase tracking-widest">
-                <RotateCcw className="w-4 h-4" /> Clear
+                <RotateCcw className="w-4 h-4" /> New quote
               </button>
               <button onClick={save} disabled={!price}
                 className="min-h-[48px] inline-flex items-center justify-center gap-1.5 rounded-xl text-white text-xs font-black uppercase tracking-widest disabled:opacity-40"
@@ -642,12 +696,20 @@ function SavedSnowQuotes({ quotes, currentUser, isAdmin, versionMap, onOpen, onD
                       ? <span className="font-mono font-bold text-amber-700">Custom · min {money(priceOf(x, cfg))}</span>
                       : <><span className="font-mono font-bold text-slate-700">{money(x.total || 0)}</span> · Tier {x.tier}</>}
                     {' '}· {x.lanes}×{x.depth} · {x.cars} cars{x.dragCount ? ` · ${x.dragCount} drag` : ''}
-                    {x.noBoulevard ? <span style={{ color: GREEN }}> · no boulevard</span> : ''}
                   </div>
                 )}
                 {/* WHO QUOTED IT, and who last changed it when that is somebody
                     else. With several people quoting residential snow, a quote
                     nobody can attribute is a quote nobody can ask about. */}
+                {/* The same modifiers, compact, so a set of quotes can be
+                    scanned for outliers. Rebuilt through the SAME computeAdds
+                    the estimator's price used, against the quote's OWN config
+                    version — so a row can never claim a modifier the quote did
+                    not actually price with. */}
+                <div className="mt-1">
+                  <ModifierChips compact mods={activeModifiers(breakdownOfSaved(x, cfg), x, cfg)} />
+                </div>
+
                 {/* Measured area on the list too, so the set is scannable —
                     the whole point of recording it is comparing across
                     properties later. Always labelled, never bare. */}
