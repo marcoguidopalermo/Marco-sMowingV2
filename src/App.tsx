@@ -126,7 +126,7 @@ import { buildMonthlySummary } from './lib/monthlySummary';
 import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
-import { computeRosterUpdate } from './lib/rosterWrite';
+import { adminEmailsFrom, computeRosterUpdate } from './lib/rosterWrite';
 import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './lib/scheduledBulletins';
 import { timeEntryLock } from './lib/timeEntryLock';
 import { canSeeMortgages, mortgageAuditDiff } from './lib/mortgages';
@@ -1902,7 +1902,7 @@ export default function App() {
       }, (err) => { console.error('contractingMortgages listen error:', err); })
       : () => {};
     const ea1 = onSnapshot(
-      collection(db, 'artifacts', appId, 'public', 'data', 'efficiencyAdjustments'),
+      collection(db, 'efficiencyAdjustments'),
       (snap) => {
         const list: EfficiencyAdjustment[] = [];
         snap.forEach((d) => { const v = d.data() as EfficiencyAdjustment; if (v && v.id) list.push(v); });
@@ -3657,7 +3657,7 @@ export default function App() {
     };
     try {
       await setDoc(
-        doc(collection(db, 'artifacts', appId, 'public', 'data', 'efficiencyAdjustments'), rec.id),
+        doc(collection(db, 'efficiencyAdjustments'), rec.id),
         JSON.parse(JSON.stringify(rec, (_k, v) => (v === undefined ? null : v))),
       );
     } catch (err: any) {
@@ -3705,7 +3705,7 @@ export default function App() {
     // voided adjustment simply stops matching any crew-day.
     try {
       await setDoc(
-        doc(collection(db, 'artifacts', appId, 'public', 'data', 'efficiencyAdjustments'), id),
+        doc(collection(db, 'efficiencyAdjustments'), id),
         JSON.parse(JSON.stringify({
           ...a, voided: true, voidedAt: Date.now(),
           voidedBy: displayName || displayEmail, voidReason: reason.trim() || 'no reason given',
@@ -4075,9 +4075,16 @@ export default function App() {
       return false;
     }
     if (plan.noop) return true;
+    // adminEmails travels WITH the roster in one write. Firestore rules cannot
+    // find an admin inside an array of employee maps, so the rule protecting
+    // efficiency adjustments reads this list instead — and a list written by
+    // any path other than the one that changes the roster would eventually
+    // disagree with it.
+    const nextAdminEmails = adminEmailsFrom(plan.finalList);
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'), {
         employees: plan.finalList,
+        adminEmails: nextAdminEmails,
       });
     } catch (err: any) {
       console.error('roster save failed', err);

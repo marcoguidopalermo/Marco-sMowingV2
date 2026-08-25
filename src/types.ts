@@ -2784,6 +2784,12 @@ export interface AppData {
   // Only PAST months — the current + future months stay in the doc.
   archivedScheduleMonths?: string[];
   authorizedEmails: string[];
+  // ADMIN EMAILS, derived from employees[] and written by saveEmployees in the
+  // same targeted update, so the two cannot drift. It exists because Firestore
+  // rules cannot search an array of maps for systemRole === 'admin', and a rule
+  // that cannot identify an admin cannot protect anything from a non-admin.
+  // Lowercased, deduped, sorted.
+  adminEmails?: string[];
   supplies: string[];
   inspections: Inspection[];
   cvorExpiry?: string;

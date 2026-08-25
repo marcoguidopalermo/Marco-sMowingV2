@@ -105,3 +105,24 @@ export function computeRosterUpdate<T extends RosterRecord>(input: {
   const noop = upserted.length === 0 && actuallyRemoved === 0;
   return { finalList, upserted, removed, alreadyGone, noop };
 }
+
+// ── ADMIN EMAILS ───────────────────────────────────────────────────────────
+// Derived from the roster and written with it, because a Firestore rule cannot
+// search an array of employee maps for systemRole === 'admin' — and the rule
+// protecting efficiency adjustments (which feed bonus) needs to identify an
+// admin without the app's help.
+//
+// It lives here, next to the only path that changes the roster, so the two are
+// written in one update and cannot drift. A stale admin list is not a cosmetic
+// problem: it is either a lockout or an unintended grant.
+export function adminEmailsFrom(
+  employees: { systemRole?: string; linkedUserEmail?: string; email?: string }[] | undefined,
+): string[] {
+  const out = new Set<string>();
+  for (const e of employees || []) {
+    if (!e || e.systemRole !== 'admin') continue;
+    const addr = (e.linkedUserEmail || e.email || '').trim().toLowerCase();
+    if (addr) out.add(addr);
+  }
+  return [...out].sort();
+}

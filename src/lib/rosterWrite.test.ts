@@ -6,7 +6,7 @@
 // or incidental save must NOT be able to do to it.
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { computeRosterUpdate } from './rosterWrite';
+import { adminEmailsFrom, computeRosterUpdate } from './rosterWrite';
 
 type E = { id: string; name: string; hourlyRate?: number; linkedUserEmail?: string };
 
@@ -137,4 +137,36 @@ test('records without a usable id are ignored rather than corrupting the roster'
   const p = plan({ next: [...ROSTER, ...junk] });
   assert.deepEqual(p.upserted, []);
   assert.equal(p.finalList.length, 4);
+});
+
+console.log('\nThe admin list the Firestore rule reads');
+test('only admins, by their sign-in address, lowercased and sorted', () => {
+  assert.deepEqual(adminEmailsFrom([
+    { systemRole: 'admin', linkedUserEmail: '  Marco@X.test ' },
+    { systemRole: 'manager', linkedUserEmail: 'jonah@x.test' },
+    { systemRole: 'admin', linkedUserEmail: 'anthony@x.test' },
+    { systemRole: 'worker', linkedUserEmail: 'w@x.test' },
+  ]), ['anthony@x.test', 'marco@x.test']);
+});
+test('falls back to `email` when there is no linked account', () => {
+  assert.deepEqual(adminEmailsFrom([{ systemRole: 'admin', email: 'dave@x.test' }]), ['dave@x.test']);
+});
+test('an admin with no address at all is skipped rather than adding a blank', () => {
+  // A blank in the list would be compared against a token email and could
+  // never match — but it would also make the list look populated when it is not.
+  assert.deepEqual(adminEmailsFrom([
+    { systemRole: 'admin' },
+    { systemRole: 'admin', linkedUserEmail: '   ' },
+    { systemRole: 'admin', email: 'real@x.test' },
+  ]), ['real@x.test']);
+});
+test('duplicates collapse', () => {
+  assert.deepEqual(adminEmailsFrom([
+    { systemRole: 'admin', linkedUserEmail: 'a@x.test' },
+    { systemRole: 'admin', linkedUserEmail: 'A@X.TEST' },
+  ]), ['a@x.test']);
+});
+test('a roster with no admins yields an empty list, not a wrong one', () => {
+  assert.deepEqual(adminEmailsFrom([{ systemRole: 'manager', email: 'm@x.test' }]), []);
+  assert.deepEqual(adminEmailsFrom(undefined), []);
 });
