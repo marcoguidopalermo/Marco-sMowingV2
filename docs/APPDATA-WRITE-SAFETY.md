@@ -117,6 +117,113 @@ remains is the operational tier and the archive markers.)*
   once, with no incremental verification, on the surfaces where a mistake costs
   pay.
 
+## The rule of thumb: pay and bonus data belongs in a ROOT collection
+
+**Anything that feeds PAY or BONUS should be created in a top-level collection
+with its own Firestore rule, from the start.**
+
+This has now been learned four separate times, always the same way — the data
+was put where everything else lives, and the protection had to be retrofitted:
+
+| Collection | Why it had to move |
+|---|---|
+| `hoursBank` | ledger of hours owed; needed genuine append-only |
+| `authorizedEmailAudit` | log of who changed system access |
+| `crewDayFlags` / `crewDayAudits` | a flag unapproves a day, so it gates bonus |
+| `contractingMortgages` | lender and balance must not reach the property manager |
+| `efficiencyAdjustments` | moves what counts toward efficiency and bonus |
+
+### Why a rule underneath cannot fix it
+
+```
+match /artifacts/{document=**} {
+  allow read, write: if isAuthorized() || isSuperAdmin();
+}
+```
+
+Firestore rules are **OR-semantics**: if *any* matching rule allows the request,
+it is allowed. A narrower rule on a path beneath `artifacts/**` cannot take away
+what that rule grants — it can only add. So every authorized user can write
+every document under it, and no amount of app-layer checking changes that. A
+signed-in employee with the browser console open can write directly.
+
+That is fine for operational data. It is not fine for anything somebody has a
+financial reason to alter.
+
+### The test to apply
+
+> If a signed-in employee wrote this document by hand, could it change what
+> anybody gets paid, or who can get in?
+
+If yes, it goes at the root with a rule. Retrofitting means a migration, a
+rules deploy, and a window where it was exposed — the four rows above each cost
+all three.
+
+### Still guarded only in the app layer
+
+Known gaps, listed so they are known rather than discovered. None is
+hypothetical: each is a real write that a crafted request could make today.
+
+| What | Where it lives | What a crafted write could do |
+|---|---|---|
+| **`timeEntries`** | `artifacts/…/public/data/timeEntries` | invent or alter a punch — this IS payroll's source. It moved to a subcollection for concurrency, which did nothing for authorization. |
+| **Trainee credit** (`Employee.training`) | `appData/main.employees` | grant a crew a standing efficiency percentage |
+| **Crew-day approval** (`approvalStatus`) | `appData/main.performance` | approve their own crew-day, which is the bonus gate |
+| **Crew-day numbers** (BH / AH / deductions) | `appData/main.performance` | edit the hours efficiency and bonus are computed from |
+
+The last three sit on `appData/main`, so moving them is a larger job than
+`efficiencyAdjustments` was — the field-level protections in this document
+(server-tracking refs, targeted writes) stop a *stale client* from clobbering
+them, but they do not stop a *deliberate* write. Different threat, different
+mechanism; worth being clear which one is in place.
+
+## The `adminEmails` mirror on appData/main — do not break this
+
+`appData/main.adminEmails` is a derived, lowercased, sorted list of the sign-in
+addresses of every employee with `systemRole === 'admin'`.
+
+**It exists because Firestore rules cannot identify an admin any other way.**
+Rules have no way to search an array of employee maps for a field value, so a
+rule that needs "is this caller an admin" — currently `isContentAdmin()`,
+guarding `efficiencyAdjustments` — has to read a flat list of strings.
+
+```
+function isContentAdmin() {
+  return request.auth != null
+    && request.auth.token.email != null
+    && request.auth.token.email.lower() in
+      get(/databases/$(database)/documents/artifacts/crewmaster/public/data/appData/main).data.adminEmails;
+}
+```
+
+### The dependency
+
+- **`saveEmployees` in `App.tsx` is the only thing that writes it.** It derives
+  the list with `adminEmailsFrom()` (`lib/rosterWrite`) and writes it in the
+  **same targeted `updateDoc`** as `employees`. One write, so the two cannot
+  drift.
+- `employees` is itself protected by the server-tracking ref, so no other save
+  path touches the roster — which is what makes this hook reliable.
+- `adminEmailsFrom()` is a tested pure function precisely because a security
+  rule depends on it.
+
+### If it goes stale
+
+There is no safe direction:
+
+- **Missing an admin** → they are locked out of writing adjustments, with a
+  permission error and no obvious cause.
+- **Holding somebody who is no longer an admin** → they keep write access to
+  data that feeds bonus, after their role was changed specifically to stop that.
+
+The super admin bypass (`isSuperAdmin()`) is the break-glass path for the first
+case. Nothing recovers the second automatically.
+
+### If you add a rule that needs it
+
+Read it the same way, and do **not** introduce a second source of truth for who
+is an admin. Two lists is the failure this one was created to avoid.
+
 ## Not on the main document at all
 
 Some surfaces were deliberately built outside `appData/main`, so they never
@@ -128,6 +235,8 @@ enter this problem in the first place:
 | `authorizedEmailAudit` | append-only; rules forbid update and delete |
 | `crewDayFlags` | daily-audit flags. Rules forbid delete and make the *raised* half immutable — a resolution can add an answer, never rewrite the question |
 | `crewDayAudits` | one marker per audited date; rules forbid delete, so a missed day stays visible |
+| `contractingMortgages` | lender, balance, rate; read and write restricted to two addresses |
+| `efficiencyAdjustments` | feeds efficiency and bonus; admin-only create/update via `adminEmails`, delete forbidden |
 
 The `artifacts/**` rule grants full write to every authorized user and its
 OR-semantics cannot be narrowed, which is why anything needing a real
