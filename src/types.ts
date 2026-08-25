@@ -777,6 +777,7 @@ export type PerfActivityType =
   | 'approval_note_saved'
   | 'efficiency_adjustment'
   | 'efficiency_adjustment_voided'
+  | 'punch_removed_ah_recalculated'
   | 'chunk_marked_paid'
   | 'chunk_payment_reversed'
   | 'performance_month_pushed'
@@ -1180,6 +1181,9 @@ export interface AppSettings {
   // TimeMaster bi-weekly pay-period anchor/cadence (admin-editable). Absent →
   // DEFAULT_PAY_PERIOD from lib/payPeriods. Display/range-selection only.
   payPeriod?: { anchorStart: string; lengthDays: number; payLagDays: number };
+  // Warn when one employee's punches for a single day exceed this many hours.
+  // Seeded at 12. The signal for a punch entered twice — see lib/dailyHoursGuard.
+  dailyHoursWarnThreshold?: number;
   // Month-to-month notice length in days (default 60), admin-editable.
   contractingNoticeDays?: number;
   // CAPACITY CALENDAR — weekly BH capacity per crew/division + the colour

@@ -11,6 +11,10 @@ import {
   canClockFor, isBackdated, onBehalfLabel, reasonIsUsable, runningPunchFor,
   validateStartTime, validateStopTime,
 } from '../lib/clockOnBehalf';
+import {
+  checkDailyHours, dailyHoursThreshold, entryIsOverHours, hoursForEmployeeDate,
+  overHoursDays,
+} from '../lib/dailyHoursGuard';
 
 // A ms timestamp as a <input type="datetime-local"> value, in the manager's
 // own clock — the one they are reading the time off.
@@ -34,6 +38,10 @@ interface TimeMasterProps {
   saveSettings: (next: AppSettings, baseline: AppSettings | undefined) => Promise<boolean>;
   // Start / stop another employee's clock. Guarded and audited in App.
   onClockForEmployee: (email: string, action: 'in' | 'out', reason: string, atIso?: string) => Promise<boolean>;
+  // After a punch is removed from a LOCKED (approved) day, bring that day's
+  // crew AH back into step with the punches that remain. Handled in App,
+  // which has the performance map.
+  onRecalcAHAfterDelete: (entry: TimeEntry, reason: string) => Promise<void>;
   // Who the viewer is, for the division check on the buttons.
   currentUserManagedDivision?: string | null;
   userEmail: string;
@@ -106,6 +114,7 @@ export default function TimeMaster({
   syncToCloud,
   saveSettings,
   onClockForEmployee,
+  onRecalcAHAfterDelete,
   currentUserManagedDivision,
   userEmail,
   userName,
@@ -158,6 +167,9 @@ export default function TimeMaster({
   // datetime-local for the WORKED time; seeded to now when the dialog opens.
   const [clockAt, setClockAt] = useState('');
   const [clockBusy, setClockBusy] = useState(false);
+  // Over this many hours in one day for one person, warn — it is almost always
+  // a punch entered twice. Admin-editable; seeded at 12.
+  const hoursThreshold = dailyHoursThreshold(appData.settings);
   // editMode: 'times' edits clock-in/out directly (hours derived);
   // 'hours' edits the total hours directly (clockOut synthesized from
   // clockIn + hours). `hours` holds the hours-mode input.
@@ -235,6 +247,22 @@ export default function TimeMaster({
     const s = new Date(d.getFullYear(), d.getMonth(), 1); s.setHours(0, 0, 0, 0);
     const e = new Date(d.getFullYear(), d.getMonth() + 1, 0); e.setHours(23, 59, 59, 999);
     return [s.getTime(), e.getTime()];
+  };
+
+  // The selected period as YYYY-MM-DD bounds, so the over-hours review scans
+  // exactly what the lens is showing — on Dave's payroll lens, exactly what is
+  // about to be paid.
+  const activeRangeYmd = (): { from: string; to: string } => {
+    let r: [number, number];
+    if (dateFilter === 'today') r = todayRange();
+    else if (dateFilter === 'week') r = weekRange();
+    else if (dateFilter === 'month') r = monthRange();
+    else return { from: customStart, to: customEnd };
+    const ymd = (ms: number) => {
+      const d = new Date(ms); const p2 = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+    };
+    return { from: ymd(r[0]), to: ymd(r[1]) };
   };
 
   const filterByDateFilter = (entries: TimeEntry[]) => {
@@ -623,7 +651,7 @@ export default function TimeMaster({
   // soft-delete. Paid-chunk overlap warns first.
   const requestDelete = (entry: TimeEntry) => {
     if (!canModify(entry)) { showToastMsg('You can only delete your own entries.'); return; }
-    const doDelete = () => {
+    const doDelete = (overrideReason?: string) => {
       const auditEntry: DeletionAuditEntry = {
         id: `del-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         timestamp: Date.now(),
@@ -638,6 +666,11 @@ export default function TimeMaster({
         },
         snapshot: entry,
       };
+      // The override reason rides in the audit summary, so the deletion log
+      // says WHY a locked day was opened as well as what was removed.
+      if (overrideReason) {
+        auditEntry.summary.title += ` · removed from an approved day — ${overrideReason}`;
+      }
       // Route through the TimeMaster syncToCloud WRAPPER (this very prop)
       // so the pay-chunk state machine recomputes against the shortened
       // timeEntries list. Atomic with the audit write.
@@ -647,10 +680,43 @@ export default function TimeMaster({
         deletionAuditLog: [auditEntry, ...(appData.deletionAuditLog || [])],
       });
       setPendingAction(null);
+      if (overrideReason) {
+        // A duplicate removed from an approved day would otherwise leave the
+        // crew-day's AH reflecting a punch that no longer exists — the same
+        // divergence that had TimeMaster and PerformanceMaster disagreeing.
+        onRecalcAHAfterDelete(entry, overrideReason);
+      }
       showToastMsg('Entry deleted.');
     };
     const delLock = entryLock(entry);
-    if (delLock.locked) { showToastMsg(delLock.message || 'That day is locked.'); return; }
+    if (delLock.locked) {
+      // NOT A DEAD END. A duplicate punch on an approved day is exactly the
+      // thing that has to be removable — it is double pay. An admin may
+      // override with a stated reason; anybody else is told the route out
+      // (unapprove the crew-day) rather than just being refused.
+      if (!isAdmin) {
+        showToastMsg(`${delLock.message || 'That day is locked.'} An admin can remove it without unapproving.`);
+        return;
+      }
+      const why = window.prompt(
+        `${delLock.crewLabel ? `${delLock.crewLabel} is approved.` : 'That day is locked.'}\n\n`
+        + 'Removing this punch anyway will also correct that crew-day\'s hours.\n\n'
+        + 'Reason (required):',
+        '',
+      );
+      if (why == null) return;
+      if (why.trim().length < 3) { showToastMsg('A reason is required to remove a punch from an approved day.'); return; }
+      setPendingAction({
+        title: 'Remove this punch from an approved day?',
+        warnings: [
+          'The crew-day is approved. The punch is removed and the crew-day\'s hours for this person are recalculated from the punches that remain.',
+          'A deletion record with the full punch is kept, so this is recoverable.',
+        ],
+        confirmLabel: 'Remove punch',
+        onConfirm: () => doDelete(why.trim()),
+      });
+      return;
+    }
     const warnings: string[] = [];
     if (overlapsPaidChunk(entry.userEmail, entry.clockIn, entry.clockOut)) {
       warnings.push('This entry falls in a PAID pay period (a closed pay chunk). Deleting it rewrites settled pay records.');
@@ -659,7 +725,7 @@ export default function TimeMaster({
       title: 'Delete this time entry?',
       warnings: warnings.length > 0 ? warnings : ['This permanently removes the entry. A deletion record (who/when) is kept in the log.'],
       confirmLabel: 'Delete entry',
-      onConfirm: doDelete,
+      onConfirm: () => doDelete(),
     });
   };
 
@@ -806,6 +872,8 @@ export default function TimeMaster({
     // actions that would move payroll are withdrawn, with the reason shown
     // rather than a button that fails when pressed.
     const rowLock = entryLock(entry);
+    // Review flag: this punch sits on a day that totals over the threshold.
+    const overHours = entryIsOverHours(entry, appData.timeEntries, hoursThreshold);
     const canEdit = canModify(entry) && !rowLock.locked;
     const canNote = canAddNoteToEntry(entry);
     const editorName = entry.editedBy
@@ -881,6 +949,14 @@ export default function TimeMaster({
               </span>
             )}
             <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border ${statusClass}`}>{status}</span>
+            {overHours && (
+              <span
+                className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-rose-50 text-rose-700 border-rose-200"
+                title={`${entry.userName} has ${hoursForEmployeeDate(appData.timeEntries, entry.userEmail, (entry.clockIn || '').slice(0, 10))} hours logged on this day — over the ${hoursThreshold}-hour mark. Usually a punch entered twice.`}
+              >
+                ⚑ {hoursForEmployeeDate(appData.timeEntries, entry.userEmail, (entry.clockIn || '').slice(0, 10))}h that day
+              </span>
+            )}
             {rowLock.locked && (
               <span
                 className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-slate-100 text-slate-600 border-slate-300"
@@ -1079,6 +1155,49 @@ export default function TimeMaster({
           <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded bg-amber-500" /> Active</span>
           <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded bg-rose-500" /> Unclosed (&gt;12h)</span>
           <span className="ml-auto italic">Window: 6am – 10pm</span>
+        </div>
+      </div>
+    );
+  };
+
+  // REVIEW FLAG — anything that slipped past the entry-time warning, visible
+  // BEFORE pay runs rather than after. Scoped to the selected period, so on
+  // Dave's payroll lens it lists exactly what is about to be paid.
+  const renderOverHoursReview = () => {
+    const { from, to } = activeRangeYmd();
+    const flagged = overHoursDays(appData.timeEntries, hoursThreshold, { from, to });
+    if (flagged.length === 0) return null;
+    return (
+      <div className="bg-white rounded-xl shadow-sm border-2 border-rose-300 p-3 mb-4">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+          <span className="text-[11px] font-black uppercase tracking-widest text-rose-800">
+            {flagged.length} day{flagged.length === 1 ? '' : 's'} over {hoursThreshold} hours
+          </span>
+          <span className="text-[11px] text-slate-500">
+            — in this period. Usually a punch entered twice.
+          </span>
+        </div>
+        <div className="mt-2 space-y-1">
+          {flagged.map(d => (
+            <button
+              key={`${d.email}|${d.date}`}
+              onClick={() => { setDrilledUserEmail(d.email); }}
+              className="w-full flex items-center justify-between gap-2 text-left text-[13px] px-2 py-1.5 rounded-lg border border-rose-100 hover:bg-rose-50"
+            >
+              <span className="truncate">
+                <b>{d.name}</b> · {d.date}
+                {d.looksDuplicated
+                  ? <span className="text-rose-700"> · {d.entryCount} punches</span>
+                  : <span className="text-slate-400"> · one long punch</span>}
+              </span>
+              <span className="font-mono font-black text-rose-700 shrink-0">{d.hours}h</span>
+            </button>
+          ))}
+        </div>
+        <div className="text-[11px] text-slate-400 mt-1.5">
+          Two or more punches on one day is the duplicate shape. One long punch is
+          a different problem — usually a missed clock-out.
         </div>
       </div>
     );
@@ -1382,6 +1501,7 @@ export default function TimeMaster({
           {showAdminAllUsers ? (
             <>
               {renderPayPeriods()}
+              {renderOverHoursReview()}
               {renderTimeline()}
               {renderUsersTable()}
             </>

@@ -129,6 +129,9 @@ import { checkDocWrite } from './lib/docWriteGuard';
 import { adminEmailsFrom, computeRosterUpdate } from './lib/rosterWrite';
 import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './lib/scheduledBulletins';
 import { timeEntryLock } from './lib/timeEntryLock';
+import {
+  checkDailyHours, dailyHoursThreshold, entriesForEmployeeDate, hoursForEmployeeDate,
+} from './lib/dailyHoursGuard';
 import { canSeeMortgages, mortgageAuditDiff } from './lib/mortgages';
 import { validateAdjustment } from './lib/efficiencyAdjustments';
 import {
@@ -3490,6 +3493,70 @@ export default function App() {
   // a whole array the admin's screen happened to hold: two admins editing at
   // once both get their changes, and neither wipes the other's. Each add and
   // each removal is audited individually to its own append-only collection.
+  // After a punch is removed from an APPROVED crew-day, bring that day's hours
+  // back into step with the punches that remain.
+  //
+  // This exists because the sync SKIPS approved days by design — so without it
+  // a duplicate could be deleted from TimeMaster while the crew-day went on
+  // carrying hours from a punch that no longer exists. That is the same
+  // divergence that had payroll and efficiency disagreeing about the same work.
+  //
+  // ONLY for employees whose AH comes from punches. A Jobber-linked worker's
+  // hours are sourced from Jobber timesheets, and rewriting their AH from
+  // CrewMaster punches would substitute the wrong source.
+  const recalcAHAfterPunchDelete = async (entry: TimeEntry, reason: string) => {
+    const date = (entry.clockIn || '').slice(0, 10);
+    if (!date) return;
+    const email = (entry.userEmail || '').trim().toLowerCase();
+    const emp = (appData.employees || []).find(e =>
+      (e.linkedUserEmail || e.email || '').trim().toLowerCase() === email);
+    if (!emp) return;
+    if (emp.jobberUserId) {
+      showToastMsg(`Punch removed. ${emp.name}'s crew hours come from Jobber, so the crew-day is unchanged.`);
+      return;
+    }
+    // Remaining punches for that person on that day, AFTER the deletion.
+    const remaining = (appData.timeEntries || []).filter(e => e.id !== entry.id);
+    const hours = hoursForEmployeeDate(remaining, email, date);
+    const dayLogs = (appData.performance || {})[date] || {};
+    const touched: string[] = [];
+    const nextDay: Record<string, PerformanceLog> = { ...dayLogs };
+    for (const [crewId, log] of Object.entries(dayLogs)) {
+      if (!log || !(emp.id in (log.employeeAH || {}))) continue;
+      // manualAH is a manager's deliberate figure (an AH split) — authoritative,
+      // and never overwritten by a recompute, exactly as the sync treats it.
+      if (log.manualAH?.[emp.id]) continue;
+      const nextTs = { ...(log.employeeTimesheets || {}) };
+      const intervals = entriesForEmployeeDate(remaining, email, date)
+        .map(e => ({ startAt: e.clockIn, endAt: e.clockOut ?? null }));
+      if (intervals.length > 0) nextTs[emp.id] = intervals as any;
+      else delete nextTs[emp.id];
+      nextDay[crewId] = {
+        ...log,
+        employeeAH: { ...(log.employeeAH || {}), [emp.id]: Math.round(hours * 10) / 10 },
+        employeeTimesheets: nextTs,
+      };
+      touched.push(`${log.division} #${log.crewNumber}`);
+    }
+    if (touched.length === 0) return;
+    const newPerf = { ...appData.performance, [date]: nextDay };
+    await syncToCloud({ ...appData, performance: newPerf });
+    logPerfActivity({
+      type: 'punch_removed_ah_recalculated',
+      targetDate: date,
+      crewId: 'timemaster',
+      crewLabel: touched.join(', '),
+      userId: user?.uid || displayEmail,
+      userName: displayName,
+      userRole: effectiveRole,
+      valueLabel: 'AH',
+      valueAfter: hours,
+      reasonNote: `Duplicate punch removed from an approved day (${reason}) — `
+        + `${emp.name}'s hours recalculated to ${hours} from the remaining punches`,
+    });
+    showToastMsg(`Punch removed · ${emp.name}'s hours on ${touched.join(', ')} recalculated to ${hours}.`);
+  };
+
   // CLOCK SOMEBODY ELSE IN / OUT. A dead phone or a forgotten punch, fixed with
   // a real timestamp now rather than a reconstruction later.
   //
@@ -3539,6 +3606,18 @@ export default function App() {
         archivedDays: appData.archivedDays,
       });
       if (lk.locked) { showToastMsg(lk.message || 'That day is locked.'); return false; }
+      // Same impossible-hours check the manual-entry form applies — a manager
+      // starting a clock for somebody who already has a full day logged is the
+      // other half of how the Tyberious duplicate happened.
+      {
+        const existing = hoursForEmployeeDate(entries, email, workedIso.slice(0, 10));
+        const thr = dailyHoursThreshold(appData.settings);
+        if (existing > thr && !window.confirm(
+          `${target.name} already has ${existing} hours logged on ${workedIso.slice(0, 10)}, `
+          + `which is over the ${thr}-hour mark. Over ${thr} hours in a day is usually a `
+          + 'punch entered twice.\n\nStart another clock anyway?',
+        )) return false;
+      }
       const entry = buildOnBehalfStart({
         target, email, actor: { email: displayEmail, name: displayName || displayEmail },
         reason, atIso: workedIso, nowIso,
@@ -3565,6 +3644,16 @@ export default function App() {
       archivedDays: appData.archivedDays,
     });
     if (lk.locked) { showToastMsg(lk.message || 'That day is locked.'); return false; }
+    // On the STOP, the span becomes known — check the day's total with it.
+    {
+      const w = checkDailyHours({
+        entries, email, name: target.name, date: (running.clockIn || '').slice(0, 10),
+        addedHours: (workedMs - Date.parse(running.clockIn)) / 3_600_000,
+        threshold: dailyHoursThreshold(appData.settings),
+        excludeId: running.id,
+      });
+      if (w.over && !window.confirm(`${w.message}\n\nStop the clock anyway?`)) return false;
+    }
     const stopped = applyOnBehalfStop(
       running, { email: displayEmail, name: displayName || displayEmail },
       reason, workedIso, nowIso,
@@ -7713,6 +7802,7 @@ export default function App() {
           // WRITES ARE ADMIN-ONLY. The handler enforces it again server-side
           // of this component; this is what decides whether the buttons exist.
           onClockForEmployee={clockForEmployee}
+          onRecalcAHAfterDelete={recalcAHAfterPunchDelete}
           currentUserManagedDivision={currentUserEmployee?.managedDivision}
           canManageBank={isAdmin}
           // The TAB is for people who look at other people's ledgers — an
