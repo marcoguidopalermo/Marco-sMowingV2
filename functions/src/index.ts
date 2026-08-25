@@ -25,6 +25,7 @@ export {
   pushAvailableForWork,
   pushCrewDayFlagged,
   pushCrewDayFlagResolved,
+  pushEfficiencyAdjustment,
   sendTestNotification,
   onWorkOrderWrite,
   // Marketing: comments (clips, links, to-dos), post-queue additions and

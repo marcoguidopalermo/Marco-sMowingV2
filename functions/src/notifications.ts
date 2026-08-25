@@ -643,6 +643,78 @@ export const pushCrewDayFlagResolved = onCall({region: REGION}, async (req) => {
   return {sent: 1};
 });
 
+// EFFICIENCY ADJUSTMENT applied — tell the crew it affects.
+//
+// WORDING MATTERS HERE. This is usually a correction in the crew's favour —
+// time they were asked to spend, or pricing they had no part in setting — so
+// it must never read as a deduction or a penalty. The body says what moved,
+// which direction their efficiency went, and that their PAY IS UNCHANGED,
+// because that is the first thing anybody wonders when told their hours were
+// altered.
+//
+// Recipients resolve SERVER-SIDE from the scope: the crew's own members for a
+// crew adjustment, the division's crews for a division one, everyone rostered
+// for company-wide. The caller says what it adjusted, not who to tell.
+export const pushEfficiencyAdjustment = onCall({region: REGION}, async (req) => {
+  const email = normEmail(req.auth?.token?.email);
+  if (!email) throw new HttpsError("unauthenticated", "Sign in required.");
+  const d = (req.data || {}) as any;
+  const unit = d.unit === "percent" ? "percent" : "hours";
+  const amount = Number(d.amount) || 0;
+  const reason = String(d.reason || "").slice(0, 200);
+  const scope = ["crew", "division", "company"].includes(d.scope) ? d.scope : "crew";
+  const startDate = String(d.startDate || "");
+  const endDate = String(d.endDate || "");
+  if (!reason || !amount) return {sent: 0};
+
+  const emps = await loadEmployees();
+  const active = (e: any): boolean => {
+    const v = String(e.status || "").toLowerCase();
+    return !e.isTestUser && !(v.includes("away") || v.includes("inactive") ||
+      v.includes("archive") || v.includes("terminat"));
+  };
+  const divKey = (e: any): string => String(e.primaryCrew || "").toLowerCase();
+  const wantDiv = String(d.division || "").toLowerCase();
+
+  let targets: any[] = emps.filter(active);
+  if (scope === "division" && wantDiv) {
+    // The crew-day division ("Lawn Division") against an employee's
+    // primaryCrew ("Lawn") — substring, the same shape used elsewhere.
+    const token = wantDiv.replace(/\s*division\s*/g, "").replace(/\s*projects?\s*/g, "").trim();
+    targets = targets.filter((e) => token && divKey(e).includes(token));
+  } else if (scope === "crew") {
+    // The crew roster for the day is on the schedule; the caller passes the
+    // crew id, so resolve through the appData schedule for startDate.
+    const snap = await db.doc(`${PUB}/appData/main`).get();
+    const day = ((snap.data() as any)?.schedules || {})[startDate] || [];
+    const crew = day.find((c: any) => c && c.id === d.crewId);
+    const ids = new Set<string>((crew?.employees || []) as string[]);
+    targets = targets.filter((e) => ids.has(e.id));
+  }
+  const recips = [...new Set(targets.map(empEmail).filter(Boolean))]
+    .filter((e) => e !== email);      // never the admin who applied it
+  if (recips.length === 0) return {sent: 0};
+
+  const mag = Math.abs(amount);
+  const amountText = unit === "hours" ?
+    (mag < 1 ? `${Math.round(mag * 60)} min` : `${mag} hr${mag === 1 ? "" : "s"}`) :
+    `${mag}%`;
+  const helping = unit === "hours" ? amount < 0 : amount > 0;
+  const verb = unit === "hours" ?
+    (amount < 0 ? "removed from" : "added to") :
+    (amount > 0 ? "added to" : "removed from");
+  const what = unit === "hours" ? "your crew's hours" : "your crew's efficiency";
+  const range = endDate && endDate !== startDate ? ` (${startDate} → ${endDate})` : "";
+  await sendNotification(recips, "crew", {
+    title: "Efficiency adjustment",
+    body: `${amountText} ${verb} ${what} for ${reason}${range} — this ` +
+      `${helping ? "improves" : "lowers"} your efficiency. Your pay is unchanged; ` +
+      "you are paid for every minute worked.",
+    url: "/",
+  });
+  return {sent: recips.length};
+});
+
 export const sendTestNotification = onCall({region: REGION}, async (req) => {
   const email = normEmail(req.auth?.token?.email);
   if (!email) throw new HttpsError("unauthenticated", "Sign in required.");

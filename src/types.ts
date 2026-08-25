@@ -775,6 +775,8 @@ export type PerfActivityType =
   | 'crew_day_flag_resolved'
   | 'crew_day_audited'
   | 'approval_note_saved'
+  | 'efficiency_adjustment'
+  | 'efficiency_adjustment_voided'
   | 'chunk_marked_paid'
   | 'chunk_payment_reversed'
   | 'performance_month_pushed'
@@ -916,6 +918,59 @@ export interface MultiDayJob {
   // Void metadata (resolvedKind === 'voided'). The uncredited remainder is
   // closed; credited BH on prior days is untouched.
   voidedRemainder?: { bh: number; reason: string; byEmail: string; byName: string; at: number };
+}
+
+// ── EFFICIENCY ADJUSTMENT ──────────────────────────────────────────────────
+// ONE adjuster with two UNITS, deliberately not two features. Hours and
+// percentage share a scope model, an audit trail, a notification and a display
+// format; splitting them would end with a crew-day carrying one of each,
+// rendered two different ways, reconciled from two different logs.
+//
+//   HOURS      — a crew films marketing content for 30 minutes. Real time,
+//                really worked, but not billable, so leaving it in AH drags
+//                their efficiency for something they were asked to do.
+//   PERCENTAGE — the acquired Lush accounts carry inherited pricing that
+//                cannot change until next season. Their BH understates the
+//                work. Nothing here is cleanly measurable, so a stated
+//                percentage is the honest instrument rather than a fake hour.
+//
+// PAY IS NEVER TOUCHED. The crew is paid for every minute worked, filming
+// included. This changes only what counts toward efficiency and bonus, and it
+// never edits raw BH or AH — the adjustment is applied on READ, itemized
+// beside the raw figure, exactly like the 3-man and trainee credits.
+export type AdjustmentUnit = 'hours' | 'percent';
+export type AdjustmentScope = 'crew' | 'division' | 'company';
+export interface EfficiencyAdjustment {
+  id: string;
+  unit: AdjustmentUnit;
+  /** SIGNED. Negative removes hours / percentage points, positive adds. */
+  amount: number;
+  /** Required. "filming", "shop meeting", "Lush inherited pricing". */
+  reason: string;
+  scope: AdjustmentScope;
+  crewId?: string;                 // scope === 'crew'
+  crewLabel?: string;              // denormalized for the audit and the list
+  division?: string;               // scope === 'division'
+  /** Inclusive. A single-day adjustment has endDate === startDate. */
+  startDate: string;
+  /**
+   * Inclusive, and ALWAYS set — there is no open-ended adjustment. A seasonal
+   * correction that could run forever would stop being a correction and become
+   * the number, with nobody left who remembers why.
+   */
+  endDate: string;
+  createdAt: number;
+  createdBy: { email: string; name: string };
+  /**
+   * Append-only. Every push of the end date, so a range that keeps creeping is
+   * visible as creep rather than as a single long window. Two or more and the
+   * UI flags it, the way the trainee credit does.
+   */
+  extensions?: { at: number; by: string; fromEndDate: string; toEndDate: string }[];
+  voided?: boolean;
+  voidedAt?: number;
+  voidedBy?: string;
+  voidReason?: string;
 }
 
 // ── CREW-DAY FLAG (daily audit) ────────────────────────────────────────────

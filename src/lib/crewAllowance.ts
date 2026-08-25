@@ -388,6 +388,33 @@ export function creditBreakdown(
   adjustedEff: number | null,
 ): string | null {
   if (rawEff === null || !credits || credits.length === 0) return null;
-  const parts = credits.map(c => `+${c.pct}% ${c.label}`);
+  // SIGNED. The 3-man and trainee credits are always positive, but an
+  // efficiency adjustment can go either way — "+-3%" would be nonsense, and a
+  // bare "3%" would hide which direction it moved.
+  const parts = credits.map(c => `${signed(c.pct)}% ${c.label}`);
   return `${rawEff}% raw · ${parts.join(' · ')} · ${adjustedEff}% adjusted`;
 }
+
+// One sign convention for both breakdowns. A minus sign, not a hyphen, so it
+// reads as arithmetic rather than as a dash between words.
+const signed = (n: number): string => (n < 0 ? `−${Math.abs(n)}` : `+${n}`);
+
+/**
+ * The hours equivalent, in the SAME shape and the same file, because a
+ * crew-day can carry both and two formats invented separately would drift:
+ *
+ *   "7.5 AH raw · −0.5 filming · 7.0 adjusted"
+ *
+ * Raw is never edited — this is what makes that visible on the card.
+ */
+export function hoursBreakdown(
+  rawAH: number,
+  items: { label: string; amount: number }[],
+  adjustedAH: number,
+): string | null {
+  if (!items || items.length === 0) return null;
+  const parts = items.map(i => `${signed(round1(i.amount))} ${i.label}`);
+  return `${round1(rawAH)} AH raw · ${parts.join(' · ')} · ${round1(adjustedAH)} adjusted`;
+}
+
+const round1 = (n: number) => Math.round(n * 10) / 10;

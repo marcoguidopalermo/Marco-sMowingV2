@@ -9,7 +9,7 @@ import {
 import { httpsCallable } from 'firebase/functions';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { functions, db, appId } from '../lib/firebase';
-import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole, JobberBhConflict, BonusPayoutRecord, BonusExcludeReason, CrewDayFlag, CrewDayAudit, ManagedDivision } from '../types';
+import { Employee, Job, PerformanceLog, DeductionValue, SyncLogEntry, PerformanceJobRow, MultiDayJob, AppData, UserRole, JobberBhConflict, BonusPayoutRecord, BonusExcludeReason, CrewDayFlag, CrewDayAudit, ManagedDivision, EfficiencyAdjustment, AdjustmentUnit, AdjustmentScope } from '../types';
 import { logPerfActivity } from '../lib/perfAudit';
 import { monthsPresent, monthOfDate, monthSettlementStatus } from '../lib/performanceMonths';
 import { scanBlockingPartialJobs, scanOpenPartials, monthResolutionSummary, BlockingPartialJob, totalBelowCredited, creditedBHOf } from '../lib/multiDayResolution';
@@ -27,7 +27,11 @@ import PerformanceActivityLog from './PerformanceActivityLog';
 import TrendsPage from './TrendsPage';
 import Stamp from './Stamp';
 import { can } from '../lib/permissions';
-import { getCrewAllowance, adjustedEfficiency, allowanceTag, creditBreakdown } from '../lib/crewAllowance';
+import { getCrewAllowance, adjustedEfficiency, allowanceTag, creditBreakdown, hoursBreakdown } from '../lib/crewAllowance';
+import {
+  adjustedAH, extensionCount, isOverExtended, resolveAdjustments, spanDays,
+  validateAdjustment,
+} from '../lib/efficiencyAdjustments';
 import { accumulateEmployeeEff } from '../lib/efficiency';
 import { isBonusEligible } from '../lib/mtd';
 import { computeMonthlyStreaks, crewDayHasFlame, crewKeyOf } from '../lib/crewGamification';
@@ -137,6 +141,9 @@ interface PerformanceBoardProps {
   // Daily audit — see DailyAuditView. Flags are live state in their own
   // top-level collection, not part of appData.
   crewDayFlags: CrewDayFlag[];
+  efficiencyAdjustments: EfficiencyAdjustment[];
+  onSaveEfficiencyAdjustment: (d: Omit<EfficiencyAdjustment, 'id' | 'createdAt' | 'createdBy'> & { id?: string }) => Promise<boolean>;
+  onVoidEfficiencyAdjustment: (id: string, reason: string) => Promise<boolean>;
   crewDayAudits: Record<string, CrewDayAudit>;
   managedDivision: ManagedDivision | null | undefined;
   onFlagCrewDay: (date: string, crewId: string, reason: string) => Promise<boolean>;
@@ -201,6 +208,256 @@ export function ScopeHistoryLines({ ledger, className = '' }: { ledger: MultiDay
 // The note is OPTIONAL and the confirm button never depends on it — requiring
 // an explanation for every day would train people to type "n/a", which reads
 // like an answer and is worse than an empty field. Most days need nothing said.
+// ONE ADJUSTER, TWO UNITS — a unit toggle, not two features. Hours and
+// percentage share this form, the scope model, the audit entry, the crew
+// notification and the itemized display; building them apart would end with a
+// crew-day carrying one of each, rendered two different ways.
+function EfficiencyAdjustmentPanel({ adjustments, perfDate, dailyLogs, onSave, onVoid }: {
+  adjustments: EfficiencyAdjustment[];
+  perfDate: string;
+  dailyLogs: Record<string, PerformanceLog>;
+  onSave: (d: Omit<EfficiencyAdjustment, 'id' | 'createdAt' | 'createdBy'> & { id?: string }) => Promise<boolean>;
+  onVoid: (id: string, reason: string) => Promise<boolean>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<EfficiencyAdjustment | null>(null);
+  const live = (adjustments || []).filter(a => !a.voided);
+  const onThisDay = live.filter(a => perfDate >= a.startDate && perfDate <= a.endDate);
+  const ranges = live.filter(a => a.endDate > a.startDate);
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-4">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <SplitIcon className="w-4 h-4 text-slate-500" />
+          <span className="font-bold text-gray-700 text-sm">Efficiency adjustments</span>
+          <span className="text-[11px] text-slate-400">
+            — hours or percentage, with a reason. Never changes pay or raw hours.
+          </span>
+        </div>
+        <button onClick={() => { setEditing(null); setOpen(true); }} className="text-xs font-black uppercase tracking-widest px-3 py-1.5 rounded-lg text-white" style={{ backgroundColor: '#334155' }}>
+          + Adjustment
+        </button>
+      </div>
+
+      {onThisDay.length > 0 && (
+        <div className="mt-2">
+          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+            Affecting {perfDate}
+          </div>
+          <div className="space-y-1">
+            {onThisDay.map(a => (
+              <AdjustmentRow key={a.id} a={a} onEdit={() => { setEditing(a); setOpen(true); }} onVoid={onVoid} />
+            ))}
+          </div>
+        </div>
+      )}
+      {ranges.length > 0 && (
+        <div className="mt-2">
+          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
+            Running ranges
+          </div>
+          <div className="space-y-1">
+            {ranges.map(a => (
+              <AdjustmentRow key={a.id} a={a} onEdit={() => { setEditing(a); setOpen(true); }} onVoid={onVoid} />
+            ))}
+          </div>
+        </div>
+      )}
+      {onThisDay.length === 0 && ranges.length === 0 && (
+        <div className="text-[13px] text-slate-400 mt-2">Nothing adjusted.</div>
+      )}
+
+      {open && (
+        <AdjustmentForm
+          initial={editing}
+          perfDate={perfDate}
+          dailyLogs={dailyLogs}
+          onClose={() => { setOpen(false); setEditing(null); }}
+          onSave={async d => { const ok = await onSave(d); if (ok) { setOpen(false); setEditing(null); } }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AdjustmentRow({ a, onEdit, onVoid }: {
+  a: EfficiencyAdjustment; onEdit: () => void; onVoid: (id: string, reason: string) => Promise<boolean>;
+}) {
+  const over = isOverExtended(a);
+  const amt = `${a.amount > 0 ? '+' : '−'}${Math.abs(a.amount)}${a.unit === 'hours' ? 'h' : '%'}`;
+  const where = a.scope === 'company' ? 'Company-wide'
+    : a.scope === 'division' ? a.division : (a.crewLabel || 'crew');
+  return (
+    <div className="rounded-lg border border-slate-200 px-3 py-2 flex items-start justify-between gap-3 flex-wrap">
+      <div className="min-w-0">
+        <div className="text-[13px] text-slate-800">
+          <b className="font-mono">{amt}</b> · {where} · {a.reason}
+        </div>
+        <div className="text-[11px] text-slate-400">
+          {a.startDate}{a.endDate !== a.startDate ? ` → ${a.endDate} (${spanDays(a)} days)` : ''}
+          {' · '}{a.createdBy?.name}
+          {extensionCount(a) > 0 ? ` · extended ${extensionCount(a)}×` : ''}
+        </div>
+        {/* Flagged the way the trainee credit flags repeated extension: a
+            correction that keeps being pushed out is becoming permanent. */}
+        {over && (
+          <div className="text-[11px] font-bold mt-0.5" style={{ color: '#B7950B' }}>
+            ⚑ Extended {extensionCount(a)} times — is this still a correction, or the new normal?
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <button onClick={onEdit} className="text-[11px] font-bold px-2 py-1 rounded border border-slate-300 text-slate-700">Edit</button>
+        <button
+          onClick={() => {
+            const r = window.prompt(`Void this adjustment?\n\n${amt} · ${a.reason}\n\nIt stops affecting every day. Reason:`);
+            if (r == null) return;
+            onVoid(a.id, r);
+          }}
+          className="text-[11px] font-bold px-2 py-1 rounded text-rose-500"
+        >
+          Void
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AdjustmentForm({ initial, perfDate, dailyLogs, onClose, onSave }: {
+  initial: EfficiencyAdjustment | null;
+  perfDate: string;
+  dailyLogs: Record<string, PerformanceLog>;
+  onClose: () => void;
+  onSave: (d: Omit<EfficiencyAdjustment, 'id' | 'createdAt' | 'createdBy'> & { id?: string }) => void;
+}) {
+  const [unit, setUnit] = useState<AdjustmentUnit>(initial?.unit || 'hours');
+  const [amount, setAmount] = useState(initial ? String(initial.amount) : '');
+  const [reason, setReason] = useState(initial?.reason || '');
+  const [scope, setScope] = useState<AdjustmentScope>(initial?.scope || 'crew');
+  const [crewId, setCrewId] = useState(initial?.crewId || '');
+  const [division, setDivision] = useState(initial?.division || '');
+  const [startDate, setStartDate] = useState(initial?.startDate || perfDate);
+  const [endDate, setEndDate] = useState(initial?.endDate || perfDate);
+
+  const crews = Object.entries(dailyLogs).map(([id, l]) => ({ id, label: `${l.division} #${l.crewNumber}` }));
+  const divisions = [...new Set(Object.values(dailyLogs).map(l => l.division).filter(Boolean))];
+  const draft = {
+    id: initial?.id, unit, amount: Number(amount), reason, scope,
+    crewId: scope === 'crew' ? crewId : undefined,
+    crewLabel: scope === 'crew' ? crews.find(c => c.id === crewId)?.label : undefined,
+    division: scope === 'division' ? division : undefined,
+    startDate, endDate,
+  };
+  const err = validateAdjustment(draft as any);
+  const isRange = endDate > startDate;
+  const extending = !!initial && endDate > initial.endDate;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto">
+        <h3 className="text-lg font-bold text-slate-800">{initial ? 'Edit adjustment' : 'Efficiency adjustment'}</h3>
+        <div className="text-[12px] text-slate-500 mt-0.5">
+          Changes what counts toward efficiency and bonus. Raw hours and pay are untouched.
+        </div>
+
+        {/* THE UNIT TOGGLE — the whole reason this is one feature. */}
+        <div className="flex bg-slate-100 rounded-xl p-1 mt-3">
+          {(['hours', 'percent'] as const).map(u => (
+            <button key={u} onClick={() => setUnit(u)}
+              className={`flex-1 px-3 py-1.5 text-[11px] font-black uppercase tracking-widest rounded-lg ${unit === u ? 'bg-white text-slate-800 shadow' : 'text-slate-500'}`}>
+              {u === 'hours' ? 'Hours' : 'Percentage'}
+            </button>
+          ))}
+        </div>
+        <div className="text-[11px] text-slate-400 mt-1">
+          {unit === 'hours'
+            ? 'Removes (or adds) real time from the hours efficiency is measured against — e.g. −0.5 for filming.'
+            : 'Moves the efficiency percentage directly — e.g. +8 where inherited pricing understates the work.'}
+        </div>
+
+        <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mt-3 mb-1">
+          Amount ({unit === 'hours' ? 'hours, − to remove' : 'percentage points'})
+        </label>
+        <input type="number" step={unit === 'hours' ? '0.25' : '1'} value={amount} autoFocus
+          onChange={e => setAmount(e.target.value)}
+          className="w-full rounded-lg border border-slate-300 p-2 text-[13px]"
+          placeholder={unit === 'hours' ? '-0.5' : '8'} />
+
+        <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mt-3 mb-1">
+          Reason <span className="font-medium text-slate-400 normal-case tracking-normal">· required</span>
+        </label>
+        <input value={reason} onChange={e => setReason(e.target.value)}
+          className="w-full rounded-lg border border-slate-300 p-2 text-[13px]"
+          placeholder={unit === 'hours' ? 'filming' : 'Lush inherited pricing'} />
+
+        <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mt-3 mb-1">Scope</label>
+        <div className="flex gap-2">
+          {(['crew', 'division', 'company'] as const).map(sc => (
+            <button key={sc} onClick={() => setScope(sc)}
+              className={`flex-1 py-1.5 rounded-lg border text-[12px] font-bold capitalize ${scope === sc ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-300 text-slate-600'}`}>
+              {sc}
+            </button>
+          ))}
+        </div>
+        {scope === 'crew' && (
+          <select value={crewId} onChange={e => setCrewId(e.target.value)} className="w-full rounded-lg border border-slate-300 p-2 text-[13px] mt-2">
+            <option value="">Pick a crew…</option>
+            {crews.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
+        )}
+        {scope === 'division' && (
+          <select value={division} onChange={e => setDivision(e.target.value)} className="w-full rounded-lg border border-slate-300 p-2 text-[13px] mt-2">
+            <option value="">Pick a division…</option>
+            {divisions.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+        )}
+
+        <div className="grid grid-cols-2 gap-2 mt-3">
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">From</label>
+            <input type="date" value={startDate} onChange={e => { setStartDate(e.target.value); if (endDate < e.target.value) setEndDate(e.target.value); }}
+              className="w-full rounded-lg border border-slate-300 p-2 text-[13px]" />
+          </div>
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">
+              To <span className="font-medium text-slate-400 normal-case tracking-normal">· required</span>
+            </label>
+            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 p-2 text-[13px]" />
+          </div>
+        </div>
+        {/* Nothing runs open-ended. A seasonal correction with no end quietly
+            becomes the baseline and nobody is left who remembers why. */}
+        <div className="text-[11px] text-slate-400 mt-1">
+          {isRange
+            ? `Runs ${spanDays({ startDate, endDate } as any)} days. Every adjustment needs an end date — a correction with none becomes permanent.`
+            : 'Single day. Set a later end date for a seasonal correction.'}
+        </div>
+        {extending && (
+          <div className="text-[11px] mt-1 px-2 py-1 rounded bg-amber-50 border border-amber-200 text-amber-800">
+            ⚠ This extends the end date from {initial!.endDate}. It will be recorded as
+            extension #{extensionCount(initial!) + 1}
+            {extensionCount(initial!) + 1 >= 2 ? ' — and flagged as repeatedly extended.' : '.'}
+          </div>
+        )}
+        {err && <div className="text-[11px] mt-2 px-2 py-1 rounded bg-rose-50 border border-rose-200 text-rose-700">{err.message}</div>}
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-[12px] font-bold text-slate-500">Cancel</button>
+          <button onClick={() => onSave(draft as any)} disabled={!!err}
+            className="rounded-lg bg-slate-800 px-4 py-1.5 text-[12px] font-black uppercase tracking-widest text-white disabled:opacity-40">
+            {initial ? 'Save' : 'Apply'}
+          </button>
+        </div>
+        <div className="text-[11px] text-slate-400 mt-2 text-right">
+          The affected crew is notified — worded as the correction it is, not as a deduction.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ApprovalNoteModal({
   title, subtitle, warning, initial, confirmLabel, allowEmpty, onClose, onSave,
 }: {
@@ -304,6 +561,9 @@ export default function PerformanceBoard({
   syncToCloud,
   saveVisitBHSplits,
   crewDayFlags,
+  efficiencyAdjustments,
+  onSaveEfficiencyAdjustment,
+  onVoidEfficiencyAdjustment,
   crewDayAudits,
   managedDivision,
   onFlagCrewDay,
@@ -1898,14 +2158,29 @@ export default function PerformanceBoard({
                   crewObj, log, appData.settings, testUserIds,
                   { date: perfDate, employees },
                 );
-                const rawEffOrNull = sumAH > 0 ? eff : null;
-                const adjEffNum = adjustedEfficiency(rawEffOrNull, allowance.totalPct);
+                // EFFICIENCY ADJUSTMENTS — resolved on READ. sumAH and the
+                // stored employeeAH are never touched; the adjusted figure is
+                // derived here and shown beside the raw one.
+                const adjRes = resolveAdjustments(efficiencyAdjustments, {
+                  date: perfDate, division: log.division, crewId: cId,
+                });
+                // Hours move the DENOMINATOR (the day's countable AH), so they
+                // change the raw efficiency before any percentage credit is
+                // added. Percentages are credits and compose with the 3-man and
+                // trainee ones additively.
+                const effAH = adjustedAH(sumAH, adjRes.hours);
+                const effBase = effAH > 0 ? Math.round((sumBH / effAH) * 1000) / 10 : null;
+                const rawEffOrNull = sumAH > 0 ? effBase : null;
+                const adjEffNum = adjustedEfficiency(rawEffOrNull, allowance.totalPct + adjRes.pct);
                 const effForColor = adjEffNum ?? 0;
-                // Itemized breakdown (raw + each credit + adjusted). Falls
-                // back to the legacy size-only tag if, somehow, only the
-                // size credit is present without the itemized list.
-                const effBreakdown = creditBreakdown(rawEffOrNull, allowance.credits, adjEffNum)
-                  || allowanceTag(allowance.size, allowance.pct);
+                // ONE itemized mechanism for all of it — the 3-man credit, the
+                // trainee credit and any percentage adjustment share a list, so
+                // a third format cannot drift away from the first two.
+                const effBreakdown = creditBreakdown(
+                  rawEffOrNull, [...allowance.credits, ...adjRes.pctItems], adjEffNum,
+                ) || allowanceTag(allowance.size, allowance.pct);
+                // The hours line sits beside it when hours were adjusted.
+                const ahBreakdown = hoursBreakdown(sumAH, adjRes.hourItems, effAH);
 
                 let effColor = 'text-gray-500 bg-gray-100 border-gray-200';
                 if (sumAH > 0) {
@@ -2002,6 +2277,9 @@ export default function PerformanceBoard({
                               {sumAH > 0 && effBreakdown && (
                                 <span className="text-[9px] font-medium tracking-wide opacity-80 mt-0.5">{effBreakdown}</span>
                               )}
+                              {ahBreakdown && (
+                                <span className="text-[9px] font-medium tracking-wide opacity-80">{ahBreakdown}</span>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -2023,6 +2301,9 @@ export default function PerformanceBoard({
                             <span className="text-2xl leading-none">{sumAH > 0 && adjEffNum !== null ? `${adjEffNum}%` : '--'}</span>
                             {sumAH > 0 && effBreakdown && (
                               <span className="text-[9px] font-medium tracking-wide opacity-80 mt-0.5">{effBreakdown}</span>
+                            )}
+                            {ahBreakdown && (
+                              <span className="text-[9px] font-medium tracking-wide opacity-80">{ahBreakdown}</span>
                             )}
                           </div>
                         </div>
@@ -3240,6 +3521,17 @@ export default function PerformanceBoard({
               sheets so the main doc stays under the 1 MiB cap. Data is
               MOVED, not deleted: pushed months stay fully viewable here
               via the overlay. */}
+          {/* EFFICIENCY ADJUSTMENTS — admin only. One adjuster, two units. */}
+          {isAdmin && (
+            <EfficiencyAdjustmentPanel
+              adjustments={efficiencyAdjustments}
+              perfDate={perfDate}
+              dailyLogs={dailyLogs}
+              onSave={onSaveEfficiencyAdjustment}
+              onVoid={onVoidEfficiencyAdjustment}
+            />
+          )}
+
           {/* OPEN PARTIAL JOBS — every part-done visit with BH outstanding,
               not only the ones holding up a month close. Those two are
               deliberately NOT presented as equally urgent: a blocking partial

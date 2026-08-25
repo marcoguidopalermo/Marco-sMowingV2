@@ -28,7 +28,7 @@ import {
   CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract,
   MarketingContentItem, MarketingShot, MarketingLink,
   MarketingFeedbackEntry, MarketingClipThread, MarketingClipStatus,
-  MarketingPostQueueEntry, MarketingTodo, HoursBankEntry, ContractingMortgage,
+  MarketingPostQueueEntry, MarketingTodo, HoursBankEntry, ContractingMortgage, EfficiencyAdjustment,
   CrewDayFlag, CrewDayAudit,
 } from './types';
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
@@ -130,6 +130,7 @@ import { computeRosterUpdate } from './lib/rosterWrite';
 import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './lib/scheduledBulletins';
 import { timeEntryLock } from './lib/timeEntryLock';
 import { canSeeMortgages, mortgageAuditDiff } from './lib/mortgages';
+import { validateAdjustment } from './lib/efficiencyAdjustments';
 import {
   applyOnBehalfStop, buildOnBehalfStart, canClockFor, guardStart, guardStop,
   isBackdated, reasonIsUsable, runningPunchFor, validateStartTime, validateStopTime,
@@ -337,6 +338,8 @@ export default function App() {
   // the firestore rule, not by this listener). The listener is not even
   // attached for anyone else, so a denied read never fires.
   const [contractingMortgages, setContractingMortgages] = useState<ContractingMortgage[]>([]);
+  // EFFICIENCY ADJUSTMENTS — applied on read, never written into a crew-day.
+  const [efficiencyAdjustments, setEfficiencyAdjustments] = useState<EfficiencyAdjustment[]>([]);
   const [crewDayFlags, setCrewDayFlags] = useState<CrewDayFlag[]>([]);
   const [crewDayAudits, setCrewDayAudits] = useState<Record<string, CrewDayAudit>>({});
   // Has this session ever received appData/main? A database does not
@@ -1898,6 +1901,15 @@ export default function App() {
         setContractingMortgages(list);
       }, (err) => { console.error('contractingMortgages listen error:', err); })
       : () => {};
+    const ea1 = onSnapshot(
+      collection(db, 'artifacts', appId, 'public', 'data', 'efficiencyAdjustments'),
+      (snap) => {
+        const list: EfficiencyAdjustment[] = [];
+        snap.forEach((d) => { const v = d.data() as EfficiencyAdjustment; if (v && v.id) list.push(v); });
+        setEfficiencyAdjustments(list);
+      },
+      (err) => { console.error('efficiencyAdjustments listen error:', err); },
+    );
     const cf1 = onSnapshot(collection(db, 'crewDayFlags'), (snap) => {
       const list: CrewDayFlag[] = [];
       snap.forEach((d) => { const v = d.data() as CrewDayFlag; if (v && v.id) list.push(v); });
@@ -1909,7 +1921,7 @@ export default function App() {
       snap.forEach((d) => { const v = d.data() as CrewDayAudit; if (v && v.date) map[v.date] = v; });
       setCrewDayAudits(map);
     }, (err) => { console.error('crewDayAudits listen error:', err); });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); m8(); hb1(); mg1(); cf1(); ca1(); };
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); m8(); hb1(); mg1(); ea1(); cf1(); ca1(); };
   }, [user]);
 
   useEffect(() => {
@@ -3606,6 +3618,111 @@ export default function App() {
       return false;
     }
     showToastMsg('Mortgage removed.');
+    return true;
+  };
+
+  // APPLY AN EFFICIENCY ADJUSTMENT. Admin only — a manager crediting their own
+  // division's number is the same conflict of interest the trainee credit
+  // already guards against.
+  //
+  // Nothing here writes to a crew-day. The adjustment is its own record and is
+  // resolved when efficiency is rendered or a bonus computed, so raw BH and AH
+  // stay exactly as recorded and PAY IS UNTOUCHED — pay comes from time entries
+  // and employeeAH, neither of which this reads or writes.
+  const saveEfficiencyAdjustment = async (
+    draft: Omit<EfficiencyAdjustment, 'id' | 'createdAt' | 'createdBy'> & { id?: string },
+  ): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return false; }
+    const invalid = validateAdjustment(draft);
+    if (invalid) { showToastMsg(invalid.message); return false; }
+    const now = Date.now();
+    const existing = draft.id ? efficiencyAdjustments.find(a => a.id === draft.id) : undefined;
+    // Pushing the end date out is an EXTENSION, recorded as one. A range that
+    // keeps creeping should read as creep, not as a single long window.
+    const extensions = [...(existing?.extensions || [])];
+    if (existing && existing.endDate !== draft.endDate && draft.endDate > existing.endDate) {
+      extensions.push({
+        at: now, by: displayName || displayEmail,
+        fromEndDate: existing.endDate, toEndDate: draft.endDate,
+      });
+    }
+    const rec: EfficiencyAdjustment = {
+      ...draft,
+      id: draft.id || `eadj-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      reason: draft.reason.trim(),
+      createdAt: existing?.createdAt ?? now,
+      createdBy: existing?.createdBy ?? { email: displayEmail, name: displayName || displayEmail },
+      extensions,
+    };
+    try {
+      await setDoc(
+        doc(collection(db, 'artifacts', appId, 'public', 'data', 'efficiencyAdjustments'), rec.id),
+        JSON.parse(JSON.stringify(rec, (_k, v) => (v === undefined ? null : v))),
+      );
+    } catch (err: any) {
+      console.error('efficiency adjustment save failed', err);
+      showToastMsg(`Could not save that adjustment: ${err?.message || String(err)}`);
+      return false;
+    }
+    logPerfActivity({
+      type: 'efficiency_adjustment',
+      targetDate: rec.startDate,
+      crewId: rec.crewId || rec.scope,
+      crewLabel: rec.crewLabel || (rec.scope === 'division' ? rec.division || '' : rec.scope),
+      userId: user?.uid || displayEmail,
+      userName: displayName,
+      userRole: effectiveRole,
+      valueLabel: rec.unit === 'hours' ? 'hrs' : '%',
+      valueAfter: rec.amount,
+      reasonNote: `${existing ? 'Updated' : 'Applied'} ${rec.amount > 0 ? '+' : ''}${rec.amount}`
+        + `${rec.unit === 'hours' ? 'h' : '%'} · ${rec.scope}${rec.division ? ` ${rec.division}` : ''}`
+        + ` · ${rec.startDate}${rec.endDate !== rec.startDate ? `→${rec.endDate}` : ''} · ${rec.reason}`,
+    });
+    // Tell the crew. Non-fatal: a failed push must not make a saved adjustment
+    // look unsaved.
+    try {
+      await httpsCallable(functions, 'pushEfficiencyAdjustment')({
+        adjustmentId: rec.id, unit: rec.unit, amount: rec.amount, reason: rec.reason,
+        scope: rec.scope, crewId: rec.crewId, crewLabel: rec.crewLabel,
+        division: rec.division, startDate: rec.startDate, endDate: rec.endDate,
+      });
+    } catch (err) {
+      console.error('efficiency adjustment push failed', err);
+      showToastMsg('Adjustment saved — but the crew could not be notified automatically.');
+      return true;
+    }
+    showToastMsg(existing ? 'Adjustment updated — crew notified.' : 'Adjustment applied — crew notified.');
+    return true;
+  };
+
+  const voidEfficiencyAdjustment = async (id: string, reason: string): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return false; }
+    const a = efficiencyAdjustments.find(x => x.id === id);
+    if (!a) { showToastMsg('Adjustment not found.'); return false; }
+    // VOID, never delete: the record of what was applied and why stays, and a
+    // voided adjustment simply stops matching any crew-day.
+    try {
+      await setDoc(
+        doc(collection(db, 'artifacts', appId, 'public', 'data', 'efficiencyAdjustments'), id),
+        JSON.parse(JSON.stringify({
+          ...a, voided: true, voidedAt: Date.now(),
+          voidedBy: displayName || displayEmail, voidReason: reason.trim() || 'no reason given',
+        })),
+      );
+    } catch (err: any) {
+      showToastMsg(`Could not void that adjustment: ${err?.message || String(err)}`);
+      return false;
+    }
+    logPerfActivity({
+      type: 'efficiency_adjustment_voided',
+      targetDate: a.startDate, crewId: a.crewId || a.scope,
+      crewLabel: a.crewLabel || a.division || a.scope,
+      userId: user?.uid || displayEmail, userName: displayName, userRole: effectiveRole,
+      reasonNote: `Voided ${a.amount}${a.unit === 'hours' ? 'h' : '%'} (${a.reason}) — ${reason.trim()}`,
+    });
+    showToastMsg('Adjustment voided — it no longer affects any day.');
     return true;
   };
 
@@ -6384,6 +6501,9 @@ export default function App() {
     <PerformanceBoard
       saveVisitBHSplits={saveVisitBHSplits}
       crewDayFlags={crewDayFlags}
+      efficiencyAdjustments={efficiencyAdjustments}
+      onSaveEfficiencyAdjustment={saveEfficiencyAdjustment}
+      onVoidEfficiencyAdjustment={voidEfficiencyAdjustment}
       crewDayAudits={crewDayAudits}
       managedDivision={currentUserEmployee?.managedDivision}
       onFlagCrewDay={raiseCrewDayFlag}
