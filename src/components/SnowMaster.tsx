@@ -35,6 +35,20 @@ const addsOf = (q: SnowQuote, cfg: SnowConfig): number =>
   (q.noBoulevard ? -((q.lanes || 0) * noBoulevardRate(cfg)) : 0);
 const priceOf = (q: SnowQuote, cfg: SnowConfig): number =>
   q.total ?? Math.max(0, q.basePrice + addsOf(q, cfg));
+// THE ADDRESS OF A QUOTE, from whichever field a record actually carries.
+//
+// There used to be two inputs: `address` at the top, and an older free-text
+// label saved as both `name` and `client`. They could disagree — one saved
+// record holds name "396 Ray" and address "396 ray boulevard" — so a single
+// resolver decides, and every display, search and lookup goes through it.
+//
+// `address` wins because it is the field the map and Street View resolved
+// against, and therefore the one that was checked. Records written before the
+// address field existed have none, and fall back to what they do have; nothing
+// is lost and nothing on the server had to be rewritten.
+export const addressOf = (q: Pick<SnowQuote, 'address' | 'client' | 'name'>): string =>
+  (q.address || '').trim() || (q.client || '').trim() || (q.name || '').trim();
+
 // Label an unnamed quote by its shape + price, e.g. "1×3 · 3 car · Tier 1 · $599".
 const shapeLabel = (q: SnowQuote, cfg: SnowConfig): string =>
   `${q.lanes}×${q.depth} · ${q.cars} car · ${q.isCustom ? 'Custom' : 'Tier ' + q.tier} · ${q.isCustom ? 'min ' : ''}${money(priceOf(q, cfg))}`;
@@ -111,13 +125,21 @@ export default function SnowMaster({
   // Optional label. The Snow tab only FINDS a price — the real quote is written
   // in Jobber. A saved record exists to feed the report, so the name is never
   // required; it's just there for anyone who wants to find a shape at renewal.
-  const [name, setName] = useState('');
   // THE ADDRESS identifies which driveway this is, so it sits at the top of the
   // quote rather than among the pricing inputs — and seeds the map.
   const [address, setAddress] = useState('');
   const [measureOpen, setMeasureOpen] = useState(false);
   const [streetOpen, setStreetOpen] = useState(false);
   const [measurement, setMeasurement] = useState<PropertyMeasurement | undefined>(undefined);
+  // Does the saved outline belong to the address currently typed? Loose
+  // comparison, so reformatting an address does not discard a good outline.
+  const outlineMatchesAddress = (() => {
+    const norm = (v?: string) => (v || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const a = norm(measurement?.address); const b = norm(address);
+    if (!a || !b) return true;            // nothing to contradict
+    return a === b || a.startsWith(b) || b.startsWith(a);
+  })();
+
 
   // Standard price (no premium). The Premium column adds config.PREMIUM on top.
   const price = useMemo<SnowPrice | null>(
@@ -147,7 +169,7 @@ export default function SnowMaster({
     if (price && !window.confirm('Clear the driveway and all inputs?')) return;
     setGrid(emptyGrid()); setBusyRoad(false); setDanger(0); setNoBoulevard(false);
     setAddress(''); setMeasurement(undefined);
-    setLoadedId(null); setName(''); setLoadedVersion(null); setDirty(false);
+    setLoadedId(null); setLoadedVersion(null); setDirty(false);
   };
 
   // One tap, no blocking dialog — the report is only useful if estimators
@@ -155,7 +177,10 @@ export default function SnowMaster({
   // the version it was priced under (viewVersion).
   const save = () => {
     if (!price) return;
-    const label = name.trim();
+    // ONE SOURCE. name and client are still written so the saved list, the
+    // search and every existing reader keep working — they are derived from
+    // the address field, not entered separately.
+    const label = address.trim();
     const id = loadedId || `snow-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const q: SnowQuote = {
       id, name: label, client: label || undefined,
@@ -168,7 +193,7 @@ export default function SnowMaster({
       // totals are recorded. `total` keeps its meaning (Standard total / null for
       // custom); `premiumTotal` is new. `premium: false` since Standard is base.
       premium: false, busyRoad, danger, noBoulevard,
-      address: address.trim() || undefined,
+      address: label || undefined,
       measurement,
       total: stdTotal, premiumTotal: premTotal, isCustom: price.isCustom,
       pricingConfigVersion: viewVersion,
@@ -189,9 +214,9 @@ export default function SnowMaster({
     setGrid(g.length ? g.map(r => [...r]) : emptyGrid());
     setBusyRoad(!!q.busyRoad); setDanger(q.danger || 0);
     setNoBoulevard(!!q.noBoulevard);
-    setAddress(q.address || '');
+    setAddress(addressOf(q));
     setMeasurement(q.measurement);
-    setLoadedId(q.id); setName(q.name || '');
+    setLoadedId(q.id);
     setLoadedVersion(q.pricingConfigVersion || 'snow-v1'); setDirty(false);
     setSub('quote');
   };
@@ -304,7 +329,7 @@ export default function SnowMaster({
               <div className="rounded-lg px-3 py-1.5"
                 style={{ backgroundColor: '#eef4f0', color: GREEN }}>
                 <div className="text-[12px] font-bold flex items-center gap-1.5">
-                  <FolderOpen className="w-3.5 h-3.5" /> Editing saved shape{name.trim() ? `: ${name.trim()}` : ''}
+                  <FolderOpen className="w-3.5 h-3.5" /> Editing saved shape{address.trim() ? `: ${address.trim()}` : ''}
                 </div>
                 {/* On the quote itself, not only in the list — the person
                     looking at a price is the one who needs to know whose it is. */}
@@ -422,11 +447,6 @@ export default function SnowMaster({
               </div>
             )}
 
-            {/* Optional label — for finding a shape again at renewal. Saving
-                never requires it; the quote itself is written in Jobber. */}
-            <input value={name} onChange={e => setName(e.target.value)}
-              placeholder="Client / address (optional)"
-              className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-slate-400" />
             <div className="grid grid-cols-2 gap-2">
               <button onClick={clearAll}
                 className="min-h-[48px] inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-black uppercase tracking-widest">
@@ -451,7 +471,10 @@ export default function SnowMaster({
         <PropertyMeasureTool
           palette="snow"
           currentUser={currentUser}
-          initial={measurement || null}
+          // The saved outline is only re-rendered when it belongs to the
+          // address currently in the field. Change the address and the tool
+          // opens on the NEW property rather than the old outline.
+          initial={outlineMatchesAddress ? (measurement || null) : null}
           initialAddress={address.trim() || undefined}
           onClose={() => setMeasureOpen(false)}
           onUse={(m) => {
@@ -585,7 +608,9 @@ function SavedSnowQuotes({ quotes, currentUser, isAdmin, versionMap, onOpen, onD
   const list = useMemo(() => {
     const s = search.trim().toLowerCase();
     return Object.values(quotes)
-      .filter(x => !s || `${x.name} ${x.client || ''}`.toLowerCase().includes(s))
+      // Search the RESOLVED address plus the legacy fields, so a record that
+      // predates the address field is still findable by what it does carry.
+      .filter(x => !s || `${addressOf(x)} ${x.name || ''} ${x.client || ''}`.toLowerCase().includes(s))
       .sort((a, b) => (b.updatedAt || b.quotedAt || 0) - (a.updatedAt || a.quotedAt || 0));
   }, [quotes, search]);
   const canDelete = (x: SnowQuote) => isAdmin || (x.quotedBy?.email || '').toLowerCase() === currentUser.email.toLowerCase();
@@ -602,7 +627,7 @@ function SavedSnowQuotes({ quotes, currentUser, isAdmin, versionMap, onOpen, onD
       ) : (
         <div className="space-y-2">
           {list.map(x => {
-            const named = (x.name || '').trim();
+            const named = addressOf(x);
             const cfg = resolveSnowConfig(x.pricingConfigVersion, versionMap);
             const title = named || shapeLabel(x, cfg);
             return (

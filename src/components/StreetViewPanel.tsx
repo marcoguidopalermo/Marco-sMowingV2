@@ -20,6 +20,19 @@ import { X, AlertTriangle } from 'lucide-react';
 import { loadGoogleMaps, onMapsAuthFailure, lastMapsError } from '../lib/googleMaps';
 import type { PropertyMeasurement } from '../types';
 
+/**
+ * Loose address comparison — case, punctuation and spacing ignored, so
+ * "396 ray boulevard" and "396 Ray Blvd." are not treated as different
+ * properties while "396 Ray" and "12 Elm" are.
+ */
+const sameAddress = (a: string | undefined, b: string | undefined): boolean => {
+  const norm = (v: string | undefined) =>
+    (v || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const x = norm(a); const y = norm(b);
+  if (!x || !y) return false;
+  return x === y || x.startsWith(y) || y.startsWith(x);
+};
+
 /** Centre of a saved outline — avoids re-resolving an address we already placed. */
 function centroidOf(m: PropertyMeasurement | undefined): { lat: number; lng: number } | null {
   const pts = (m?.polygons || []).flatMap(p => p.path || []);
@@ -46,8 +59,14 @@ export default function StreetViewPanel({ address, measurement, onClose }: {
     loadGoogleMaps().then(async ({ maps, hasPlaces }) => {
       if (dead || !hostRef.current) return;
 
-      // 1. Where to look. A saved outline already knows, so no lookup at all.
-      let point = centroidOf(measurement);
+      // 1. Where to look. A saved outline already knows — but ONLY if it was
+      //    taken for this address. Correcting a typo has to move the view; a
+      //    stale centroid from the wrong property would keep showing the old
+      //    place and quietly make the correction pointless.
+      const outlineMatches = !address.trim()
+        || !measurement?.address
+        || sameAddress(measurement.address, address);
+      let point = outlineMatches ? centroidOf(measurement) : null;
 
       // 2. Otherwise resolve the typed address with the SAME Places call the
       //    measuring tool uses — Places is already enabled and working, so
