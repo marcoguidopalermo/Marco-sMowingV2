@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
-import { Snowflake, RotateCcw, Save, FolderOpen, Trash2, Search, AlertTriangle, BarChart3, Car, SlidersHorizontal, FileText, Map } from 'lucide-react';
+import { Snowflake, RotateCcw, Save, FolderOpen, Trash2, Search, AlertTriangle, BarChart3, Car, SlidersHorizontal, FileText, Map, Eye } from 'lucide-react';
 import { SnowQuote, SnowRateConfigVersion, SnowContract } from '../types';
 import { encodeGrid, gridOf } from '../lib/snowGrid';
 import PropertyMeasureTool from './PropertyMeasureTool';
+import StreetViewPanel from './StreetViewPanel';
 import type { PropertyMeasurement } from '../types';
 import {
   priceSnow, SnowConfig, SNOW_CONFIG_V1, SnowPrice, resolveSnowConfig,
@@ -115,6 +116,7 @@ export default function SnowMaster({
   // quote rather than among the pricing inputs — and seeds the map.
   const [address, setAddress] = useState('');
   const [measureOpen, setMeasureOpen] = useState(false);
+  const [streetOpen, setStreetOpen] = useState(false);
   const [measurement, setMeasurement] = useState<PropertyMeasurement | undefined>(undefined);
 
   // Standard price (no premium). The Premium column adds config.PREMIUM on top.
@@ -254,14 +256,43 @@ export default function SnowMaster({
                 title="Open the satellite view on this property"
                 className="min-h-[44px] px-3 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 text-sm font-bold"
               >
-                <Map className="w-4 h-4" /> Map
+                <Map className="w-4 h-4" /> Satellite
+              </button>
+              {/* Two views of the same address, one button each. For snow the
+                  kerbside view is usually the more useful: it shows the
+                  approach, whether there is a boulevard, the clearance and the
+                  slope — the things the price actually turns on. */}
+              <button
+                onClick={() => setStreetOpen(true)}
+                disabled={!address.trim() && !measurement}
+                title="Open Street View on this property"
+                className="min-h-[44px] px-3 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 text-sm font-bold disabled:opacity-40"
+              >
+                <Eye className="w-4 h-4" /> Street
               </button>
             </div>
-            {measurement?.address && (
-              <div className="text-[11px] text-slate-400 mt-1">
-                Satellite view saved for {measurement.address}
-                {measurement.polygons?.length ? ` · ${measurement.polygons.length} outline${measurement.polygons.length === 1 ? '' : 's'}` : ''}
-                {' · reference only, the price comes from the traced grid'}
+            {measurement && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                {measurement.totalSqft > 0 && (
+                  // REFERENCE ONLY, and labelled so nobody later reads it as an
+                  // input. Stored so that after a season we can put measured
+                  // area against actual service time on the same properties and
+                  // find out whether the lane/tier model prices big driveways
+                  // correctly. That analysis is impossible on unmeasured work.
+                  <span
+                    className="text-[11px] font-bold px-2 py-1 rounded border border-slate-200 bg-slate-50 text-slate-600"
+                    title="Measured from the satellite outline. Reference only — snow pricing uses lanes and depth from the traced grid, never area."
+                  >
+                    {Math.round(measurement.totalSqft).toLocaleString()} sq ft
+                    <span className="ml-1 font-medium text-slate-400 uppercase tracking-wide">reference only · not priced</span>
+                  </span>
+                )}
+                {measurement.address && (
+                  <span className="text-[11px] text-slate-400">
+                    Outline saved for {measurement.address}
+                    {measurement.polygons?.length ? ` · ${measurement.polygons.length} shape${measurement.polygons.length === 1 ? '' : 's'}` : ''}
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -434,6 +465,14 @@ export default function SnowMaster({
         />
       )}
 
+      {streetOpen && (
+        <StreetViewPanel
+          address={address}
+          measurement={measurement}
+          onClose={() => setStreetOpen(false)}
+        />
+      )}
+
       {sub === 'saved' && (
         <SavedSnowQuotes quotes={quotes} currentUser={currentUser} isAdmin={isAdmin} versionMap={versionMap} onOpen={load} onDelete={onDelete} />
       )}
@@ -578,11 +617,21 @@ function SavedSnowQuotes({ quotes, currentUser, isAdmin, versionMap, onOpen, onD
                       ? <span className="font-mono font-bold text-amber-700">Custom · min {money(priceOf(x, cfg))}</span>
                       : <><span className="font-mono font-bold text-slate-700">{money(x.total || 0)}</span> · Tier {x.tier}</>}
                     {' '}· {x.lanes}×{x.depth} · {x.cars} cars{x.dragCount ? ` · ${x.dragCount} drag` : ''}
+                    {x.noBoulevard ? <span style={{ color: GREEN }}> · no boulevard</span> : ''}
                   </div>
                 )}
                 {/* WHO QUOTED IT, and who last changed it when that is somebody
                     else. With several people quoting residential snow, a quote
                     nobody can attribute is a quote nobody can ask about. */}
+                {/* Measured area on the list too, so the set is scannable —
+                    the whole point of recording it is comparing across
+                    properties later. Always labelled, never bare. */}
+                {x.measurement?.totalSqft ? (
+                  <div className="text-[10px] text-slate-500">
+                    {Math.round(x.measurement.totalSqft).toLocaleString()} sq ft
+                    <span className="text-slate-400"> · reference only</span>
+                  </div>
+                ) : null}
                 <div className="text-[10px] text-slate-400">
                   Quoted by {x.quotedBy?.name || '—'} · {fmtWhen(x.quotedAt)}
                   {x.updatedAt && x.updatedAt !== x.quotedAt && (
