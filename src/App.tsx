@@ -3296,14 +3296,44 @@ export default function App() {
   // directly (like the month sheets), never touching the appData doc.
   const roleColl = (name: string) => collection(db, 'artifacts', appId, 'public', 'data', name);
   const cleanRM = (o: any) => JSON.parse(JSON.stringify(o, (_k, v) => v === undefined ? null : v));
+
+  // EVERY subcollection write goes through these, so a rejected write can never
+  // again report success by omission.
+  //
+  // The snow-quote bug was a hard 400 from Firestore ("Nested arrays are not
+  // allowed") on an `await setDoc` with no catch: the promise rejected, the
+  // success toast on the next line never ran, and the estimator saw a form
+  // close and nothing else. A sweep found the same shape at ALL 56 roleColl
+  // write sites — snow quotes were simply the one where a write happened to be
+  // invalid. Wrapping the primitive fixes the class rather than the instance.
+  //
+  // Returns true/false so a caller that cares can branch; callers that do not
+  // still get the console error and the toast.
+  const safeSetDoc = async (ref: any, data: any, opts?: any): Promise<boolean> => {
+    try {
+      if (opts) await setDoc(ref, data, opts); else await setDoc(ref, data);
+      return true;
+    } catch (err: any) {
+      console.error('[write] setDoc failed', ref?.path, err);
+      showToastMsg(`Could not save: ${err?.message || String(err)}`);
+      return false;
+    }
+  };
+  const safeDeleteDoc = async (ref: any): Promise<boolean> => {
+    try { await deleteDoc(ref); return true; } catch (err: any) {
+      console.error('[write] deleteDoc failed', ref?.path, err);
+      showToastMsg(`Could not delete: ${err?.message || String(err)}`);
+      return false;
+    }
+  };
   const saveRoleMasterRole = async (r: RoleMasterRole) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('roleMasterRoles'), r.id), cleanRM({ ...r, createdBy: r.createdBy || { email: displayEmail, name: displayName } }));
+    await safeSetDoc(doc(roleColl('roleMasterRoles'), r.id), cleanRM({ ...r, createdBy: r.createdBy || { email: displayEmail, name: displayName } }));
     showToastMsg('Role saved.');
   };
   const saveRoleMasterDuty = async (d: RoleMasterDuty) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('roleMasterDuties'), d.id), cleanRM(d));
+    await safeSetDoc(doc(roleColl('roleMasterDuties'), d.id), cleanRM(d));
     // New category → auto-assign the next unused palette color (bounded map
     // in settings; persisted only when the category isn't mapped yet).
     const cat = (d.category || '').trim();
@@ -3320,29 +3350,29 @@ export default function App() {
   };
   const saveRoleMasterResponsibility = async (r: RoleMasterResponsibility) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('roleMasterResponsibilities'), r.id), cleanRM({ ...r, createdBy: r.createdBy || { email: displayEmail, name: displayName } }));
+    await safeSetDoc(doc(roleColl('roleMasterResponsibilities'), r.id), cleanRM({ ...r, createdBy: r.createdBy || { email: displayEmail, name: displayName } }));
     showToastMsg('Responsibility saved.');
   };
   // Library — Templates (admin + managers edit; admin deletes) and Policies
   // (admin-only). Own subcollections; never in the main doc.
   const saveRoleMasterTemplate = async (t: RoleMasterTemplate) => {
     if (!isManager) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('roleMasterTemplates'), t.id), cleanRM({ ...t, createdBy: t.createdBy || { email: displayEmail, name: displayName }, updatedBy: { email: displayEmail, name: displayName }, updatedAt: Date.now() }));
+    await safeSetDoc(doc(roleColl('roleMasterTemplates'), t.id), cleanRM({ ...t, createdBy: t.createdBy || { email: displayEmail, name: displayName }, updatedBy: { email: displayEmail, name: displayName }, updatedAt: Date.now() }));
     showToastMsg('Template saved.');
   };
   const deleteRoleMasterTemplate = async (id: string) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('roleMasterTemplates'), id));
+    await safeDeleteDoc(doc(roleColl('roleMasterTemplates'), id));
     showToastMsg('Template deleted.');
   };
   const saveRoleMasterPolicy = async (p: RoleMasterPolicy) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('roleMasterPolicies'), p.id), cleanRM({ ...p, createdBy: p.createdBy || { email: displayEmail, name: displayName }, updatedBy: { email: displayEmail, name: displayName }, updatedAt: Date.now() }));
+    await safeSetDoc(doc(roleColl('roleMasterPolicies'), p.id), cleanRM({ ...p, createdBy: p.createdBy || { email: displayEmail, name: displayName }, updatedBy: { email: displayEmail, name: displayName }, updatedAt: Date.now() }));
     showToastMsg('Policy saved.');
   };
   const deleteRoleMasterPolicy = async (id: string) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('roleMasterPolicies'), id));
+    await safeDeleteDoc(doc(roleColl('roleMasterPolicies'), id));
     showToastMsg('Policy deleted.');
   };
   // Policy change requests — managers + admins create/edit-own-open; admin
@@ -3354,7 +3384,7 @@ export default function App() {
     if (existing) {
       // Edit allowed only by the creator while still OPEN.
       if (existing.status !== 'open' || (existing.createdBy?.id || '') !== reqCreatorId()) { showToastMsg(PERMISSION_DENIED); return; }
-      await setDoc(doc(roleColl('roleMasterPolicyRequests'), id), cleanRM({ ...existing, text }));
+      await safeSetDoc(doc(roleColl('roleMasterPolicyRequests'), id), cleanRM({ ...existing, text }));
       showToastMsg('Request updated.');
       return;
     }
@@ -3363,14 +3393,14 @@ export default function App() {
       createdBy: { id: reqCreatorId(), name: displayName },
       createdAt: Date.now(), status: 'open',
     };
-    await setDoc(doc(roleColl('roleMasterPolicyRequests'), id), cleanRM(rec));
+    await safeSetDoc(doc(roleColl('roleMasterPolicyRequests'), id), cleanRM(rec));
     showToastMsg('Change request submitted.');
   };
   const resolveRoleMasterPolicyRequest = async (id: string, note: string) => {
     if (!isAdmin) { showToastMsg(PERMISSION_DENIED); return; }
     const existing = appData.roleMasterPolicyRequests?.[id];
     if (!existing) return;
-    await setDoc(doc(roleColl('roleMasterPolicyRequests'), id), cleanRM({
+    await safeSetDoc(doc(roleColl('roleMasterPolicyRequests'), id), cleanRM({
       ...existing, status: 'resolved',
       resolvedBy: { id: reqCreatorId(), name: displayName },
       resolvedAt: Date.now(), resolutionNote: note.trim() || undefined,
@@ -4424,14 +4454,14 @@ export default function App() {
       updatedBy: { email: displayEmail, name: displayName },
       updatedAt: now,
     };
-    await setDoc(doc(roleColl('salesMasterQuotes'), q.id), cleanRM(rec));
+    await safeSetDoc(doc(roleColl('salesMasterQuotes'), q.id), cleanRM(rec));
     showToastMsg('Quote saved.');
   };
   const deleteSalesQuote = async (id: string) => {
     const q = appData.salesMasterQuotes?.[id];
     const isCreator = (q?.createdBy?.email || '').toLowerCase() === displayEmail.toLowerCase();
     if (!isAdmin && !isCreator) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('salesMasterQuotes'), id));
+    await safeDeleteDoc(doc(roleColl('salesMasterQuotes'), id));
     showToastMsg('Quote deleted.');
   };
   // Snow quotes — own subcollection snowQuotes/{id} (grows; never the main doc).
@@ -4449,14 +4479,19 @@ export default function App() {
       updatedBy: { email: displayEmail, name: displayName },
       updatedAt: now,
     };
-    await setDoc(doc(roleColl('snowQuotes'), qz.id), cleanRM(rec));
+    // The success toast is now CONDITIONAL on the write. Reporting success
+    // unconditionally on the line after an unguarded await is exactly what hid
+    // this bug: every save was rejected by Firestore and every save said
+    // "saved". safeSetDoc reports the failure itself, so this only adds the
+    // confirmation when there is something to confirm.
+    if (!(await safeSetDoc(doc(roleColl('snowQuotes'), qz.id), cleanRM(rec)))) return;
     showToastMsg('Snow quote saved.');
   };
   const deleteSnowQuote = async (id: string) => {
     const qz = appData.snowQuotes?.[id];
     const isAuthor = (qz?.quotedBy?.email || '').toLowerCase() === displayEmail.toLowerCase();
     if (!isAdmin && !isAuthor) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('snowQuotes'), id));
+    await safeDeleteDoc(doc(roleColl('snowQuotes'), id));
     showToastMsg('Snow quote deleted.');
   };
   // Lawn quotes — own subcollection lawnQuotes/{id} (grows; never the main doc).
@@ -4473,14 +4508,14 @@ export default function App() {
       updatedBy: { email: displayEmail, name: displayName },
       updatedAt: now,
     };
-    await setDoc(doc(roleColl('lawnQuotes'), lq.id), cleanRM(rec));
+    await safeSetDoc(doc(roleColl('lawnQuotes'), lq.id), cleanRM(rec));
     showToastMsg('Lawn quote saved.');
   };
   const deleteLawnQuote = async (id: string) => {
     const lq = appData.lawnQuotes?.[id];
     const isAuthor = (lq?.quotedBy?.email || '').toLowerCase() === displayEmail.toLowerCase();
     if (!isAdmin && !isAuthor) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('lawnQuotes'), id));
+    await safeDeleteDoc(doc(roleColl('lawnQuotes'), id));
     showToastMsg('Lawn quote deleted.');
   };
   // ── Snow rate config — SUPER-ADMIN ONLY. Immutable versions: every save
@@ -4566,7 +4601,7 @@ export default function App() {
       updatedBy: marketingUser,
       updatedAt: now,
     };
-    await setDoc(doc(roleColl('marketingContent'), item.id), cleanRM(rec));
+    await safeSetDoc(doc(roleColl('marketingContent'), item.id), cleanRM(rec));
   };
   // Also the UNSCHEDULE path for a post-queue clip: the calendar entry owns the
   // date, so deleting it is the whole of unscheduling — the queue row carries
@@ -4574,7 +4609,7 @@ export default function App() {
   // Hence the neutral wording, which is true from either side.
   const deleteMarketingContent = async (id: string) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('marketingContent'), id));
+    await safeDeleteDoc(doc(roleColl('marketingContent'), id));
     showToastMsg('Calendar entry removed.');
   };
   const saveMarketingShot = async (shot: MarketingShot) => {
@@ -4588,11 +4623,11 @@ export default function App() {
       updatedBy: marketingUser,
       updatedAt: now,
     };
-    await setDoc(doc(roleColl('marketingShots'), shot.id), cleanRM(rec));
+    await safeSetDoc(doc(roleColl('marketingShots'), shot.id), cleanRM(rec));
   };
   const deleteMarketingShot = async (id: string) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('marketingShots'), id));
+    await safeDeleteDoc(doc(roleColl('marketingShots'), id));
     showToastMsg('Shot removed.');
   };
   const saveMarketingLink = async (link: MarketingLink) => {
@@ -4603,7 +4638,7 @@ export default function App() {
       addedBy: existing?.addedBy || link.addedBy || marketingUser,
       addedAt: existing?.addedAt || link.addedAt || Date.now(),
     };
-    await setDoc(doc(roleColl('marketingLinks'), link.id), cleanRM(rec));
+    await safeSetDoc(doc(roleColl('marketingLinks'), link.id), cleanRM(rec));
   };
   // Deleting a link also detaches it from any content item holding its id —
   // the item is the only place attachment is stored, so this is the one place
@@ -4620,16 +4655,16 @@ export default function App() {
       addedBy: existing?.addedBy || t.addedBy || marketingUser,
       addedAt: existing?.addedAt || t.addedAt || Date.now(),
     };
-    await setDoc(doc(roleColl('marketingMusic'), t.id), cleanRM(rec));
+    await safeSetDoc(doc(roleColl('marketingMusic'), t.id), cleanRM(rec));
   };
   const deleteMarketingTrack = async (id: string) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('marketingMusic'), id));
+    await safeDeleteDoc(doc(roleColl('marketingMusic'), id));
   };
 
   const deleteMarketingLink = async (id: string) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('marketingLinks'), id));
+    await safeDeleteDoc(doc(roleColl('marketingLinks'), id));
     const holders = Object.values(appData.marketingContent || {}).filter(i => (i.links || []).includes(id));
     for (const item of holders) {
       await setDoc(
@@ -4663,7 +4698,7 @@ export default function App() {
       createdBy: existing?.createdBy || entry.createdBy || marketingUser,
       createdAt: existing?.createdAt || entry.createdAt || now,
     };
-    await setDoc(doc(roleColl('marketingFeedback'), entry.id), cleanRM(rec));
+    await safeSetDoc(doc(roleColl('marketingFeedback'), entry.id), cleanRM(rec));
     if (s.subjectType !== 'clip') return;
 
     // The thread doc is created on first message and REOPENED by any new one.
@@ -4692,14 +4727,14 @@ export default function App() {
   const deleteMarketingComment = async (id: string) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
     const entry = appData.marketingFeedback?.[id];
-    await deleteDoc(doc(roleColl('marketingFeedback'), id));
+    await safeDeleteDoc(doc(roleColl('marketingFeedback'), id));
     const s = entry ? commentSubject(entry) : null;
     if (s?.subjectType === 'clip' && s.subjectId) {
       const siblings = Object.values(appData.marketingFeedback || {})
         .filter(e => e.id !== id && commentSubject(e).subjectId === s.subjectId
           && commentSubject(e).subjectType === 'clip');
       if (siblings.length === 0) {
-        await deleteDoc(doc(roleColl('marketingClips'), s.subjectId));
+        await safeDeleteDoc(doc(roleColl('marketingClips'), s.subjectId));
       }
     }
     showToastMsg('Comment removed.');
@@ -4739,7 +4774,7 @@ export default function App() {
       postedBy: posted ? (existing?.postedBy || marketingUser) : undefined,
       postedAt: posted ? (existing?.postedAt || now) : undefined,
     };
-    await setDoc(doc(roleColl('marketingPostQueue'), clip), cleanRM(rec));
+    await safeSetDoc(doc(roleColl('marketingPostQueue'), clip), cleanRM(rec));
   };
   const deleteMarketingPostQueue = async (id: string) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
@@ -4747,7 +4782,7 @@ export default function App() {
     if (!clip) return;
     // Only the queue row goes. The clip's feedback thread is a separate
     // subcollection keyed by the same clip number and is untouched.
-    await deleteDoc(doc(roleColl('marketingPostQueue'), clip));
+    await safeDeleteDoc(doc(roleColl('marketingPostQueue'), clip));
     showToastMsg('Removed from the post queue.');
   };
 
@@ -4809,11 +4844,11 @@ export default function App() {
       addedBy: existing?.addedBy || todo.addedBy || marketingUser,
       addedAt: existing?.addedAt || todo.addedAt || now,
     };
-    await setDoc(doc(roleColl('marketingTodos'), todo.id), cleanRM(rec));
+    await safeSetDoc(doc(roleColl('marketingTodos'), todo.id), cleanRM(rec));
   };
   const deleteMarketingTodo = async (id: string) => {
     if (!canViewMarketing) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('marketingTodos'), id));
+    await safeDeleteDoc(doc(roleColl('marketingTodos'), id));
     showToastMsg('To-do removed.');
   };
 
@@ -4889,12 +4924,12 @@ export default function App() {
   };
   const saveContractingPropertyDoc = async (p: ContractingProperty) => {
     if (!canManageProperties) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('contractingPropertyDocs'), p.id), cleanRM(p));
+    await safeSetDoc(doc(roleColl('contractingPropertyDocs'), p.id), cleanRM(p));
   };
   const deleteContractingPropertyDoc = async (id: string) => {
     if (!canManageProperties) { showToastMsg(PERMISSION_DENIED); return; }
     const p = subContractingPropertyDocsRef.current[id];
-    await deleteDoc(doc(roleColl('contractingPropertyDocs'), id));
+    await safeDeleteDoc(doc(roleColl('contractingPropertyDocs'), id));
     await appendContractingAudit('property.delete', `${p?.name || id}`);
     showToastMsg('Property deleted.');
   };
@@ -4904,7 +4939,7 @@ export default function App() {
   };
   const saveContractingProject = async (p: ContractingProject) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('contractingProjects'), p.id), cleanRM(p));
+    await safeSetDoc(doc(roleColl('contractingProjects'), p.id), cleanRM(p));
   };
   // Bounded audit trail for project delete/archive/restore (settings doc).
   const appendContractingAudit = async (action: string, detail: string) => {
@@ -5060,7 +5095,7 @@ export default function App() {
     const removable = projectIsRemovable(id, Object.values(subContractingInvoicesRef.current), Object.values(subContractingProgressReportsRef.current), Object.values(subContractingTimeEntriesRef.current));
     if (!removable) { showToastMsg('Project has attached billing/time — archive it instead.'); return; }
     await appendContractingAudit('project.delete', `${proj?.name || id}`);
-    await deleteDoc(doc(roleColl('contractingProjects'), id));
+    await safeDeleteDoc(doc(roleColl('contractingProjects'), id));
     showToastMsg('Project deleted.');
   };
   // Merge one phase INTO another (generalizable): re-points every invoice,
@@ -5079,14 +5114,14 @@ export default function App() {
     );
     if (plan.error || !plan.mergedProject) { showToastMsg(plan.error || 'Cannot merge.'); return; }
     const now = Date.now();
-    for (const id of plan.invoiceIds) await setDoc(doc(roleColl('contractingInvoices'), id), cleanRM({ phaseId: targetId }), { merge: true } as any);
-    for (const id of plan.reportIds) await setDoc(doc(roleColl('contractingProgressReports'), id), cleanRM({ phaseId: targetId }), { merge: true } as any);
-    for (const id of plan.timeEntryIds) await setDoc(doc(roleColl('contractingTimeEntries'), id), cleanRM({ phaseId: targetId }), { merge: true } as any);
+    for (const id of plan.invoiceIds) await safeSetDoc(doc(roleColl('contractingInvoices'), id), cleanRM({ phaseId: targetId }), { merge: true } as any);
+    for (const id of plan.reportIds) await safeSetDoc(doc(roleColl('contractingProgressReports'), id), cleanRM({ phaseId: targetId }), { merge: true } as any);
+    for (const id of plan.timeEntryIds) await safeSetDoc(doc(roleColl('contractingTimeEntries'), id), cleanRM({ phaseId: targetId }), { merge: true } as any);
     // Fold-in survivor (absorbs discarded open reports' receipts + manual time)
     // then delete the folded-away duplicates → exactly one open report.
-    if (plan.keptReport) await setDoc(doc(roleColl('contractingProgressReports'), plan.keptReport.id), cleanRM({ ...plan.keptReport, updatedAt: now }));
-    for (const id of plan.deleteReportIds) await deleteDoc(doc(roleColl('contractingProgressReports'), id));
-    await setDoc(doc(roleColl('contractingProjects'), projectId), cleanRM({ ...plan.mergedProject, updatedAt: now }));
+    if (plan.keptReport) await safeSetDoc(doc(roleColl('contractingProgressReports'), plan.keptReport.id), cleanRM({ ...plan.keptReport, updatedAt: now }));
+    for (const id of plan.deleteReportIds) await safeDeleteDoc(doc(roleColl('contractingProgressReports'), id));
+    await safeSetDoc(doc(roleColl('contractingProjects'), projectId), cleanRM({ ...plan.mergedProject, updatedAt: now }));
     await appendContractingAudit('phase.merge', `${project.name}: "${plan.sourceName}" → "${plan.targetName}" (re-pointed ${plan.invoiceIds.length} inv / ${plan.reportIds.length} rpt / ${plan.timeEntryIds.length} time)`);
     showToastMsg('Phases merged.');
   };
@@ -5095,13 +5130,13 @@ export default function App() {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     const proj = subContractingProjectsRef.current[id];
     if (!proj) return;
-    await setDoc(doc(roleColl('contractingProjects'), id), cleanRM({ ...proj, archived, archivedBy: archived ? displayName : undefined, archivedAt: archived ? Date.now() : undefined, updatedAt: Date.now() }));
+    await safeSetDoc(doc(roleColl('contractingProjects'), id), cleanRM({ ...proj, archived, archivedBy: archived ? displayName : undefined, archivedAt: archived ? Date.now() : undefined, updatedAt: Date.now() }));
     await appendContractingAudit(archived ? 'project.archive' : 'project.restore', `${proj.name}`);
     showToastMsg(archived ? 'Project archived.' : 'Project restored.');
   };
   const saveContractingReport = async (r: ContractingProgressReport) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('contractingProgressReports'), r.id), cleanRM(r));
+    await safeSetDoc(doc(roleColl('contractingProgressReports'), r.id), cleanRM(r));
   };
   // Open the first/next billing period for a T&M phase. Start at the previous
   // report's endAt, else the phase's tmStartAt, else now — no gaps/overlaps.
@@ -5115,7 +5150,7 @@ export default function App() {
     const startAt = startAtOverride || lastEnd || phase?.tmStartAt || Date.now();
     const reportNumber = prior.reduce((m, r) => Math.max(m, r.reportNumber), 0) + 1;
     const rep: ContractingProgressReport = { id: `crep-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, projectId, phaseId, startAt, status: 'open', reportNumber, receipts: [], manualTime: [], createdAt: Date.now(), updatedAt: Date.now() };
-    await setDoc(doc(roleColl('contractingProgressReports'), rep.id), cleanRM(rep));
+    await safeSetDoc(doc(roleColl('contractingProgressReports'), rep.id), cleanRM(rep));
     showToastMsg('Billing period opened.');
   };
   // Close-without-invoicing (discard) an open report. Empty → delete outright;
@@ -5126,7 +5161,7 @@ export default function App() {
     const report = subContractingProgressReportsRef.current[reportId];
     if (!report || report.status !== 'open') { showToastMsg('Report not open.'); return; }
     if ((report.receipts || []).length || (report.manualTime || []).length) { showToastMsg('Clear this period’s material and hours lines first, then discard.'); return; }
-    await deleteDoc(doc(roleColl('contractingProgressReports'), reportId));
+    await safeDeleteDoc(doc(roleColl('contractingProgressReports'), reportId));
     await appendContractingAudit('report.discard', `Report #${report.reportNumber} closed without invoicing (empty)`);
     showToastMsg('Period discarded.');
   };
@@ -5140,7 +5175,7 @@ export default function App() {
     if (!report) { showToastMsg('Report not found.'); return; }
     const guard = reportIsDeletable(reportId, Object.values(subContractingInvoicesRef.current));
     if (!guard.deletable) { showToastMsg(`Void ${guard.blockedBy} first, then delete.`); return; }
-    await deleteDoc(doc(roleColl('contractingProgressReports'), reportId));
+    await safeDeleteDoc(doc(roleColl('contractingProgressReports'), reportId));
     await appendContractingAudit('report.delete', `Report #${report.reportNumber} deleted${guard.blockedBy ? '' : ' (no live invoice)'}`);
     showToastMsg(`Report #${report.reportNumber} deleted.`);
   };
@@ -5156,7 +5191,7 @@ export default function App() {
     if (want === normalizeInvoiceNumber(inv.number)) return true;   // nothing to do
     const clash = duplicateInvoiceNumber(want, Object.values(subContractingInvoicesRef.current), invoiceId);
     const stage = inv.paid ? 'paid' : inv.sentAt ? 'sent' : 'minted';
-    await setDoc(doc(roleColl('contractingInvoices'), inv.id), cleanRM({ ...inv, number: want }));
+    await safeSetDoc(doc(roleColl('contractingInvoices'), inv.id), cleanRM({ ...inv, number: want }));
     await appendContractingAudit('invoice.renumber',
       describeNumberChange(inv.number, want, `invoice (${stage})`)
       + (clash ? ` — DUPLICATE of ${clash.number}` : ''));
@@ -5208,16 +5243,16 @@ export default function App() {
       issuedAt: now, dueAt: now + 14 * 86400000, awaitingSend: true, paid: false, createdBy: contractingUser, createdAt: now,
     };
     // Persist: frozen report + minted invoice, then auto-open the next period.
-    await setDoc(doc(roleColl('contractingProgressReports'), report.id), cleanRM({ ...ended, status: 'invoiced', snapshot, updatedAt: now }));
-    await setDoc(doc(roleColl('contractingInvoices'), invoice.id), cleanRM(invoice));
+    await safeSetDoc(doc(roleColl('contractingProgressReports'), report.id), cleanRM({ ...ended, status: 'invoiced', snapshot, updatedAt: now }));
+    await safeSetDoc(doc(roleColl('contractingInvoices'), invoice.id), cleanRM(invoice));
     const nextNo = report.reportNumber + 1;
     const next: ContractingProgressReport = { id: `crep-${now}-${Math.random().toString(36).slice(2, 6)}`, projectId: report.projectId, phaseId: report.phaseId, startAt: now, status: 'open', reportNumber: nextNo, receipts: [], manualTime: [], createdAt: now, updatedAt: now };
-    await setDoc(doc(roleColl('contractingProgressReports'), next.id), cleanRM(next));
+    await safeSetDoc(doc(roleColl('contractingProgressReports'), next.id), cleanRM(next));
     showToastMsg(`Invoice ${number} minted · ${next ? 'next period open' : ''}`);
   };
   const saveContractingInvoice = async (inv: ContractingInvoice) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('contractingInvoices'), inv.id), cleanRM(inv));
+    await safeSetDoc(doc(roleColl('contractingInvoices'), inv.id), cleanRM(inv));
   };
   // VOID an invoice (never hard-delete): it contributes zero to every total
   // and is hidden from default views, surviving as an accounted stub so PROG
@@ -5235,50 +5270,50 @@ export default function App() {
         const otherOpen = Object.values(subContractingProgressReportsRef.current).find(r => r.id !== R.id && r.projectId === R.projectId && r.phaseId === R.phaseId && r.status === 'open');
         if (otherOpen) {
           // Fold the voided report's lines into the existing open period, drop R.
-          await setDoc(doc(roleColl('contractingProgressReports'), otherOpen.id), cleanRM({ ...otherOpen, manualTime: [...(otherOpen.manualTime || []), ...(R.manualTime || [])], receipts: [...(otherOpen.receipts || []), ...(R.receipts || [])], updatedAt: now }));
-          await deleteDoc(doc(roleColl('contractingProgressReports'), R.id));
+          await safeSetDoc(doc(roleColl('contractingProgressReports'), otherOpen.id), cleanRM({ ...otherOpen, manualTime: [...(otherOpen.manualTime || []), ...(R.manualTime || [])], receipts: [...(otherOpen.receipts || []), ...(R.receipts || [])], updatedAt: now }));
+          await safeDeleteDoc(doc(roleColl('contractingProgressReports'), R.id));
         } else {
           // Reopen the backing report → its lines are billable again.
-          await setDoc(doc(roleColl('contractingProgressReports'), R.id), cleanRM({ ...R, status: 'open', endAt: null, snapshot: null, updatedAt: now }));
+          await safeSetDoc(doc(roleColl('contractingProgressReports'), R.id), cleanRM({ ...R, status: 'open', endAt: null, snapshot: null, updatedAt: now }));
         }
       }
     }
-    await setDoc(doc(roleColl('contractingInvoices'), id), cleanRM({ ...inv, voided: true, voidReason: reason, voidedBy: displayName, voidedAt: now, paid: false, paidAt: null }));
+    await safeSetDoc(doc(roleColl('contractingInvoices'), id), cleanRM({ ...inv, voided: true, voidReason: reason, voidedBy: displayName, voidedAt: now, paid: false, paidAt: null }));
     await appendContractingAudit('invoice.void', `${inv.number} (${inv.total ? '$' + inv.total : ''}) voided — ${reason}`);
     showToastMsg(`${inv.number} voided.`);
   };
   const saveContractingWorkOrder = async (w: ContractingWorkOrder) => {
-    await setDoc(doc(roleColl('contractingWorkOrders'), w.id), cleanRM(w));
+    await safeSetDoc(doc(roleColl('contractingWorkOrders'), w.id), cleanRM(w));
   };
   const deleteContractingWorkOrder = async (id: string) => {
     if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
     const w = subContractingWorkOrdersRef.current[id];
-    await deleteDoc(doc(roleColl('contractingWorkOrders'), id));
+    await safeDeleteDoc(doc(roleColl('contractingWorkOrders'), id));
     await appendContractingAudit('workorder.delete', `${w?.title || id}${w?.property ? ` @ ${w.property}` : ''}`);
     showToastMsg('Work order deleted.');
   };
   const saveContractingShoppingItem = async (s: ContractingShoppingItem) => {
-    await setDoc(doc(roleColl('contractingShoppingList'), s.id), cleanRM(s));
+    await safeSetDoc(doc(roleColl('contractingShoppingList'), s.id), cleanRM(s));
   };
   const deleteContractingShoppingItem = async (id: string) => {
     // Anyone deletes their own added items; managers delete any (enforced at UI).
     const it = subContractingShoppingListRef.current[id];
     if (!canManageContracting && it?.addedBy?.id !== contractingUser.id) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('contractingShoppingList'), id));
+    await safeDeleteDoc(doc(roleColl('contractingShoppingList'), id));
   };
   // Personal TO-DO / FOLLOW-UP items — private per user (guard: own items only).
   const saveContractingPersonalItem = async (it: ContractingPersonalItem) => {
     if (it.userId !== contractingUser.id) { showToastMsg(PERMISSION_DENIED); return; }
-    await setDoc(doc(roleColl('contractingPersonalItems'), it.id), cleanRM(it));
+    await safeSetDoc(doc(roleColl('contractingPersonalItems'), it.id), cleanRM(it));
   };
   const deleteContractingPersonalItem = async (id: string) => {
     const it = subContractingPersonalItemsRef.current[id];
     if (it && it.userId !== contractingUser.id) { showToastMsg(PERMISSION_DENIED); return; }
-    await deleteDoc(doc(roleColl('contractingPersonalItems'), id));
+    await safeDeleteDoc(doc(roleColl('contractingPersonalItems'), id));
   };
   const [roleInstanceModalId, setRoleInstanceModalId] = useState<string | null>(null);
   const resolveInstance = async (id: string, patch: Partial<RoleTaskInstance>) => {
-    await setDoc(doc(roleColl('roleTaskInstances'), id), cleanRM(patch), { merge: true } as any);
+    await safeSetDoc(doc(roleColl('roleTaskInstances'), id), cleanRM(patch), { merge: true } as any);
   };
   const completeRoleInstance = async (id: string, note: string) => {
     if (isViewingAs) { showToastMsg('View Only.'); return; }

@@ -2014,7 +2014,14 @@ export interface SnowQuote {
   id: string;
   name: string;                 // free-form label, usually the client / address
   client?: string;              // client the quote belongs to (reused at renewal)
-  grid: number[][];             // the traced shape (0 empty, 1 open, 2 drag)
+  // THE TRACED SHAPE, one string per row, one character per cell
+  // (0 empty · 1 open · 2 drag). Strings because Firestore refuses an array
+  // inside an array — the previous `number[][]` made every save fail with a
+  // hard 400 and no quote was ever stored. Read through gridOf() in
+  // lib/snowGrid, which also accepts the legacy shape.
+  gridRows: string[];
+  /** DEPRECATED — the shape Firestore rejected. Read-migrated by gridOf(). */
+  grid?: number[][];
   lanes: number;
   depth: number;
   cars: number;

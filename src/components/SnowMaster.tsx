@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Snowflake, RotateCcw, Save, FolderOpen, Trash2, Search, AlertTriangle, BarChart3, Car, SlidersHorizontal, FileText } from 'lucide-react';
 import { SnowQuote, SnowRateConfigVersion, SnowContract } from '../types';
+import { encodeGrid, gridOf } from '../lib/snowGrid';
 import {
   priceSnow, SnowConfig, SNOW_CONFIG_V1, SnowPrice, resolveSnowConfig,
 } from '../lib/snowPricing';
@@ -81,10 +82,15 @@ export default function SnowMaster({
   // Premium is no longer a toggle — Standard and Premium are shown side by side,
   // always. Premium = Standard + config.PREMIUM. So the live price is computed
   // WITHOUT premium; the Premium column derives from it.
-  const [grid, setGrid] = useState<number[][]>(() => initial?.grid?.map(r => [...r]) || emptyGrid());
+  const [grid, setGrid] = useState<number[][]>(() => {
+    const g = gridOf(initial);
+    return g.length ? g.map(r => [...r]) : emptyGrid();
+  });
   const [busyRoad, setBusyRoad] = useState(!!initial?.busyRoad);
   const [danger, setDanger] = useState(initial?.danger || 0);
   const [loadedId, setLoadedId] = useState<string | null>(null);
+  // The saved quote currently open, so re-saving preserves who first quoted it.
+  const loaded = loadedId ? quotes[loadedId] : undefined;
   // Version-safe display: a freshly-loaded, UN-edited quote resolves against the
   // version it was quoted under (loadedVersion); a fresh trace or any edit uses
   // the ACTIVE version (re-quoting at current rates). This is what stops a saved
@@ -136,7 +142,9 @@ export default function SnowMaster({
     const id = loadedId || `snow-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const q: SnowQuote = {
       id, name: label, client: label || undefined,
-      grid: grid.map(r => [...r]),
+      // Encoded to strings: Firestore refuses an array inside an array, which
+      // is why nothing saved before. See lib/snowGrid.
+      gridRows: encodeGrid(grid),
       lanes: price.lanes, depth: price.depth, cars: price.cars, dragCount: price.dragCount,
       tier: price.tier, basePrice: price.basePrice,
       // Premium is no longer a toggle: the Standard price is the base, and BOTH
@@ -145,14 +153,21 @@ export default function SnowMaster({
       premium: false, busyRoad, danger,
       total: stdTotal, premiumTotal: premTotal, isCustom: price.isCustom,
       pricingConfigVersion: viewVersion,
-      quotedBy: currentUser, quotedAt: Date.now(),
+      // The ORIGINAL quoter is preserved when re-saving a loaded quote; App
+      // stamps updatedBy/updatedAt. With several people quoting residential
+      // snow, a quote nobody can attribute is a quote nobody can ask about.
+      quotedBy: loaded?.quotedBy || currentUser,
+      quotedAt: loaded?.quotedAt || Date.now(),
     };
     onSave(q);
     setLoadedId(id); setLoadedVersion(viewVersion); setDirty(false);
   };
 
   const load = (q: SnowQuote) => {
-    setGrid((q.grid && q.grid.length ? q.grid.map(r => [...r]) : emptyGrid()));
+    // gridOf() reads the string form and the legacy number[][] alike, so a
+    // quote restored by hand still opens.
+    const g = gridOf(q);
+    setGrid(g.length ? g.map(r => [...r]) : emptyGrid());
     setBusyRoad(!!q.busyRoad); setDanger(q.danger || 0);
     setLoadedId(q.id); setName(q.name || '');
     setLoadedVersion(q.pricingConfigVersion || 'snow-v1'); setDirty(false);
@@ -203,9 +218,21 @@ export default function SnowMaster({
           {/* ── LEFT: tracer + inputs ─────────────────────────────────────── */}
           <div className="space-y-4">
             {loadedId && (
-              <div className="rounded-lg px-3 py-1.5 text-[12px] font-bold flex items-center gap-1.5"
+              <div className="rounded-lg px-3 py-1.5"
                 style={{ backgroundColor: '#eef4f0', color: GREEN }}>
-                <FolderOpen className="w-3.5 h-3.5" /> Editing saved shape{name.trim() ? `: ${name.trim()}` : ''}
+                <div className="text-[12px] font-bold flex items-center gap-1.5">
+                  <FolderOpen className="w-3.5 h-3.5" /> Editing saved shape{name.trim() ? `: ${name.trim()}` : ''}
+                </div>
+                {/* On the quote itself, not only in the list — the person
+                    looking at a price is the one who needs to know whose it is. */}
+                {loaded && (
+                  <div className="text-[10px] font-medium opacity-80 mt-0.5">
+                    Quoted by {loaded.quotedBy?.name || '—'} · {fmtWhen(loaded.quotedAt)}
+                    {loaded.updatedAt && loaded.updatedAt !== loaded.quotedAt && (
+                      <> · last updated by {loaded.updatedBy?.name || '—'} · {fmtWhen(loaded.updatedAt)}</>
+                    )}
+                  </div>
+                )}
               </div>
             )}
             {/* Historical view: an un-edited loaded quote is priced at ITS
@@ -464,7 +491,16 @@ function SavedSnowQuotes({ quotes, currentUser, isAdmin, versionMap, onOpen, onD
                     {' '}· {x.lanes}×{x.depth} · {x.cars} cars{x.dragCount ? ` · ${x.dragCount} drag` : ''}
                   </div>
                 )}
-                <div className="text-[10px] text-slate-400">{(x.updatedBy || x.quotedBy)?.name || '—'} · {fmtWhen(x.updatedAt || x.quotedAt)}{x.dragCount && !named ? ` · ${x.dragCount} drag` : ''}</div>
+                {/* WHO QUOTED IT, and who last changed it when that is somebody
+                    else. With several people quoting residential snow, a quote
+                    nobody can attribute is a quote nobody can ask about. */}
+                <div className="text-[10px] text-slate-400">
+                  Quoted by {x.quotedBy?.name || '—'} · {fmtWhen(x.quotedAt)}
+                  {x.updatedAt && x.updatedAt !== x.quotedAt && (
+                    <> · updated by {x.updatedBy?.name || '—'} · {fmtWhen(x.updatedAt)}</>
+                  )}
+                  {x.dragCount && !named ? ` · ${x.dragCount} drag` : ''}
+                </div>
               </button>
               <div className="flex items-center gap-1.5 shrink-0">
                 <button onClick={() => onOpen(x)} title="Open the traced shape" className="min-w-[40px] min-h-[40px] inline-flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><FolderOpen className="w-4 h-4" /></button>
