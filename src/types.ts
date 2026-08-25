@@ -2031,6 +2031,16 @@ export interface SnowQuote {
   premium: boolean;
   busyRoad: boolean;
   danger: number;
+  // No boulevard to clear — subtracts a per-lane amount. Stored on the quote so
+  // reopening it reprices identically.
+  noBoulevard?: boolean;
+  // THE ADDRESS — what identifies which driveway this is. Distinct from `name`,
+  // which is a free-form label. Shown at the top of the quote and used to seed
+  // the map.
+  address?: string;
+  // Satellite outline of the property, from the shared PropertyMeasureTool.
+  // REFERENCE ONLY — the price comes from the traced grid, never from area.
+  measurement?: PropertyMeasurement;
   total: number | null;         // STANDARD total; null when custom
   // Premium total (Standard + config.PREMIUM); null when custom. Added when
   // Standard + Premium became always-shown side by side. Older quotes predate

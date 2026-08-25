@@ -6,7 +6,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   priceSnow, measureGrid, SNOW_PRICING_CONFIG, SNOW_CONFIG_V1, SNOW_PRICING_CONFIG_VERSION, SnowGrid, SnowConfig,
-  resolveSnowConfig, activeSnowVersionId, snowVersionId, validateSnowConfig, diffSnowConfig, StoredSnowVersion,
+  resolveSnowConfig, activeSnowVersionId, snowVersionId, validateSnowConfig, diffSnowConfig, StoredSnowVersion, noBoulevardRate,
 } from './snowPricing';
 
 const ROWS = 6;
@@ -197,4 +197,53 @@ test('diffSnowConfig: reports only changed fields, old → new', () => {
   const dr = changes.find(c => c.key === 'DRAG_RATE')!;
   assert.equal(dr.from, '50'); assert.equal(dr.to, '60');
   assert.deepEqual(diffSnowConfig(SNOW_CONFIG_V1, SNOW_CONFIG_V1), []); // no-op
+});
+
+console.log('\nNo-boulevard discount — per lane, applied last');
+const drive = (lanes: number, depth: number): number[][] =>
+  Array.from({ length: depth }, () => Array.from({ length: lanes }, () => 1));
+
+test('subtracts the per-lane rate for every lane', () => {
+  const one = priceSnow(drive(1, 3), { noBoulevard: true });
+  const two = priceSnow(drive(2, 3), { noBoulevard: true });
+  assert.equal(one!.addBreakdown.noBoulevard, -50);
+  assert.equal(two!.addBreakdown.noBoulevard, -100, 'a double-lane driveway saves twice');
+  assert.equal(two!.addBreakdown.noBoulevardLanes, 2);
+});
+test('off by default — an untoggled quote prices exactly as before', () => {
+  const off = priceSnow(drive(2, 3), {});
+  assert.equal(off!.addBreakdown.noBoulevard, 0);
+  assert.equal(off!.addBreakdown.noBoulevardLanes, 0);
+});
+test('THE ORDER: base + surcharges, then the discount, on the TOTAL', () => {
+  const plain = priceSnow(drive(2, 3), { busyRoad: true, danger: 100 })!;
+  const disc = priceSnow(drive(2, 3), { busyRoad: true, danger: 100, noBoulevard: true })!;
+  // Exactly lanes × rate apart, regardless of how large the surcharges are.
+  assert.equal(plain.total! - disc.total!, 2 * 50);
+  assert.equal(disc.basePrice, plain.basePrice, 'the tier base is untouched');
+  assert.equal(disc.tier, plain.tier, 'and a driveway never drops a tier for it');
+});
+test('it composes with drag, busy road and danger rather than replacing them', () => {
+  const p = priceSnow(drive(2, 3), { busyRoad: true, danger: 50, noBoulevard: true })!;
+  const b = p.addBreakdown;
+  assert.equal(b.busyRoad > 0, true);
+  assert.equal(b.danger, 50);
+  assert.equal(b.noBoulevard, -100);
+  assert.equal(p.adds, b.drag + b.premium + b.busyRoad + b.danger + b.noBoulevard);
+  assert.equal(p.total, p.basePrice + p.adds);
+});
+test('the total floors at zero — a discount can never produce a negative quote', () => {
+  const wide = priceSnow(drive(40, 1), { noBoulevard: true });
+  if (wide && wide.total !== null) assert.ok(wide.total >= 0, `got ${wide.total}`);
+});
+test('a config version stored before the discount existed still prices', () => {
+  // resolveSnowConfig returns the stored config wholesale, so an older version
+  // has no NO_BOULEVARD_PER_LANE key. Undefined there would make the whole
+  // total NaN.
+  const legacy = { ...SNOW_CONFIG_V1 } as any;
+  delete legacy.NO_BOULEVARD_PER_LANE;
+  assert.equal(noBoulevardRate(legacy), 50, 'falls back to the v1 rate');
+  const p = priceSnow(drive(2, 3), { noBoulevard: true }, legacy);
+  assert.equal(Number.isFinite(p!.total!), true);
+  assert.equal(p!.addBreakdown.noBoulevard, -100);
 });

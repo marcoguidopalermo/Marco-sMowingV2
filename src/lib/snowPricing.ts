@@ -20,6 +20,11 @@ export interface SnowConfig {
   PREMIUM: number;
   BUSY_ROAD: number;
   DRAG_RATE: number;              // per dragged spot — under active review
+  // NO BOULEVARD — subtracted PER LANE. A driveway with no boulevard strip to
+  // clear is less work, and the saving scales with how wide the driveway is.
+  // Optional on the interface because configs stored before it existed do not
+  // carry it; read through noBoulevardRate(), never directly.
+  NO_BOULEVARD_PER_LANE?: number;
   DRAG_COUNTS_TOWARD_SIZE: boolean; // under review
   DANGER_OPTIONS: number[];       // selectable danger amounts ($)
 }
@@ -35,6 +40,7 @@ export const SNOW_CONFIG_V1: SnowConfig = {
   PREMIUM: 200,
   BUSY_ROAD: 100,
   DRAG_RATE: 50,
+  NO_BOULEVARD_PER_LANE: 50,
   DRAG_COUNTS_TOWARD_SIZE: true,
   DANGER_OPTIONS: [0, 50, 100, 200],
 };
@@ -82,11 +88,31 @@ export type SnowCell = 0 | 1 | 2;
 export type SnowGrid = number[][];
 export type SnowTier = 1 | 2 | 3 | 'custom';
 
-export interface SnowInputs { premium?: boolean; busyRoad?: boolean; danger?: number }
+export interface SnowInputs {
+  premium?: boolean; busyRoad?: boolean; danger?: number;
+  /** No boulevard to clear — subtracts NO_BOULEVARD_PER_LANE for every lane. */
+  noBoulevard?: boolean;
+}
+
+/**
+ * The per-lane no-boulevard saving for a config. Read through this rather than
+ * the field: a rate-sheet version stored before the discount existed has no
+ * such key, and an undefined here would make the whole total NaN.
+ */
+export const noBoulevardRate = (config: SnowConfig): number => {
+  const v = Number(config.NO_BOULEVARD_PER_LANE);
+  return Number.isFinite(v) && v >= 0 ? v : (SNOW_CONFIG_V1.NO_BOULEVARD_PER_LANE || 0);
+};
 
 export interface SnowMeasurement { cars: number; lanes: number; depth: number; dragCount: number }
 
-export interface SnowAddBreakdown { drag: number; premium: number; busyRoad: number; danger: number }
+export interface SnowAddBreakdown {
+  drag: number; premium: number; busyRoad: number; danger: number;
+  /** NEGATIVE (or 0). Kept in the same breakdown so the quote shows one list. */
+  noBoulevard: number;
+  /** Lanes the discount was computed over — for the "2 lanes × $50" line. */
+  noBoulevardLanes: number;
+}
 
 export interface SnowPrice extends SnowMeasurement {
   tier: SnowTier;
@@ -174,12 +200,22 @@ const tierBase = (tier: SnowTier, config: SnowConfig): number => {
   return config.CUSTOM_FLOOR;
 };
 
-function computeAdds(dragCount: number, inputs: SnowInputs, config: SnowConfig): SnowAddBreakdown {
+function computeAdds(
+  m: SnowMeasurement, inputs: SnowInputs, config: SnowConfig,
+): SnowAddBreakdown {
+  const lanes = Math.max(0, Number(m.lanes) || 0);
+  // Per LANE, so a double-lane driveway saves twice. Negative, because it sits
+  // in the same breakdown list as the surcharges and the quote renders that
+  // list in order — a discount hidden in a separate structure is a discount
+  // that eventually stops being shown.
+  const noBoulevard = inputs.noBoulevard ? -(lanes * noBoulevardRate(config)) : 0;
   return {
-    drag: dragCount * config.DRAG_RATE,
+    drag: m.dragCount * config.DRAG_RATE,
     premium: inputs.premium ? config.PREMIUM : 0,
     busyRoad: inputs.busyRoad ? config.BUSY_ROAD : 0,
     danger: Math.max(0, Number(inputs.danger) || 0),
+    noBoulevard,
+    noBoulevardLanes: inputs.noBoulevard ? lanes : 0,
   };
 }
 
@@ -198,10 +234,26 @@ export function priceSnow(
   const tier = computeTier(m);
   if (tier === null) return null;
 
-  const breakdown = computeAdds(m.dragCount, inputs, config);
-  const adds = breakdown.drag + breakdown.premium + breakdown.busyRoad + breakdown.danger;
+  // ORDER OF OPERATIONS, and it matters because the discount is per-lane:
+  //   1. measure the traced shape        → cars, lanes, depth, dragCount
+  //   2. tier from the measurement       → basePrice
+  //   3. surcharges, each independent    → drag, premium, busy road, danger
+  //   4. no-boulevard discount, LAST     → −(lanes × rate)
+  //   5. total = basePrice + Σ(3) + (4), floored at 0
+  //
+  // The discount is applied to the TOTAL, not to the tier base and not as a
+  // percentage — so it is unaffected by how large the surcharges happen to be,
+  // and two identical driveways differing only in boulevard always differ by
+  // exactly lanes × rate. Tier selection is untouched: a driveway does not drop
+  // a tier because it has no boulevard.
+  const breakdown = computeAdds(m, inputs, config);
+  const adds = breakdown.drag + breakdown.premium + breakdown.busyRoad
+    + breakdown.danger + breakdown.noBoulevard;
   const basePrice = tierBase(tier, config);
   const isCustom = tier === 'custom';
+  // Floored at 0: a discount can never produce a negative quote, however many
+  // lanes are traced.
+  const gross = Math.max(0, basePrice + adds);
 
   return {
     ...m,
@@ -210,8 +262,8 @@ export function priceSnow(
     adds,
     addBreakdown: breakdown,
     isCustom,
-    total: isCustom ? null : basePrice + adds,
-    floor: isCustom ? basePrice + adds : null,
+    total: isCustom ? null : gross,
+    floor: isCustom ? gross : null,
     pricingConfigVersion: versionId,
   };
 }
@@ -222,6 +274,7 @@ export const SNOW_FIELD_LABELS: Record<keyof SnowConfig, string> = {
   TIER_1: 'Tier 1', TIER_2: 'Tier 2', TIER_3: 'Tier 3', CUSTOM_FLOOR: 'Custom floor',
   PREMIUM: 'Premium', BUSY_ROAD: 'Busy road', DRAG_RATE: 'Drag rate',
   DRAG_COUNTS_TOWARD_SIZE: 'Drag counts toward size', DANGER_OPTIONS: 'Danger options',
+  NO_BOULEVARD_PER_LANE: 'No boulevard (per lane)',
 };
 
 const fmtVal = (v: unknown): string =>

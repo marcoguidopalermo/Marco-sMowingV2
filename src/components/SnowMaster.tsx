@@ -1,9 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Snowflake, RotateCcw, Save, FolderOpen, Trash2, Search, AlertTriangle, BarChart3, Car, SlidersHorizontal, FileText } from 'lucide-react';
+import { Snowflake, RotateCcw, Save, FolderOpen, Trash2, Search, AlertTriangle, BarChart3, Car, SlidersHorizontal, FileText, Map } from 'lucide-react';
 import { SnowQuote, SnowRateConfigVersion, SnowContract } from '../types';
 import { encodeGrid, gridOf } from '../lib/snowGrid';
+import PropertyMeasureTool from './PropertyMeasureTool';
+import type { PropertyMeasurement } from '../types';
 import {
   priceSnow, SnowConfig, SNOW_CONFIG_V1, SnowPrice, resolveSnowConfig,
+  noBoulevardRate,
 } from '../lib/snowPricing';
 import SnowRateSheet from './SnowRateSheet';
 import SnowContractsModule from './SnowContractsModule';
@@ -25,8 +28,12 @@ const addsOf = (q: SnowQuote, cfg: SnowConfig): number =>
   (q.dragCount || 0) * cfg.DRAG_RATE +
   (q.premium ? cfg.PREMIUM : 0) +
   (q.busyRoad ? cfg.BUSY_ROAD : 0) +
-  (q.danger || 0);
-const priceOf = (q: SnowQuote, cfg: SnowConfig): number => q.total ?? (q.basePrice + addsOf(q, cfg));
+  (q.danger || 0) +
+  // The discount is part of the adds, so a saved quote's derived price matches
+  // what the estimator saw. Per lane, against the QUOTE'S OWN config version.
+  (q.noBoulevard ? -((q.lanes || 0) * noBoulevardRate(cfg)) : 0);
+const priceOf = (q: SnowQuote, cfg: SnowConfig): number =>
+  q.total ?? Math.max(0, q.basePrice + addsOf(q, cfg));
 // Label an unnamed quote by its shape + price, e.g. "1×3 · 3 car · Tier 1 · $599".
 const shapeLabel = (q: SnowQuote, cfg: SnowConfig): string =>
   `${q.lanes}×${q.depth} · ${q.cars} car · ${q.isCustom ? 'Custom' : 'Tier ' + q.tier} · ${q.isCustom ? 'min ' : ''}${money(priceOf(q, cfg))}`;
@@ -46,7 +53,7 @@ interface Props {
   onSaveConfig?: (next: SnowConfig) => Promise<boolean>;
   onRevertConfig?: (versionId: string) => Promise<boolean>;
   // Optional initial seed for the tracer (used by previews / future deep-links).
-  initial?: { grid?: number[][]; premium?: boolean; busyRoad?: boolean; danger?: number };
+  initial?: { grid?: number[][]; premium?: boolean; busyRoad?: boolean; danger?: number; noBoulevard?: boolean };
   // Commercial contract builder — its own sub-tab.
   snowContracts?: Record<string, SnowContract>;
   onSaveSnowContract?: (c: SnowContract) => Promise<void>;
@@ -88,6 +95,7 @@ export default function SnowMaster({
   });
   const [busyRoad, setBusyRoad] = useState(!!initial?.busyRoad);
   const [danger, setDanger] = useState(initial?.danger || 0);
+  const [noBoulevard, setNoBoulevard] = useState(!!initial?.noBoulevard);
   const [loadedId, setLoadedId] = useState<string | null>(null);
   // The saved quote currently open, so re-saving preserves who first quoted it.
   const loaded = loadedId ? quotes[loadedId] : undefined;
@@ -103,11 +111,16 @@ export default function SnowMaster({
   // in Jobber. A saved record exists to feed the report, so the name is never
   // required; it's just there for anyone who wants to find a shape at renewal.
   const [name, setName] = useState('');
+  // THE ADDRESS identifies which driveway this is, so it sits at the top of the
+  // quote rather than among the pricing inputs — and seeds the map.
+  const [address, setAddress] = useState('');
+  const [measureOpen, setMeasureOpen] = useState(false);
+  const [measurement, setMeasurement] = useState<PropertyMeasurement | undefined>(undefined);
 
   // Standard price (no premium). The Premium column adds config.PREMIUM on top.
   const price = useMemo<SnowPrice | null>(
-    () => priceSnow(grid, { premium: false, busyRoad, danger }, viewConfig, viewVersion),
-    [grid, busyRoad, danger, viewConfig, viewVersion],
+    () => priceSnow(grid, { premium: false, busyRoad, danger, noBoulevard }, viewConfig, viewVersion),
+    [grid, busyRoad, danger, noBoulevard, viewConfig, viewVersion],
   );
   const premiumAdd = viewConfig.PREMIUM;
   // Standard vs Premium totals (non-custom) / floors (custom). Derived from the
@@ -125,11 +138,13 @@ export default function SnowMaster({
     setGrid(g => g.map((row, i) => i === r ? row.map((v, j) => j === c ? (v + 1) % 3 : v) : row));
   };
   const editBusyRoad = () => { setDirty(true); setBusyRoad(b => !b); };
+  const editNoBoulevard = () => { setDirty(true); setNoBoulevard(v => !v); };
   const editDanger = (d: number) => { setDirty(true); setDanger(d); };
 
   const clearAll = () => {
     if (price && !window.confirm('Clear the driveway and all inputs?')) return;
-    setGrid(emptyGrid()); setBusyRoad(false); setDanger(0);
+    setGrid(emptyGrid()); setBusyRoad(false); setDanger(0); setNoBoulevard(false);
+    setAddress(''); setMeasurement(undefined);
     setLoadedId(null); setName(''); setLoadedVersion(null); setDirty(false);
   };
 
@@ -150,7 +165,9 @@ export default function SnowMaster({
       // Premium is no longer a toggle: the Standard price is the base, and BOTH
       // totals are recorded. `total` keeps its meaning (Standard total / null for
       // custom); `premiumTotal` is new. `premium: false` since Standard is base.
-      premium: false, busyRoad, danger,
+      premium: false, busyRoad, danger, noBoulevard,
+      address: address.trim() || undefined,
+      measurement,
       total: stdTotal, premiumTotal: premTotal, isCustom: price.isCustom,
       pricingConfigVersion: viewVersion,
       // The ORIGINAL quoter is preserved when re-saving a loaded quote; App
@@ -169,6 +186,9 @@ export default function SnowMaster({
     const g = gridOf(q);
     setGrid(g.length ? g.map(r => [...r]) : emptyGrid());
     setBusyRoad(!!q.busyRoad); setDanger(q.danger || 0);
+    setNoBoulevard(!!q.noBoulevard);
+    setAddress(q.address || '');
+    setMeasurement(q.measurement);
     setLoadedId(q.id); setName(q.name || '');
     setLoadedVersion(q.pricingConfigVersion || 'snow-v1'); setDirty(false);
     setSub('quote');
@@ -214,6 +234,38 @@ export default function SnowMaster({
       )}
 
       {sub === 'quote' && (
+        <div className="space-y-4">
+          {/* ── ADDRESS — first, and full width. It is what identifies WHICH
+                driveway this is; a price with no address is a price nobody can
+                match to a property. The map opens from it. ─────────────── */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3">
+            <label className="block text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1">
+              Property address
+            </label>
+            <div className="flex gap-2">
+              <input
+                value={address}
+                onChange={e => { setDirty(true); setAddress(e.target.value); }}
+                placeholder="123 Example St, Thunder Bay"
+                className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-base font-semibold outline-none"
+              />
+              <button
+                onClick={() => setMeasureOpen(true)}
+                title="Open the satellite view on this property"
+                className="min-h-[44px] px-3 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 text-sm font-bold"
+              >
+                <Map className="w-4 h-4" /> Map
+              </button>
+            </div>
+            {measurement?.address && (
+              <div className="text-[11px] text-slate-400 mt-1">
+                Satellite view saved for {measurement.address}
+                {measurement.polygons?.length ? ` · ${measurement.polygons.length} outline${measurement.polygons.length === 1 ? '' : 's'}` : ''}
+                {' · reference only, the price comes from the traced grid'}
+              </div>
+            )}
+          </div>
+
         <div className="grid md:grid-cols-2 gap-4 items-start">
           {/* ── LEFT: tracer + inputs ─────────────────────────────────────── */}
           <div className="space-y-4">
@@ -271,6 +323,12 @@ export default function SnowMaster({
                 in the readout, always, so it can be quoted without a tap. */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
               <Toggle label="Busy road" sub="Main-road frontage" on={busyRoad} onClick={editBusyRoad} />
+              <Toggle
+                label="No boulevard"
+                sub={price ? `−$${noBoulevardRate(viewConfig)} × ${price.lanes} lane${price.lanes === 1 ? '' : 's'}` : `−$${noBoulevardRate(viewConfig)} per lane`}
+                on={noBoulevard}
+                onClick={editNoBoulevard}
+              />
               <div>
                 <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Danger charge</div>
                 <div className="grid grid-cols-4 gap-2">
@@ -313,6 +371,14 @@ export default function SnowMaster({
                   {price.addBreakdown.drag > 0 && <Row label={`Drag × ${price.dragCount} @ $${viewConfig.DRAG_RATE}`} value={money(price.addBreakdown.drag)} />}
                   {price.addBreakdown.busyRoad > 0 && <Row label="Busy road" value={money(price.addBreakdown.busyRoad)} />}
                   {price.addBreakdown.danger > 0 && <Row label="Danger" value={money(price.addBreakdown.danger)} />}
+                  {/* Its OWN line, showing the arithmetic — a discount folded
+                      silently into a total is a discount nobody can check. */}
+                  {price.addBreakdown.noBoulevard !== 0 && (
+                    <div className="flex justify-between" style={{ color: GREEN }}>
+                      <span>No boulevard — {price.addBreakdown.noBoulevardLanes} lane{price.addBreakdown.noBoulevardLanes === 1 ? '' : 's'} × ${noBoulevardRate(viewConfig)}</span>
+                      <span className="font-mono font-bold">−{money(Math.abs(price.addBreakdown.noBoulevard))}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between border-t-2 border-slate-200 pt-1.5 mt-1 font-bold text-slate-700">
                     <span className="uppercase tracking-widest text-[12px] text-slate-500 self-center">{price.isCustom ? 'Standard floor' : 'Standard total'}</span>
                     <span className="text-base font-mono">{money(price.isCustom ? stdFloor! : stdTotal!)}</span>
@@ -343,6 +409,29 @@ export default function SnowMaster({
             </div>
           </div>
         </div>
+        </div>
+      )}
+
+      {/* THE SHARED TOOL, not a second one. Same component LawnMaster and the
+          snow contract builder use, with the snow palette. Interactive Maps
+          JavaScript API — no Static API needed here, that is only the printed
+          contract map. */}
+      {measureOpen && (
+        <PropertyMeasureTool
+          palette="snow"
+          currentUser={currentUser}
+          initial={measurement || null}
+          initialAddress={address.trim() || undefined}
+          onClose={() => setMeasureOpen(false)}
+          onUse={(m) => {
+            setDirty(true);
+            setMeasurement(m);
+            // The tool resolves the address it actually landed on — take it, so
+            // a typo corrected on the map corrects the quote too.
+            if (m.address) setAddress(m.address);
+            setMeasureOpen(false);
+          }}
+        />
       )}
 
       {sub === 'saved' && (
