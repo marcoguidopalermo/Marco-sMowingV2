@@ -24,7 +24,7 @@ import {
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, JobberBhConflict, MonthlySummary,
   RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, RoleTaskInstance,
-  ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry,
+  ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingPayment, ContractingMoneyAudit, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry,
   CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract,
   MarketingContentItem, MarketingShot, MarketingLink,
   MarketingFeedbackEntry, MarketingClipThread, MarketingClipStatus,
@@ -127,7 +127,11 @@ import { buildMonthlySummary } from './lib/monthlySummary';
 import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
+import ContractingStatementDocument from './components/ContractingStatementDocument';
 import { adminEmailsFrom, computeRosterUpdate } from './lib/rosterWrite';
+import {
+  validatePayment, reconstructPaymentsFromPaidFlags, invoiceSettlement,
+} from './lib/contractingPayments';
 import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './lib/scheduledBulletins';
 import { timeEntryLock, crewDayCorrectionTarget } from './lib/timeEntryLock';
 import {
@@ -201,7 +205,7 @@ const SUBCOLLECTION_ONLY_FIELDS = [
   'salesMasterQuotes',
   'snowQuotes', 'snowRateConfigs', 'lawnQuotes', 'lawnRateConfigs',
   'contractingProjects', 'contractingTimeEntries', 'contractingProgressReports',
-  'contractingInvoices', 'contractingWorkOrders', 'contractingShoppingList',
+  'contractingInvoices', 'contractingPayments', 'contractingWorkOrders', 'contractingShoppingList',
   'contractingPersonalItems', 'contractingPropertyDocs',
   'marketingContent', 'marketingShots', 'marketingLinks', 'marketingMusic', 'marketingFeedback',
   'marketingClips', 'marketingPostQueue', 'marketingTodos',
@@ -429,6 +433,7 @@ export default function App() {
   const subContractingTimeEntriesRef = useRef<Record<string, ContractingTimeEntry>>({});
   const subContractingProgressReportsRef = useRef<Record<string, ContractingProgressReport>>({});
   const subContractingInvoicesRef = useRef<Record<string, ContractingInvoice>>({});
+  const subContractingPaymentsRef = useRef<Record<string, ContractingPayment>>({});
   const subContractingWorkOrdersRef = useRef<Record<string, ContractingWorkOrder>>({});
   const subContractingShoppingListRef = useRef<Record<string, ContractingShoppingItem>>({});
   const subContractingPersonalItemsRef = useRef<Record<string, ContractingPersonalItem>>({});
@@ -526,6 +531,11 @@ export default function App() {
   const [localSettings, setLocalSettings] = useState<AppSettings>({ endOfDayReminder: DEFAULT_EOD_REMINDER });
   const [localPermissions, setLocalPermissions] = useState<RolePermissionsOverride>({});
   const [isSystemPrinting, setIsSystemPrinting] = useState(false);
+  // CLIENT STATEMENT PRINT — same mechanism the operational schedule uses:
+  // the app root is replaced by the document alone, then window.print(). One
+  // component renders both the on-screen preview and this, so what is printed
+  // is what was reviewed.
+  const [printingStatement, setPrintingStatement] = useState<{ projectId: string; asOf: number } | null>(null);
   const [completionModal, setCompletionModal] = useState<import('./components/CompletionModal').CompletionModalState>({
     isOpen: false, taskId: '', partCost: '', laborHours: '', fixNotes: ''
   });
@@ -1293,6 +1303,7 @@ export default function App() {
           contractingTimeEntries: subContractingTimeEntriesRef.current,
           contractingProgressReports: subContractingProgressReportsRef.current,
           contractingInvoices: subContractingInvoicesRef.current,
+          contractingPayments: subContractingPaymentsRef.current,
           contractingWorkOrders: subContractingWorkOrdersRef.current,
           contractingShoppingList: subContractingShoppingListRef.current,
           contractingPersonalItems: subContractingPersonalItemsRef.current,
@@ -1923,6 +1934,7 @@ export default function App() {
     const c2 = mk('contractingTimeEntries', subContractingTimeEntriesRef, 'contractingTimeEntries');
     const c3 = mk('contractingProgressReports', subContractingProgressReportsRef, 'contractingProgressReports');
     const c4 = mk('contractingInvoices', subContractingInvoicesRef, 'contractingInvoices');
+    const c4b = mk('contractingPayments', subContractingPaymentsRef, 'contractingPayments');
     const c5 = mk('contractingWorkOrders', subContractingWorkOrdersRef, 'contractingWorkOrders');
     const c6 = mk('contractingShoppingList', subContractingShoppingListRef, 'contractingShoppingList');
     const c7 = mk('contractingPersonalItems', subContractingPersonalItemsRef, 'contractingPersonalItems');
@@ -1979,7 +1991,7 @@ export default function App() {
       snap.forEach((d) => { const v = d.data() as CrewDayAudit; if (v && v.date) map[v.date] = v; });
       setCrewDayAudits(map);
     }, (err) => { console.error('crewDayAudits listen error:', err); });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); m8(); hb1(); mg1(); ea1(); cf1(); ca1(); };
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c4b(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); m8(); hb1(); mg1(); ea1(); cf1(); ca1(); };
   }, [user]);
 
   useEffect(() => {
@@ -5397,6 +5409,122 @@ export default function App() {
     await appendContractingAudit('invoice.void', `${inv.number} (${inv.total ? '$' + inv.total : ''}) voided — ${reason}`);
     showToastMsg(`${inv.number} voided.`);
   };
+  // ── PAYMENTS ─────────────────────────────────────────────────────────────
+  // Money that arrived, and which invoices it settled. Every write is audited
+  // (who, when, before → after) because this is money, and nothing here is
+  // ever hard-deleted: a payment is VOIDED, keeping the record of what was
+  // recorded and why it stopped counting.
+  const moneyAuditLine = (
+    action: ContractingMoneyAudit['action'], detail: string,
+    from?: string, to?: string,
+  ): ContractingMoneyAudit => ({
+    at: Date.now(), by: displayEmail, byName: displayName, action, detail,
+    ...(from !== undefined ? { from } : {}), ...(to !== undefined ? { to } : {}),
+  });
+
+  const saveContractingPayment = async (
+    payment: ContractingPayment, opts?: { silent?: boolean },
+  ): Promise<boolean> => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return false; }
+    const invoices = Object.values(subContractingPaymentsRef.current).length >= 0
+      ? Object.values(subContractingInvoicesRef.current) : [];
+    // OVER-ALLOCATION IS REFUSED HERE TOO, not only in the form. A payment
+    // reaching this function from anywhere must still balance.
+    const v = validatePayment(payment, invoices);
+    if (!v.ok) { showToastMsg(v.errors[0]); return false; }
+    const prev = subContractingPaymentsRef.current[payment.id];
+    const now = Date.now();
+    const money = (n: number) => `$${(Number(n) || 0).toFixed(2)}`;
+    const line = prev
+      ? moneyAuditLine('edited',
+        `Payment ${payment.reference || payment.method} edited`,
+        `${money(prev.amount)} / ${(prev.allocations || []).length} allocation(s)`,
+        `${money(payment.amount)} / ${(payment.allocations || []).length} allocation(s)`)
+      : moneyAuditLine('created',
+        `Payment ${money(payment.amount)} by ${payment.method}${payment.reference ? ` (${payment.reference})` : ''}`);
+    const next: ContractingPayment = {
+      ...payment,
+      createdBy: prev?.createdBy || { email: displayEmail, name: displayName },
+      createdAt: prev?.createdAt || now,
+      updatedBy: { email: displayEmail, name: displayName },
+      updatedAt: now,
+      audit: [...(prev?.audit || []), line],
+    };
+    await safeSetDoc(doc(roleColl('contractingPayments'), next.id), cleanRM(next));
+    await appendContractingAudit(prev ? 'payment.edit' : 'payment.create', line.detail);
+    if (!opts?.silent) {
+      showToastMsg(v.warnings.length > 0
+        ? `Payment saved. ${v.warnings[0]}`
+        : 'Payment saved.');
+    }
+    return true;
+  };
+
+  const voidContractingPayment = async (id: string, reason: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const p = subContractingPaymentsRef.current[id];
+    if (!p) { showToastMsg('Payment not found.'); return; }
+    if (!reason.trim()) { showToastMsg('A reason is required to void a payment.'); return; }
+    const now = Date.now();
+    const line = moneyAuditLine('voided', `Payment voided — ${reason.trim()}`);
+    await safeSetDoc(doc(roleColl('contractingPayments'), id), cleanRM({
+      ...p, voided: true, voidReason: reason.trim(), voidedBy: displayName, voidedAt: now,
+      audit: [...(p.audit || []), line],
+    }));
+    await appendContractingAudit('payment.void', line.detail);
+    showToastMsg('Payment voided. It no longer counts toward any total.');
+  };
+
+  // ONE-CLICK PAID IN FULL — the fast path, preserved from the old "Mark paid"
+  // button. It does not set a flag; it mints a real payment for the invoice's
+  // exact balance, allocated to it. Same record as a hand-entered cheque, so
+  // the statement and the phase rollup see no difference.
+  const payContractingInvoiceInFull = async (
+    invoiceId: string, method: ContractingPayment['method'], reference?: string,
+  ) => {
+    const inv = subContractingInvoicesRef.current[invoiceId];
+    if (!inv) { showToastMsg('Invoice not found.'); return; }
+    const settled = invoiceSettlement(inv, Object.values(subContractingPaymentsRef.current));
+    if (settled.balance <= 0) { showToastMsg(`${inv.number} is already settled.`); return; }
+    const now = Date.now();
+    const ok = await saveContractingPayment({
+      id: `cpay-${now}-${Math.random().toString(36).slice(2, 6)}`,
+      projectId: inv.projectId,
+      receivedAt: now,
+      amount: settled.balance,
+      method,
+      reference: reference || '',
+      note: `Paid in full — ${inv.number}`,
+      allocations: [{
+        id: `cpal-${now}`, invoiceId: inv.id, phaseId: inv.phaseId, amount: settled.balance,
+      }],
+      audit: [],
+    }, { silent: true });
+    if (ok) showToastMsg(`${inv.number} settled — $${settled.balance.toFixed(2)} recorded.`);
+  };
+
+  // MIGRATION — turn the old boolean paid flags into real, reconstructed
+  // payments. Idempotent: reconstructed ids are derived from the invoice id,
+  // so running it twice rewrites the same seven documents rather than
+  // doubling the money.
+  const migrateContractingPaidFlags = async (projectId: string) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const invoices = Object.values(subContractingInvoicesRef.current);
+    const plan = reconstructPaymentsFromPaidFlags(
+      projectId, invoices, { email: displayEmail, name: displayName }, Date.now(),
+    );
+    if (plan.invoiceCount === 0) { showToastMsg('Nothing to reconstruct — no paid invoices without payments.'); return; }
+    for (const pay of plan.payments) {
+      await safeSetDoc(doc(roleColl('contractingPayments'), pay.id), cleanRM(pay));
+    }
+    await appendContractingAudit(
+      'payment.migrate',
+      `Reconstructed ${plan.invoiceCount} payment(s) from paid flags — `
+      + `$${plan.beforePaidWithHst.toFixed(2)} before, $${plan.afterPaidWithHst.toFixed(2)} after`,
+    );
+    showToastMsg(`${plan.invoiceCount} payments reconstructed — $${plan.afterPaidWithHst.toFixed(2)}, unchanged to the cent.`);
+  };
+
   const saveContractingWorkOrder = async (w: ContractingWorkOrder) => {
     await safeSetDoc(doc(roleColl('contractingWorkOrders'), w.id), cleanRM(w));
   };
@@ -7214,6 +7342,22 @@ export default function App() {
   );
 
 
+  if (printingStatement) {
+    const proj = subContractingProjectsRef.current[printingStatement.projectId];
+    if (proj) {
+      return (
+        <div className="bg-white min-h-screen p-6">
+          <ContractingStatementDocument
+            project={proj}
+            invoices={Object.values(subContractingInvoicesRef.current)}
+            payments={Object.values(subContractingPaymentsRef.current)}
+            asOf={printingStatement.asOf}
+            printMode
+          />
+        </div>
+      );
+    }
+  }
   if (isSystemPrinting) {
     return (
       <div className="bg-white min-h-screen p-8">
@@ -8089,6 +8233,15 @@ export default function App() {
           canSeeMortgages={canSeeMortgages(displayEmail)}
           onSaveMortgage={saveContractingMortgage}
           onDeleteMortgage={deleteContractingMortgage}
+          payments={appData.contractingPayments || {}}
+          onSavePayment={saveContractingPayment}
+          onVoidPayment={voidContractingPayment}
+          onPayInFull={payContractingInvoiceInFull}
+          onMigratePaidFlags={migrateContractingPaidFlags}
+          onPrintStatement={(projectId) => {
+            setPrintingStatement({ projectId, asOf: Date.now() });
+            setTimeout(() => { window.print(); setPrintingStatement(null); }, 400);
+          }}
           projects={appData.contractingProjects || {}}
           timeEntries={appData.contractingTimeEntries || {}}
           reports={appData.contractingProgressReports || {}}

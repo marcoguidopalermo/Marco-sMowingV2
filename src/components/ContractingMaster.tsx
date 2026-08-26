@@ -1,7 +1,7 @@
 // ContractingMaster — Palermo's Contracting portal. A separate tenant inside
 // CrewMaster: slate/gold branding, its own namespaced data, ZERO contact with
 // Marco's performance/BH/bonus/pay. All billing math comes from lib/contracting.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState , Fragment } from 'react';
 import {
   dateOutsidePeriod, describeDateChange, duplicateInvoiceNumber,
   invoiceNumberIsUsable, normalizeInvoiceNumber, reportMintNumber,
@@ -10,6 +10,7 @@ import {
   ContractingProject, ContractingPhase, ContractingChecklistItem, ContractingTimeEntry,
   ContractingProgressReport, ContractingReceipt, ContractingInvoice, ContractingWorkOrder,
   ContractingShoppingItem, ContractingRateCard, ContractingBillingRole, ContractingStatus,
+  ContractingPayment, ContractingPaymentAllocation,
   ContractingProperty, ContractingSupplier, ContractingPersonalItem, ContractingPhaseType, Employee, StoredFile, TimeEntry,
   ContractingUnit, ContractingTenancy, ContractingTenant, ContractingTenancyStatus,
   ContractingMortgage,
@@ -23,6 +24,11 @@ import {
 import {
   mortgageRollup, mortgagesForProperty, renewalCountdown, RENEWAL_AMBER_DAYS,
 } from '../lib/mortgages';
+import ContractingStatementDocument from './ContractingStatementDocument';
+import {
+  invoiceSettlement, phaseSettlement, projectSettlement, statementRows,
+  unappliedAmount, validatePayment, allocatedTotal,
+} from '../lib/contractingPayments';
 import type { ContractingDeposit } from '../types';
 import {
   HST_PCT, ratesOrDefault, ROLE_LABEL, rateFor, round2, money, receiptBilled,
@@ -64,6 +70,14 @@ interface Props {
   onSavePropertyDoc: (p: ContractingProperty) => void;
   onDeletePropertyDoc: (id: string) => void;
   onSaveSuppliers: (list: ContractingSupplier[]) => void;
+  // PAYMENTS — money that arrived and what it settled. See
+  // lib/contractingPayments for the four decisions behind the shape.
+  payments: Record<string, ContractingPayment>;
+  onSavePayment: (p: ContractingPayment) => Promise<boolean>;
+  onVoidPayment: (id: string, reason: string) => void;
+  onPayInFull: (invoiceId: string, method: ContractingPayment['method'], reference?: string) => void;
+  onMigratePaidFlags: (projectId: string) => void;
+  onPrintStatement: (projectId: string) => void;
   onDiscardReport: (reportId: string) => void;
   onDeleteReport: (reportId: string) => void;
   // Payroll punched hours (read-only reference for the open-report panel).
@@ -112,7 +126,7 @@ interface Nav {
 
 // Base context (handlers + identity) minus the collection maps — inner
 // components re-declare only the (array-shaped) collections they actually read.
-type Ctx = Omit<Props, 'projects' | 'timeEntries' | 'reports' | 'invoices' | 'workOrders' | 'shoppingList'>;
+type Ctx = Omit<Props, 'projects' | 'timeEntries' | 'reports' | 'invoices' | 'workOrders' | 'shoppingList' | 'payments'>;
 
 const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 const fmtDate = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
@@ -210,7 +224,7 @@ export default function ContractingMaster(props: Props) {
           and an open keyboard. */}
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
       <div className="p-3 md:p-4 max-w-5xl mx-auto pb-24 md:pb-8">
-        {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} projects={projects} reports={reports} timeEntries={timeEntries} rateOverrides={rateOverrides} nav={nav} focusProjectId={focusProjectId} onConsumeFocus={() => setFocusProjectId(null)} />}
+        {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} payments={Object.values(props.payments || {})} projects={projects} reports={reports} timeEntries={timeEntries} rateOverrides={rateOverrides} nav={nav} focusProjectId={focusProjectId} onConsumeFocus={() => setFocusProjectId(null)} />}
         {tab === 'reports' && canManage && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} invoices={invoices} rateOverrides={rateOverrides} nav={nav} />}
         {tab === 'invoices' && canManage && <InvoicesTab {...props} invoices={invoices} reports={reports} projects={projects} nav={nav} initialFilter={invoiceFilter} />}
         {tab === 'home' && <HomeTab {...props} hoursCards={props.hoursCards} personalItems={props.personalItems} shoppingList={props.shoppingList} workOrders={props.workOrders} onGoToMyWorkOrders={goToMyWorkOrders} />}
@@ -455,7 +469,7 @@ function MaterialMini({ items, me, canDeleteAny, onSave, onDelete }: { items: Co
 }
 
 // ─────────────────────────────────────────────────────────── PROJECTS ──────
-function ProjectsTab(p: Ctx & { rates: ContractingRateCard; invoices: ContractingInvoice[]; projects: ContractingProject[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; focusProjectId: string | null; onConsumeFocus: () => void }) {
+function ProjectsTab(p: Ctx & { rates: ContractingRateCard; invoices: ContractingInvoice[]; payments: ContractingPayment[]; projects: ContractingProject[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; focusProjectId: string | null; onConsumeFocus: () => void }) {
   // Board opens to the only active client project (Feaver Rd) by default.
   const feaver = p.projects.find(x => /feaver/i.test(x.name)) || (p.projects.filter(x => x.status !== 'closed').length === 1 ? p.projects.find(x => x.status !== 'closed') : undefined);
   const [selId, setSelId] = useState<string | null>(p.focusProjectId || feaver?.id || null);
@@ -552,7 +566,7 @@ function DeleteProjectForm({ project, onClose, onDelete }: { project: Contractin
   );
 }
 
-function ProjectDetail(p: Ctx & { project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; onBack: () => void }) {
+function ProjectDetail(p: Ctx & { project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; payments: ContractingPayment[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; onBack: () => void }) {
   const { project, canManage } = p;
   const [addingPhase, setAddingPhase] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -628,6 +642,18 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
         </div>
       </div>
 
+      <BillingPanel
+        project={project}
+        invoices={p.invoices}
+        payments={p.payments}
+        canManage={canManage}
+        onSavePayment={p.onSavePayment}
+        onVoidPayment={p.onVoidPayment}
+        onPayInFull={p.onPayInFull}
+        onMigratePaidFlags={p.onMigratePaidFlags}
+        onPrintStatement={p.onPrintStatement}
+      />
+
       <div className="flex items-center justify-between mb-2">
         <h3 className="font-semibold" style={{ color: PALERMO.slate }}>Phases</h3>
         <div className="flex items-center gap-2">
@@ -678,6 +704,329 @@ function PhaseForm({ onClose, onSave }: { onClose: () => void; onSave: (p: Contr
 // Edit an existing phase. GUARDS: fixed↔T&M is locked once the phase has
 // invoiced billing; a fixed-price change is audited (who/when/from→to);
 // removal is offered only when nothing is attached (else deactivate via status).
+// ── BILLING: PHASE SUMMARY, PAYMENTS, STATEMENT ────────────────────────────
+// Phases 1 and 2 are settled and read as one line each; Phase 3/4 is still
+// accumulating and reads the same shape. Tap a phase for the invoices and
+// payments behind it.
+const PAY_METHODS: ContractingPayment['method'][] = ['cheque', 'etransfer', 'eft', 'cash', 'card', 'other'];
+const stateChip: Record<string, { bg: string; fg: string; label: string }> = {
+  paid: { bg: '#e7f4ec', fg: '#1c6b3a', label: 'paid' },
+  partial: { bg: '#fdf3e0', fg: '#8a6100', label: 'part paid' },
+  unpaid: { bg: '#fdeaea', fg: '#a03030', label: 'outstanding' },
+  overpaid: { bg: '#eef0ff', fg: '#3a3f8a', label: 'overpaid' },
+};
+
+function BillingPanel(p: {
+  project: ContractingProject;
+  invoices: ContractingInvoice[];
+  payments: ContractingPayment[];
+  canManage: boolean;
+  onSavePayment: Props['onSavePayment'];
+  onVoidPayment: Props['onVoidPayment'];
+  onPayInFull: Props['onPayInFull'];
+  onMigratePaidFlags: Props['onMigratePaidFlags'];
+  onPrintStatement: Props['onPrintStatement'];
+}) {
+  const { project } = p;
+  const invoices = p.invoices.filter(i => i.projectId === project.id);
+  const payments = p.payments.filter(x => x.projectId === project.id);
+  const st = projectSettlement(project, invoices, payments);
+  const [openPhase, setOpenPhase] = useState<string | null>(null);
+  const [editing, setEditing] = useState<ContractingPayment | null>(null);
+  const [view, setView] = useState<'summary' | 'statement'>('summary');
+  // Invoices still carrying the OLD boolean flag with no payment behind them.
+  const needsMigration = invoices.filter(
+    i => !i.voided && i.paid && invoiceSettlement(i, payments).allocated <= 0,
+  );
+
+  const blank = (): ContractingPayment => ({
+    id: `cpay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    projectId: project.id, receivedAt: Date.now(), amount: 0,
+    method: 'cheque', reference: '', note: '', allocations: [],
+  });
+
+  return (
+    <div className="bg-white rounded-lg border p-3 mb-3">
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+        <h3 className="font-bold text-sm" style={{ color: PALERMO.slate }}>Billing &amp; payments</h3>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setView(v => v === 'summary' ? 'statement' : 'summary')}
+            className="text-xs px-2.5 py-1.5 rounded border font-semibold" style={{ color: PALERMO.slate }}>
+            {view === 'summary' ? 'Statement' : 'Summary'}
+          </button>
+          {p.canManage && (
+            <button onClick={() => setEditing(blank())}
+              className="text-xs px-2.5 py-1.5 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.gold }}>
+              Record payment
+            </button>
+          )}
+        </div>
+      </div>
+
+      {needsMigration.length > 0 && p.canManage && (
+        <div className="mb-3 rounded border-2 px-3 py-2 text-xs" style={{ borderColor: PALERMO.gold, background: '#fdfaf0' }}>
+          <b style={{ color: PALERMO.slate }}>{needsMigration.length} invoice{needsMigration.length === 1 ? '' : 's'} marked paid with no payment record.</b>
+          {' '}The old model stored only a flag — no amount, method or cheque number. Reconstruct them as payments (totals unchanged to the cent), then merge them into the real cheques.
+          <button onClick={() => p.onMigratePaidFlags(project.id)}
+            className="ml-2 text-[11px] px-2 py-1 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.slate }}>
+            Reconstruct {needsMigration.length}
+          </button>
+        </div>
+      )}
+
+      {view === 'summary' ? (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wider text-gray-500">
+                  <th className="text-left py-1">Phase</th>
+                  <th className="text-right py-1">Contract</th>
+                  <th className="text-right py-1">Invoiced</th>
+                  <th className="text-right py-1">Paid</th>
+                  <th className="text-right py-1">Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {st.phases.map(ph => {
+                  const open = openPhase === ph.phaseId;
+                  const phInv = invoices.filter(i => !i.voided && i.phaseId === ph.phaseId);
+                  const phPay = payments.filter(x => !x.voided && (x.allocations || []).some(
+                    a => a.phaseId === ph.phaseId || phInv.some(i => i.id === a.invoiceId)));
+                  return (
+                    <Fragment key={ph.phaseId}>
+                      <tr onClick={() => setOpenPhase(open ? null : ph.phaseId)}
+                        className="border-t cursor-pointer hover:bg-gray-50">
+                        <td className="py-1.5 font-semibold" style={{ color: PALERMO.slate }}>
+                          {open ? '▾ ' : '▸ '}{ph.phaseName}
+                          {ph.complete && <span className="ml-1 text-[10px] text-gray-400">complete</span>}
+                        </td>
+                        <td className="text-right tabular-nums">
+                          {ph.contractTotal == null ? <span className="text-gray-400 italic">T&amp;M</span> : money(ph.contractTotal)}
+                        </td>
+                        <td className="text-right tabular-nums">{money(ph.invoicedWithHst)}</td>
+                        <td className="text-right tabular-nums text-green-700">{money(ph.paidWithHst)}</td>
+                        <td className="text-right tabular-nums font-bold"
+                          style={{ color: ph.balanceWithHst > 0.01 ? '#a03030' : '#1c6b3a' }}>
+                          {money(ph.balanceWithHst)}
+                        </td>
+                      </tr>
+                      {open && (
+                        <tr><td colSpan={5} className="bg-gray-50 px-3 py-2">
+                          <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Invoices</div>
+                          {phInv.length === 0 && <div className="text-gray-400 italic">None yet.</div>}
+                          {phInv.map(i => {
+                            const s2 = invoiceSettlement(i, payments);
+                            const chip = stateChip[s2.state];
+                            return (
+                              <div key={i.id} className="flex items-center justify-between gap-2 py-1 border-b border-gray-100">
+                                <span><b style={{ color: PALERMO.slate }}>{i.number}</b> <span className="text-gray-500">{fmtDate(i.issuedAt || i.createdAt)}</span>
+                                  <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded" style={{ background: chip.bg, color: chip.fg }}>{chip.label}</span>
+                                </span>
+                                <span className="tabular-nums">
+                                  {money(s2.allocated)} / {money(s2.total)}
+                                  {p.canManage && s2.balance > 0.01 && (
+                                    <button onClick={() => p.onPayInFull(i.id, 'cheque')}
+                                      className="ml-2 text-[10px] px-1.5 py-0.5 rounded text-white" style={{ backgroundColor: PALERMO.gold }}>
+                                      Paid in full
+                                    </button>
+                                  )}
+                                </span>
+                              </div>
+                            );
+                          })}
+                          <div className="text-[10px] uppercase tracking-wider text-gray-500 mt-2 mb-1">Payments</div>
+                          {phPay.length === 0 && <div className="text-gray-400 italic">None yet.</div>}
+                          {phPay.map(x => (
+                            <div key={x.id} className="flex items-center justify-between gap-2 py-1 border-b border-gray-100">
+                              <span>{fmtDate(x.receivedAt)} · {x.method}{x.reference ? ` ${x.reference}` : ''}
+                                {x.reconstructed && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded" style={{ background: '#fdf3e0', color: '#8a6100' }}>reconstructed</span>}
+                              </span>
+                              <span className="tabular-nums text-green-700">{money(x.amount)}
+                                {p.canManage && <button onClick={() => setEditing(x)} className="ml-2 text-[10px] underline" style={{ color: PALERMO.slate }}>edit</button>}
+                              </span>
+                            </div>
+                          ))}
+                        </td></tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+                <tr className="border-t-2" style={{ borderColor: PALERMO.slate }}>
+                  <td className="py-1.5 font-bold" style={{ color: PALERMO.slate }}>Total</td>
+                  <td className="text-right tabular-nums font-bold">{money(st.contractTotalFixed)}</td>
+                  <td className="text-right tabular-nums font-bold">{money(st.invoicedWithHst)}</td>
+                  <td className="text-right tabular-nums font-bold text-green-700">{money(st.paidWithHst)}</td>
+                  <td className="text-right tabular-nums font-bold" style={{ color: st.balanceWithHst > 0.01 ? '#a03030' : '#1c6b3a' }}>{money(st.balanceWithHst)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          {st.unappliedWithHst > 0.01 && (
+            <div className="mt-2 text-xs rounded px-2.5 py-1.5" style={{ background: '#fdf3e0', color: '#8a6100' }}>
+              {money(st.unappliedWithHst)} received is not applied to any invoice or phase. It stays on the account and shows on the statement.
+            </div>
+          )}
+        </>
+      ) : (
+        <div>
+          <div className="flex justify-end mb-2">
+            <button onClick={() => p.onPrintStatement(project.id)}
+              className="text-xs px-2.5 py-1.5 rounded text-white font-semibold" style={{ backgroundColor: PALERMO.slate }}>
+              Print / PDF
+            </button>
+          </div>
+          <div className="border rounded overflow-x-auto">
+            <ContractingStatementDocument
+              project={project} invoices={invoices} payments={payments} asOf={Date.now()}
+            />
+          </div>
+        </div>
+      )}
+
+      {editing && (
+        <PaymentForm
+          payment={editing}
+          project={project}
+          invoices={invoices}
+          payments={payments}
+          onClose={() => setEditing(null)}
+          onSave={async (next) => { const ok = await p.onSavePayment(next); if (ok) setEditing(null); }}
+          onVoid={(reason) => { p.onVoidPayment(editing.id, reason); setEditing(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// RECORD A PAYMENT ONCE, ALLOCATE IT ACROSS PHASES OR INVOICES.
+// The remainder is shown live: under-allocation is a warning that travels with
+// the payment; over-allocation disables the save outright.
+function PaymentForm({ payment, project, invoices, payments, onClose, onSave, onVoid }: {
+  payment: ContractingPayment;
+  project: ContractingProject;
+  invoices: ContractingInvoice[];
+  payments: ContractingPayment[];
+  onClose: () => void;
+  onSave: (p: ContractingPayment) => void;
+  onVoid: (reason: string) => void;
+}) {
+  const [f, setF] = useState<ContractingPayment>(payment);
+  const set = (patch: Partial<ContractingPayment>) => setF(prev => ({ ...prev, ...patch }));
+  const v = validatePayment(f, invoices);
+  const remainder = unappliedAmount(f);
+  const live = invoices.filter(i => !i.voided);
+  const addAlloc = () => set({
+    allocations: [...(f.allocations || []), {
+      id: `cpal-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      phaseId: project.phases[0]?.id, amount: Math.max(0, remainder),
+    }],
+  });
+  const setAlloc = (id: string, patch: Partial<ContractingPaymentAllocation>) => set({
+    allocations: (f.allocations || []).map(a => a.id === id ? { ...a, ...patch } : a),
+  });
+  const dropAlloc = (id: string) => set({ allocations: (f.allocations || []).filter(a => a.id !== id) });
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-3" onClick={onClose}>
+      <div className="bg-white rounded-lg w-full max-w-2xl max-h-[92vh] overflow-y-auto p-4" onClick={e => e.stopPropagation()}>
+        <h3 className="font-bold mb-3" style={{ color: PALERMO.slate }}>
+          {payment.amount ? 'Edit payment' : 'Record a payment'}
+          {f.reconstructed && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded" style={{ background: '#fdf3e0', color: '#8a6100' }}>reconstructed — replace with the real record</span>}
+        </h3>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="text-xs font-semibold text-gray-500">Date received
+            <input type="date" className="inp mt-1" value={new Date(f.receivedAt).toISOString().slice(0, 10)}
+              onChange={e => set({ receivedAt: new Date(`${e.target.value}T12:00:00`).getTime() })} />
+          </label>
+          <label className="text-xs font-semibold text-gray-500">Amount received (incl. HST)
+            <input type="number" step="0.01" className="inp mt-1" value={f.amount || ''}
+              onChange={e => set({ amount: Number(e.target.value) || 0 })} />
+          </label>
+          <label className="text-xs font-semibold text-gray-500">Method
+            <select className="inp mt-1" value={f.method} onChange={e => set({ method: e.target.value as ContractingPayment['method'] })}>
+              {PAY_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </label>
+          <label className="text-xs font-semibold text-gray-500">Reference (cheque no.)
+            <input className="inp mt-1" value={f.reference || ''} onChange={e => set({ reference: e.target.value })} />
+          </label>
+        </div>
+        <label className="text-xs font-semibold text-gray-500 block mt-2">Note
+          <input className="inp mt-1" value={f.note || ''} onChange={e => set({ note: e.target.value })} />
+        </label>
+
+        <div className="flex items-center justify-between mt-3 mb-1">
+          <span className="text-xs font-bold uppercase tracking-wider" style={{ color: PALERMO.slate }}>Allocations</span>
+          <button onClick={addAlloc} className="text-[11px] px-2 py-1 rounded border font-semibold" style={{ color: PALERMO.slate }}>+ Add line</button>
+        </div>
+        {(f.allocations || []).length === 0 && <div className="text-xs text-gray-400 italic">Nothing allocated yet.</div>}
+        {(f.allocations || []).map(a => (
+          <div key={a.id} className="flex items-center gap-2 mb-1.5">
+            <select className="inp text-xs flex-1"
+              value={a.invoiceId ? `i:${a.invoiceId}` : `p:${a.phaseId || ''}`}
+              onChange={e => {
+                const val = e.target.value;
+                if (val.startsWith('i:')) {
+                  const inv = live.find(x => x.id === val.slice(2));
+                  setAlloc(a.id, { invoiceId: inv?.id, phaseId: inv?.phaseId });
+                } else setAlloc(a.id, { invoiceId: undefined, phaseId: val.slice(2) });
+              }}>
+              <optgroup label="Phase">
+                {project.phases.map(ph => <option key={ph.id} value={`p:${ph.id}`}>{ph.name}</option>)}
+              </optgroup>
+              <optgroup label="Invoice">
+                {live.map(i => {
+                  const s2 = invoiceSettlement(i, payments.filter(x => x.id !== f.id));
+                  return <option key={i.id} value={`i:${i.id}`}>{i.number} — {money(s2.balance)} outstanding</option>;
+                })}
+              </optgroup>
+            </select>
+            <input type="number" step="0.01" className="inp text-xs w-32 text-right" value={a.amount || ''}
+              onChange={e => setAlloc(a.id, { amount: Number(e.target.value) || 0 })} />
+            <button onClick={() => dropAlloc(a.id)} className="text-xs text-red-600 px-1">✕</button>
+          </div>
+        ))}
+
+        <div className="mt-2 flex items-center justify-between text-xs border-t pt-2">
+          <span className="text-gray-500">Allocated {money(allocatedTotal(f))} of {money(f.amount || 0)}</span>
+          <span className="font-bold tabular-nums" style={{ color: remainder < -0.01 ? '#a03030' : remainder > 0.01 ? '#8a6100' : '#1c6b3a' }}>
+            {remainder < -0.01 ? `${money(-remainder)} over-allocated` : remainder > 0.01 ? `${money(remainder)} unapplied` : 'fully allocated'}
+          </span>
+        </div>
+        {v.errors.map((e, i) => <div key={i} className="mt-2 text-xs rounded px-2.5 py-1.5" style={{ background: '#fdeaea', color: '#a03030' }}>{e}</div>)}
+        {v.warnings.map((w, i) => <div key={i} className="mt-2 text-xs rounded px-2.5 py-1.5" style={{ background: '#fdf3e0', color: '#8a6100' }}>{w}</div>)}
+
+        <div className="flex items-center justify-between gap-2 mt-4">
+          <div>
+            {payment.amount > 0 && !payment.voided && (
+              <button onClick={() => { const r = window.prompt('Reason for voiding this payment (required):', ''); if (r && r.trim().length >= 3) onVoid(r.trim()); }}
+                className="text-xs px-2.5 py-1.5 rounded border font-semibold text-red-700 border-red-200">Void payment</button>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="text-xs px-3 py-1.5 rounded border font-semibold">Cancel</button>
+            <button onClick={() => onSave(f)} disabled={!v.ok}
+              className="text-xs px-3 py-1.5 rounded text-white font-semibold disabled:opacity-40"
+              style={{ backgroundColor: PALERMO.gold }}>Save payment</button>
+          </div>
+        </div>
+        {(f.audit || []).length > 0 && (
+          <div className="mt-3 pt-2 border-t">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">History</div>
+            {(f.audit || []).slice().reverse().map((a, i) => (
+              <div key={i} className="text-[11px] text-gray-600">
+                {fmtDate(a.at)} · {a.byName || a.by} · {a.detail}
+                {a.from && a.to && <span className="text-gray-400"> ({a.from} → {a.to})</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function PhaseEditForm({ phase, hasBilling, removable, currentUser, onClose, onSave, onRemove }: {
   phase: ContractingPhase; hasBilling: boolean; removable: boolean; currentUser: { id: string; name: string };
   onClose: () => void; onSave: (p: ContractingPhase) => void; onRemove: () => void;

@@ -1888,6 +1888,57 @@ export interface ContractingInvoice {
   createdAt?: number;
 }
 
+// ── PAYMENTS ───────────────────────────────────────────────────────────────
+// Money that actually arrived, and which invoices it settled. See
+// lib/contractingPayments for the four decisions this shape encodes.
+export type ContractingPaymentMethod =
+  'cheque' | 'etransfer' | 'eft' | 'cash' | 'card' | 'other';
+
+// An audit line on anything money-shaped: who, when, and before → after.
+export interface ContractingMoneyAudit {
+  at: number;
+  by: string;
+  byName?: string;
+  action: 'created' | 'edited' | 'voided' | 'allocated';
+  detail: string;
+  from?: string;
+  to?: string;
+}
+
+export interface ContractingPaymentAllocation {
+  id: string;
+  // An allocation names an INVOICE (most specific) or just a PHASE. An
+  // invoice allocation also carries its phaseId so a phase rollup never has
+  // to walk back through the invoice list.
+  invoiceId?: string;
+  phaseId?: string;
+  amount: number;                 // WITH HST — the money that actually moved
+}
+
+export interface ContractingPayment {
+  id: string;
+  projectId: string;
+  receivedAt: number;
+  amount: number;                 // WITH HST
+  method: ContractingPaymentMethod;
+  reference?: string;             // cheque number, e-transfer id
+  note?: string;
+  allocations: ContractingPaymentAllocation[];
+  // Migrated from the old boolean paid flag rather than entered from a real
+  // cheque. Shown as "reconstructed" everywhere until somebody replaces it.
+  reconstructed?: boolean;
+  // VOID, never delete — same model as invoices.
+  voided?: boolean;
+  voidReason?: string;
+  voidedBy?: string;
+  voidedAt?: number;
+  createdBy?: { email: string; name: string };
+  createdAt?: number;
+  updatedBy?: { email: string; name: string };
+  updatedAt?: number;
+  audit?: ContractingMoneyAudit[];
+}
+
 // Two-state model: in progress → complete. Legacy 'open' is read-migrated to
 // 'in_progress' by woStatus() in lib/contracting.
 export type ContractingWorkOrderStatus = 'open' | 'in_progress' | 'done';
@@ -2865,6 +2916,7 @@ export interface AppData {
   contractingTimeEntries?: Record<string, ContractingTimeEntry>;
   contractingProgressReports?: Record<string, ContractingProgressReport>;
   contractingInvoices?: Record<string, ContractingInvoice>;
+  contractingPayments?: Record<string, ContractingPayment>;
   contractingWorkOrders?: Record<string, ContractingWorkOrder>;
   contractingShoppingList?: Record<string, ContractingShoppingItem>;
   contractingPersonalItems?: Record<string, ContractingPersonalItem>;
