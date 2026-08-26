@@ -10,7 +10,11 @@
 // and sizing a bonus adjustment against hours that never existed.
 import {test} from "vitest";
 import assert from "node:assert/strict";
-import {conflictReportableBH, ledgerOutstandingBH} from "./conflictMeasure";
+import {
+  conflictReportableBH,
+  ledgerOutstandingBH,
+  multiDayReportableBH,
+} from "./conflictMeasure";
 
 const c = (
   isComplete: boolean, storedBH: number, jobberShareBH: number,
@@ -68,4 +72,52 @@ test("over-credited clamps at zero, never negative", () => {
 test("missing history and junk entries are tolerated", () => {
   assert.equal(ledgerOutstandingBH(5, null), 5);
   assert.equal(ledgerOutstandingBH(5, [{}, {creditedBH: undefined}]), 5);
+});
+
+console.log("\nMulti-day: the row is a SLICE, the title is the WHOLE job");
+test("THE SECOND BUG: a fully-credited multi-day job is no conflict", () => {
+  // Ken Kopechanski garden bed re-grade: 14.2 BH credited 4.97 + 7.1 + 2.13
+  // across 08-20/24/25, ledger complete. The old comparison read this day's
+  // 2.13 slice against the 14.2 whole-job total and called 12.1 BH withheld —
+  // on TWO separate days. Nothing was ever owed.
+  const hist = [
+    {creditedBH: 4.97}, {creditedBH: 7.1}, {creditedBH: 2.13},
+  ];
+  const r = multiDayReportableBH(
+    {storedSliceBH: 2.13, ledgerTotalBH: 14.2}, hist,
+  );
+  assert.equal(r, 0);
+});
+test("every day the job touched reports nothing, not just one", () => {
+  const hist = [
+    {creditedBH: 4.97}, {creditedBH: 7.1}, {creditedBH: 2.13},
+  ];
+  for (const slice of [4.97, 7.1, 2.13]) {
+    const r = multiDayReportableBH(
+      {storedSliceBH: slice, ledgerTotalBH: 14.2}, hist,
+    );
+    assert.equal(r, 0, `slice ${slice} should not report`);
+  }
+});
+test("a genuine multi-day shortfall reports slice + outstanding", () => {
+  // Scope moved to 20 after 14.2 was credited: 5.8 still owed, and this
+  // day's row should become its 2.13 slice plus that 5.8.
+  const hist = [
+    {creditedBH: 4.97}, {creditedBH: 7.1}, {creditedBH: 2.13},
+  ];
+  const r = multiDayReportableBH(
+    {storedSliceBH: 2.13, ledgerTotalBH: 20}, hist,
+  );
+  assert.equal(r, 7.93);
+});
+test("with credit on OTHER days, the report is below the job total", () => {
+  // 08-20 and 08-24 already took 4.97 + 7.1; only 2.13 is still owed. This
+  // day's row should read its own 0 slice plus that 2.13 — NOT the 14.2
+  // whole-job total, which is what the old comparison produced.
+  const hist = [{creditedBH: 4.97}, {creditedBH: 7.1}];
+  const r = multiDayReportableBH(
+    {storedSliceBH: 0, ledgerTotalBH: 14.2}, hist,
+  );
+  assert.equal(r, 2.13);
+  assert.ok(r < 14.2);
 });

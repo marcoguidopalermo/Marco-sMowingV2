@@ -52,3 +52,23 @@ export function ledgerOutstandingBH(
     .reduce((sum, h) => sum + (Number(h.creditedBH) || 0), 0);
   return Math.max(0, round2((Number(totalBH) || 0) - credited));
 }
+
+/**
+ * Conflict figure for a visit that has a MULTI-DAY ledger. The crew-day row
+ * holds this day's slice; the visit title holds the whole job. Comparing them
+ * reports the gap as withheld BH on every day the job touched, so the ledger
+ * decides: nothing owed means no conflict.
+ * @param {object} input The day's slice and the ledger.
+ * @param {number} input.storedSliceBH BH on this crew-day's row.
+ * @param {number} input.ledgerTotalBH The ledger's current scope.
+ * @param {Array} history Completion entries across all days.
+ * @return {number} The corrected newBH, or 0 when there is no conflict.
+ */
+export function multiDayReportableBH(
+  input: { storedSliceBH: number; ledgerTotalBH: number },
+  history: Array<{ creditedBH?: number }> | null | undefined,
+): number {
+  const owed = ledgerOutstandingBH(input.ledgerTotalBH, history);
+  if (owed <= 0) return 0;
+  return round2((Number(input.storedSliceBH) || 0) + owed);
+}

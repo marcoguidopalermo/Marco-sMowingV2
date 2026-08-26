@@ -1,5 +1,9 @@
 import {onCall, HttpsError} from "firebase-functions/v2/https";
-import {conflictReportableBH, ledgerOutstandingBH} from "./conflictMeasure.js";
+import {
+  conflictReportableBH,
+  ledgerOutstandingBH,
+  multiDayReportableBH,
+} from "./conflictMeasure.js";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
@@ -1867,7 +1871,26 @@ async function runPerformanceSync(args: {
             );
             if (!existingRow) continue;
             const oldBH = Number(existingRow.bh) || 0;
-            const newBH = shareForCrew(v.id, crew.id, parsedConflict.bh);
+            let newBH = shareForCrew(v.id, crew.id, parsedConflict.bh);
+            // MULTI-DAY JOBS: the crew-day row holds THIS DAY'S SLICE, while
+            // the title holds the WHOLE job. Comparing them reports the
+            // difference as withheld BH on every single day the job touched.
+            // Ken Kopechanski - Garden bed re-grade (14.2 BH over 08-20/24/25,
+            // credited 4.97 + 7.1 + 2.13 = 14.2, ledger complete, nothing
+            // owed) was flagged on two separate days as 12.1 and 7.1 BH
+            // "withheld". The ledger is the authority on what is still owed:
+            // if it owes nothing there is no conflict, and if it does owe, the
+            // shortfall is that outstanding amount on top of this day's slice
+            // — never the whole-job total.
+            const mdjLedger = multiDayJobs[v.id];
+            if (mdjLedger) {
+              const corrected = multiDayReportableBH(
+                {storedSliceBH: oldBH, ledgerTotalBH: mdjLedger.totalBH},
+                mdjLedger.completionHistory,
+              );
+              if (corrected === 0) continue;
+              newBH = corrected;
+            }
             if (conflictReportableBH({
               isComplete: mv.isComplete,
               storedBH: oldBH,
