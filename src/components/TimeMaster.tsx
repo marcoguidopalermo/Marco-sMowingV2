@@ -940,6 +940,14 @@ export default function TimeMaster({
     // Review flag: this punch sits on a day that totals over the threshold.
     const overHours = entryIsOverHours(entry, appData.timeEntries, hoursThreshold);
     const canEdit = canModify(entry) && !rowLock.locked;
+    // DELETE SURVIVES THE LOCK FOR AN ADMIN. Withdrawing both buttons on a
+    // locked row made the admin override in requestDelete unreachable: there
+    // was no button to press, so a duplicate punch on an approved day — double
+    // pay — had no route out of the UI at all, whatever the code allowed.
+    // Editing stays withdrawn (it moves payroll without moving the crew-day);
+    // removing a duplicate is the case that must never be a dead end.
+    const canDelete = canModify(entry) && (!rowLock.locked || isAdmin);
+    const deleteIsOverride = canDelete && rowLock.locked;
     const canNote = canAddNoteToEntry(entry);
     const editorName = entry.editedBy
       ? (allUsers.find(u => u.email.toLowerCase() === (entry.editedBy || '').toLowerCase())?.name || entry.editedBy)
@@ -1037,8 +1045,16 @@ export default function TimeMaster({
                 <Edit className="w-3.5 h-3.5" />
               </button>
             )}
-            {canEdit && (
-              <button onClick={() => requestDelete(entry)} title="Delete entry" className="p-1.5 bg-rose-50 border border-rose-200 rounded hover:bg-rose-100 text-rose-600">
+            {canDelete && (
+              <button
+                onClick={() => requestDelete(entry)}
+                title={deleteIsOverride
+                  ? `${rowLock.message || 'This day is locked.'} As an admin you can still remove a duplicate — you will be asked for a reason.`
+                  : 'Delete entry'}
+                className={`p-1.5 rounded border ${deleteIsOverride
+                  ? 'bg-amber-50 border-amber-300 text-amber-700 hover:bg-amber-100'
+                  : 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100'}`}
+              >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}

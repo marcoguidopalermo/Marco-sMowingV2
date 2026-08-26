@@ -2795,6 +2795,21 @@ export default function App() {
       // to the payload only before the first snapshot, which is the seed path
       // writing an initial roster into a document that does not exist yet.
       employees: serverEmployeesRef.current ?? safeData.employees,
+      // ADMIN EMAILS — the flat list the efficiencyAdjustments Firestore rule
+      // reads via isContentAdmin(). Rules cannot search an array of employee
+      // maps for systemRole, so this mirror IS the gate on a collection that
+      // feeds bonus. saveEmployees writes it in the same targeted update as
+      // the roster, but a whole-document setDoc replaces the document, and
+      // this field was in no client's appData — so every ordinary save
+      // silently DELETED it. The doc has been without it, which means the rule
+      // has been denying every admin except the super admin.
+      //
+      // Derived here from the SAME roster this write is about to persist, so
+      // it cannot drift from it and every save self-heals the field. Never
+      // taken from the caller: a stale client cannot narrow who is an admin.
+      adminEmails: adminEmailsFrom(
+        (serverEmployeesRef.current ?? safeData.employees) as Employee[],
+      ),
       // Likewise: a whole-document save can no longer change any setting, any
       // visit's BH split, or any pay chunk.
       settings: serverSettingsRef.current ?? safeData.settings,

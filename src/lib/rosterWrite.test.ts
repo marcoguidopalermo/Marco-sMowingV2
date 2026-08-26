@@ -170,3 +170,29 @@ test('a roster with no admins yields an empty list, not a wrong one', () => {
   assert.deepEqual(adminEmailsFrom([{ systemRole: 'manager', email: 'm@x.test' }]), []);
   assert.deepEqual(adminEmailsFrom(undefined), []);
 });
+
+console.log('\nThe mirror is DERIVED, never carried');
+test('THE WIPE: the list is rebuilt from whatever roster is being written', () => {
+  // appData.adminEmails was absent from the document for an unknown period.
+  // saveEmployees wrote it in a targeted update, but the field was in no
+  // client's appData, and syncToCloud replaces the whole document — so every
+  // ordinary save deleted it. Verified against the live rules: with the field
+  // absent, isContentAdmin() denied Dave (a real admin); with it present, he
+  // was allowed. A missing mirror is a lockout, exactly as this file warns.
+  //
+  // The fix derives it inside the write from the same roster being persisted,
+  // so any save restores it and it cannot drift from the roster.
+  const roster = [
+    { systemRole: 'admin', linkedUserEmail: 'Office@Marcosmowing.com ' },
+    { systemRole: 'admin', email: 'anthonypalermo23@hotmail.com' },
+    { systemRole: 'manager', email: 'liamroberta@gmail.com' },
+    { systemRole: 'worker', email: 'nobody@x.test' },
+  ];
+  assert.deepEqual(adminEmailsFrom(roster), [
+    'anthonypalermo23@hotmail.com', 'office@marcosmowing.com',
+  ]);
+});
+test('an empty or missing roster yields an empty list, not a crash', () => {
+  assert.deepEqual(adminEmailsFrom([]), []);
+  assert.deepEqual(adminEmailsFrom(undefined), []);
+});
