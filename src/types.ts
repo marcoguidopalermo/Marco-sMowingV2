@@ -1907,12 +1907,52 @@ export interface ContractingMoneyAudit {
 
 export interface ContractingPaymentAllocation {
   id: string;
-  // An allocation names an INVOICE (most specific) or just a PHASE. An
+  // An allocation names an INVOICE (most specific), a PHASE, or a CREDIT. An
   // invoice allocation also carries its phaseId so a phase rollup never has
   // to walk back through the invoice list.
   invoiceId?: string;
   phaseId?: string;
+  // Money received beyond what was invoiced. It lands on a credit record
+  // rather than on any invoice, so the payment still balances to the cent
+  // while none of it is counted as settling something that was never billed.
+  creditId?: string;
   amount: number;                 // WITH HST — the money that actually moved
+}
+
+// ── CUSTOMER CREDIT ────────────────────────────────────────────────────────
+// Money on account that has NOT been invoiced against. Its own record type on
+// purpose: it is not revenue and it is not a payment against any invoice, so
+// it must not sit in either total. No HST — nothing has been billed, so there
+// is nothing to charge tax on. It shows beneath Balance Due, and is drawn down
+// by applying it to a future invoice.
+export interface ContractingCreditApplication {
+  id: string;
+  invoiceId: string;
+  amount: number;
+  at: number;
+  by: string;
+  byName?: string;
+}
+
+export interface ContractingCredit {
+  id: string;
+  projectId: string;
+  receivedAt: number;
+  amount: number;                 // no HST — never invoiced
+  source: 'overpayment' | 'deposit' | 'adjustment';
+  /** The payment this credit arrived on, when it came in with one. */
+  paymentId?: string;
+  note?: string;
+  applications: ContractingCreditApplication[];
+  voided?: boolean;
+  voidReason?: string;
+  voidedBy?: string;
+  voidedAt?: number;
+  createdBy?: { email: string; name: string };
+  createdAt?: number;
+  updatedBy?: { email: string; name: string };
+  updatedAt?: number;
+  audit?: ContractingMoneyAudit[];
 }
 
 export interface ContractingPayment {
@@ -2917,6 +2957,7 @@ export interface AppData {
   contractingProgressReports?: Record<string, ContractingProgressReport>;
   contractingInvoices?: Record<string, ContractingInvoice>;
   contractingPayments?: Record<string, ContractingPayment>;
+  contractingCredits?: Record<string, ContractingCredit>;
   contractingWorkOrders?: Record<string, ContractingWorkOrder>;
   contractingShoppingList?: Record<string, ContractingShoppingItem>;
   contractingPersonalItems?: Record<string, ContractingPersonalItem>;

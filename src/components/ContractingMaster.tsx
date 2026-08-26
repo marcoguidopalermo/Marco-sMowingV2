@@ -10,7 +10,7 @@ import {
   ContractingProject, ContractingPhase, ContractingChecklistItem, ContractingTimeEntry,
   ContractingProgressReport, ContractingReceipt, ContractingInvoice, ContractingWorkOrder,
   ContractingShoppingItem, ContractingRateCard, ContractingBillingRole, ContractingStatus,
-  ContractingPayment, ContractingPaymentAllocation,
+  ContractingPayment, ContractingPaymentAllocation, ContractingCredit,
   ContractingProperty, ContractingSupplier, ContractingPersonalItem, ContractingPhaseType, Employee, StoredFile, TimeEntry,
   ContractingUnit, ContractingTenancy, ContractingTenant, ContractingTenancyStatus,
   ContractingMortgage,
@@ -27,7 +27,7 @@ import {
 import ContractingStatementDocument from './ContractingStatementDocument';
 import {
   invoiceSettlement, phaseSettlement, projectSettlement, statementRows,
-  unappliedAmount, validatePayment, allocatedTotal,
+  unappliedAmount, validatePayment, allocatedTotal, creditRemaining,
 } from '../lib/contractingPayments';
 import type { ContractingDeposit } from '../types';
 import {
@@ -35,7 +35,7 @@ import {
   computeReportTotals, labourForReport, phaseBillables, phaseReadyToBill, withHst,
   PALERMO, phaseHasInvoicedBilling, phaseIsRemovable, rateMapFor,
   projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
-  projectBillables, projectCompletionPct, woAssignees, woIsAssignedTo,
+  projectBillables, projectCompletionPct, fixedCompletionPct, woAssignees, woIsAssignedTo,
   reportIsDeletable, woStatus, woIsOverdue, compareWorkOrders, woWeekStats, nextProgNumber,
   isContractingWorker,
 } from '../lib/contracting';
@@ -77,6 +77,9 @@ interface Props {
   onVoidPayment: (id: string, reason: string) => void;
   onPayInFull: (invoiceId: string, method: ContractingPayment['method'], reference?: string) => void;
   onMigratePaidFlags: (projectId: string) => void;
+  credits: Record<string, ContractingCredit>;
+  onSaveCredit: (c: ContractingCredit) => Promise<boolean>;
+  onApplyCredit: (creditId: string, invoiceId: string, amount: number) => void;
   onPrintStatement: (projectId: string) => void;
   onDiscardReport: (reportId: string) => void;
   onDeleteReport: (reportId: string) => void;
@@ -126,7 +129,7 @@ interface Nav {
 
 // Base context (handlers + identity) minus the collection maps — inner
 // components re-declare only the (array-shaped) collections they actually read.
-type Ctx = Omit<Props, 'projects' | 'timeEntries' | 'reports' | 'invoices' | 'workOrders' | 'shoppingList' | 'payments'>;
+type Ctx = Omit<Props, 'projects' | 'timeEntries' | 'reports' | 'invoices' | 'workOrders' | 'shoppingList' | 'payments' | 'credits'>;
 
 const uid = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 const fmtDate = (ms?: number) => ms ? new Date(ms).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
@@ -224,7 +227,7 @@ export default function ContractingMaster(props: Props) {
           and an open keyboard. */}
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
       <div className="p-3 md:p-4 max-w-5xl mx-auto pb-24 md:pb-8">
-        {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} payments={Object.values(props.payments || {})} projects={projects} reports={reports} timeEntries={timeEntries} rateOverrides={rateOverrides} nav={nav} focusProjectId={focusProjectId} onConsumeFocus={() => setFocusProjectId(null)} />}
+        {tab === 'projects' && canManage && <ProjectsTab {...props} rates={rates} invoices={invoices} payments={Object.values(props.payments || {})} credits={Object.values(props.credits || {})} projects={projects} reports={reports} timeEntries={timeEntries} rateOverrides={rateOverrides} nav={nav} focusProjectId={focusProjectId} onConsumeFocus={() => setFocusProjectId(null)} />}
         {tab === 'reports' && canManage && <ReportsTab {...props} rates={rates} reports={reports} timeEntries={timeEntries} contractors={contractors} projects={projects} invoices={invoices} rateOverrides={rateOverrides} nav={nav} />}
         {tab === 'invoices' && canManage && <InvoicesTab {...props} invoices={invoices} reports={reports} projects={projects} nav={nav} initialFilter={invoiceFilter} />}
         {tab === 'home' && <HomeTab {...props} hoursCards={props.hoursCards} personalItems={props.personalItems} shoppingList={props.shoppingList} workOrders={props.workOrders} onGoToMyWorkOrders={goToMyWorkOrders} />}
@@ -469,7 +472,7 @@ function MaterialMini({ items, me, canDeleteAny, onSave, onDelete }: { items: Co
 }
 
 // ─────────────────────────────────────────────────────────── PROJECTS ──────
-function ProjectsTab(p: Ctx & { rates: ContractingRateCard; invoices: ContractingInvoice[]; payments: ContractingPayment[]; projects: ContractingProject[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; focusProjectId: string | null; onConsumeFocus: () => void }) {
+function ProjectsTab(p: Ctx & { rates: ContractingRateCard; invoices: ContractingInvoice[]; payments: ContractingPayment[]; credits: ContractingCredit[]; projects: ContractingProject[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; focusProjectId: string | null; onConsumeFocus: () => void }) {
   // Board opens to the only active client project (Feaver Rd) by default.
   const feaver = p.projects.find(x => /feaver/i.test(x.name)) || (p.projects.filter(x => x.status !== 'closed').length === 1 ? p.projects.find(x => x.status !== 'closed') : undefined);
   const [selId, setSelId] = useState<string | null>(p.focusProjectId || feaver?.id || null);
@@ -566,7 +569,7 @@ function DeleteProjectForm({ project, onClose, onDelete }: { project: Contractin
   );
 }
 
-function ProjectDetail(p: Ctx & { project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; payments: ContractingPayment[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; onBack: () => void }) {
+function ProjectDetail(p: Ctx & { project: ContractingProject; rates: ContractingRateCard; invoices: ContractingInvoice[]; payments: ContractingPayment[]; credits: ContractingCredit[]; reports: ContractingProgressReport[]; timeEntries: ContractingTimeEntry[]; rateOverrides: Record<string, number>; nav: Nav; onBack: () => void }) {
   const { project, canManage } = p;
   const [addingPhase, setAddingPhase] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -576,7 +579,11 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
   const [merging, setMerging] = useState(false);
   const removable = projectIsRemovable(project.id, p.invoices, p.reports, p.timeEntries);
   const rollup = projectBillables(project, p.invoices, p.reports);
-  const blendedPct = projectCompletionPct(project);
+  // FIXED-COST completion, not a blended average of manual percentages — see
+  // fixedCompletionPct. Falls back to the blended figure for a project with no
+  // fixed phases, which has no contract denominator to measure against.
+  const fixedPct = fixedCompletionPct(project, p.invoices);
+  const blendedPct = fixedPct ?? projectCompletionPct(project);
 
   return (
     <div>
@@ -632,13 +639,17 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
         <div className="mt-2 pt-2 border-t border-white/10 text-xs" style={{ color: '#D5DBDB' }}>
           Remaining expected: <b style={{ color: 'white' }}>{money(rollup.remainingFixedPreHst)}</b> pre-HST <span className="opacity-70">({money(rollup.remainingFixedWithHst)} incl.)</span> in fixed completion balances{rollup.hasOpenTm ? ' · open T&M accrues on top' : ''}.
         </div>
-        {/* Blended completion — simple average of the phases' manual %. */}
+        {/* Fixed-cost completion: contracted fixed work billed. Open T&M is
+            reported alongside rather than averaged in. */}
         <div className="mt-2 flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wide" style={{ color: '#AEB6BF' }}>Progress</span>
+          <span className="text-[10px] uppercase tracking-wide" style={{ color: '#AEB6BF' }}>
+            {fixedPct == null ? 'Progress' : 'Fixed-cost complete'}
+          </span>
           <div className="flex-1 h-2 rounded-full overflow-hidden bg-black/25">
             <div className="h-full rounded-full" style={{ width: `${blendedPct}%`, backgroundColor: PALERMO.gold }} />
           </div>
           <span className="text-xs font-bold" style={{ color: PALERMO.gold }}>{blendedPct}%</span>
+          {rollup.hasOpenTm && <span className="text-[10px]" style={{ color: '#AEB6BF' }}>+ open T&amp;M</span>}
         </div>
       </div>
 
@@ -646,7 +657,9 @@ function ProjectDetail(p: Ctx & { project: ContractingProject; rates: Contractin
         project={project}
         invoices={p.invoices}
         payments={p.payments}
+        credits={p.credits}
         canManage={canManage}
+        onApplyCredit={p.onApplyCredit}
         onSavePayment={p.onSavePayment}
         onVoidPayment={p.onVoidPayment}
         onPayInFull={p.onPayInFull}
@@ -720,7 +733,9 @@ function BillingPanel(p: {
   project: ContractingProject;
   invoices: ContractingInvoice[];
   payments: ContractingPayment[];
+  credits: ContractingCredit[];
   canManage: boolean;
+  onApplyCredit: Props['onApplyCredit'];
   onSavePayment: Props['onSavePayment'];
   onVoidPayment: Props['onVoidPayment'];
   onPayInFull: Props['onPayInFull'];
@@ -730,7 +745,8 @@ function BillingPanel(p: {
   const { project } = p;
   const invoices = p.invoices.filter(i => i.projectId === project.id);
   const payments = p.payments.filter(x => x.projectId === project.id);
-  const st = projectSettlement(project, invoices, payments);
+  const credits = p.credits.filter(c => c.projectId === project.id);
+  const st = projectSettlement(project, invoices, payments, credits);
   const [openPhase, setOpenPhase] = useState<string | null>(null);
   const [editing, setEditing] = useState<ContractingPayment | null>(null);
   const [view, setView] = useState<'summary' | 'statement'>('summary');
@@ -862,6 +878,49 @@ function BillingPanel(p: {
               </tbody>
             </table>
           </div>
+          {/* CREDIT ON ACCOUNT — a distinct line beneath the totals, never a
+              row in the activity list. It is not revenue and settles no
+              invoice, and it carries no HST because nothing has been billed
+              against it. Applying it draws it down and reduces that invoice. */}
+          {credits.filter(c => creditRemaining(c) > 0.01).map(c => {
+            const left = creditRemaining(c);
+            const openInv = invoices.filter(
+              i => !i.voided && invoiceSettlement(i, payments, credits).balance > 0.01);
+            return (
+              <div key={c.id} className="mt-2 rounded border-2 px-3 py-2 flex items-center justify-between flex-wrap gap-2"
+                style={{ borderColor: PALERMO.gold, background: '#fdfaf0' }}>
+                <div className="text-xs">
+                  <b style={{ color: PALERMO.slate }}>Credit on account · {money(left)}</b>
+                  <div className="text-gray-600">
+                    {c.note || 'Unapplied customer credit'} · received {fmtDate(c.receivedAt)} · no HST
+                  </div>
+                </div>
+                {p.canManage && (
+                  openInv.length > 0 ? (
+                    <button
+                      onClick={() => {
+                        const opts = openInv.map((i, n) => `${n + 1}. ${i.number} — ${money(invoiceSettlement(i, payments, credits).balance)} outstanding`).join('\n');
+                        const pick = window.prompt(`Apply credit to which invoice?\n\n${opts}\n\nEnter a number:`, '1');
+                        const idx = Number(pick) - 1;
+                        const inv = openInv[idx];
+                        if (!inv) return;
+                        const owing = invoiceSettlement(inv, payments, credits).balance;
+                        const suggested = Math.min(left, owing).toFixed(2);
+                        const amt = window.prompt(`Apply how much to ${inv.number}? (max ${money(Math.min(left, owing))})`, suggested);
+                        const n = Number(amt);
+                        if (Number.isFinite(n) && n > 0) p.onApplyCredit(c.id, inv.id, n);
+                      }}
+                      className="text-[11px] px-2.5 py-1.5 rounded text-white font-semibold"
+                      style={{ backgroundColor: PALERMO.slate }}>
+                      Apply to an invoice
+                    </button>
+                  ) : (
+                    <span className="text-[11px] text-gray-500 italic">Holds until the next progress invoice.</span>
+                  )
+                )}
+              </div>
+            );
+          })}
           {st.unappliedWithHst > 0.01 && (
             <div className="mt-2 text-xs rounded px-2.5 py-1.5" style={{ background: '#fdf3e0', color: '#8a6100' }}>
               {money(st.unappliedWithHst)} received is not applied to any invoice or phase. It stays on the account and shows on the statement.
@@ -878,7 +937,7 @@ function BillingPanel(p: {
           </div>
           <div className="border rounded overflow-x-auto">
             <ContractingStatementDocument
-              project={project} invoices={invoices} payments={payments} asOf={Date.now()}
+              project={project} invoices={invoices} payments={payments} credits={credits} asOf={Date.now()}
             />
           </div>
         </div>

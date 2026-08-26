@@ -24,7 +24,7 @@ import {
   DeletionAuditEntry, PartsOrder, MaintenanceItem, MechanicPayChunk,
   TaskMasterTask, TaskMasterNote, TimeOffRequest, MultiDayJob, JobberBhConflict, MonthlySummary,
   RoleMasterRole, RoleMasterDuty, RoleMasterResponsibility, RoleMasterTemplate, RoleMasterPolicy, RoleMasterPolicyRequest, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, RoleTaskInstance,
-  ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingPayment, ContractingMoneyAudit, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry,
+  ContractingProject, ContractingTimeEntry, ContractingProgressReport, ContractingInvoice, ContractingPayment, ContractingCredit, ContractingMoneyAudit, ContractingWorkOrder, ContractingShoppingItem, ContractingPersonalItem, ContractingRateCard, TimeEntry,
   CapacityForecast, BonusPayoutRecord, HourlyEstimate, SnowContract,
   MarketingContentItem, MarketingShot, MarketingLink,
   MarketingFeedbackEntry, MarketingClipThread, MarketingClipStatus,
@@ -131,6 +131,7 @@ import ContractingStatementDocument from './components/ContractingStatementDocum
 import { adminEmailsFrom, computeRosterUpdate } from './lib/rosterWrite';
 import {
   validatePayment, reconstructPaymentsFromPaidFlags, invoiceSettlement,
+  planCreditApplication,
 } from './lib/contractingPayments';
 import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './lib/scheduledBulletins';
 import { timeEntryLock, crewDayCorrectionTarget } from './lib/timeEntryLock';
@@ -205,7 +206,7 @@ const SUBCOLLECTION_ONLY_FIELDS = [
   'salesMasterQuotes',
   'snowQuotes', 'snowRateConfigs', 'lawnQuotes', 'lawnRateConfigs',
   'contractingProjects', 'contractingTimeEntries', 'contractingProgressReports',
-  'contractingInvoices', 'contractingPayments', 'contractingWorkOrders', 'contractingShoppingList',
+  'contractingInvoices', 'contractingPayments', 'contractingCredits', 'contractingWorkOrders', 'contractingShoppingList',
   'contractingPersonalItems', 'contractingPropertyDocs',
   'marketingContent', 'marketingShots', 'marketingLinks', 'marketingMusic', 'marketingFeedback',
   'marketingClips', 'marketingPostQueue', 'marketingTodos',
@@ -434,6 +435,7 @@ export default function App() {
   const subContractingProgressReportsRef = useRef<Record<string, ContractingProgressReport>>({});
   const subContractingInvoicesRef = useRef<Record<string, ContractingInvoice>>({});
   const subContractingPaymentsRef = useRef<Record<string, ContractingPayment>>({});
+  const subContractingCreditsRef = useRef<Record<string, ContractingCredit>>({});
   const subContractingWorkOrdersRef = useRef<Record<string, ContractingWorkOrder>>({});
   const subContractingShoppingListRef = useRef<Record<string, ContractingShoppingItem>>({});
   const subContractingPersonalItemsRef = useRef<Record<string, ContractingPersonalItem>>({});
@@ -1304,6 +1306,7 @@ export default function App() {
           contractingProgressReports: subContractingProgressReportsRef.current,
           contractingInvoices: subContractingInvoicesRef.current,
           contractingPayments: subContractingPaymentsRef.current,
+          contractingCredits: subContractingCreditsRef.current,
           contractingWorkOrders: subContractingWorkOrdersRef.current,
           contractingShoppingList: subContractingShoppingListRef.current,
           contractingPersonalItems: subContractingPersonalItemsRef.current,
@@ -1935,6 +1938,7 @@ export default function App() {
     const c3 = mk('contractingProgressReports', subContractingProgressReportsRef, 'contractingProgressReports');
     const c4 = mk('contractingInvoices', subContractingInvoicesRef, 'contractingInvoices');
     const c4b = mk('contractingPayments', subContractingPaymentsRef, 'contractingPayments');
+    const c4c = mk('contractingCredits', subContractingCreditsRef, 'contractingCredits');
     const c5 = mk('contractingWorkOrders', subContractingWorkOrdersRef, 'contractingWorkOrders');
     const c6 = mk('contractingShoppingList', subContractingShoppingListRef, 'contractingShoppingList');
     const c7 = mk('contractingPersonalItems', subContractingPersonalItemsRef, 'contractingPersonalItems');
@@ -1991,7 +1995,7 @@ export default function App() {
       snap.forEach((d) => { const v = d.data() as CrewDayAudit; if (v && v.date) map[v.date] = v; });
       setCrewDayAudits(map);
     }, (err) => { console.error('crewDayAudits listen error:', err); });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c4b(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); m8(); hb1(); mg1(); ea1(); cf1(); ca1(); };
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); c1(); c2(); c3(); c4(); c4b(); c4c(); c5(); c6(); c7(); c8(); m1(); m2(); m3(); m4(); m5(); m6(); m7(); m8(); hb1(); mg1(); ea1(); cf1(); ca1(); };
   }, [user]);
 
   useEffect(() => {
@@ -5525,6 +5529,45 @@ export default function App() {
     showToastMsg(`${plan.invoiceCount} payments reconstructed — $${plan.afterPaidWithHst.toFixed(2)}, unchanged to the cent.`);
   };
 
+  const saveContractingCredit = async (credit: ContractingCredit): Promise<boolean> => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return false; }
+    const prev = subContractingCreditsRef.current[credit.id];
+    const now = Date.now();
+    const next: ContractingCredit = {
+      ...credit,
+      createdBy: prev?.createdBy || { email: displayEmail, name: displayName },
+      createdAt: prev?.createdAt || now,
+      updatedBy: { email: displayEmail, name: displayName },
+      updatedAt: now,
+      audit: [...(prev?.audit || []), moneyAuditLine(
+        prev ? 'edited' : 'created',
+        `Credit $${(Number(credit.amount) || 0).toFixed(2)} (${credit.source})`,
+      )],
+    };
+    await safeSetDoc(doc(roleColl('contractingCredits'), next.id), cleanRM(next));
+    await appendContractingAudit(prev ? 'credit.edit' : 'credit.create',
+      `Credit $${(Number(credit.amount) || 0).toFixed(2)} — ${credit.note || credit.source}`);
+    return true;
+  };
+
+  // APPLY A CREDIT to an invoice: reduces that invoice's balance and draws the
+  // credit down. Refused rather than clamped when it would over-apply.
+  const applyContractingCredit = async (creditId: string, invoiceId: string, amount: number) => {
+    if (!canManageContracting) { showToastMsg(PERMISSION_DENIED); return; }
+    const credit = subContractingCreditsRef.current[creditId];
+    const invoice = subContractingInvoicesRef.current[invoiceId];
+    if (!credit || !invoice) { showToastMsg('Credit or invoice not found.'); return; }
+    const plan = planCreditApplication(
+      credit, invoice, amount, Object.values(subContractingPaymentsRef.current),
+      { email: displayEmail, name: displayName }, Date.now(),
+    );
+    if (!plan.ok || !plan.credit) { showToastMsg(plan.error || 'Could not apply that credit.'); return; }
+    await safeSetDoc(doc(roleColl('contractingCredits'), creditId), cleanRM(plan.credit));
+    await appendContractingAudit('credit.apply',
+      `$${amount.toFixed(2)} of credit applied to ${invoice.number}`);
+    showToastMsg(`$${amount.toFixed(2)} applied to ${invoice.number}.`);
+  };
+
   const saveContractingWorkOrder = async (w: ContractingWorkOrder) => {
     await safeSetDoc(doc(roleColl('contractingWorkOrders'), w.id), cleanRM(w));
   };
@@ -7351,6 +7394,7 @@ export default function App() {
             project={proj}
             invoices={Object.values(subContractingInvoicesRef.current)}
             payments={Object.values(subContractingPaymentsRef.current)}
+            credits={Object.values(subContractingCreditsRef.current)}
             asOf={printingStatement.asOf}
             printMode
           />
@@ -8238,6 +8282,9 @@ export default function App() {
           onVoidPayment={voidContractingPayment}
           onPayInFull={payContractingInvoiceInFull}
           onMigratePaidFlags={migrateContractingPaidFlags}
+          credits={appData.contractingCredits || {}}
+          onSaveCredit={saveContractingCredit}
+          onApplyCredit={applyContractingCredit}
           onPrintStatement={(projectId) => {
             setPrintingStatement({ projectId, asOf: Date.now() });
             setTimeout(() => { window.print(); setPrintingStatement(null); }, 400);

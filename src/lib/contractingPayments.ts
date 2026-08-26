@@ -22,8 +22,8 @@
 //     deleting them. Money that arrived does not vanish because a document was
 //     voided — it becomes money looking for a home, which is the truth.
 import type {
-  ContractingInvoice, ContractingPayment, ContractingPaymentAllocation,
-  ContractingPhase, ContractingProject,
+  ContractingCredit, ContractingInvoice, ContractingPayment,
+  ContractingPaymentAllocation, ContractingPhase, ContractingProject,
 } from '../types';
 
 export const HST_PCT = 0.13;
@@ -31,6 +31,8 @@ export const HST_PCT = 0.13;
 export const MONEY_EPSILON = 0.01;
 
 const round2 = (n: number): number => Math.round((Number(n) || 0) * 100) / 100;
+const money = (n: number): string =>
+  `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const num = (v: unknown): number => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -89,8 +91,8 @@ export function validatePayment(
     }
   }
   for (const a of allocs) {
-    if (!a.invoiceId && !a.phaseId) {
-      errors.push('Every allocation must name an invoice or a phase.');
+    if (!a.invoiceId && !a.phaseId && !a.creditId) {
+      errors.push('Every allocation must name an invoice, a phase, or a credit.');
       break;
     }
   }
@@ -142,6 +144,7 @@ const paymentCounts = (p: ContractingPayment): boolean => !p.voided;
 export function invoiceSettlement(
   invoice: ContractingInvoice,
   payments: ContractingPayment[],
+  credits: ContractingCredit[] = [],
 ): InvoiceSettlement {
   const total = round2(num(invoice.total));
   let allocated = 0;
@@ -156,7 +159,9 @@ export function invoiceSettlement(
     }
     if (touched) paymentIds.push(p.id);
   }
-  allocated = round2(allocated);
+  // Credit APPLIED to this invoice settles it just as a payment does — the
+  // cash already arrived; applying it only decides which invoice it answers.
+  allocated = round2(allocated + creditAppliedToInvoice(invoice.id, credits));
   const balance = round2(total - allocated);
   let state: InvoicePaymentState;
   if (invoice.voided) state = 'unpaid';                    // contributes nothing
@@ -203,18 +208,20 @@ export function phaseSettlement(
   phase: ContractingPhase,
   invoices: ContractingInvoice[],
   payments: ContractingPayment[],
+  credits: ContractingCredit[] = [],
 ): PhaseSettlement {
   const mine = phaseInvoices(project.id, phase.id, invoices);
   let invPre = 0; let invFull = 0; let paid = 0;
   for (const inv of mine) {
     invPre += num(inv.amountPreHst);
     invFull += num(inv.total);
-    paid += invoiceSettlement(inv, payments).allocated;
+    paid += invoiceSettlement(inv, payments, credits).allocated;
   }
   // Payments allocated to the PHASE rather than to one of its invoices.
   for (const p of payments) {
     if (p.voided || p.projectId !== project.id) continue;
     for (const a of liveAllocations(p)) {
+      if (a.creditId) continue;                  // credit, not settlement
       if (a.invoiceId || a.phaseId !== phase.id) continue;
       paid += num(a.amount);
     }
@@ -238,27 +245,103 @@ export function phaseSettlement(
   };
 }
 
+// ── CREDIT ─────────────────────────────────────────────────────────────────
+
+export function creditApplied(c: Pick<ContractingCredit, 'applications'> | undefined | null): number {
+  return round2((c?.applications || []).reduce((s, a) => s + num(a.amount), 0));
+}
+
+/** What is left on a credit. A voided credit has nothing left, by definition. */
+export function creditRemaining(c: ContractingCredit | undefined | null): number {
+  if (!c || c.voided) return 0;
+  return round2(num(c.amount) - creditApplied(c));
+}
+
+export function creditOnAccount(projectId: string, credits: ContractingCredit[]): number {
+  return round2(credits
+    .filter(c => c.projectId === projectId)
+    .reduce((s, c) => s + creditRemaining(c), 0));
+}
+
+/**
+ * Applying a credit reduces an invoice's balance and draws the credit down.
+ * Refused rather than clamped when it would over-apply — the caller has to
+ * choose a real number.
+ */
+export function planCreditApplication(
+  credit: ContractingCredit,
+  invoice: ContractingInvoice,
+  amount: number,
+  payments: ContractingPayment[],
+  by: { email: string; name: string },
+  nowMs: number,
+): { ok: boolean; error?: string; credit?: ContractingCredit } {
+  const amt = round2(num(amount));
+  if (amt <= 0) return { ok: false, error: 'Enter an amount greater than $0.' };
+  const left = creditRemaining(credit);
+  if (amt - left > MONEY_EPSILON) {
+    return { ok: false, error: `Only $${left.toFixed(2)} is left on this credit.` };
+  }
+  const owing = invoiceSettlement(invoice, payments).balance
+    - creditAppliedToInvoice(invoice.id, [credit]);
+  if (amt - owing > MONEY_EPSILON) {
+    return { ok: false, error: `${invoice.number} only has $${round2(owing).toFixed(2)} outstanding.` };
+  }
+  return {
+    ok: true,
+    credit: {
+      ...credit,
+      applications: [...(credit.applications || []), {
+        id: `ccap-${nowMs}-${Math.random().toString(36).slice(2, 6)}`,
+        invoiceId: invoice.id, amount: amt, at: nowMs, by: by.email, byName: by.name,
+      }],
+      updatedBy: by,
+      updatedAt: nowMs,
+      audit: [...(credit.audit || []), {
+        at: nowMs, by: by.email, byName: by.name, action: 'allocated',
+        detail: `$${amt.toFixed(2)} of credit applied to ${invoice.number}`,
+      }],
+    },
+  };
+}
+
+export function creditAppliedToInvoice(invoiceId: string, credits: ContractingCredit[]): number {
+  let n = 0;
+  for (const c of credits) {
+    if (c.voided) continue;
+    for (const a of c.applications || []) if (a.invoiceId === invoiceId) n += num(a.amount);
+  }
+  return round2(n);
+}
+
 export interface ProjectSettlement {
   phases: PhaseSettlement[];
   contractTotalFixed: number;
   invoicedWithHst: number;
   paidWithHst: number;
   balanceWithHst: number;
-  /** Money received that is not pointed at any live invoice or phase. */
+  /** Money received that is not pointed at any live invoice, phase or credit. */
   unappliedWithHst: number;
+  /** Unapplied customer credit — NOT revenue, NOT settlement. */
+  creditOnAccount: number;
 }
 
 export function projectSettlement(
   project: ContractingProject,
   invoices: ContractingInvoice[],
   payments: ContractingPayment[],
+  credits: ContractingCredit[] = [],
 ): ProjectSettlement {
   const phases = (project.phases || []).map(
-    ph => phaseSettlement(project, ph, invoices, payments),
+    ph => phaseSettlement(project, ph, invoices, payments, credits),
   );
   const mine = payments.filter(p => !p.voided && p.projectId === project.id);
   const received = round2(mine.reduce((s, p) => s + num(p.amount), 0));
   const applied = round2(phases.reduce((s, p) => s + p.paidWithHst, 0));
+  // Money deliberately parked on a credit is APPLIED — it has a home. Only
+  // money pointing at nothing at all is unapplied.
+  const toCredit = round2(mine.reduce((s, p) => s + liveAllocations(p)
+    .filter(a => !!a.creditId).reduce((t, a) => t + num(a.amount), 0), 0));
   return {
     phases,
     contractTotalFixed: round2(phases.reduce((s, p) => s + (p.contractTotal || 0), 0)),
@@ -268,7 +351,8 @@ export function projectSettlement(
     // Everything received minus everything that landed on a live invoice or
     // phase. Picks up both an under-allocated payment AND (decision 4) money
     // released by voiding the invoice it was pointed at.
-    unappliedWithHst: round2(received - applied),
+    unappliedWithHst: round2(received - applied - toCredit),
+    creditOnAccount: creditOnAccount(project.id, credits),
   };
 }
 
@@ -313,13 +397,28 @@ export function statementRows(
   for (const p of payments) {
     if (p.voided || p.projectId !== project.id) continue;
     const ref = [p.method, p.reference].filter(Boolean).join(' ');
+    // ONLY THE SETTLEMENT PORTION BELONGS IN THE LEDGER. Money on a transfer
+    // that landed on a CREDIT settles no invoice, so crediting the full
+    // transfer here would drive the running balance below zero and contradict
+    // the Balance Due it is supposed to explain — Feaver Rd's Aug 21 transfer
+    // ended the statement at -$9,000.00 against a balance due of $0.00. The
+    // credit is reported beneath the balance instead, which is where money
+    // that has not been billed for belongs.
+    const toCredit = round2(liveAllocations(p)
+      .filter(a => !!a.creditId)
+      .reduce((t, a) => t + num(a.amount), 0));
+    const settling = round2(num(p.amount) - toCredit);
+    if (settling <= MONEY_EPSILON && toCredit > MONEY_EPSILON) continue;
     rows.push({
       kind: 'payment',
       at: num(p.receivedAt),
       ref: ref || 'payment',
-      description: p.note || 'Payment received, thank you',
+      description: (p.note || 'Payment received, thank you')
+        + (toCredit > MONEY_EPSILON
+          ? ` · ${money(round2(num(p.amount)))} received, ${money(toCredit)} held on account`
+          : ''),
       charge: 0,
-      credit: round2(num(p.amount)),
+      credit: settling,
       reconstructed: !!p.reconstructed,
       id: p.id,
     });

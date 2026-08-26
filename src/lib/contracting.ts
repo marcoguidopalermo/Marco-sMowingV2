@@ -230,6 +230,27 @@ export function projectCompletionPct(project: ContractingProject): number {
   return Math.round(sum / project.phases.length);
 }
 
+// FIXED-COST COMPLETION — how much of the CONTRACTED (fixed-price) work has
+// been billed. This is the honest headline for a project whose fixed phases
+// are closed: a blended average of manual per-phase percentages drags a fully
+// delivered contract down with the open T&M phase's own progress, so Feaver Rd
+// read 77% ((100 + 100 + 30) / 3) with both fixed phases complete and fully
+// invoiced. T&M has no denominator — it accrues on top and is reported
+// separately rather than being averaged into a number it cannot belong to.
+// Returns null when the project has no fixed phases at all.
+export function fixedCompletionPct(
+  project: ContractingProject, invoices: ContractingInvoice[],
+): number | null {
+  let contracted = 0; let billed = 0;
+  for (const ph of project.phases || []) {
+    if (ph.type !== 'fixed' || ph.fixedPrice == null) continue;
+    contracted += Number(ph.fixedPrice) || 0;
+    billed += phaseBillables(project.id, ph.id, invoices).invoicedPreHst;
+  }
+  if (contracted <= 0) return null;
+  return Math.min(100, Math.round((billed / contracted) * 100));
+}
+
 // A fixed phase is READY TO BILL when every REQUIRED checklist item is done.
 export function phaseReadyToBill(phase: ContractingPhase): boolean {
   const required = phase.checklist.filter(c => c.required);

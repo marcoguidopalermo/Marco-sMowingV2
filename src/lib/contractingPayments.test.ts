@@ -6,6 +6,7 @@ import {
   allocatedTotal, unappliedAmount, validatePayment, invoiceSettlement,
   phaseSettlement, projectSettlement, statementRows,
   reconstructPaymentsFromPaidFlags, MONEY_EPSILON,
+  creditRemaining, planCreditApplication,
 } from './contractingPayments';
 
 const inv = (o: any) => ({
@@ -180,4 +181,72 @@ test('after migrating, every migrated invoice derives as paid', () => {
   const invoices = [inv({ id: 'a', total: 56500, paid: true, paidAt: 1 })];
   const plan = reconstructPaymentsFromPaidFlags('p1', invoices, { email: 'm@x.test', name: 'M' }, 9_000);
   assert.equal(invoiceSettlement(invoices[0], plan.payments).state, 'paid');
+});
+
+console.log('\nCustomer credit — not revenue, not a payment against any invoice');
+const CRED = (o: any) => ({
+  id: 'c1', projectId: 'p1', receivedAt: 3_000, amount: 9000,
+  source: 'overpayment', applications: [], ...o,
+} as any);
+
+test('a credit allocation lets the payment balance without settling anything', () => {
+  // Feaver Rd's Aug 21 transfer: $177,536.34 against $168,536.34 of invoices.
+  const p = pay({ amount: 177536.34, allocations: [
+    alloc({ id: 'a', invoiceId: 'i1', amount: 168536.34 }),
+    alloc({ id: 'b', creditId: 'c1', amount: 9000 }),
+  ] });
+  const v = validatePayment(p, [inv({ id: 'i1', total: 168536.34 })]);
+  assert.equal(v.ok, true);
+  assert.equal(v.unapplied, 0, 'money parked on a credit is applied — it has a home');
+  assert.equal(v.warnings.length, 0);
+});
+test('credit money is NOT counted as paying its phase', () => {
+  const s = phaseSettlement(PROJECT, PROJECT.phases[0], [], [
+    pay({ amount: 9000, allocations: [alloc({ creditId: 'c1', phaseId: 'ph1', amount: 9000 })] }),
+  ]);
+  assert.equal(s.paidWithHst, 0);
+});
+test('credit shows on the project as credit, never as unapplied', () => {
+  const payments = [pay({ amount: 9000, allocations: [alloc({ creditId: 'c1', amount: 9000 })] })];
+  const st = projectSettlement(PROJECT, [], payments, [CRED({})]);
+  assert.equal(st.creditOnAccount, 9000);
+  assert.equal(st.unappliedWithHst, 0, 'it is not homeless money — it is on a credit');
+  assert.equal(st.paidWithHst, 0, 'and it is not revenue');
+});
+test('THE LEDGER RULE: the credit portion stays out of the activity list', () => {
+  // Crediting the whole transfer drove the running balance to -$9,000.00
+  // against a Balance Due of $0.00 — the statement contradicting itself.
+  const invoices = [inv({ id: 'i1', number: 'INV-1', issuedAt: 10, total: 168536.34 })];
+  const payments = [pay({ receivedAt: 20, amount: 177536.34, allocations: [
+    alloc({ id: 'a', invoiceId: 'i1', amount: 168536.34 }),
+    alloc({ id: 'b', creditId: 'c1', amount: 9000 }),
+  ] })];
+  const rows = statementRows(PROJECT, invoices, payments);
+  assert.equal(rows[1].credit, 168536.34, 'only the settling portion');
+  assert.equal(rows[rows.length - 1].balance, 0, 'the ledger closes at zero');
+  assert.match(rows[1].description, /\$177,536\.34 received, \$9,000\.00 held on account/);
+});
+test('a payment that is ENTIRELY credit does not appear in the ledger at all', () => {
+  const rows = statementRows(PROJECT, [], [pay({ amount: 9000, allocations: [alloc({ creditId: 'c1', amount: 9000 })] })]);
+  assert.equal(rows.length, 0);
+});
+
+console.log('\nApplying a credit draws it down and settles an invoice');
+test('applying reduces the invoice balance and the credit together', () => {
+  const future = inv({ id: 'fut', number: 'PROG-004', total: 5000 });
+  const plan = planCreditApplication(CRED({}), future, 5000, [], { email: 'm@x.test', name: 'M' }, 7_000);
+  assert.equal(plan.ok, true);
+  assert.equal(creditRemaining(plan.credit!), 4000);
+  assert.equal(invoiceSettlement(future, [], [plan.credit!]).state, 'paid');
+});
+test('over-applying is REFUSED, never clamped', () => {
+  const small = inv({ id: 's', number: 'X', total: 500 });
+  assert.match(planCreditApplication(CRED({}), small, 800, [], { email: 'm@x.test', name: 'M' }, 1).error!,
+    /only has \$500\.00 outstanding/);
+  assert.match(planCreditApplication(CRED({ amount: 100 }), inv({ total: 9999 }), 500, [], { email: 'm@x.test', name: 'M' }, 1).error!,
+    /Only \$100\.00 is left/);
+  assert.equal(planCreditApplication(CRED({}), small, 0, [], { email: 'm@x.test', name: 'M' }, 1).ok, false);
+});
+test('a voided credit has nothing left on it', () => {
+  assert.equal(creditRemaining(CRED({ voided: true })), 0);
 });

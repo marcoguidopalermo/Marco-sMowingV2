@@ -11,7 +11,7 @@
 // document that recomputes its own totals is a document that eventually
 // disagrees with the screen it was generated from.
 import type {
-  ContractingInvoice, ContractingPayment, ContractingProject,
+  ContractingCredit, ContractingInvoice, ContractingPayment, ContractingProject,
 } from '../types';
 import { PALERMO } from '../lib/contracting';
 import { projectSettlement, statementRows } from '../lib/contractingPayments';
@@ -58,6 +58,10 @@ const DOC_CSS = `
 .cstmt .due .lbl { font-size:9pt; letter-spacing:.12em; text-transform:uppercase; }
 .cstmt .due .amt { font-size:15pt; font-weight:700; font-variant-numeric:tabular-nums; }
 .cstmt .credit { color:#1c6b3a; }
+.cstmt .credbox { margin-top:8px; border:2px solid ${PALERMO.gold}; padding:9px 14px;
+  display:flex; justify-content:space-between; align-items:center; background:#fdfaf0; }
+.cstmt .credbox .lbl { font-size:8.6pt; letter-spacing:.12em; text-transform:uppercase; color:${PALERMO.slate}; }
+.cstmt .credbox .amt { font-size:12.5pt; font-weight:700; color:#8a6100; font-variant-numeric:tabular-nums; }
 .cstmt .foot { margin-top:14px; padding-top:8px; border-top:1px solid #e2e2e2;
   font-size:7.8pt; color:#777; display:flex; justify-content:space-between; }
 .cstmt .recon { font-size:7.4pt; color:#9a7d1f; }
@@ -74,6 +78,7 @@ export interface StatementDocProps {
   project: ContractingProject;
   invoices: ContractingInvoice[];
   payments: ContractingPayment[];
+  credits: ContractingCredit[];
   /** Statement date — passed in, never Date.now() inside a render. */
   asOf: number;
   /** Set on the staging render inside the print window. */
@@ -81,9 +86,9 @@ export interface StatementDocProps {
 }
 
 export default function ContractingStatementDocument({
-  project, invoices, payments, asOf, printMode,
+  project, invoices, payments, credits, asOf, printMode,
 }: StatementDocProps) {
-  const st = projectSettlement(project, invoices, payments);
+  const st = projectSettlement(project, invoices, payments, credits);
   const rows = statementRows(project, invoices, payments);
   const anyReconstructed = rows.some(r => r.reconstructed);
 
@@ -204,6 +209,21 @@ export default function ContractingStatementDocument({
           <span className="lbl">Balance due</span>
           <span className="amt">{money(st.balanceWithHst)}</span>
         </div>
+        {/* CREDIT SITS BELOW THE BALANCE, NOT IN THE ACTIVITY LIST. It is not
+            revenue and it settles no invoice — putting it in the ledger would
+            make it look like either. No HST: nothing has been billed for it. */}
+        {st.creditOnAccount > 0.01 && (
+          <div className="credbox">
+            <span className="lbl">Unapplied credit on account</span>
+            <span className="amt">{money(st.creditOnAccount)}</span>
+          </div>
+        )}
+        {st.creditOnAccount > 0.01 && (
+          <div className="muted" style={{ marginTop: 5 }}>
+            Held on account and not applied to any invoice. No HST is charged until it is billed against.
+            It will be applied to a future progress invoice.
+          </div>
+        )}
 
         <div className="foot">
           <span>Palermo&rsquo;s Contracting · statement generated {dt(asOf)}</span>
