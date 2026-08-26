@@ -119,6 +119,7 @@ import {
   monthOfDate, extractMonth, monthSettlementStatus,
   SHEET_SIZE_WARN_BYTES,
 } from './lib/performanceMonths';
+import { mergePerformance, monthsNeedingSheet } from './lib/performanceOverlay';
 import {
   scanBlockingPartialJobs, scanOpenPartials, remainingBHOf, rowBlocksApproval, voidLedger, carryLedger, completeLedger, BlockingPartialJob,
 } from './lib/multiDayResolution';
@@ -432,10 +433,8 @@ export default function App() {
   const subContractingShoppingListRef = useRef<Record<string, ContractingShoppingItem>>({});
   const subContractingPersonalItemsRef = useRef<Record<string, ContractingPersonalItem>>({});
   const subContractingPropertyDocsRef = useRef<Record<string, ContractingProperty>>({});
-  const mergePerformance = (
-    docPerf: Record<string, Record<string, PerformanceLog>>,
-    monthOverlay: Record<string, Record<string, PerformanceLog>>,
-  ): Record<string, Record<string, PerformanceLog>> => ({ ...monthOverlay, ...docPerf });
+  // mergePerformance + monthsNeedingSheet live in lib/performanceOverlay so
+  // the archive-invisibility invariant is unit-tested. See that file's header.
   // Schedules → per-month sheets (scheduleMonths/{YYYY-MM}). Same overlay as
   // performance: the doc keeps the current + future months; PAST months live
   // on their sheet. docSchedulesRef holds the doc's own copy; the sheets are
@@ -1744,14 +1743,21 @@ export default function App() {
   // never load all sheets at once, and the doc write strips pushed-month dates,
   // so the main doc never moves.
   const [monthSheetStatus, setMonthSheetStatus] = useState<Record<string, 'loading' | 'loaded' | 'missing' | 'error'>>({});
-  const ensureMonthLoaded = useCallback(async (ym: string) => {
+  // `force` re-reads a sheet we already hold. Needed because the rolling
+  // archive can move a NEW day onto the current month's sheet while this tab
+  // is open — see the current-month effect below.
+  const ensureMonthLoaded = useCallback(async (ym: string, opts?: { force?: boolean }) => {
     if (!ym || !user) return;
-    setMonthSheetStatus((s) => {
-      if (s[ym] === 'loading' || s[ym] === 'loaded') return s; // already have it / in flight
-      return { ...s, [ym]: 'loading' };
-    });
-    // Guard against a double-fire while the state above is settling.
-    if (monthSheetStatus[ym] === 'loading' || monthSheetStatus[ym] === 'loaded') return;
+    if (opts?.force) {
+      setMonthSheetStatus((s) => ({ ...s, [ym]: 'loading' }));
+    } else {
+      setMonthSheetStatus((s) => {
+        if (s[ym] === 'loading' || s[ym] === 'loaded') return s; // already have it / in flight
+        return { ...s, [ym]: 'loading' };
+      });
+      // Guard against a double-fire while the state above is settling.
+      if (monthSheetStatus[ym] === 'loading' || monthSheetStatus[ym] === 'loaded') return;
+    }
     try {
       const snap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'performanceMonths', ym));
       if (!snap.exists()) { setMonthSheetStatus((s) => ({ ...s, [ym]: 'missing' })); return; }
@@ -1771,6 +1777,47 @@ export default function App() {
     const ym = monthOfDate(perfDate);
     if ((appData.pushedMonths || []).includes(ym) && !monthSheetStatus[ym]) ensureMonthLoaded(ym);
   }, [perfDate, appData.pushedMonths, monthSheetStatus, ensureMonthLoaded]);
+
+  // THE ROLLING ARCHIVE ALSO DRAINS THE MONTH THAT IS STILL OPEN.
+  // functions/src/jobber/archive.ts moves every settled day older than
+  // ARCHIVE_WINDOW_DAYS (14) onto its month sheet; it does NOT wait for the
+  // month to close. So from mid-month onward the CURRENT month is routinely
+  // split between the doc and its sheet, with no overlap.
+  //
+  // Every live monthly reader — the MTD widgets, division standings, and the
+  // live bonus projection — reads appData.performance. Loading only PUSHED
+  // months meant the first half of the open month silently stopped counting
+  // the morning the archiver first reached it: August 2026 lost 782.7 BH, 49%
+  // of the month, at 06:01 on the 26th, and every employee's total halved with
+  // nothing on screen to say why.
+  //
+  // Loading the current month's sheet through the SAME overlay fixes every
+  // reader at the source, rather than teaching each call site to merge. Safe
+  // against re-bloating the doc: syncToCloud strips any archived date from the
+  // doc write regardless of what the in-memory map holds.
+  const archiveRefetchRef = useRef<string>('');
+  useEffect(() => {
+    const [ym] = monthsNeedingSheet({
+      today: formatDate(new Date()),
+      archivedDays: appData.archivedDays,
+    });
+    if (!ym) return;
+    if (!monthSheetStatus[ym]) { ensureMonthLoaded(ym); return; }
+    // Mid-session archive: the 06:00 scheduled sync can move a day from the
+    // doc onto the sheet while this tab is open. The doc listener drops it at
+    // once, but our cached overlay predates it, so the day would belong to
+    // neither. Re-read the sheet when the doc reports a day archived that we
+    // are not holding. Keyed on the stale set so it runs once per change, and
+    // so a sheet that genuinely lacks the day can't spin.
+    const stale = Object.keys(appData.archivedDays || {})
+      .filter((d) => monthOfDate(d) === ym
+        && !subPerformanceMonthsRef.current[d] && !docPerformanceRef.current[d])
+      .sort().join(',');
+    if (stale && archiveRefetchRef.current !== stale && monthSheetStatus[ym] !== 'loading') {
+      archiveRefetchRef.current = stale;
+      ensureMonthLoaded(ym, { force: true });
+    }
+  }, [appData.archivedDays, appData.performance, monthSheetStatus, ensureMonthLoaded]);
 
   // Trends: live monthlySummaries subcollection listener. One compact doc
   // per month (id = YYYY-MM). Read-only reporting — never written back into
@@ -3169,7 +3216,17 @@ export default function App() {
       return false;
     }
     // Settlement guard: every crew-day must be approved or waived.
-    const settle = monthSettlementStatus(appData.performance || {}, ym);
+    //
+    // Read the FULL month, not appData.performance. The rolling archive drains
+    // settled days onto the sheet as they age, so for a month that was archived
+    // but never pushed the doc holds only a residual tail — and this guard would
+    // then certify "every crew-day is settled" having looked at a fraction of
+    // them, while the summary built four lines below reads the whole month via
+    // the same loader. A guard weaker than the thing it protects is worse than
+    // no guard: it passes a month with an unapproved crew-day sitting on the
+    // sheet, and the push is terminal.
+    const guardPerf = await loadFullMonthPerformance(ym);
+    const settle = monthSettlementStatus(guardPerf, ym);
     if (settle.dayCount === 0) {
       if (!opts?.auto) showToastMsg(`No performance data for ${ym}.`);
       return false;
