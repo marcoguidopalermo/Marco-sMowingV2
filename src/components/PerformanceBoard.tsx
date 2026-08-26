@@ -2039,12 +2039,19 @@ export default function PerformanceBoard({
             const conflicts = Object.values(jobberBhConflicts || {}).flat();
             if (conflicts.length === 0) return null;
             const dayCount = new Set(conflicts.map(c => c.targetDate)).size;
+            // Total BH actually outstanding. The sync now reports only work
+            // Jobber marks COMPLETE, so this is hours earned and not yet
+            // credited — not quoted BH on visits nobody did. Shown because the
+            // count alone invites sizing a decision against the wrong number.
+            const outstandingBH = Math.round(
+              conflicts.reduce((sum, c) => sum + Math.max(0, (c.newBH || 0) - (c.oldBH || 0)), 0) * 10,
+            ) / 10;
             return (
               <div className="mb-4 bg-orange-50 border-2 border-orange-400 rounded-xl px-4 py-3">
                 <div className="flex items-center gap-2 text-sm text-orange-900 mb-2">
                   <AlertTriangle className="w-4 h-4 text-orange-600 shrink-0" />
-                  <span className="font-bold">{conflicts.length} Jobber BH change{conflicts.length === 1 ? '' : 's'} on approved day{dayCount === 1 ? '' : 's'}</span>
-                  <span className="text-orange-700">— Jobber updated the hours after this crew-day was locked. Nothing changed automatically. Review each:</span>
+                  <span className="font-bold">{outstandingBH} BH outstanding across {conflicts.length} completed visit{conflicts.length === 1 ? '' : 's'} on approved day{dayCount === 1 ? '' : 's'}</span>
+                  <span className="text-orange-700">— completed work whose hours landed after the crew-day was locked. Uncompleted visits are not counted here. Nothing changed automatically. Review each:</span>
                 </div>
                 <div className="flex flex-col gap-2">
                   {conflicts.map(c => (

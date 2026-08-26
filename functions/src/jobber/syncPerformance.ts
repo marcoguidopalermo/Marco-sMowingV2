@@ -1,4 +1,5 @@
 import {onCall, HttpsError} from "firebase-functions/v2/https";
+import {conflictReportableBH, ledgerOutstandingBH} from "./conflictMeasure.js";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
@@ -1820,13 +1821,21 @@ async function runPerformanceSync(args: {
           for (const mv of matched) {
             if (mv.isComplete && !mv.isHourly) {
               const mdj = multiDayJobs[mv.visit.id];
-              if (mdj) {
-                summary.warnings.push(
-                  "auto_credit_blocked_approved " +
-                  `visit=${mv.visit.id} crew=${crew.id} — ` +
-                  "unapprove and re-sync",
-                );
-              }
+              if (!mdj) continue;
+              // ONLY WARN WHEN BH IS ACTUALLY OUTSTANDING. This used to fire
+              // for every complete multi-day visit on a locked day whether or
+              // not anything was left to credit, so the count read as "N lost
+              // credits" when the true answer was usually zero. On 2026-08-24
+              // it reported 49 blocked credits against 0 BH genuinely withheld.
+              const outstandingBH = ledgerOutstandingBH(
+                mdj.totalBH, mdj.completionHistory,
+              );
+              if (outstandingBH <= 0) continue;
+              summary.warnings.push(
+                "auto_credit_blocked_approved " +
+                `visit=${mv.visit.id} crew=${crew.id} ` +
+                `bh=${outstandingBH} — unapprove and re-sync`,
+              );
             }
           }
           // CONFLICT SURFACE — a locked (approved/waived) day is never
@@ -1838,6 +1847,18 @@ async function runPerformanceSync(args: {
             existing.approvalStatus === "waived" ? "waived" : "approved";
           for (const mv of matched) {
             const v = mv.visit;
+            // COMPLETED WORK ONLY. The BH here is parsed from the Jobber
+            // visit/job TITLE — it is the QUOTED figure, and it exists on a
+            // visit whether or not anyone has done it. Without this guard every
+            // incomplete visit sitting on a locked day was reported as
+            // `old=0 new=<quoted>`, so the conflict log read as alarming
+            // precisely when the LEAST work had happened: on 2026-08-25, a rain
+            // day, it showed 51.1 BH "withheld" of which 36.9 was quoted BH for
+            // 47 visits nobody ever completed — visits still open in Jobber the
+            // next day. Genuinely outstanding BH on that date was 12.1, one
+            // multi-day job. A number that peaks when nothing is wrong gets
+            // acted on, so this reports only BH outstanding on COMPLETED work.
+            if (!mv.isComplete) continue;
             const parsedConflict =
               parseBh(v.title) ?? parseBh(v.job?.title ?? null);
             if (!parsedConflict) continue;
@@ -1847,7 +1868,11 @@ async function runPerformanceSync(args: {
             if (!existingRow) continue;
             const oldBH = Number(existingRow.bh) || 0;
             const newBH = shareForCrew(v.id, crew.id, parsedConflict.bh);
-            if (Math.abs(newBH - oldBH) > 1e-6) {
+            if (conflictReportableBH({
+              isComplete: mv.isComplete,
+              storedBH: oldBH,
+              jobberShareBH: newBH,
+            }) !== 0) {
               summary.approvedDayConflicts.push({
                 jobberVisitId: v.id,
                 jobTitle: existingRow.desc || v.title || v.id,

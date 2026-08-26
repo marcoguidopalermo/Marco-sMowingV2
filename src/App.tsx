@@ -1266,6 +1266,14 @@ export default function App() {
           pushedMonths: data.pushedMonths || [],
           archivedDays: data.archivedDays || {},
           unlockedDays: data.unlockedDays || {},
+          // BH the sync could not apply because the crew-day was locked. The
+          // cloud sync writes this per date; the apply/ignore UI reads it. It
+          // was never mapped in here, so appData.jobberBhConflicts was always
+          // undefined — which meant the queue rendered empty AND the full-doc
+          // setDoc below dropped the field, deleting on every save what the
+          // sync had just written. The conflicts existed only in syncLog
+          // warning strings nobody reads.
+          jobberBhConflicts: data.jobberBhConflicts || {},
           // Trends summaries live in a subcollection, overlaid via the ref.
           monthlySummaries: subMonthlySummariesRef.current,
           roleMasterRoles: subRoleMasterRolesRef.current,
