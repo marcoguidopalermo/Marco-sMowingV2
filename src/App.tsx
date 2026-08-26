@@ -129,7 +129,7 @@ import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
 import { adminEmailsFrom, computeRosterUpdate } from './lib/rosterWrite';
 import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './lib/scheduledBulletins';
-import { timeEntryLock } from './lib/timeEntryLock';
+import { timeEntryLock, crewDayCorrectionTarget } from './lib/timeEntryLock';
 import {
   checkDailyHours, dailyHoursThreshold, entriesForEmployeeDate, hoursForEmployeeDate,
 } from './lib/dailyHoursGuard';
@@ -3635,7 +3635,42 @@ export default function App() {
     }
     if (touched.length === 0) return;
     const newPerf = { ...appData.performance, [date]: nextDay };
-    await syncToCloud({ ...appData, performance: newPerf });
+    // WHERE DOES THIS DATE LIVE? A rolling-archived day sits on its month
+    // sheet, and syncToCloud STRIPS every archived date from the doc write —
+    // so writing the corrected crew-day into appData alone would report
+    // success and persist nothing, leaving payroll corrected and the crew-day
+    // still carrying the deleted punch. That is precisely the divergence this
+    // recalculation exists to prevent, so the correction has to follow the
+    // data to the sheet.
+    const ym = monthOfDate(date);
+    const target = crewDayCorrectionTarget({
+      date, pushedMonths: appData.pushedMonths, archivedDays: appData.archivedDays,
+    });
+    if (target === 'unavailable') {
+      // A pushed month is finalized payroll history. The punch is already
+      // gone; say plainly that the crew-day was NOT corrected rather than
+      // implying a silent fix.
+      showToastMsg(
+        `Punch removed, but ${ym} is a pushed month — ${emp.name}'s crew hours on `
+        + `${touched.join(', ')} could not be corrected and still read the old figure.`,
+      );
+      return;
+    }
+    if (target === 'month-sheet') {
+      const wrote = await writeAndVerifySheet(ym, { [date]: nextDay }, { terminal: false });
+      if (wrote === null) {
+        showToastMsg(`Punch removed, but the ${ym} sheet write failed — ${emp.name}'s crew hours were NOT corrected.`);
+        return;
+      }
+      // Keep the overlay in step so the board reflects it without a reload.
+      subPerformanceMonthsRef.current = { ...subPerformanceMonthsRef.current, [date]: nextDay };
+      setAppData(prev => ({
+        ...prev,
+        performance: mergePerformance(docPerformanceRef.current, subPerformanceMonthsRef.current),
+      }));
+    } else {
+      await syncToCloud({ ...appData, performance: newPerf });
+    }
     logPerfActivity({
       type: 'punch_removed_ah_recalculated',
       targetDate: date,

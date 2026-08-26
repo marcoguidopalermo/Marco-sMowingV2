@@ -6,7 +6,7 @@
 // days. Payroll and efficiency then disagree about the same work, silently.
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { punchDate, timeEntryLock } from './timeEntryLock';
+import { punchDate, timeEntryLock, crewDayCorrectionTarget } from './timeEntryLock';
 import type { Employee } from '../types';
 
 const emp = (o: Partial<Employee> & { id: string; name: string }): Employee => ({
@@ -123,4 +123,31 @@ test('the approved message tells you to unapprove, and why it matters', () => {
   assert.match(m, /2026-08-18/);
   assert.match(m, /Unapprove/);
   assert.match(m, /sync carries the correction/);
+});
+
+console.log('\nWhere a crew-day correction has to be written');
+test('a live day is corrected in the doc', () => {
+  assert.equal(crewDayCorrectionTarget({ date: '2026-08-24' }), 'doc');
+});
+test('THE TRAP: an archived day must go to its month SHEET', () => {
+  // syncToCloud strips archived dates from the doc write, so a correction
+  // written into appData would report success and persist nothing — payroll
+  // corrected, crew-day still carrying the deleted punch.
+  const t = crewDayCorrectionTarget({
+    date: '2026-08-11', archivedDays: { '2026-08-11': 1 },
+  });
+  assert.equal(t, 'month-sheet');
+});
+test('a pushed month cannot be corrected at all', () => {
+  const t = crewDayCorrectionTarget({ date: '2026-07-14', pushedMonths: ['2026-07'] });
+  assert.equal(t, 'unavailable');
+});
+test('pushed outranks archived — the month is terminal either way', () => {
+  const t = crewDayCorrectionTarget({
+    date: '2026-07-14', pushedMonths: ['2026-07'], archivedDays: { '2026-07-14': 1 },
+  });
+  assert.equal(t, 'unavailable');
+});
+test('a missing date is never silently treated as correctable', () => {
+  assert.equal(crewDayCorrectionTarget({ date: '' }), 'unavailable');
 });

@@ -61,13 +61,17 @@ export function timeEntryLock(input: {
     return {
       locked: true, reason: 'month-pushed', date,
       message: `${date} is in a month that has been pushed to its sheet, so it is `
-        + 'read-only. Time for a closed month cannot be changed here.',
+        + 'read-only. Time for a closed month cannot be changed here. An admin can '
+        + 'still remove a duplicate punch with a stated reason, but the crew-day\'s '
+        + 'hours can no longer be corrected to match — so the two would disagree.',
     };
   }
   if ((input.archivedDays || {})[date]) {
     return {
       locked: true, reason: 'day-archived', date,
-      message: `${date} has been archived to a sheet, so it is read-only.`,
+      message: `${date} has been archived to a sheet, so it is read-only. An admin `
+        + 'can still remove a duplicate punch with a stated reason — the crew-day\'s '
+        + 'hours are corrected on the sheet along with it.',
     };
   }
 
@@ -100,4 +104,28 @@ export function timeEntryLock(input: {
     };
   }
   return UNLOCKED;
+}
+
+// ── WHERE A CREW-DAY CORRECTION HAS TO BE WRITTEN ──────────────────────────
+// Deleting a duplicate punch on a settled day must also correct that crew-day's
+// employeeAH, or payroll drops while the crew-day keeps the hours — the exact
+// divergence that had TimeMaster and PerformanceMaster disagreeing about the
+// same work.
+//
+// The catch is that the corrected day does not always belong in the same place.
+// syncToCloud STRIPS every rolling-archived date from the doc write, so writing
+// an archived day into appData reports success and persists nothing. It has to
+// go to the month sheet instead. A pushed month cannot be corrected at all.
+export type CorrectionTarget = 'doc' | 'month-sheet' | 'unavailable';
+
+export function crewDayCorrectionTarget(input: {
+  date: string;
+  pushedMonths?: string[] | null;
+  archivedDays?: Record<string, unknown> | null;
+}): CorrectionTarget {
+  const date = input.date || '';
+  if (!date) return 'unavailable';
+  if ((input.pushedMonths || []).includes(date.slice(0, 7))) return 'unavailable';
+  if ((input.archivedDays || {})[date]) return 'month-sheet';
+  return 'doc';
 }

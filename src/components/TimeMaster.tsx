@@ -445,7 +445,17 @@ export default function TimeMaster({
   // Admin/any edit
   const openEdit = (entry: TimeEntry) => {
     const lk = entryLock(entry);
-    if (lk.locked) { showToastMsg(lk.message || 'That day is locked.'); return; }
+    if (lk.locked) {
+      // Editing a locked punch stays refused: changing hours on a settled day
+      // moves payroll without moving the crew-day. DELETING a duplicate is the
+      // case that must stay possible, and it has an admin override — say so
+      // rather than leaving a dead end.
+      showToastMsg(
+        `${lk.message || 'That day is locked.'}`
+        + (isAdmin ? ' To remove a duplicate punch, use delete — it will ask for a reason.' : ''),
+      );
+      return;
+    }
     setEditingEntry(entry);
     setEditForm({
       // Hours-only entries default to the hours editor (their clock
@@ -545,12 +555,42 @@ export default function TimeMaster({
       enteredBy: { email: userEmail, name: userName },
       ...(manualHoursOnly ? { manualHoursOnly: true } : {}),
     };
-    syncToCloud({
-      ...appData,
-      timeEntries: [...appData.timeEntries, newEntry],
+    const commitNew = () => {
+      syncToCloud({
+        ...appData,
+        timeEntries: [...appData.timeEntries, newEntry],
+      });
+      setIsManualEntryOpen(false);
+      showToastMsg('Manual entry added.');
+    };
+    // OVER-HOURS WARNING AT THE POINT OF ENTRY. Two managers independently
+    // fixing the same missed punch is how one employee ends up with two full
+    // days on one date — it happened to Tyberious on 2026-08-24 (9.50 + 9.45
+    // = 18.95 h) and to three other people before that. Nobody did anything
+    // careless; neither could see what the other had already entered.
+    // WARN, NEVER BLOCK: a genuine 13-hour day in a storm must still go in.
+    // The threshold is a setting (Settings → Time), seeded at 12.
+    const dayWarn = checkDailyHours({
+      entries: appData.timeEntries,
+      email: employeeEmail,
+      name: employeeName,
+      date,
+      addedHours: (clockOut.getTime() - clockIn.getTime()) / 3600000,
+      threshold: hoursThreshold,
     });
-    setIsManualEntryOpen(false);
-    showToastMsg('Manual entry added.');
+    if (dayWarn.over) {
+      setPendingAction({
+        title: 'Add this entry anyway?',
+        warnings: [
+          dayWarn.message,
+          'Check the day before adding — somebody else may already have entered this punch.',
+        ],
+        confirmLabel: 'Add entry',
+        onConfirm: commitNew,
+      });
+      return;
+    }
+    commitNew();
   };
 
   const saveEdit = () => {
@@ -634,6 +674,21 @@ export default function TimeMaster({
     ) {
       warnings.push('This entry falls in a PAID pay period (a closed pay chunk). Changing it rewrites settled pay records.');
     }
+    // Same over-hours check the manual-entry form applies. excludeId stops
+    // the entry being edited from counting its own OLD duration against the
+    // new one, which would warn on every edit of a long day.
+    if (clockOutIso) {
+      const w = checkDailyHours({
+        entries: appData.timeEntries,
+        email: owner,
+        name: editingEntry.userName,
+        date: clockInIso.slice(0, 10),
+        addedHours: (new Date(clockOutIso).getTime() - new Date(clockInIso).getTime()) / 3600000,
+        threshold: hoursThreshold,
+        excludeId: editingEntry.id,
+      });
+      if (w.over) warnings.push(w.message);
+    }
     if (wouldCloseOpenChunk(owner, prospective)) {
       warnings.push('This change pushes the current pay period to its $1,000 threshold and will CLOSE it. The pay engine never re-opens a closed chunk — editing the hours back down afterward will NOT undo it.');
     }
@@ -695,13 +750,23 @@ export default function TimeMaster({
       // override with a stated reason; anybody else is told the route out
       // (unapprove the crew-day) rather than just being refused.
       if (!isAdmin) {
-        showToastMsg(`${delLock.message || 'That day is locked.'} An admin can remove it without unapproving.`);
+        showToastMsg(`${delLock.message || 'That day is locked.'} An admin can remove a duplicate without unapproving — ask one to do it.`);
         return;
       }
+      // Say WHICH lock, and what removal will and won't fix. "That day is
+      // locked" with no route is what sent two managers looking for another
+      // way to solve the same missed punch.
+      const head = delLock.reason === 'month-pushed'
+        ? `${delLock.date} is in a pushed month.`
+        : delLock.reason === 'day-archived'
+          ? `${delLock.date} has been archived to its month sheet.`
+          : `${delLock.crewLabel || 'The crew-day'} is ${delLock.reason === 'crew-day-waived' ? 'waived' : 'approved'}.`;
+      const effect = delLock.reason === 'month-pushed'
+        ? 'The punch will be removed, but the crew-day\'s hours CANNOT be corrected '
+          + 'in a pushed month — they will keep reading the old figure.'
+        : 'Removing this punch will also correct that crew-day\'s hours.';
       const why = window.prompt(
-        `${delLock.crewLabel ? `${delLock.crewLabel} is approved.` : 'That day is locked.'}\n\n`
-        + 'Removing this punch anyway will also correct that crew-day\'s hours.\n\n'
-        + 'Reason (required):',
+        `${head}\n\n${effect}\n\nReason (required):`,
         '',
       );
       if (why == null) return;
@@ -1177,6 +1242,26 @@ export default function TimeMaster({
           <span className="text-[11px] text-slate-500">
             — in this period. Usually a punch entered twice.
           </span>
+          {canEditAny && (
+            <label className="ml-auto flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 shrink-0">
+              Warn over
+              <input
+                type="number"
+                min={1}
+                max={24}
+                defaultValue={hoursThreshold}
+                onBlur={e => {
+                  const v = Number(e.target.value);
+                  if (!Number.isFinite(v) || v <= 0 || v > 24) { e.target.value = String(hoursThreshold); return; }
+                  if (v === hoursThreshold) return;
+                  saveSettings({ ...(appData.settings || {}), dailyHoursWarnThreshold: v }, appData.settings);
+                }}
+                title="Hours in one day for one person before the entry form warns. Seeded at 12."
+                className="w-14 border border-slate-300 rounded p-1 text-[12px] font-mono font-bold normal-case tracking-normal text-slate-800"
+              />
+              hrs
+            </label>
+          )}
         </div>
         <div className="mt-2 space-y-1">
           {flagged.map(d => (
