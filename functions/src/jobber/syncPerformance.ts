@@ -4,6 +4,7 @@ import {
   ledgerOutstandingBH,
   multiDayReportableBH,
 } from "./conflictMeasure.js";
+import {isRecurringVisitTitle} from "./ledgerClassify.js";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
@@ -1972,7 +1973,10 @@ async function runPerformanceSync(args: {
                 jobberJobNumber: jobNum || "",
                 title: desc,
                 totalBH: parsed.bh,
-                isLawnJob: false,
+                // Classified from the title, not hardcoded — see
+                // ledgerClassify. A recurring cut is single-day work and
+                // should auto-credit rather than demand a % review.
+                isLawnJob: isRecurringVisitTitle(desc),
                 manualOverride: false,
                 completionHistory: [],
                 status: "in_progress",
@@ -2253,7 +2257,7 @@ async function runPerformanceSync(args: {
               jobberJobNumber: jobNum || "",
               title: desc,
               totalBH: bh,
-              isLawnJob: false,
+              isLawnJob: isRecurringVisitTitle(desc),
               manualOverride: false,
               completionHistory: [],
               status: "in_progress",
