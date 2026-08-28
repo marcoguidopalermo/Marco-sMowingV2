@@ -4,7 +4,7 @@ import logoBlack from '@/assets/logo/LOGOBLACK.png';
 import { LoginDemo } from './components/blocks/LoginDemo';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, sendPasswordResetEmail } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, deleteField, collection, deleteDoc, FieldPath } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, deleteField, collection, deleteDoc, FieldPath, query, where, getDocs, documentId } from 'firebase/firestore';
 import {
   Calendar as CalendarIcon, ChevronLeft, ChevronRight, Users, Truck, Plus, Trash2, GripVertical,
   UserCircle, Wrench, Settings, Printer, AlertTriangle, Sun, Cloud, CloudRain, CloudLightning,
@@ -366,6 +366,12 @@ export default function App() {
   // removal pass strips the doc field, the doc-base is just {}.
   const docMultiDayJobsRef = useRef<Record<string, MultiDayJob>>({});
   const subMultiDayJobsRef = useRef<Record<string, MultiDayJob>>({});
+  // COMPLETED ledgers fetched on demand for the date being viewed. The live
+  // listener carries only the open ones; see the listener comment below.
+  const mdjOnDemandRef = useRef<Record<string, MultiDayJob>>({});
+  // Ids already asked for, present or absent — so a date whose rows have no
+  // ledgers is not re-queried on every render.
+  const mdjRequestedRef = useRef<Set<string>>(new Set());
   // Phase 3: inspections live in their own subcollection. Same overlay model
   // as multiDayJobs — doc-base copy + live subcollection, merged by id
   // (subcollection wins), newest-first to match the prepend convention.
@@ -1340,7 +1346,7 @@ export default function App() {
             : {},
           settings: data.settings || { endOfDayReminder: DEFAULT_EOD_REMINDER },
           // Doc-base overlaid by the live subcollection (Phase 1).
-          multiDayJobs: { ...docMultiDayJobsRef.current, ...subMultiDayJobsRef.current },
+          multiDayJobs: { ...docMultiDayJobsRef.current, ...mdjOnDemandRef.current, ...subMultiDayJobsRef.current },
           partsOrders: data.partsOrders || {},
           mechanicPayChunks: data.mechanicPayChunks || {},
           // Task colour was removed — colour now belongs to the ASSIGNEE
@@ -1625,11 +1631,25 @@ export default function App() {
   // merges it OVER the appData doc's (legacy) copy so every existing
   // keyed reader (appData.multiDayJobs[visitId]) works unchanged. Keyed
   // by the stored jobberVisitId field, so no doc-id decoding is needed.
+  //
+  // SCOPED TO THE OPEN ONES. This listener used to subscribe to the WHOLE
+  // collection: 3,469 documents and ~3.5 MB of JSON on every session, on every
+  // device, growing about 1,100 documents and 1.15 MB a month. 96% of those
+  // ledgers are complete and fully credited — history that two of the three
+  // big consumers (scanOpenPartials, capacity.forwardSlices) skip on their
+  // first line anyway. Twenty people opening the app three times a day was
+  // over 200,000 document reads daily from this one listener, against a
+  // 50,000/day allowance.
+  //
+  // The server sync has always been disciplined here (syncPerformance loads
+  // in_progress plus the ids in today's visit window, never the collection);
+  // the client simply never was. This brings it in line: 127 open ledgers
+  // live, and completed ones fetched by id for the date being viewed.
   useEffect(() => {
     if (!user) return;
     const mdjCol = collection(db, 'artifacts', appId, 'public', 'data', 'multiDayJobs');
     return onSnapshot(
-      mdjCol,
+      query(mdjCol, where('status', '==', 'in_progress')),
       (snap) => {
         const map: Record<string, MultiDayJob> = {};
         snap.forEach((d) => {
@@ -1639,12 +1659,95 @@ export default function App() {
         subMultiDayJobsRef.current = map;
         setAppData((prev) => ({
           ...prev,
-          multiDayJobs: { ...docMultiDayJobsRef.current, ...map },
+          multiDayJobs: { ...docMultiDayJobsRef.current, ...mdjOnDemandRef.current, ...map },
         }));
       },
       (err) => { console.error('multiDayJobs subcollection listen error:', err); },
     );
   }, [user]);
+
+  // Fetch completed ledgers BY VISIT ID and fold them into the map. Shared by
+  // the two callers below so there is one implementation of the merge order:
+  // doc-base, then on-demand, then the live open ledgers, which are freshest.
+  const loadLedgersByVisitId = useCallback(async (
+    list: string[], cancelled: () => boolean,
+  ) => {
+    if (list.length === 0) return;
+    const mdjCol = collection(db, 'artifacts', appId, 'public', 'data', 'multiDayJobs');
+    const found: Record<string, MultiDayJob> = {};
+    // documentId() 'in' queries cap at 30 values per call.
+    for (let i = 0; i < list.length; i += 30) {
+      const chunk = list.slice(i, i + 30).map(encodeURIComponent);
+      try {
+        const snap = await getDocs(query(mdjCol, where(documentId(), 'in', chunk)));
+        snap.forEach((d) => {
+          const v = d.data() as MultiDayJob;
+          if (v && v.jobberVisitId) found[v.jobberVisitId] = v;
+        });
+      } catch (err) { console.error('multiDayJobs on-demand load error:', err); }
+    }
+    if (cancelled()) return;
+    // Every id we asked for is marked requested, present or absent, so a set
+    // with no ledgers is not re-queried on every render.
+    for (const id of list) mdjRequestedRef.current.add(id);
+    if (Object.keys(found).length === 0) return;
+    mdjOnDemandRef.current = { ...mdjOnDemandRef.current, ...found };
+    setAppData((prev) => ({
+      ...prev,
+      multiDayJobs: {
+        ...docMultiDayJobsRef.current,
+        ...mdjOnDemandRef.current,
+        ...subMultiDayJobsRef.current,
+      },
+    }));
+  }, []);
+
+  // COMPLETED LEDGERS FOR THE DATE BEING VIEWED. The board renders a ledger's
+  // scope history per job row (ScopeHistoryLines) and offers "mark as
+  // multi-day", which reads the existing ledger before writing. Both act on
+  // rows of the open date, so loading that date's ids is enough — and it MUST
+  // load them: a create-if-missing path that cannot see a completed ledger
+  // would mint a fresh one over the real record.
+  useEffect(() => {
+    if (!user) return;
+    const day = (appData.performance || {})[perfDate] || {};
+    const ids = new Set<string>();
+    for (const log of Object.values(day)) {
+      for (const j of (log?.jobs || [])) {
+        const id = (j as { jobberVisitId?: string }).jobberVisitId;
+        if (id && !subMultiDayJobsRef.current[id] && !mdjRequestedRef.current.has(id)) ids.add(id);
+      }
+    }
+    if (ids.size === 0) return;
+    let cancelled = false;
+    void loadLedgersByVisitId([...ids], () => cancelled);
+    return () => { cancelled = true; };
+  }, [user, perfDate, appData.performance]);
+
+  // LEDGERS BEHIND THE CAPACITY FORECAST. capacity.forwardSlices SKIPS a visit
+  // whose ledger is complete; with no ledger it falls back to the visit's full
+  // BH as remaining. So a completed ledger that is merely UNLOADED would stop
+  // being skipped and be forecast as outstanding work — 391 of the 1,416
+  // forecast visits currently carry a complete ledger, which is a material
+  // over-count, not a rounding one.
+  //
+  // The forecast is rewritten only by the cloud pull, so this resolves once
+  // per session and is then cached. Fetching by id returns only the ledgers
+  // that exist, so the ~940 forecast visits with no ledger cost nothing.
+  useEffect(() => {
+    if (!user) return;
+    const ids = new Set<string>();
+    for (const f of Object.values(capacityForecasts)) {
+      for (const v of (f?.visits || [])) {
+        const id = v.visitId;
+        if (id && !subMultiDayJobsRef.current[id] && !mdjRequestedRef.current.has(id)) ids.add(id);
+      }
+    }
+    if (ids.size === 0) return;
+    let cancelled = false;
+    void loadLedgersByVisitId([...ids], () => cancelled);
+    return () => { cancelled = true; };
+  }, [user, capacityForecasts]);
 
   // Phase 3: live inspections subcollection listener. Rebuilds the
   // Inspection[] from one-doc-per-inspection and merges it OVER the appData
