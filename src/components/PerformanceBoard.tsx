@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { manualRowLedgerWarning } from '../lib/manualRowLedgerWarning';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   TrendingUp, CalendarDays, BarChart, Save, Calendar as CalendarIcon,
@@ -583,6 +584,15 @@ export default function PerformanceBoard({
   onApplyJobberBhConflict,
   onIgnoreJobberBhConflict,
 }: PerformanceBoardProps) {
+  // Hand-keyed rows only: does a live ledger already exist for this client?
+  // Reads the ledgers already in memory — the open ones plus whatever the
+  // viewed date loaded — so it costs nothing extra.
+  const ledgerList = useMemo(() => Object.values(multiDayJobs || {}), [multiDayJobs]);
+  const manualDupWarning = useCallback(
+    (desc: string | undefined) => manualRowLedgerWarning(desc, ledgerList),
+    [ledgerList],
+  );
+
   const crewLabelFor = (cId: string): string => {
     const log = dailyLogs[cId];
     return log ? `${log.division} #${log.crewNumber}` : cId;
@@ -2655,6 +2665,22 @@ export default function PerformanceBoard({
                                     onBlur={() => persistCrewDay(`${cId}:${jIdx}`, cId, dailyLogs[cId])}
                                     className={`flex-1 min-w-0 border border-gray-300 rounded p-1.5 text-sm outline-none bg-white font-medium disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed ${isRemoved ? 'line-through text-amber-700' : ''} ${isIncomplete ? 'italic text-slate-400' : ''} ${isGhost ? 'italic text-slate-400 line-through' : ''}`}
                                   />
+                                )}
+                                {/* DUPLICATE-ENTRY WARNING on hand-keyed rows.
+                                    A manual row carries no visit id and no job
+                                    number, so nothing reconciles it to the
+                                    Jobber visit for the same work — that is how
+                                    "Kyla Francis" was credited on the crew-day
+                                    while its ledger read 1.5 BH owed for two
+                                    months. Warn, never act: the row is still
+                                    saved exactly as typed. */}
+                                {isManual && manualDupWarning(job.desc) && (
+                                  <span
+                                    title={manualDupWarning(job.desc) || ''}
+                                    className="shrink-0 inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-amber-50 text-amber-800 border-amber-300"
+                                  >
+                                    <AlertTriangle className="w-3 h-3" /> already in Jobber
+                                  </span>
                                 )}
                                 {(() => {
                                   const bhKey = draftKey(cId, jIdx, 'bh');
