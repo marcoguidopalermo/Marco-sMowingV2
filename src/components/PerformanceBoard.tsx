@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { manualRowLedgerWarning } from '../lib/manualRowLedgerWarning';
+import { clearJobberConflict } from '../lib/clearJobberConflict';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   TrendingUp, CalendarDays, BarChart, Save, Calendar as CalendarIcon,
@@ -1313,9 +1314,8 @@ export default function PerformanceBoard({
         ...target,
         jobs: target.jobs.map((j, i) => {
           if (i !== jobIdx) return j;
-          const next: PerformanceJobRow = { ...j, bh: restoredBH, hasJobberConflict: false };
+          const next: PerformanceJobRow = clearJobberConflict({ ...j, bh: restoredBH });
           delete next.manuallyEditedAt;
-          delete next.jobberSuggestedValue;
           return next;
         }),
       };
@@ -2594,10 +2594,10 @@ export default function PerformanceBoard({
                             const handleAcceptJobber = () => {
                               if (typeof job.jobberSuggestedValue !== 'number') return;
                               if (!confirm(`Accept Jobber's value of ${job.jobberSuggestedValue} BH (replacing your ${job.bh} BH)?`)) return;
-                              setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: n[cId].jobs.map((j, i) => i === jIdx ? { ...j, bh: job.jobberSuggestedValue!, manuallyEditedAt: undefined, hasJobberConflict: false, jobberSuggestedValue: undefined } : j) }; return n; });
+                              setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: n[cId].jobs.map((j, i) => i === jIdx ? clearJobberConflict({ ...j, bh: job.jobberSuggestedValue!, manuallyEditedAt: undefined }) : j) }; return n; });
                             };
                             const handleKeepManual = () => {
-                              setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: n[cId].jobs.map((j, i) => i === jIdx ? { ...j, hasJobberConflict: false, jobberSuggestedValue: undefined } : j) }; return n; });
+                              setDailyLogs(p => { const n = { ...p }; n[cId] = { ...n[cId], jobs: n[cId].jobs.map((j, i) => i === jIdx ? clearJobberConflict(j) : j) }; return n; });
                             };
                             return (
                               <div key={jIdx} className={`flex flex-col gap-1 p-1.5 rounded border ${rowBg}`}>

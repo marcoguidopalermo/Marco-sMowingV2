@@ -128,6 +128,7 @@ import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
 import ContractingStatementDocument from './components/ContractingStatementDocument';
+import { clearJobberConflict } from './lib/clearJobberConflict';
 import { adminEmailsFrom, computeRosterUpdate } from './lib/rosterWrite';
 import {
   validatePayment, reconstructPaymentsFromPaidFlags, invoiceSettlement,
@@ -5256,8 +5257,8 @@ export default function App() {
         // Multi-day: never touch the credited row on a scope change. Non-ledger
         // single-day: the row is the whole visit → take the new value.
         return hasLedger
-          ? { ...r, hasJobberConflict: false, jobberSuggestedValue: undefined }
-          : { ...r, bh: c.newBH, hasJobberConflict: false, jobberSuggestedValue: undefined };
+          ? clearJobberConflict(r)
+          : clearJobberConflict({ ...r, bh: c.newBH });
       }
       return r;
     });
