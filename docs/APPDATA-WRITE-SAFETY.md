@@ -6,6 +6,10 @@ Keep this current. A half-migrated model that nobody has written down is worse
 than either end state, because the next person has to rediscover which fields
 are safe by reading 96 call sites.
 
+**Size is a different question and lives in its own file.** How big the
+document is, why it grows, and the ranked levers if the storage warning ever
+fires: [APPDATA-SIZE.md](./APPDATA-SIZE.md).
+
 ## The problem this tracks
 
 `syncToCloud` writes the **entire** `appData/main` document with `setDoc`, built
