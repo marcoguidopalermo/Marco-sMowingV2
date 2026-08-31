@@ -4,7 +4,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   resolveAddressPoint, serviceAreaBias, unresolvedAddressMessage,
-  SERVICE_AREA_RADIUS_M,
+  SERVICE_AREA_RADIUS_M, MAX_BIAS_RADIUS_M,
 } from './resolveAddressPoint';
 
 const TBAY = { lat: 48.3809, lng: -89.2477 };
@@ -81,4 +81,23 @@ test('it says which address failed, and what to do', () => {
 });
 test('no address at all reads differently', () => {
   assert.match(unresolvedAddressMessage('  '), /No address entered yet/);
+});
+
+console.log('\nThe bias radius must satisfy the NEW Places API');
+test('THE CEILING: a bias over 50 km is rejected outright by the new API', () => {
+  // Verified against places.googleapis.com: radius 60000 returns
+  // INVALID_ARGUMENT, "Radius must be in the range of [0, 50000]". The legacy
+  // API accepted it, so this only appeared on migration — and it failed EVERY
+  // lookup, not just distant ones.
+  assert.ok(SERVICE_AREA_RADIUS_M <= MAX_BIAS_RADIUS_M);
+  assert.equal(MAX_BIAS_RADIUS_M, 50_000);
+});
+test('an over-large radius is clamped rather than passed through', () => {
+  const f = fakeMaps();
+  const b: any = serviceAreaBias(f.maps, TBAY, 999_000);
+  assert.equal(b.radius, 50_000);
+});
+test('a negative radius never reaches the API', () => {
+  const f = fakeMaps();
+  assert.equal((serviceAreaBias(f.maps, TBAY, -5) as any).radius, 0);
 });

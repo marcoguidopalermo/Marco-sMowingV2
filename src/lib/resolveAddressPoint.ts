@@ -16,8 +16,16 @@
 // address must SAY SO — silently keeping the previous view is how the map came
 // to open on whichever property was measured last.
 
-/** Thunder Bay and the surrounding service area. */
-export const SERVICE_AREA_RADIUS_M = 60_000;
+// Thunder Bay and the surrounding service area.
+//
+// 50 km, not 60: the NEW Places API rejects a locationBias circle with
+// `radius` above 50000 outright — "Invalid circle.radius. Radius must be in
+// the range of [0, 50000] inclusively" — so a 60 km bias made every lookup
+// fail with INVALID_ARGUMENT rather than merely being ignored. The legacy API
+// accepted it, which is why this only surfaced on migrating.
+export const SERVICE_AREA_RADIUS_M = 50_000;
+/** The new Places API's hard ceiling for a bias circle. */
+export const MAX_BIAS_RADIUS_M = 50_000;
 
 export interface LatLngLiteral { lat: number; lng: number }
 
@@ -33,10 +41,13 @@ export function serviceAreaBias(
 ): unknown {
   // A circle literal is what findPlaceFromQuery documents for locationBias.
   // Constructing a LatLng keeps it valid across API versions.
+  // Clamped, because a radius over the ceiling is a hard rejection rather than
+  // a silently wider search.
+  const r = Math.min(Math.max(0, radius), MAX_BIAS_RADIUS_M);
   try {
-    return { center: new maps.LatLng(centre.lat, centre.lng), radius };
+    return { center: new maps.LatLng(centre.lat, centre.lng), radius: r };
   } catch {
-    return { center: centre, radius };
+    return { center: centre, radius: r };
   }
 }
 
@@ -153,7 +164,8 @@ export function serviceAreaBounds(
 ): unknown {
   try {
     return new maps.Circle({
-      center: new maps.LatLng(centre.lat, centre.lng), radius,
+      center: new maps.LatLng(centre.lat, centre.lng),
+      radius: Math.min(Math.max(0, radius), MAX_BIAS_RADIUS_M),
     }).getBounds();
   } catch {
     return null;
