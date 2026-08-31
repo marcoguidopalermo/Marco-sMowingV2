@@ -8,6 +8,7 @@ import {
 } from '../lib/lawnPricing';
 import LawnRateSheet from './LawnRateSheet';
 import PropertyMeasureTool from './PropertyMeasureTool';
+import AddressAutocompleteInput from './AddressAutocompleteInput';
 
 const todayYmd = () => new Date().toISOString().slice(0, 10);
 const defaultFirstCut = () => mondayOfNextWeek(todayYmd());
@@ -62,6 +63,9 @@ export default function LawnMaster({
   const [frequency, setFrequency] = useState<'weekly' | 'biweekly' | null>(null);
   const [selectedPackages, setSelectedPackages] = useState<string[]>([]); // one Jobber quote may carry several packages
   const [name, setName] = useState('');
+  // Coordinates from a chosen suggestion, handed straight to the measuring
+  // tool so it skips the address lookup entirely.
+  const [pickedPoint, setPickedPoint] = useState<{ lat: number; lng: number; zoom?: number } | null>(null);
   const [loadedId, setLoadedId] = useState<string | null>(null);
   const [loadedVersion, setLoadedVersion] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -352,8 +356,17 @@ export default function LawnMaster({
               </>
             )}
 
-            <input value={name} onChange={e => setName(e.target.value)} placeholder="Client / address (optional)"
-              className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-slate-400" />
+            {/* Same field as before — it accepts a client NAME or an address,
+                so suggestions are offered and never required. Picking one seeds
+                the measuring tool with coordinates; typing clears that again,
+                because a point belongs to the address it came from. */}
+            <AddressAutocompleteInput
+              value={name}
+              onChange={(t) => { setName(t); setPickedPoint(null); }}
+              onPick={(p) => { setName(p.address); setPickedPoint({ lat: p.lat, lng: p.lng, zoom: 19 }); }}
+              placeholder="Client / address (optional)"
+              className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-slate-400"
+            />
             <div className="grid grid-cols-2 gap-2">
               <button onClick={clearAll} className="min-h-[48px] inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-black uppercase tracking-widest">
                 <RotateCcw className="w-4 h-4" /> Clear
@@ -387,6 +400,7 @@ export default function LawnMaster({
           currentUser={currentUser}
           initial={measurement}
           initialAddress={name.trim() || undefined}
+          focus={pickedPoint}
           onClose={() => setMeasureOpen(false)}
           onUse={(m) => { touch(); setSqft(Math.round(m.totalSqft)); setMeasurement(m); }}
         />

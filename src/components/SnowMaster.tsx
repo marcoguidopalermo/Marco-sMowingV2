@@ -4,6 +4,7 @@ import { SnowQuote, SnowRateConfigVersion, SnowContract } from '../types';
 import { encodeGrid, gridOf } from '../lib/snowGrid';
 import PropertyMeasureTool from './PropertyMeasureTool';
 import StreetViewPanel from './StreetViewPanel';
+import AddressAutocompleteInput from './AddressAutocompleteInput';
 import type { PropertyMeasurement } from '../types';
 import {
   priceSnow, SnowConfig, SNOW_CONFIG_V1, SnowPrice, resolveSnowConfig,
@@ -318,9 +319,18 @@ export default function SnowMaster({
               Property address
             </label>
             <div className="flex gap-2">
-              <input
+              <AddressAutocompleteInput
                 value={address}
-                onChange={e => { setDirty(true); setAddressAndDropFocus(e.target.value); }}
+                onChange={(t) => { setDirty(true); setAddressAndDropFocus(t); }}
+                // A CHOSEN suggestion carries its coordinates, so the map opens
+                // on them directly — no second lookup, and nothing for the
+                // un-geocodable path to catch. Typed text still falls through
+                // to resolveAddressPoint and its banner.
+                onPick={(p) => {
+                  setDirty(true);
+                  setAddress(p.address);
+                  setMapFocus({ lat: p.lat, lng: p.lng, zoom: 19 });
+                }}
                 placeholder="123 Example St, Thunder Bay"
                 className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-base font-semibold outline-none"
               />

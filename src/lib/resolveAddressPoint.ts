@@ -86,3 +86,26 @@ export function unresolvedAddressMessage(address: string | null | undefined): st
       + 'search or pan to it on the map.'
     : 'No address entered yet — search or pan to the property.';
 }
+
+/**
+ * The same service area as a LatLngBounds, which is what the Places
+ * Autocomplete widget takes (it wants `bounds`, not the `locationBias` circle
+ * findPlaceFromQuery uses). Derived from the identical centre and radius so the
+ * suggestions you are offered and the lookup that resolves a typed address can
+ * never disagree about where the service area is.
+ * @param {object} maps The google.maps namespace.
+ * @param {LatLngLiteral} centre Centre of the service area.
+ * @param {number} radius Metres.
+ * @return {unknown} A LatLngBounds, or null if one cannot be built.
+ */
+export function serviceAreaBounds(
+  maps: any, centre: LatLngLiteral, radius: number = SERVICE_AREA_RADIUS_M,
+): unknown {
+  try {
+    return new maps.Circle({
+      center: new maps.LatLng(centre.lat, centre.lng), radius,
+    }).getBounds();
+  } catch {
+    return null;
+  }
+}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X, Search, Plus, Minus, Trash2, MapPin, AlertTriangle, Check, Loader2, Pencil, Eye } from 'lucide-react';
+import { X, Search, Plus, Minus, Trash2, MapPin, AlertTriangle, Check, Loader2, Pencil, Eye, Map } from 'lucide-react';
 import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, M2_TO_SQFT, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM } from '../lib/googleMaps';
 import { resolveAddressPoint, unresolvedAddressMessage } from '../lib/resolveAddressPoint';
 import { PropertyMeasurement, SnowAreaPurpose } from '../types';
@@ -85,6 +85,14 @@ export default function PropertyMeasureTool({
   // Set when a typed address could not be resolved. The map must never look as
   // though it found the property when it did not.
   const [addrError, setAddrError] = useState<string | null>(null);
+  // IMAGERY WATCHDOG. Google fires no "tile failed" event, so the only signal
+  // that satellite imagery is not arriving is `tilesloaded` never firing. If it
+  // has not fired by the time this trips, the map is up but blank/grey, and we
+  // say which of the handful of causes it is likely to be instead of leaving a
+  // silent grey rectangle.
+  const [tilesOk, setTilesOk] = useState(false);
+  const [tilesSlow, setTilesSlow] = useState(false);
+  const [mapType, setMapType] = useState<'hybrid' | 'roadmap'>('hybrid');
 
   const [draftCount, setDraftCount] = useState(0);   // vertices placed in the in-progress shape
 
@@ -286,8 +294,25 @@ export default function PropertyMeasureTool({
         renderingType: (g.maps.RenderingType && g.maps.RenderingType.RASTER) || 'RASTER',
         tilt: 0, gestureHandling: 'greedy', disableDefaultUI: true,
         zoomControl: true, clickableIcons: false,
+        // The map-type control was hidden with the rest of the default UI, so
+        // if the map ever fell back to road tiles there was no way to see that
+        // or to switch back. Our own toggle sits in the header instead.
       });
       mapRef.current = map;
+      // What Google actually gave us, named in the console so a support
+      // conversation starts from fact rather than description. Not the key.
+      console.info('[maps] map created —',
+        'mapTypeId:', map.getMapTypeId?.(),
+        '| renderingType:', map.getRenderingType?.() ?? '(not reported)',
+        '| tilt:', map.getTilt?.());
+      g.maps.event.addListenerOnce(map, 'tilesloaded', () => {
+        if (cancelled) return;
+        setTilesOk(true); setTilesSlow(false);
+        console.info('[maps] tilesloaded — imagery is rendering');
+      });
+      window.setTimeout(() => {
+        if (!cancelled) setTilesSlow((prev) => prev || true);
+      }, 8000);
       // Manual drawing: every map tap drops a vertex onto the active draft
       // polygon (no DrawingManager). Ignored when not drawing.
       g.maps.event.addListener(map, 'click', (e: any) => {
@@ -416,6 +441,21 @@ export default function PropertyMeasureTool({
               disabled={status !== 'ready' || !placesOn}
               className="w-full border border-slate-300 rounded-lg pl-8 pr-3 py-2.5 text-sm outline-none focus:border-slate-500 disabled:bg-slate-50 disabled:text-slate-400" />
           </div>
+          {/* Satellite ↔ road. The default map-type control is hidden with the
+              rest of the default UI, so without this a fallback to road tiles
+              is neither visible nor correctable. */}
+          <button
+            type="button"
+            onClick={() => {
+              const next = mapType === 'hybrid' ? 'roadmap' : 'hybrid';
+              setMapType(next);
+              mapRef.current?.setMapTypeId?.(next);
+            }}
+            title={mapType === 'hybrid' ? 'Switch to road map' : 'Switch to satellite'}
+            className="min-h-[44px] px-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-black uppercase tracking-widest"
+          >
+            <Map className="w-4 h-4" /> {mapType === 'hybrid' ? 'Road' : 'Sat'}
+          </button>
           {/* SWITCH IN PLACE, don't back out. Hands the current centre and
               zoom over so Street View opens on what you were just looking at. */}
           {onSwitchToStreet && (
@@ -448,6 +488,24 @@ export default function PropertyMeasureTool({
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
             <span>{addrError}</span>
             <button onClick={() => setAddrError(null)} className="ml-auto shrink-0 text-amber-700 font-black px-1" aria-label="Dismiss">×</button>
+          </div>
+        )}
+
+        {/* IMAGERY NOT ARRIVING. `tilesloaded` never fired, so the map object
+            exists but nothing is being painted — the grey-rectangle case. Names
+            the causes in the order they are worth checking, because every one
+            of them is invisible from inside the app. */}
+        {status === 'ready' && tilesSlow && !tilesOk && (
+          <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 text-[12px] text-amber-900 flex items-start gap-2 shrink-0">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+            <span>
+              <b>Map imagery has not loaded.</b> The map itself started, so this is
+              tiles, not the panel. Most likely: billing disabled on the Google
+              Cloud project, the API key’s HTTP-referrer restriction not covering
+              this domain, or a Maps JavaScript API quota. The browser console
+              carries Google’s own reason — look for <code>gm_authFailure</code>,
+              <code> BillingNotEnabled</code>, or <code>RefererNotAllowed</code>.
+            </span>
           </div>
         )}
 
