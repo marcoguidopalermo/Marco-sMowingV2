@@ -4,6 +4,7 @@ import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, M2_TO_SQFT, DEFAULT_M
 import { resolveAddressPointNew, unresolvedAddressMessage } from '../lib/resolveAddressPoint';
 import { waitForSize, hasSize } from '../lib/mapContainerReady';
 import { readMapDiag, mapVerdict, VERDICT_TEXT } from '../lib/mapDiagnostics';
+import { PIN_HEX, pinLabel } from '../lib/addressPin';
 import { PropertyMeasurement, SnowAreaPurpose } from '../types';
 import { SNOW_AREAS, areaSpec } from '../lib/snowAreas';
 
@@ -33,6 +34,8 @@ const ADD_COLOR = '#16a34a';   // added area (front/back yard)
 const SUB_COLOR = '#dc2626';   // subtracted area (driveway/pool/beds)
 const fmtSqft = (n: number) => `${Math.round(n).toLocaleString('en-US')} sq ft`;
 
+
+
 // A shape is either an ADDED or SUBTRACTED area (the lawn palette), and on a
 // snow contract it additionally carries WHAT it is. `purpose` is undefined for
 // every lawn measurement ever taken, and undefined means "serviced area",
@@ -54,6 +57,10 @@ interface Props {
   // Switch to Street View in place, at whatever the map is looking at, so the
   // two views are one surface rather than two modals to back out of.
   onSwitchToStreet?: (focus: { lat: number; lng: number; zoom?: number }) => void;
+  // Coordinates the ADDRESS resolved to, when the caller already has them
+  // (an autocomplete suggestion carries its own). Drives the address pin.
+  // Absent means "not resolved" — and an unresolved address gets NO pin.
+  addressPoint?: { lat: number; lng: number } | null;
   // Where the other view left off, so switching back returns to the same spot.
   focus?: { lat: number; lng: number; zoom?: number } | null;
   // 'lawn' (default) is add/subtract, unchanged. 'snow' swaps the toolbar for
@@ -64,13 +71,17 @@ interface Props {
 
 export default function PropertyMeasureTool({
   onClose, onUse, currentUser, initial, initialAddress, palette = 'lawn',
-  onSwitchToStreet, focus,
+  onSwitchToStreet, focus, addressPoint,
 }: Props) {
   const snow = palette === 'snow';
   // Which purpose the next drawn shape gets. Ignored by the lawn palette.
   const [purpose, setPurpose] = useState<SnowAreaPurpose>('plow');
   const purposeRef = useRef<SnowAreaPurpose>('plow');
   const markersRef = useRef<MarkerRef[]>([]);
+  // THE ADDRESS PIN. Kept OUT of markersRef on purpose: that list is the
+  // hazard markers the estimator places, which are measured data and are
+  // cleared by "clear all". This one is a label on the map, owned by the tool.
+  const addressPinRef = useRef<any>(null);
   const [markerCount, setMarkerCount] = useState(0);
   // "Tap to drop a hazard" armed. A ref as well as state because the map's
   // click listener is registered once, on mount, and closes over the first
@@ -192,6 +203,44 @@ export default function PropertyMeasureTool({
     markersRef.current.push({ id: `mk-${Date.now().toString(36)}`, mk, purpose: 'hazard' });
     setMarkerCount(markersRef.current.length);
   };
+  // Drop or move the address pin. Called only with coordinates that actually
+  // resolved — never with a guess, for the same reason the amber banner exists.
+  const placeAddressPin = (point: { lat: number; lng: number }, label?: string) => {
+    const g = gRef.current, map = mapRef.current;
+    if (!g || !map) return;
+    if (addressPinRef.current) {
+      addressPinRef.current.setPosition(point);
+      if (label !== undefined) addressPinRef.current.setLabel(pinLabel(label));
+      return;
+    }
+    addressPinRef.current = new g.maps.Marker({
+      position: point, map,
+      // NOT draggable and NOT clickable: every map click must reach the map so
+      // it becomes a polygon vertex. A clickable marker would swallow taps and
+      // make the pin a hole in the drawing surface.
+      draggable: false, clickable: false,
+      // Above the drawn shapes, so a polygon cannot bury the thing that says
+      // which property this is.
+      zIndex: 10_000,
+      icon: {
+        // A teardrop pin, drawn rather than fetched so it needs no asset.
+        path: 'M 0,0 C -2,-20 -10,-22 -10,-30 A 10,10 0 1,1 10,-30 C 10,-22 2,-20 0,0 z',
+        fillColor: PIN_HEX, fillOpacity: 1,
+        strokeColor: '#ffffff', strokeWeight: 2,
+        scale: 1.1,
+        anchor: new g.maps.Point(0, 0),
+        // Text sits BELOW the pin rather than inside the head.
+        labelOrigin: new g.maps.Point(0, 8),
+      },
+      label: pinLabel(label),
+      title: label || undefined,
+    });
+  };
+  const clearAddressPin = () => {
+    try { addressPinRef.current?.setMap(null); } catch { /* noop */ }
+    addressPinRef.current = null;
+  };
+
   const clearMarkers = () => {
     markersRef.current.forEach(m => m.mk.setMap(null));
     markersRef.current = [];
@@ -384,6 +433,11 @@ export default function PropertyMeasureTool({
       // API and the new Places Text Search are both blocked on this key, but
       // classic Places Find Place is allowed (same API the search box uses). Any
       // failure leaves the Thunder Bay default; drawing is unaffected.
+      // A PICKED SUGGESTION already carries its coordinates — pin it at once,
+      // with no lookup to wait for or to fail.
+      if (addressPoint) {
+        placeAddressPin(addressPoint, wantAddress || address);
+      }
       const addrToCenter = (!outlineSeed && !focus && hasPlaces) ? wantAddress : '';
       if (addrToCenter) {
         // Same biased resolver StreetViewPanel uses — see lib/resolveAddressPoint
@@ -395,7 +449,11 @@ export default function PropertyMeasureTool({
               desiredViewRef.current = { center: point, zoom: 19 };
               map.setCenter(point); map.setZoom(19);
               setAddress(addrToCenter); setAddrError(null);
+              placeAddressPin(point, addrToCenter);
             } else {
+              // NO PIN. An unresolved address gets the banner and nothing on
+              // the map — a pin at a guess would look exactly like a result.
+              clearAddressPin();
               setAddrError(unresolvedAddressMessage(addrToCenter));
             }
           });
@@ -413,6 +471,14 @@ export default function PropertyMeasureTool({
             else { map.setCenter(place.geometry.location); map.setZoom(20); }
             const c = map.getCenter?.();
             if (c) desiredViewRef.current = { center: { lat: c.lat(), lng: c.lng() }, zoom: map.getZoom?.() ?? 20 };
+            // Searching here resolves an address just as much as typing it on
+            // the quote does, so it earns a pin on the same terms.
+            const loc = place.geometry.location;
+            placeAddressPin(
+              { lat: loc.lat(), lng: loc.lng() },
+              place.formatted_address || searchRef.current?.value || '',
+            );
+            setAddrError(null);
             setAddress(place.formatted_address);
           });
         } catch (err) {
@@ -459,6 +525,7 @@ export default function PropertyMeasureTool({
       cancelled = true;
       try { resizeObsRef.current?.disconnect(); } catch { /* noop */ }
       resizeObsRef.current = null;
+      clearAddressPin();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -493,6 +560,10 @@ export default function PropertyMeasureTool({
 
   return (
     <div className="fixed inset-0 z-[140] bg-black/70 flex flex-col md:items-center md:justify-center md:p-4">
+      {/* White label text on satellite imagery is unreadable over pale roofs
+          and concrete without a shadow; Marker labels take a className, so the
+          outline lives here rather than being baked into the icon. */}
+      <style>{`.sm-pin-label{text-shadow:0 1px 3px rgba(0,0,0,.95),0 0 6px rgba(0,0,0,.7);}`}</style>
       <div className="bg-white w-full h-full md:h-[90vh] md:max-w-2xl md:rounded-2xl overflow-hidden flex flex-col shadow-2xl">
         {/* Header — search + close */}
         <div className="px-3 py-2.5 border-b border-slate-200 flex items-center gap-2 shrink-0">

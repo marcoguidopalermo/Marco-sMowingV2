@@ -401,6 +401,7 @@ export default function LawnMaster({
           initial={measurement}
           initialAddress={name.trim() || undefined}
           focus={pickedPoint}
+          addressPoint={pickedPoint ? { lat: pickedPoint.lat, lng: pickedPoint.lng } : null}
           onClose={() => setMeasureOpen(false)}
           onUse={(m) => { touch(); setSqft(Math.round(m.totalSqft)); setMeasurement(m); }}
         />

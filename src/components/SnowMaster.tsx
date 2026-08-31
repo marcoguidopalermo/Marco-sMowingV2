@@ -164,7 +164,16 @@ export default function SnowMaster({
   // A focus belongs to ONE property. Changing the address abandons it, so the
   // next open resolves the new address rather than reopening the old spot —
   // the same trap as the stale outline below.
-  const setAddressAndDropFocus = (v: string) => { setAddress(v); setMapFocus(null); };
+  // Coordinates from a PICKED suggestion. Distinct from mapFocus, which the
+  // satellite/Street View toggle also writes: this one means "the address
+  // resolved to here", and it is what earns a pin.
+  const [addressPoint, setAddressPoint] = useState<{ lat: number; lng: number } | null>(null);
+  const setAddressAndDropFocus = (v: string) => {
+    setAddress(v); setMapFocus(null);
+    // Editing the address abandons the point it resolved to — otherwise the
+    // pin would sit on the previous property.
+    setAddressPoint(null);
+  };
   const [measureOpen, setMeasureOpen] = useState(false);
   const [streetOpen, setStreetOpen] = useState(false);
   const [measurement, setMeasurement] = useState<PropertyMeasurement | undefined>(undefined);
@@ -211,7 +220,7 @@ export default function SnowMaster({
   const clearAll = (opts?: { silent?: boolean }) => {
     if (!opts?.silent && price && !window.confirm('Start a new quote? The traced driveway and all modifiers are cleared.')) return;
     setGrid(emptyGrid()); setBusyRoad(false); setDanger(0); setNoBoulevard(false);
-    setAddress(''); setMapFocus(null); setMeasurement(undefined);
+    setAddress(''); setMapFocus(null); setAddressPoint(null); setMeasurement(undefined);
     setLoadedId(null); setLoadedVersion(null); setDirty(false);
   };
 
@@ -263,7 +272,7 @@ export default function SnowMaster({
     setGrid(g.length ? g.map(r => [...r]) : emptyGrid());
     setBusyRoad(!!q.busyRoad); setDanger(q.danger || 0);
     setNoBoulevard(!!q.noBoulevard);
-    setAddress(addressOf(q)); setMapFocus(null);
+    setAddress(addressOf(q)); setMapFocus(null); setAddressPoint(null);
     setMeasurement(q.measurement);
     setLoadedId(q.id);
     setLoadedVersion(q.pricingConfigVersion || 'snow-v1'); setDirty(false);
@@ -330,6 +339,7 @@ export default function SnowMaster({
                   setDirty(true);
                   setAddress(p.address);
                   setMapFocus({ lat: p.lat, lng: p.lng, zoom: 19 });
+                  setAddressPoint({ lat: p.lat, lng: p.lng });
                 }}
                 placeholder="123 Example St, Thunder Bay"
                 className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-base font-semibold outline-none"
@@ -544,6 +554,7 @@ export default function SnowMaster({
           palette="snow"
           currentUser={currentUser}
           focus={mapFocus}
+          addressPoint={addressPoint}
           onSwitchToStreet={(f) => { setMapFocus(f); setMeasureOpen(false); setStreetOpen(true); }}
           // The saved outline is only re-rendered when it belongs to the
           // address currently in the field. Change the address and the tool
