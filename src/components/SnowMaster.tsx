@@ -156,6 +156,14 @@ export default function SnowMaster({
   // THE ADDRESS identifies which driveway this is, so it sits at the top of the
   // quote rather than among the pricing inputs — and seeds the map.
   const [address, setAddress] = useState('');
+  // ONE SURFACE, TWO VIEWS. The point the estimator is looking at, handed
+  // between the satellite map and Street View so switching keeps the property
+  // and the zoom instead of making them back out and re-enter.
+  const [mapFocus, setMapFocus] = useState<{ lat: number; lng: number; zoom?: number } | null>(null);
+  // A focus belongs to ONE property. Changing the address abandons it, so the
+  // next open resolves the new address rather than reopening the old spot —
+  // the same trap as the stale outline below.
+  const setAddressAndDropFocus = (v: string) => { setAddress(v); setMapFocus(null); };
   const [measureOpen, setMeasureOpen] = useState(false);
   const [streetOpen, setStreetOpen] = useState(false);
   const [measurement, setMeasurement] = useState<PropertyMeasurement | undefined>(undefined);
@@ -202,7 +210,7 @@ export default function SnowMaster({
   const clearAll = (opts?: { silent?: boolean }) => {
     if (!opts?.silent && price && !window.confirm('Start a new quote? The traced driveway and all modifiers are cleared.')) return;
     setGrid(emptyGrid()); setBusyRoad(false); setDanger(0); setNoBoulevard(false);
-    setAddress(''); setMeasurement(undefined);
+    setAddress(''); setMapFocus(null); setMeasurement(undefined);
     setLoadedId(null); setLoadedVersion(null); setDirty(false);
   };
 
@@ -254,7 +262,7 @@ export default function SnowMaster({
     setGrid(g.length ? g.map(r => [...r]) : emptyGrid());
     setBusyRoad(!!q.busyRoad); setDanger(q.danger || 0);
     setNoBoulevard(!!q.noBoulevard);
-    setAddress(addressOf(q));
+    setAddress(addressOf(q)); setMapFocus(null);
     setMeasurement(q.measurement);
     setLoadedId(q.id);
     setLoadedVersion(q.pricingConfigVersion || 'snow-v1'); setDirty(false);
@@ -312,12 +320,12 @@ export default function SnowMaster({
             <div className="flex gap-2">
               <input
                 value={address}
-                onChange={e => { setDirty(true); setAddress(e.target.value); }}
+                onChange={e => { setDirty(true); setAddressAndDropFocus(e.target.value); }}
                 placeholder="123 Example St, Thunder Bay"
                 className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-base font-semibold outline-none"
               />
               <button
-                onClick={() => setMeasureOpen(true)}
+                onClick={() => { setMapFocus(null); setMeasureOpen(true); }}
                 title="Open the satellite view on this property"
                 className="min-h-[44px] px-3 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 text-sm font-bold"
               >
@@ -328,7 +336,7 @@ export default function SnowMaster({
                   approach, whether there is a boulevard, the clearance and the
                   slope — the things the price actually turns on. */}
               <button
-                onClick={() => setStreetOpen(true)}
+                onClick={() => { setMapFocus(null); setStreetOpen(true); }}
                 disabled={!address.trim() && !measurement}
                 title="Open Street View on this property"
                 className="min-h-[44px] px-3 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 text-sm font-bold disabled:opacity-40"
@@ -525,6 +533,8 @@ export default function SnowMaster({
         <PropertyMeasureTool
           palette="snow"
           currentUser={currentUser}
+          focus={mapFocus}
+          onSwitchToStreet={(f) => { setMapFocus(f); setMeasureOpen(false); setStreetOpen(true); }}
           // The saved outline is only re-rendered when it belongs to the
           // address currently in the field. Change the address and the tool
           // opens on the NEW property rather than the old outline.
@@ -546,6 +556,8 @@ export default function SnowMaster({
         <StreetViewPanel
           address={address}
           measurement={measurement}
+          focus={mapFocus}
+          onSwitchToMap={(f) => { setMapFocus(f); setStreetOpen(false); setMeasureOpen(true); }}
           onClose={() => setStreetOpen(false)}
         />
       )}

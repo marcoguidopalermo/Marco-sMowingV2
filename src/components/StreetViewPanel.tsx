@@ -16,8 +16,9 @@
 // that component is shared with LawnMaster and the contract builder, and this
 // is a snow-quoting need. A toggle there would change the tool for everybody.
 import { useEffect, useRef, useState } from 'react';
-import { X, AlertTriangle } from 'lucide-react';
-import { loadGoogleMaps, onMapsAuthFailure, lastMapsError } from '../lib/googleMaps';
+import { X, AlertTriangle, Map } from 'lucide-react';
+import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM } from '../lib/googleMaps';
+import { resolveAddressPoint, unresolvedAddressMessage } from '../lib/resolveAddressPoint';
 import type { PropertyMeasurement } from '../types';
 
 /**
@@ -42,12 +43,23 @@ function centroidOf(m: PropertyMeasurement | undefined): { lat: number; lng: num
   return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
 }
 
-export default function StreetViewPanel({ address, measurement, onClose }: {
+export default function StreetViewPanel({
+  address, measurement, onClose, onSwitchToMap, focus,
+}: {
   address: string;
   measurement?: PropertyMeasurement;
   onClose: () => void;
+  // Switch back to the satellite map in place, at whatever this panorama is
+  // standing on, so the two views are one surface.
+  onSwitchToMap?: (focus: { lat: number; lng: number; zoom?: number }) => void;
+  // Where the map left off, used when there is no outline and no address to
+  // resolve — switching over should not throw away the view you had.
+  focus?: { lat: number; lng: number; zoom?: number } | null;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // Where this panorama is looking — the PROPERTY point, not the camera on the
+  // road — so switching to satellite lands on the driveway, not the kerb.
+  const hereRef = useRef<{ lat: number; lng: number; zoom?: number } | null>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'none' | 'error'>('loading');
   const [errCode, setErrCode] = useState<string | null>(null);
   const [resolved, setResolved] = useState<string>('');
@@ -67,29 +79,26 @@ export default function StreetViewPanel({ address, measurement, onClose }: {
         || !measurement?.address
         || sameAddress(measurement.address, address);
       let point = outlineMatches ? centroidOf(measurement) : null;
+      // Handed over from the map: that is exactly what the user was looking at.
+      if (!point && focus) point = { lat: focus.lat, lng: focus.lng };
 
       // 2. Otherwise resolve the typed address with the SAME Places call the
       //    measuring tool uses — Places is already enabled and working, so
       //    this adds no new API dependency (a Geocoder would have).
       if (!point && address.trim() && hasPlaces) {
-        point = await new Promise(res => {
-          try {
-            new maps.places.PlacesService(hostRef.current!).findPlaceFromQuery(
-              { query: address.trim(), fields: ['geometry'] },
-              (results: any, st: any) => {
-                const loc = st === maps.places.PlacesServiceStatus.OK && results?.[0]?.geometry?.location;
-                res(loc ? { lat: loc.lat(), lng: loc.lng() } : null);
-              },
-            );
-          } catch { res(null); }
-        });
+        // Shared with the measuring tool — one biased implementation, so the
+        // two views cannot disagree about where an address is. See
+        // lib/resolveAddressPoint.
+        point = await resolveAddressPoint(
+          maps, hostRef.current!, address, DEFAULT_MAP_CENTER,
+        );
       }
       if (dead) return;
       if (!point) {
         // No outline and no resolvable address — say so plainly rather than
         // dropping the viewer on Thunder Bay and letting it look like coverage.
         setStatus('none');
-        setResolved(address.trim() ? `Could not find “${address.trim()}”.` : 'No address entered yet.');
+        setResolved(unresolvedAddressMessage(address));
         return;
       }
 
@@ -107,6 +116,7 @@ export default function StreetViewPanel({ address, measurement, onClose }: {
               setResolved('Google has no Street View imagery within 80 m of this property.');
               return;
             }
+            hereRef.current = { lat: point!.lat, lng: point!.lng, zoom: 19 };
             new maps.StreetViewPanorama(hostRef.current, {
               pano: data.location.pano,
               // Face the property from the road.
@@ -150,9 +160,25 @@ export default function StreetViewPanel({ address, measurement, onClose }: {
               <div className="text-[11px] text-slate-400 truncate">{resolved}</div>
             )}
           </div>
-          <button onClick={onClose} className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center text-slate-400 hover:text-slate-700" aria-label="Close">
-            <X className="w-6 h-6" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            {/* SWITCH IN PLACE. Hands back where this panorama is standing, so
+                the map opens on the same property at working zoom. */}
+            {onSwitchToMap && (
+              <button
+                type="button"
+                onClick={() => onSwitchToMap(
+                  hereRef.current || focus || { ...DEFAULT_MAP_CENTER, zoom: DEFAULT_MAP_ZOOM },
+                )}
+                title="Satellite view of this spot"
+                className="min-h-[44px] px-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-black uppercase tracking-widest"
+              >
+                <Map className="w-4 h-4" /> Satellite
+              </button>
+            )}
+            <button onClick={onClose} className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center text-slate-400 hover:text-slate-700" aria-label="Close">
+              <X className="w-6 h-6" />
+            </button>
+          </div>
         </div>
 
         <div className="relative flex-1 min-h-[380px] bg-slate-100">

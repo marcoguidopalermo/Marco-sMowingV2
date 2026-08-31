@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X, Search, Plus, Minus, Trash2, MapPin, AlertTriangle, Check, Loader2, Pencil } from 'lucide-react';
+import { X, Search, Plus, Minus, Trash2, MapPin, AlertTriangle, Check, Loader2, Pencil, Eye } from 'lucide-react';
 import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, M2_TO_SQFT, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM } from '../lib/googleMaps';
+import { resolveAddressPoint, unresolvedAddressMessage } from '../lib/resolveAddressPoint';
 import { PropertyMeasurement, SnowAreaPurpose } from '../types';
 import { SNOW_AREAS, areaSpec } from '../lib/snowAreas';
 
@@ -48,6 +49,11 @@ interface Props {
   currentUser: { email: string; name: string };
   initial?: PropertyMeasurement | null;   // saved measurement → re-render its outline
   initialAddress?: string;                 // optional client address seed
+  // Switch to Street View in place, at whatever the map is looking at, so the
+  // two views are one surface rather than two modals to back out of.
+  onSwitchToStreet?: (focus: { lat: number; lng: number; zoom?: number }) => void;
+  // Where the other view left off, so switching back returns to the same spot.
+  focus?: { lat: number; lng: number; zoom?: number } | null;
   // 'lawn' (default) is add/subtract, unchanged. 'snow' swaps the toolbar for
   // the four contract purposes and colours every shape by the same hexes the
   // printed map and its legend use.
@@ -56,6 +62,7 @@ interface Props {
 
 export default function PropertyMeasureTool({
   onClose, onUse, currentUser, initial, initialAddress, palette = 'lawn',
+  onSwitchToStreet, focus,
 }: Props) {
   const snow = palette === 'snow';
   // Which purpose the next drawn shape gets. Ignored by the lawn palette.
@@ -75,6 +82,9 @@ export default function PropertyMeasureTool({
   const [shapes, setShapes] = useState<ShapeView[]>([]);
   const [drawing, setDrawing] = useState<Mode | null>(null);
   const [address, setAddress] = useState<string | undefined>(initial?.address || initialAddress);
+  // Set when a typed address could not be resolved. The map must never look as
+  // though it found the property when it did not.
+  const [addrError, setAddrError] = useState<string | null>(null);
 
   const [draftCount, setDraftCount] = useState(0);   // vertices placed in the in-progress shape
 
@@ -255,8 +265,17 @@ export default function PropertyMeasureTool({
       // If the quote has an address, we asynchronously recenter on it below.
       const outlineSeed = initial?.polygons?.[0]?.path?.[0] || initial?.exclusions?.[0]?.path?.[0];
       const lastView = readLastView(currentUser.email);
-      const seedCenter = outlineSeed || lastView || DEFAULT_MAP_CENTER;
-      const seedZoom = outlineSeed ? 20 : (lastView?.zoom || DEFAULT_MAP_ZOOM);
+      const wantAddress = (initialAddress || initial?.address || '').trim();
+      // WHERE TO OPEN. A saved outline wins, then an explicit focus handed over
+      // from Street View. Otherwise: if an address was typed we seed NEUTRAL,
+      // not on the last property this user measured — a failed lookup that
+      // leaves the map sitting on someone else's driveway is indistinguishable
+      // from the map working, and that is exactly how this read as "the map
+      // doesn't go to the typed address".
+      const seedCenter = outlineSeed || focus
+        || (wantAddress ? DEFAULT_MAP_CENTER : (lastView || DEFAULT_MAP_CENTER));
+      const seedZoom = outlineSeed ? 20
+        : focus?.zoom || (wantAddress ? DEFAULT_MAP_ZOOM : (lastView?.zoom || DEFAULT_MAP_ZOOM));
       const map = new g.maps.Map(mapDivRef.current, {
         center: seedCenter, zoom: seedZoom,
         mapTypeId: 'hybrid',            // satellite imagery + street labels (easier to locate the lot)
@@ -285,19 +304,20 @@ export default function PropertyMeasureTool({
       // API and the new Places Text Search are both blocked on this key, but
       // classic Places Find Place is allowed (same API the search box uses). Any
       // failure leaves the Thunder Bay default; drawing is unaffected.
-      const addrToCenter = (!outlineSeed && hasPlaces) ? (initialAddress || initial?.address || '').trim() : '';
-      if (addrToCenter && g.maps.places?.PlacesService) {
-        try {
-          new g.maps.places.PlacesService(map).findPlaceFromQuery(
-            { query: addrToCenter, fields: ['geometry'] },
-            (res: any, status: any) => {
-              const loc = res?.[0]?.geometry?.location;
-              if (!cancelled && status === 'OK' && loc) {
-                map.setCenter(loc); map.setZoom(18); setAddress(addrToCenter);
-              }
-            },
-          );
-        } catch (e) { console.warn('[maps] address centering failed — Thunder Bay default kept:', e); }
+      const addrToCenter = (!outlineSeed && !focus && hasPlaces) ? wantAddress : '';
+      if (addrToCenter) {
+        // Same biased resolver StreetViewPanel uses — see lib/resolveAddressPoint
+        // for why an unbiased findPlaceFromQuery could land anywhere on earth.
+        resolveAddressPoint(g.maps, mapDivRef.current!, addrToCenter, DEFAULT_MAP_CENTER)
+          .then((point) => {
+            if (cancelled) return;
+            if (point) {
+              map.setCenter(point); map.setZoom(19);
+              setAddress(addrToCenter); setAddrError(null);
+            } else {
+              setAddrError(unresolvedAddressMessage(addrToCenter));
+            }
+          });
       }
       // Address search (Places Autocomplete) — OPTIONAL. Only wired when the
       // places library actually loaded; otherwise the salesperson pans/zooms.
@@ -396,10 +416,40 @@ export default function PropertyMeasureTool({
               disabled={status !== 'ready' || !placesOn}
               className="w-full border border-slate-300 rounded-lg pl-8 pr-3 py-2.5 text-sm outline-none focus:border-slate-500 disabled:bg-slate-50 disabled:text-slate-400" />
           </div>
+          {/* SWITCH IN PLACE, don't back out. Hands the current centre and
+              zoom over so Street View opens on what you were just looking at. */}
+          {onSwitchToStreet && (
+            <button
+              type="button"
+              onClick={() => {
+                const map = mapRef.current;
+                const c = map?.getCenter?.();
+                rememberLocation();
+                onSwitchToStreet(c
+                  ? { lat: c.lat(), lng: c.lng(), zoom: map?.getZoom?.() }
+                  : { ...DEFAULT_MAP_CENTER, zoom: DEFAULT_MAP_ZOOM });
+              }}
+              title="Street View of this spot"
+              className="min-h-[44px] px-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-black uppercase tracking-widest"
+            >
+              <Eye className="w-4 h-4" /> Street
+            </button>
+          )}
           <button onClick={onClose} aria-label="Close" className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50">
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* THE ADDRESS DID NOT RESOLVE. Said plainly, over the map, because the
+            alternative is a map that looks like it worked and is showing the
+            wrong property. Drawing still works — pan or search to it. */}
+        {addrError && (
+          <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 text-[12px] text-amber-900 flex items-start gap-2 shrink-0">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+            <span>{addrError}</span>
+            <button onClick={() => setAddrError(null)} className="ml-auto shrink-0 text-amber-700 font-black px-1" aria-label="Dismiss">×</button>
+          </div>
+        )}
 
         {/* Map (always in the DOM so the ref exists; overlays on top) */}
         <div className="relative flex-1 min-h-0 bg-slate-100">
