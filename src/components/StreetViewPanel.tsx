@@ -18,7 +18,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { X, AlertTriangle, Map } from 'lucide-react';
 import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM } from '../lib/googleMaps';
-import { resolveAddressPoint, unresolvedAddressMessage } from '../lib/resolveAddressPoint';
+import { resolveAddressPointNew, unresolvedAddressMessage } from '../lib/resolveAddressPoint';
 import type { PropertyMeasurement } from '../types';
 
 /**
@@ -89,7 +89,7 @@ export default function StreetViewPanel({
         // Shared with the measuring tool — one biased implementation, so the
         // two views cannot disagree about where an address is. See
         // lib/resolveAddressPoint.
-        point = await resolveAddressPoint(
+        point = await resolveAddressPointNew(
           maps, hostRef.current!, address, DEFAULT_MAP_CENTER,
         );
       }

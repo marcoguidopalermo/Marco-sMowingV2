@@ -48,6 +48,56 @@ export function serviceAreaBias(
  * @param {LatLngLiteral} centre Service-area centre for the bias.
  * @return {Promise<LatLngLiteral|null>} The point, or null when unresolvable.
  */
+/**
+ * NEW Places (`Place.searchByText`) first, legacy `findPlaceFromQuery` second.
+ *
+ * This project was created 2026-03-10, after Google's 1 March 2025 cutoff, so
+ * it is a "new customer": the legacy Places widgets and PlacesService are
+ * REFUSED, not merely deprecated. Every lookup here was returning nothing, and
+ * the un-geocodable banner was firing on addresses that are perfectly real —
+ * which is a better explanation of "the map doesn't go to the typed address"
+ * than the missing location bias ever was.
+ *
+ * The legacy path is kept as a fallback so nothing regresses on projects (or a
+ * future key) where it still works. It costs one failed call.
+ * @param {object} maps The google.maps namespace.
+ * @param {HTMLElement} host Any element — legacy PlacesService needs a node.
+ * @param {string} address The address as typed.
+ * @param {LatLngLiteral} centre Service-area centre for the bias.
+ * @return {Promise<LatLngLiteral|null>} The point, or null when unresolvable.
+ */
+export async function resolveAddressPointNew(
+  maps: any,
+  host: HTMLElement,
+  address: string | null | undefined,
+  centre: LatLngLiteral,
+): Promise<LatLngLiteral | null> {
+  const q = String(address || '').trim();
+  if (!q) return null;
+  try {
+    const lib = await maps.importLibrary?.('places');
+    const Place = lib?.Place || maps.places?.Place;
+    if (Place?.searchByText) {
+      const { places } = await Place.searchByText({
+        textQuery: q,
+        fields: ['location'],
+        locationBias: serviceAreaBias(maps, centre),
+        maxResultCount: 1,
+        region: 'ca',
+      });
+      const loc = places?.[0]?.location;
+      if (loc) {
+        const lat = typeof loc.lat === 'function' ? loc.lat() : loc.lat;
+        const lng = typeof loc.lng === 'function' ? loc.lng() : loc.lng;
+        if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+      }
+    }
+  } catch (err) {
+    console.warn('[maps] new Places searchByText unavailable, trying legacy:', err);
+  }
+  return resolveAddressPoint(maps, host, address, centre);
+}
+
 export function resolveAddressPoint(
   maps: any,
   host: HTMLElement,

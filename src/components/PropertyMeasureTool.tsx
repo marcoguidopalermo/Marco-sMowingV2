@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Search, Plus, Minus, Trash2, MapPin, AlertTriangle, Check, Loader2, Pencil, Eye, Map } from 'lucide-react';
 import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, M2_TO_SQFT, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM } from '../lib/googleMaps';
-import { resolveAddressPoint, unresolvedAddressMessage } from '../lib/resolveAddressPoint';
+import { resolveAddressPointNew, unresolvedAddressMessage } from '../lib/resolveAddressPoint';
 import { waitForSize, hasSize } from '../lib/mapContainerReady';
+import { readMapDiag, mapVerdict, VERDICT_TEXT } from '../lib/mapDiagnostics';
 import { PropertyMeasurement, SnowAreaPurpose } from '../types';
 import { SNOW_AREAS, areaSpec } from '../lib/snowAreas';
 
@@ -92,7 +93,10 @@ export default function PropertyMeasureTool({
   // say which of the handful of causes it is likely to be instead of leaving a
   // silent grey rectangle.
   const [tilesOk, setTilesOk] = useState(false);
-  const [tilesSlow, setTilesSlow] = useState(false);
+  // What the evidence says went wrong, once we have enough of it. Replaces a
+  // watchdog that could only ever say "no tiles" — which was a guess, and the
+  // wrong one.
+  const [diagVerdict, setDiagVerdict] = useState<string | null>(null);
   const [mapType, setMapType] = useState<'hybrid' | 'roadmap'>('hybrid');
 
   const [draftCount, setDraftCount] = useState(0);   // vertices placed in the in-progress shape
@@ -345,14 +349,25 @@ export default function PropertyMeasureTool({
         'mapTypeId:', map.getMapTypeId?.(),
         '| renderingType:', map.getRenderingType?.() ?? '(not reported)',
         '| tilt:', map.getTilt?.());
+      const seen = { tilesLoaded: false, idleFired: false };
       g.maps.event.addListenerOnce(map, 'tilesloaded', () => {
-        if (cancelled) return;
-        setTilesOk(true); setTilesSlow(false);
+        seen.tilesLoaded = true;
+        if (!cancelled) { setTilesOk(true); setDiagVerdict(null); }
         console.info('[maps] tilesloaded — imagery is rendering');
       });
-      window.setTimeout(() => {
-        if (!cancelled) setTilesSlow((prev) => prev || true);
-      }, 8000);
+      g.maps.event.addListenerOnce(map, 'idle', () => { seen.idleFired = true; });
+      // Report the FACTS shortly after construction, then again once any
+      // reasonable load would have finished. One structured object, so a
+      // screenshot of the console answers the question outright.
+      const sweep = (label: string, decide: boolean) => {
+        if (cancelled) return;
+        const d = readMapDiag(mapDivRef.current, map, seen);
+        const v = mapVerdict(d);
+        console.info(`[maps] diag ${label} —`, { verdict: v, ...d });
+        if (decide && v !== 'ok') setDiagVerdict(VERDICT_TEXT[v]);
+      };
+      window.setTimeout(() => sweep('t+500ms', false), 500);
+      window.setTimeout(() => sweep('t+8s', true), 8000);
       // Manual drawing: every map tap drops a vertex onto the active draft
       // polygon (no DrawingManager). Ignored when not drawing.
       g.maps.event.addListener(map, 'click', (e: any) => {
@@ -373,7 +388,7 @@ export default function PropertyMeasureTool({
       if (addrToCenter) {
         // Same biased resolver StreetViewPanel uses — see lib/resolveAddressPoint
         // for why an unbiased findPlaceFromQuery could land anywhere on earth.
-        resolveAddressPoint(g.maps, mapDivRef.current!, addrToCenter, DEFAULT_MAP_CENTER)
+        resolveAddressPointNew(g.maps, mapDivRef.current!, addrToCenter, DEFAULT_MAP_CENTER)
           .then((point) => {
             if (cancelled) return;
             if (point) {
@@ -542,16 +557,13 @@ export default function PropertyMeasureTool({
             exists but nothing is being painted — the grey-rectangle case. Names
             the causes in the order they are worth checking, because every one
             of them is invisible from inside the app. */}
-        {status === 'ready' && tilesSlow && !tilesOk && (
+        {status === 'ready' && diagVerdict && !tilesOk && (
           <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 text-[12px] text-amber-900 flex items-start gap-2 shrink-0">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
             <span>
-              <b>Map imagery has not loaded.</b> The map itself started, so this is
-              tiles, not the panel. Most likely: billing disabled on the Google
-              Cloud project, the API key’s HTTP-referrer restriction not covering
-              this domain, or a Maps JavaScript API quota. The browser console
-              carries Google’s own reason — look for <code>gm_authFailure</code>,
-              <code> BillingNotEnabled</code>, or <code>RefererNotAllowed</code>.
+              <b>The map did not appear.</b> {diagVerdict}
+              {' '}Full detail is in the browser console under{' '}
+              <code>[maps] diag t+8s</code>.
             </span>
           </div>
         )}
