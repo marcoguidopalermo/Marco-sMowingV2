@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Search, Plus, Minus, Trash2, MapPin, AlertTriangle, Check, Loader2, Pencil, Eye, Map } from 'lucide-react';
 import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, M2_TO_SQFT, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM } from '../lib/googleMaps';
 import { resolveAddressPoint, unresolvedAddressMessage } from '../lib/resolveAddressPoint';
+import { waitForSize, hasSize } from '../lib/mapContainerReady';
 import { PropertyMeasurement, SnowAreaPurpose } from '../types';
 import { SNOW_AREAS, areaSpec } from '../lib/snowAreas';
 
@@ -97,6 +98,11 @@ export default function PropertyMeasureTool({
   const [draftCount, setDraftCount] = useState(0);   // vertices placed in the in-progress shape
 
   const mapDivRef = useRef<HTMLDivElement>(null);
+  // The view we intend to be showing. A resize repaints the tiles but can leave
+  // the map centred wrong, so every deliberate move records itself here and the
+  // observer re-applies it.
+  const desiredViewRef = useRef<{ center: { lat: number; lng: number }; zoom: number } | null>(null);
+  const resizeObsRef = useRef<ResizeObserver | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const gRef = useRef<any>(null);
   const mapRef = useRef<any>(null);
@@ -263,8 +269,14 @@ export default function PropertyMeasureTool({
     // Surface a Google auth failure (bad key / referrer / billing) even if it
     // arrives AFTER the libraries loaded — flip to the error panel with a code.
     onMapsAuthFailure((code) => { if (!cancelled) { setErrCode(code); setStatus('error'); } });
-    loadGoogleMaps().then(({ maps, hasPlaces }) => {
+    loadGoogleMaps().then(async ({ maps, hasPlaces }) => {
       if (cancelled || !mapDivRef.current) return;
+      // Do not construct against a box with no dimensions — that is the blank
+      // -on-first-open bug. Resolves false on a deadline rather than hanging;
+      // the ResizeObserver below is the net for that case.
+      const sized = await waitForSize(mapDivRef.current);
+      if (cancelled || !mapDivRef.current) return;
+      if (!sized) console.warn('[maps] container still had no size — relying on the resize observer');
       const g = { maps };
       gRef.current = g;
       setPlacesOn(hasPlaces);
@@ -299,6 +311,34 @@ export default function PropertyMeasureTool({
         // or to switch back. Our own toggle sits in the header instead.
       });
       mapRef.current = map;
+      desiredViewRef.current = {
+        center: (seedCenter as any).lat !== undefined
+          ? { lat: (seedCenter as any).lat, lng: (seedCenter as any).lng }
+          : DEFAULT_MAP_CENTER,
+        zoom: seedZoom,
+      };
+
+      // THE NET. A map built before its container had dimensions renders no
+      // tiles and never retries on its own — which is why leaving to Street
+      // View and coming back appeared to "fix" it. Trigger a resize the moment
+      // the box gains or changes size, and RE-CENTRE: a resize repaints but
+      // leaves the centre where the old geometry put it, so tiles alone are
+      // not enough.
+      let lastW = 0; let lastH = 0;
+      if (typeof ResizeObserver !== 'undefined' && mapDivRef.current) {
+        resizeObsRef.current = new ResizeObserver(() => {
+          const el = mapDivRef.current;
+          if (!el || !hasSize(el)) return;
+          if (el.offsetWidth === lastW && el.offsetHeight === lastH) return;
+          lastW = el.offsetWidth; lastH = el.offsetHeight;
+          try {
+            g.maps.event.trigger(map, 'resize');
+            const want = desiredViewRef.current;
+            if (want) { map.setCenter(want.center); map.setZoom(want.zoom); }
+          } catch (err) { console.warn('[maps] resize handling failed:', err); }
+        });
+        resizeObsRef.current.observe(mapDivRef.current);
+      }
       // What Google actually gave us, named in the console so a support
       // conversation starts from fact rather than description. Not the key.
       console.info('[maps] map created —',
@@ -337,6 +377,7 @@ export default function PropertyMeasureTool({
           .then((point) => {
             if (cancelled) return;
             if (point) {
+              desiredViewRef.current = { center: point, zoom: 19 };
               map.setCenter(point); map.setZoom(19);
               setAddress(addrToCenter); setAddrError(null);
             } else {
@@ -355,6 +396,8 @@ export default function PropertyMeasureTool({
             if (!place?.geometry) return;
             if (place.geometry.viewport) map.fitBounds(place.geometry.viewport);
             else { map.setCenter(place.geometry.location); map.setZoom(20); }
+            const c = map.getCenter?.();
+            if (c) desiredViewRef.current = { center: { lat: c.lat(), lng: c.lng() }, zoom: map.getZoom?.() ?? 20 };
             setAddress(place.formatted_address);
           });
         } catch (err) {
@@ -397,7 +440,11 @@ export default function PropertyMeasureTool({
       setErrCode(code);
       setStatus('error');
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      try { resizeObsRef.current?.disconnect(); } catch { /* noop */ }
+      resizeObsRef.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -510,7 +557,12 @@ export default function PropertyMeasureTool({
         )}
 
         {/* Map (always in the DOM so the ref exists; overlays on top) */}
-        <div className="relative flex-1 min-h-0 bg-slate-100">
+        {/* min-h-[380px], NOT min-h-0. A Google map measures its container once,
+            at construction; `min-h-0` permits a computed height of exactly zero
+            before layout settles, and a map built against a zero-height box
+            renders no tiles and never retries. StreetViewPanel has always
+            carried a real minimum here and has never shown the fault. */}
+        <div className="relative flex-1 min-h-[380px] bg-slate-100">
           <div ref={mapDivRef} className="absolute inset-0" />
 
           {status === 'loading' && (
