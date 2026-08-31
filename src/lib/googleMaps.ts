@@ -61,7 +61,7 @@ function installBootstrap(): void {
   /* eslint-enable */
 }
 
-export interface GoogleMapsHandle { maps: any; hasPlaces: boolean }
+export interface GoogleMapsHandle { maps: any; hasPlaces: boolean; hasStreetView: boolean }
 
 // Load core (maps + drawing + geometry) — all required, awaited. Places is
 // OPTIONAL: address search is a nicety, so a places failure never blocks the
@@ -83,5 +83,19 @@ export async function loadGoogleMaps(): Promise<GoogleMapsHandle> {
   } catch (err) {
     console.warn('[maps] places library unavailable — address search disabled, manual pan/zoom still works:', err);
   }
-  return { maps, hasPlaces };
+  // STREET VIEW IS ITS OWN LIBRARY. StreetViewService, StreetViewPanorama,
+  // StreetViewSource and StreetViewStatus all live in 'streetView' and are
+  // undefined without it. It was never imported here, so StreetViewPanel could
+  // only work once a google.maps.Map had been constructed — a Map owns a
+  // built-in panorama and side-loads the module as a consequence. That is why
+  // Street View worked only after satellite had been shown, and did nothing on
+  // a cold open. Neither panel may depend on the other having run first.
+  let hasStreetView = false;
+  try {
+    await maps.importLibrary('streetView');
+    hasStreetView = true;
+  } catch (err) {
+    console.warn('[maps] streetView library unavailable — Street View disabled, the map still works:', err);
+  }
+  return { maps, hasPlaces, hasStreetView };
 }

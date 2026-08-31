@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from 'react';
 import { X, AlertTriangle, Map } from 'lucide-react';
 import { loadGoogleMaps, onMapsAuthFailure, lastMapsError, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM } from '../lib/googleMaps';
 import { resolveAddressPointNew, unresolvedAddressMessage } from '../lib/resolveAddressPoint';
+import { waitForSize, hasSize } from '../lib/mapContainerReady';
 import type { PropertyMeasurement } from '../types';
 
 /**
@@ -63,13 +64,30 @@ export default function StreetViewPanel({
   const [status, setStatus] = useState<'loading' | 'ready' | 'none' | 'error'>('loading');
   const [errCode, setErrCode] = useState<string | null>(null);
   const [resolved, setResolved] = useState<string>('');
+  const panoRef = useRef<any>(null);
+  const resizeObsRef = useRef<ResizeObserver | null>(null);
 
   useEffect(() => {
     let dead = false;
     onMapsAuthFailure(code => { if (!dead) { setErrCode(code); setStatus('error'); } });
 
-    loadGoogleMaps().then(async ({ maps, hasPlaces }) => {
+    loadGoogleMaps().then(async ({ maps, hasPlaces, hasStreetView }) => {
       if (dead || !hostRef.current) return;
+      // The streetView library is what supplies StreetViewService and
+      // StreetViewPanorama. Say so plainly rather than throwing on an
+      // undefined constructor and rendering nothing, which is how this
+      // previously "did nothing" on a cold open.
+      if (!hasStreetView) {
+        setStatus('error');
+        setErrCode('STREETVIEW_LIBRARY_UNAVAILABLE');
+        setResolved('The Street View library did not load. The satellite map is unaffected.');
+        return;
+      }
+      // Same readiness gate the map uses: a panorama also measures its
+      // container once, at construction.
+      const sized = await waitForSize(hostRef.current);
+      if (dead || !hostRef.current) return;
+      if (!sized) console.warn('[maps] street view container had no size — relying on the resize observer');
 
       // 1. Where to look. A saved outline already knows — but ONLY if it was
       //    taken for this address. Correcting a typo has to move the view; a
@@ -117,7 +135,7 @@ export default function StreetViewPanel({
               return;
             }
             hereRef.current = { lat: point!.lat, lng: point!.lng, zoom: 19 };
-            new maps.StreetViewPanorama(hostRef.current, {
+            const pano = new maps.StreetViewPanorama(hostRef.current, {
               pano: data.location.pano,
               // Face the property from the road.
               pov: {
@@ -130,6 +148,25 @@ export default function StreetViewPanel({
               motionTracking: false,
               motionTrackingControl: false,
             });
+            panoRef.current = pano;
+            // THE THIRD DEFENCE, same as the map's. A panorama sizes itself at
+            // construction too; if the box changes afterwards it repaints only
+            // when told to, and the POV has to be re-applied because a resize
+            // leaves it looking wherever the old geometry pointed.
+            if (typeof ResizeObserver !== 'undefined' && hostRef.current) {
+              let lastW = 0; let lastH = 0;
+              resizeObsRef.current = new ResizeObserver(() => {
+                const el = hostRef.current;
+                if (!el || !hasSize(el) || !panoRef.current) return;
+                if (el.offsetWidth === lastW && el.offsetHeight === lastH) return;
+                lastW = el.offsetWidth; lastH = el.offsetHeight;
+                try {
+                  maps.event.trigger(panoRef.current, 'resize');
+                  panoRef.current.setPov(panoRef.current.getPov());
+                } catch (err) { console.warn('[maps] street view resize failed:', err); }
+              });
+              resizeObsRef.current.observe(hostRef.current);
+            }
             setResolved(data.location.description || address.trim());
             setStatus('ready');
           },
@@ -146,7 +183,12 @@ export default function StreetViewPanel({
       setStatus('error');
     });
 
-    return () => { dead = true; };
+    return () => {
+      dead = true;
+      try { resizeObsRef.current?.disconnect(); } catch { /* noop */ }
+      resizeObsRef.current = null;
+      panoRef.current = null;
+    };
   }, [address, measurement]);
 
   return (
