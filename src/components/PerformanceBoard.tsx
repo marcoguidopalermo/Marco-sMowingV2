@@ -16,6 +16,7 @@ import { logPerfActivity } from '../lib/perfAudit';
 import { monthsPresent, monthOfDate, monthSettlementStatus } from '../lib/performanceMonths';
 import { scanBlockingPartialJobs, scanOpenPartials, monthResolutionSummary, BlockingPartialJob, totalBelowCredited, creditedBHOf } from '../lib/multiDayResolution';
 import { crewDayRows, monthStats, sortCrewDayRows, CrewDayRow } from '../lib/monthAnalysis';
+import { monthsNeedingSheet, asSheetMonth, type SheetMonth } from '../lib/performanceOverlay';
 import { scanOutstandingCrewDays, groupOutstandingByDivision, divisionNameToCode, OutstandingCrewDay } from '../lib/approvalOversight';
 import CompletionReviewModal from './CompletionReviewModal';
 import AHSplitModal from './AHSplitModal';
@@ -124,7 +125,9 @@ interface PerformanceBoardProps {
   onResolveVoid: (visitIds: string[], ym: string, reason: string) => void;
   // On-demand loading of finalized-month sheets (per open month, never all at once).
   monthSheetStatus: Record<string, 'loading' | 'loaded' | 'missing' | 'error'>;
-  ensureMonthLoaded: (ym: string) => void;
+  // SheetMonth, not string — see performanceOverlay. A loader that decides
+  // by pushedMonths alone cannot produce one, so it cannot compile.
+  ensureMonthLoaded: (ym: SheetMonth) => void;
 
   jobberConnected: boolean;
   canSyncJobber: boolean;
@@ -710,12 +713,18 @@ export default function PerformanceBoard({
   // never all months at once, cached per month by the parent.
   useEffect(() => {
     if (!reportStartDate || !reportEndDate) return;
-    const startYm = monthOfDate(reportStartDate);
-    const endYm = monthOfDate(reportEndDate);
-    for (const ym of pushedMonths || []) {
-      if (ym >= startYm && ym <= endYm) ensureMonthLoaded(ym);
-    }
-  }, [reportStartDate, reportEndDate, pushedMonths, ensureMonthLoaded]);
+    // monthsNeedingSheet, NOT pushedMonths. A month's days reach a sheet by two
+    // routes and only one is a push: August 2026 was never pushed, yet 15 of
+    // its 31 days were rolling-archived, so the old `pushedMonths.includes`
+    // test was false and the report silently read 558 of 1,411 jobs.
+    for (const ym of monthsNeedingSheet({
+      today: formatTodayInToronto(),
+      pushedMonths,
+      archivedDays,
+      rangeFrom: reportStartDate,
+      rangeTo: reportEndDate,
+    })) ensureMonthLoaded(ym);
+  }, [reportStartDate, reportEndDate, pushedMonths, archivedDays, ensureMonthLoaded]);
   useEffect(() => {
     if (!focusCrewTarget || perfDate !== focusCrewTarget.date) return;
     if (!dailyLogs[focusCrewTarget.crewId]) return;
@@ -3775,7 +3784,10 @@ export default function PerformanceBoard({
                           monthLabel={fmtMonth(ym)}
                           daysMap={monthDays}
                           status={monthSheetStatus[ym]}
-                          onExpand={() => ensureMonthLoaded(ym)}
+                          // The user expanded THIS month explicitly, which is
+                          // not a decision the rule models — hence the escape
+                          // hatch with a reason rather than a bare cast.
+                          onExpand={() => ensureMonthLoaded(asSheetMonth(ym, 'user expanded this month'))}
                           onOpenDay={(date, crewId, division) => goToCrewDay({ date, crewId, division })}
                           inScope={inScope}
                         />

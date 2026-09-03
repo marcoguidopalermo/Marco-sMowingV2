@@ -119,7 +119,7 @@ import {
   monthOfDate, extractMonth, monthSettlementStatus,
   SHEET_SIZE_WARN_BYTES,
 } from './lib/performanceMonths';
-import { mergePerformance, monthsNeedingSheet } from './lib/performanceOverlay';
+import { mergePerformance, monthsNeedingSheet, asSheetMonth, type SheetMonth } from './lib/performanceOverlay';
 import {
   scanBlockingPartialJobs, scanOpenPartials, remainingBHOf, rowBlocksApproval, voidLedger, carryLedger, completeLedger, BlockingPartialJob,
 } from './lib/multiDayResolution';
@@ -1872,7 +1872,10 @@ export default function App() {
   // `force` re-reads a sheet we already hold. Needed because the rolling
   // archive can move a NEW day onto the current month's sheet while this tab
   // is open — see the current-month effect below.
-  const ensureMonthLoaded = useCallback(async (ym: string, opts?: { force?: boolean }) => {
+  // TAKES A SheetMonth, NOT A STRING. The only way to get one is
+  // monthsNeedingSheet (or asSheetMonth with a stated reason), so a loader
+  // cannot gate its fetch on pushedMonths alone without failing to compile.
+  const ensureMonthLoaded = useCallback(async (ym: SheetMonth, opts?: { force?: boolean }) => {
     if (!ym || !user) return;
     if (opts?.force) {
       setMonthSheetStatus((s) => ({ ...s, [ym]: 'loading' }));
@@ -1898,11 +1901,20 @@ export default function App() {
       setMonthSheetStatus((s) => ({ ...s, [ym]: 'error' }));
     }
   }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Load the viewed date's sheet when it belongs to a finalized (pushed) month.
+  // Load the viewed date's sheet. Same rule as everywhere else — a month is
+  // needed when it was PUSHED or when the rolling archive drained days out of
+  // it, and testing only the former meant viewing an archived day in an
+  // unpushed month showed an empty board.
   useEffect(() => {
-    const ym = monthOfDate(perfDate);
-    if ((appData.pushedMonths || []).includes(ym) && !monthSheetStatus[ym]) ensureMonthLoaded(ym);
-  }, [perfDate, appData.pushedMonths, monthSheetStatus, ensureMonthLoaded]);
+    for (const ym of monthsNeedingSheet({
+      today: formatDate(new Date()),
+      viewedDate: perfDate,
+      pushedMonths: appData.pushedMonths,
+      archivedDays: appData.archivedDays,
+    })) {
+      if (!monthSheetStatus[ym]) ensureMonthLoaded(ym);
+    }
+  }, [perfDate, appData.pushedMonths, appData.archivedDays, monthSheetStatus, ensureMonthLoaded]);
 
   // THE ROLLING ARCHIVE ALSO DRAINS THE MONTH THAT IS STILL OPEN.
   // functions/src/jobber/archive.ts moves every settled day older than
