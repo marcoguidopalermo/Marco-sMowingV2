@@ -8,7 +8,8 @@ import AddressAutocompleteInput from './AddressAutocompleteInput';
 import SnowDrivewayPanel from './SnowDrivewayPanel';
 import SnowSplitTracer from './SnowSplitTracer';
 import {
-  sharedPairing, sharedDrivewayClause, unpairedSignings, type DrivewayMode,
+  sharedPairing, sharedDrivewayClause, unpairedSignings, quoteAddressLine,
+  type DrivewayMode,
 } from '../lib/snowDriveways';
 import type { PropertyMeasurement } from '../types';
 import {
@@ -229,7 +230,10 @@ export default function SnowMaster({
     pairedQuote,
     snowContracts,
   ), [loadedId, contractId, pairedQuoteId, address2, pairedQuote, snowContracts]);
-  const pairingApplies = mode === 'shared' && pairing.discountApplies;
+  // THE QUOTE SHOWS THE DISCOUNTED PRICE. A quote is what a client is shown,
+  // so it shows what they would pay. The condition lives in the contract
+  // wording and on the saved-list flag — see lib/snowDriveways.
+  const sharedDiscountOnQuote = mode === 'shared';
   // ONE SLAB, TWO OWNERS. In shared mode the single traced grid IS the
   // driveway; each side is the columns on its own side of the line, and each is
   // tiered and priced from those cells alone.
@@ -244,15 +248,15 @@ export default function SnowMaster({
       {
         premium: false, busyRoad, danger, noBoulevard,
         // Driveway 1 takes the discount on the same terms as driveway 2.
-        sharedDriveway: mode === 'shared' && pairingApplies,
+        sharedDriveway: sharedDiscountOnQuote,
         secondDriveway: mode === 'multi',
       },
       viewConfig, viewVersion,
     ),
-    [gridLeft, busyRoad, danger, noBoulevard, mode, pairingApplies, viewConfig, viewVersion],
+    [gridLeft, busyRoad, danger, noBoulevard, mode, sharedDiscountOnQuote, viewConfig, viewVersion],
   );
   // Shared: conditional. Multi: unconditional — one payer, one trip.
-  const sharedOn = pairingApplies;
+  const sharedOn = sharedDiscountOnQuote;
   const secondOn = mode === 'multi';
   const price2 = useMemo<SnowPrice | null>(
     () => (mode === 'single' ? null : priceSnow(
@@ -322,7 +326,7 @@ export default function SnowMaster({
       // totals are recorded. `total` keeps its meaning (Standard total / null for
       // custom); `premiumTotal` is new. `premium: false` since Standard is base.
       premium: false, busyRoad, danger, noBoulevard,
-      sharedDriveway: pairingApplies || undefined,
+      sharedDriveway: sharedDiscountOnQuote || undefined,
       address: label || undefined,
       measurement,
       total: stdTotal, premiumTotal: premTotal, isCustom: price.isCustom,
@@ -371,7 +375,7 @@ export default function SnowMaster({
         || `snow-${Date.now() + 1}-${Math.random().toString(36).slice(2, 6)}`;
       const addr2 = address2.trim();
       q.sharedDrivewayWith = { quoteId: otherId, address: addr2, pairId };
-      q.sharedDriveway = pairingApplies;
+      q.sharedDriveway = sharedDiscountOnQuote;
       q.contractId = contractId;
       // The split is a property of the SLAB, so both records carry it.
       q.splitCol = splitCol;
@@ -390,7 +394,7 @@ export default function SnowMaster({
         isCustom: price2.isCustom,
         pricingConfigVersion: viewVersion,
         sharedDrivewayWith: { quoteId: id, address: label, pairId },
-        sharedDriveway: pairingApplies,
+        sharedDriveway: sharedDiscountOnQuote,
         contractId: pairedQuote?.contractId,
         splitCol,
         quotedBy: pairedQuote?.quotedBy || currentUser,
@@ -484,6 +488,19 @@ export default function SnowMaster({
 
       {sub === 'quote' && (
         <div className="space-y-4">
+          {/* BOTH PROPERTIES, at the top of a shared quote, so what is on
+              screen names the whole driveway rather than half of it. */}
+          {mode === 'shared' && (address.trim() || address2.trim()) && (
+            <div className="rounded-xl border-2 px-3 py-2" style={{ borderColor: GREEN }}>
+              <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                Shared driveway · both properties
+              </div>
+              <div className="text-sm font-bold" style={{ color: GREEN }}>
+                {[address.trim(), address2.trim()].filter(Boolean).join('  +  ') || '—'}
+              </div>
+            </div>
+          )}
+
           {/* ── DRIVEWAY SHAPE ─────────────────────────────────────────────
                 Two cases that both take $100 off per driveway and are
                 otherwise nothing alike. SHARED saves two linked records;
@@ -742,9 +759,6 @@ export default function SnowMaster({
                 subtitle={mode === 'shared' ? 'own quote record' : 'same quote'}
                 price={price2} config={viewConfig} premiumAdd={premiumAdd}
                 mods={price2 ? activeModifiers(price2.addBreakdown, price2, viewConfig) : []}
-                pendingNote={mode === 'shared' && !pairing.discountApplies
-                  ? `$100 shared-driveway discount not applied — ${pairing.state === 'one-sided' ? 'only one side is under contract.' : 'pending both contracts.'}`
-                  : null}
               />
             )}
 
@@ -797,20 +811,15 @@ export default function SnowMaster({
       {mode !== 'single' && (
         <div className="max-w-3xl mx-auto w-full px-3 pb-3 space-y-3">
           {mode === 'shared' && (
-            <div className={`rounded-xl border-2 px-3 py-2 text-[12px] ${
-              pairing.needsAttention
-                ? 'bg-amber-50 border-amber-400 text-amber-900'
-                : pairing.discountApplies
-                  ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
-                  : 'bg-slate-50 border-slate-300 text-slate-700'}`}>
+            <div className="rounded-xl border-2 border-slate-300 bg-slate-50 px-3 py-2 text-[12px] text-slate-700">
+              {/* NO PENDING/ONE-SIDED STATE HERE. This is the quote, and the
+                  quote shows the price the client would pay. The condition is
+                  stated in the contract wording below, and the pairs that need
+                  chasing are flagged on the saved-quotes list — which is where
+                  they get acted on. */}
               <div className="flex items-center gap-2 flex-wrap">
-                {pairing.needsAttention && <AlertTriangle className="w-4 h-4 shrink-0" />}
-                <b className="uppercase tracking-widest text-[10px]">
-                  {pairing.state === 'active' ? 'Discount active'
-                    : pairing.state === 'one-sided' ? 'Only one side signed'
-                      : 'Discount pending'}
-                </b>
-                <span>{pairing.message}</span>
+                <b className="uppercase tracking-widest text-[10px]">Shared driveway</b>
+                <span>$100 off each side. Link each side's contract so the pair can be tracked.</span>
               </div>
               {/* LINK THE CONTRACT, do not restate its status. Whether this
                   side is under contract is read from the contract itself, so
@@ -858,9 +867,6 @@ export default function SnowMaster({
                 noBoulevard={noBoulevard} onNoBoulevard={editNoBoulevard}
                 danger={danger} onDanger={editDanger}
                 price={price} config={viewConfig} premiumAdd={premiumAdd}
-                pendingNote={!pairing.discountApplies
-                  ? `$100 shared-driveway discount not applied — ${pairing.state === 'one-sided' ? 'only one side is under contract.' : 'pending both contracts.'}`
-                  : null}
               />
               <SnowDrivewayPanel
                 hideTracer hidePricing
@@ -873,9 +879,6 @@ export default function SnowMaster({
                 noBoulevard={noBoulevard2} onNoBoulevard={() => { setDirty(true); setNoBoulevard2(v => !v); }}
                 danger={danger2} onDanger={(d) => { setDirty(true); setDanger2(d); }}
                 price={price2} config={viewConfig} premiumAdd={premiumAdd}
-                pendingNote={!pairing.discountApplies
-                  ? `$100 shared-driveway discount not applied — ${pairing.state === 'one-sided' ? 'only one side is under contract.' : 'pending both contracts.'}`
-                  : null}
               />
             </div>
           )}
@@ -963,7 +966,7 @@ const chip = (label: string, value: number | string) => (
 // reduction that is not on a line is one applied silently, and the whole point
 // of this panel is that nobody has to do the arithmetic to find it.
 function DrivewayPricingCard({
-  title, subtitle, price, config, premiumAdd, mods, pendingNote,
+  title, subtitle, price, config, premiumAdd, mods,
 }: {
   title: string | null;
   subtitle?: string | null;
@@ -971,7 +974,6 @@ function DrivewayPricingCard({
   config: SnowConfig;
   premiumAdd: number;
   mods: { key: string; label: string; amount: number }[];
-  pendingNote?: string | null;
 }) {
   const std = price && !price.isCustom ? price.total! : null;
   const prem = std != null ? std + premiumAdd : null;
@@ -1041,12 +1043,6 @@ function DrivewayPricingCard({
               <span className="text-lg font-mono">{money(price.isCustom ? floorPrem! : prem!)}</span>
             </div>
           </div>
-          {/* Why a discount is NOT on the lines above, when one is pending. */}
-          {pendingNote && (
-            <div className="text-[11px] rounded-lg px-2.5 py-1.5 bg-amber-50 text-amber-900 border border-amber-200">
-              {pendingNote}
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -1205,6 +1201,15 @@ function SavedSnowQuotes({ quotes, contracts, currentUser, isAdmin, versionMap, 
             <div key={x.id} className="bg-white rounded-xl border border-slate-200 shadow-sm p-3 flex items-center justify-between gap-3">
               <button onClick={() => onOpen(x)} className="min-w-0 text-left flex-1">
                 <div className="font-bold text-slate-800 truncate">{title}</div>
+                {/* BOTH PROPERTIES. A shared-driveway record that names only
+                    one of the two is a record you cannot match to the driveway
+                    it is for. The partner's address comes off the link, so the
+                    two can never disagree. */}
+                {x.sharedDrivewayWith?.address && (
+                  <div className="text-[11px] font-semibold" style={{ color: GREEN }}>
+                    Shared driveway · {quoteAddressLine(x)}
+                  </div>
+                )}
                 {/* When unnamed the title already carries shape + price, so only
                     named quotes repeat the detail line. */}
                 {named && (

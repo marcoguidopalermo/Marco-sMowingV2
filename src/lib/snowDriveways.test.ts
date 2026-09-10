@@ -4,7 +4,7 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   sharedPairing, drivewayMode, isSigned, sharedDrivewayClause, unpairedSignings,
-  UNDER_CONTRACT, contractIsUnderContract,
+  UNDER_CONTRACT, contractIsUnderContract, quoteAddresses, quoteAddressLine,
 } from './snowDriveways';
 import { priceSnow, SNOW_CONFIG_V1, activeModifiers } from './snowPricing';
 
@@ -191,4 +191,41 @@ test('neither appears when it is not applied', () => {
   const keys = activeModifiers(p.addBreakdown, p, SNOW_CONFIG_V1).map(m => m.key);
   assert.ok(!keys.includes('sharedDriveway'));
   assert.ok(!keys.includes('secondDriveway'));
+});
+
+console.log('\nThe QUOTE shows the discounted price; the CONDITION lives elsewhere');
+test('the quote applies the discount regardless of pair state', () => {
+  // priceSnow takes `sharedDriveway` as a plain input — the caller (the quote)
+  // passes true for every shared quote. Withholding it put internal state in
+  // front of a customer.
+  const g = [[1, 1]];
+  const shown = priceSnow(g, { sharedDriveway: true }, SNOW_CONFIG_V1)!;
+  const full = priceSnow(g, {}, SNOW_CONFIG_V1)!;
+  assert.equal(full.total! - shown.total!, 100, 'the client sees what they would pay');
+});
+test('the pair state still resolves — it just no longer gates the price', () => {
+  const cs = contracts({ c1: 'booked' });
+  const p = sharedPairing(
+    q({ sharedDrivewayWith: link('q2', '12 Elm'), contractId: 'c1' }),
+    q({ id: 'q2' }), cs,
+  );
+  assert.equal(p.state, 'one-sided');
+  assert.equal(p.needsAttention, true, 'the flag is now the ONLY guard on the money');
+});
+test('the contract wording still carries the condition', () => {
+  assert.match(sharedDrivewayClause('12 Elm St'), /while both properties are under contract/);
+});
+
+console.log('\nBoth properties on the record');
+test('a shared quote names BOTH addresses', () => {
+  const x = q({ address: '10 Elm St', sharedDrivewayWith: link('q2', '12 Elm St') });
+  assert.deepEqual(quoteAddresses(x), ['10 Elm St', '12 Elm St']);
+  assert.equal(quoteAddressLine(x), '10 Elm St  +  12 Elm St');
+});
+test('an ordinary quote names one, with no stray separator', () => {
+  assert.equal(quoteAddressLine(q({ address: '10 Elm St' })), '10 Elm St');
+});
+test('it falls back to client/name for records predating the address field', () => {
+  assert.deepEqual(quoteAddresses({ name: 'Old Record' } as any), ['Old Record']);
+  assert.deepEqual(quoteAddresses({} as any), []);
 });

@@ -33,8 +33,6 @@ export interface DrivewayPanelProps {
   price: SnowPrice | null;
   config: SnowConfig;
   premiumAdd: number;
-  /** Shown when the discount is not yet applied — the pending/one-sided case. */
-  pendingNote?: string | null;
   /** Shared driveways trace ONE slab above, so the per-side panel omits a
    *  tracer — two tracers would contradict the single physical driveway. */
   hideTracer?: boolean;
@@ -139,11 +137,6 @@ export default function SnowDrivewayPanel(p: DrivewayPanelProps) {
                   </span>
                 </div>
               ))}
-            </div>
-          )}
-          {p.pendingNote && (
-            <div className="mt-2 text-[11px] rounded-lg px-2.5 py-1.5 bg-amber-50 text-amber-900 border border-amber-200">
-              {p.pendingNote}
             </div>
           )}
         </>

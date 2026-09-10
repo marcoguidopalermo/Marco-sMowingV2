@@ -10,19 +10,27 @@
 // not exist — neither client is party to the other's contract, and either can
 // leave without the other.
 //
-// THE DISCOUNT IS CONDITIONAL. It is a discount for sharing the cost, so it is
-// only true while both are paying. If one signs and the other does not, we are
-// clearing the whole driveway for one payer and would be giving them $100 off
-// for the privilege. So:
+// THE DISCOUNT IS CONDITIONAL, AND THE CONDITION IS CARRIED BY THE CONTRACT,
+// NOT BY THE PRICE.
 //
-//   pending    neither signed        show the discount, do NOT apply it
-//   one-sided  exactly one signed    do NOT apply, and FLAG it
-//   active     both signed           apply it, to both
+// A quote is what a client is shown, so it shows the price they would actually
+// pay: $100 off. "Discount not applied — pending both contracts" is an internal
+// state and does not belong in front of a customer.
 //
-// It is also RETROACTIVE by construction: nothing is stored as "discount
-// applied", only the pair's state. The moment the second signs, the state
-// becomes active and both prices carry the discount — no back-dating, no
-// reissue, and nothing to forget.
+// The condition is still real, and it lives in two places:
+//   1. THE CONTRACT WORDING — "$100 shared-driveway discount applies while both
+//      properties are under contract" (sharedDrivewayClause). That is what
+//      makes it enforceable.
+//   2. THE FLAG on the saved-quotes list — every pair where one side is under
+//      contract and the other is not (unpairedSignings).
+//
+// Note what this trades. Because the price is no longer withheld, a one-sided
+// pair means we ARE currently giving $100 off to a single payer whose driveway
+// we clear in full. That is a deliberate choice — the alternative put internal
+// state on a customer's quote — but it makes the flag the thing that protects
+// the money, rather than a convenience. It is the only guard left.
+//
+// The pair state below is therefore used for the FLAG, not for pricing.
 //
 // ── 2. TWO DRIVEWAYS, ONE PROPERTY — one client ────────────────────────────
 // One trip, one contract, one payer. $100 off each driveway, UNCONDITIONAL:
@@ -41,7 +49,8 @@ export type SharedPairState =
 
 export interface SharedPairing {
   state: SharedPairState;
-  /** True only when the discount may be applied to the price. */
+  // Whether BOTH sides are under contract. No longer gates the price — the
+  // quote always shows the discount — but it is what the flag is built on.
   discountApplies: boolean;
   /** True when somebody should look at this pair. */
   needsAttention: boolean;
@@ -156,3 +165,21 @@ export function unpairedSignings(
   }
   return out;
 }
+
+/**
+ * Both properties of a shared driveway, for display on the record and anywhere
+ * the quote is shown. A shared quote that names only one of the two properties
+ * is a quote you cannot match to the driveway it is for.
+ * @param {SnowQuote} q The quote.
+ * @return {string[]} One address for an ordinary quote, two for a shared one.
+ */
+export function quoteAddresses(q: Pick<SnowQuote, 'address' | 'name' | 'client' | 'sharedDrivewayWith'>): string[] {
+  const own = (q.address || q.client || q.name || '').trim();
+  const other = (q.sharedDrivewayWith?.address || '').trim();
+  return [own, other].filter(Boolean);
+}
+
+/** "10 Elm St + 12 Elm St", or just the one address. */
+export const quoteAddressLine = (
+  q: Pick<SnowQuote, 'address' | 'name' | 'client' | 'sharedDrivewayWith'>,
+): string => quoteAddresses(q).join('  +  ');
