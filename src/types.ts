@@ -2164,9 +2164,15 @@ export interface SnowQuote {
     /** Stable id shared by both sides, so a pair survives a rename. */
     pairId: string;
   };
-  /** Under contract. Drives the shared-driveway condition. */
-  signedAt?: number;
-  signedBy?: { email: string; name: string };
+  /** Where the line falls on the shared slab. Both records carry it. */
+  splitCol?: number;
+  // UNDER CONTRACT — a POINTER at the SnowContract, never a copy of its state.
+  // This used to be a `signedAt` timestamp on the quote, which was a second
+  // source of truth about whether something was signed: the contract could move
+  // to booked, or back out of it, and the quote would not know. The conditional
+  // discount would then be computed off the wrong one. Only the link is stored;
+  // the answer is always read from the contract's status.
+  contractId?: string;
   // MULTI (one client, two driveways on one property): ONE record holding
   // both. Absent or length <= 1 is an ordinary single-driveway quote, and the
   // top-level grid/tier fields remain the first driveway's — older quotes are

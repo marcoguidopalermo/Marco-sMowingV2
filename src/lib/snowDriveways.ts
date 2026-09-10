@@ -28,7 +28,7 @@
 // One trip, one contract, one payer. $100 off each driveway, UNCONDITIONAL:
 // there is only one party, so there is nothing for the discount to depend on.
 // ONE quote record holding both driveways.
-import type { SnowQuote } from '../types';
+import type { SnowContract, SnowContractStatus, SnowQuote } from '../types';
 
 /** Which shape a quote is. Absent/unknown reads as a plain single driveway. */
 export type DrivewayMode = 'single' | 'shared' | 'multi';
@@ -51,8 +51,32 @@ export interface SharedPairing {
   message: string;
 }
 
-export const isSigned = (q: Pick<SnowQuote, 'signedAt'> | null | undefined): boolean =>
-  !!q && typeof q.signedAt === 'number' && q.signedAt > 0;
+// WHICH CONTRACT STATES COUNT AS "under contract". Defined once, here, so
+// changing what counts is a one-line change rather than a hunt. 'approved' is
+// the client having agreed; 'booked' is it being on the schedule. Both mean the
+// property is paying, which is what the shared discount depends on.
+export const UNDER_CONTRACT: SnowContractStatus[] = ['approved', 'booked'];
+
+export const contractIsUnderContract = (c: SnowContract | null | undefined): boolean =>
+  !!c && UNDER_CONTRACT.includes(c.status);
+
+/**
+ * Is this quote's property under contract? Read from the CONTRACT, never from
+ * the quote — the quote holds only a pointer. A quote with no linked contract,
+ * or a link to a contract that is not loaded, reads as NOT under contract:
+ * the safe answer, because it withholds the discount rather than granting one.
+ * @param {SnowQuote} q The quote.
+ * @param {Record<string, SnowContract>} contracts Contracts by id.
+ * @return {boolean} Whether it is under contract.
+ */
+export function isSigned(
+  q: Pick<SnowQuote, 'contractId'> | null | undefined,
+  contracts?: Record<string, SnowContract> | null,
+): boolean {
+  const id = q?.contractId;
+  if (!id) return false;
+  return contractIsUnderContract(contracts?.[id]);
+}
 
 export function drivewayMode(q: Pick<SnowQuote, 'sharedDrivewayWith' | 'driveways'> | null | undefined): DrivewayMode {
   if (q?.sharedDrivewayWith?.quoteId) return 'shared';
@@ -69,18 +93,19 @@ export function drivewayMode(q: Pick<SnowQuote, 'sharedDrivewayWith' | 'driveway
 export function sharedPairing(
   quote: SnowQuote,
   partner: SnowQuote | null | undefined,
+  contracts?: Record<string, SnowContract> | null,
 ): SharedPairing {
   const link = quote.sharedDrivewayWith;
   const partnerAddress = link?.address || partner?.address || '';
   if (!link?.quoteId) {
     return {
       state: 'unpaired', discountApplies: false, needsAttention: false,
-      thisSigned: isSigned(quote), partnerSigned: false, partnerAddress: '',
+      thisSigned: isSigned(quote, contracts), partnerSigned: false, partnerAddress: '',
       message: 'Not paired with another property.',
     };
   }
-  const a = isSigned(quote);
-  const b = isSigned(partner);
+  const a = isSigned(quote, contracts);
+  const b = isSigned(partner, contracts);
   if (a && b) {
     return {
       state: 'active', discountApplies: true, needsAttention: false,
@@ -118,14 +143,15 @@ export function sharedDrivewayClause(partnerAddress: string): string {
 }
 
 /** Every pair needing attention, for the flag surface. */
-export function unpairedSignings(quotes: SnowQuote[]): {
-  quote: SnowQuote; pairing: SharedPairing;
-}[] {
+export function unpairedSignings(
+  quotes: SnowQuote[],
+  contracts?: Record<string, SnowContract> | null,
+): { quote: SnowQuote; pairing: SharedPairing }[] {
   const byId = new Map(quotes.map(q => [q.id, q]));
   const out: { quote: SnowQuote; pairing: SharedPairing }[] = [];
   for (const q of quotes) {
     if (!q.sharedDrivewayWith?.quoteId) continue;
-    const p = sharedPairing(q, byId.get(q.sharedDrivewayWith.quoteId) || null);
+    const p = sharedPairing(q, byId.get(q.sharedDrivewayWith.quoteId) || null, contracts);
     if (p.needsAttention) out.push({ quote: q, pairing: p });
   }
   return out;

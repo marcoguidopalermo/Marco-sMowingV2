@@ -6,6 +6,7 @@ import PropertyMeasureTool from './PropertyMeasureTool';
 import StreetViewPanel from './StreetViewPanel';
 import AddressAutocompleteInput from './AddressAutocompleteInput';
 import SnowDrivewayPanel from './SnowDrivewayPanel';
+import SnowSplitTracer from './SnowSplitTracer';
 import {
   sharedPairing, sharedDrivewayClause, unpairedSignings, type DrivewayMode,
 } from '../lib/snowDriveways';
@@ -193,9 +194,12 @@ export default function SnowMaster({
   const [danger2, setDanger2] = useState(0);
   const [noBoulevard2, setNoBoulevard2] = useState(false);
   const [address2, setAddress2] = useState('');
-  // Whether THIS quote is under contract, and whether the paired one is. The
-  // shared discount depends on both; nothing stores "discount applied".
-  const [signedAt, setSignedAt] = useState<number | undefined>(undefined);
+  // A POINTER at this quote's SnowContract. Whether it is under contract is
+  // read from that contract's status, never stored here — see lib/snowDriveways.
+  const [contractId, setContractId] = useState<string | undefined>(undefined);
+  // Where the line falls on a shared driveway: columns [0, splitCol) belong to
+  // Driveway 1, the rest to Driveway 2. One slab, two owners.
+  const [splitCol, setSplitCol] = useState(Math.floor(COLS / 2));
   const [pairedQuoteId, setPairedQuoteId] = useState<string | null>(null);
   const [measureOpen, setMeasureOpen] = useState(false);
   const [streetOpen, setStreetOpen] = useState(false);
@@ -217,19 +221,26 @@ export default function SnowMaster({
   const pairedQuote = pairedQuoteId ? (quotes[pairedQuoteId] || null) : null;
   const pairing = useMemo(() => sharedPairing(
     {
-      id: loadedId || 'draft', signedAt,
+      id: loadedId || 'draft', contractId,
       sharedDrivewayWith: pairedQuoteId
         ? { quoteId: pairedQuoteId, address: address2.trim(), pairId: '' }
         : undefined,
-    } as SnowQuote,
+    } as unknown as SnowQuote,
     pairedQuote,
-  ), [loadedId, signedAt, pairedQuoteId, address2, pairedQuote]);
+    snowContracts,
+  ), [loadedId, contractId, pairedQuoteId, address2, pairedQuote, snowContracts]);
   const pairingApplies = mode === 'shared' && pairing.discountApplies;
+  // ONE SLAB, TWO OWNERS. In shared mode the single traced grid IS the
+  // driveway; each side is the columns on its own side of the line, and each is
+  // tiered and priced from those cells alone.
+  const sliceCols = (g: number[][], from: number, to: number) => g.map(r => r.slice(from, to));
+  const gridLeft = mode === 'shared' ? sliceCols(grid, 0, splitCol) : grid;
+  const gridRight = mode === 'shared' ? sliceCols(grid, splitCol, COLS) : grid2;
 
   // Standard price (no premium). The Premium column adds config.PREMIUM on top.
   const price = useMemo<SnowPrice | null>(
     () => priceSnow(
-      grid,
+      gridLeft,
       {
         premium: false, busyRoad, danger, noBoulevard,
         // Driveway 1 takes the discount on the same terms as driveway 2.
@@ -238,21 +249,21 @@ export default function SnowMaster({
       },
       viewConfig, viewVersion,
     ),
-    [grid, busyRoad, danger, noBoulevard, mode, pairingApplies, viewConfig, viewVersion],
+    [gridLeft, busyRoad, danger, noBoulevard, mode, pairingApplies, viewConfig, viewVersion],
   );
   // Shared: conditional. Multi: unconditional — one payer, one trip.
   const sharedOn = pairingApplies;
   const secondOn = mode === 'multi';
   const price2 = useMemo<SnowPrice | null>(
     () => (mode === 'single' ? null : priceSnow(
-      grid2,
+      gridRight,
       {
         premium: false, busyRoad: busyRoad2, danger: danger2, noBoulevard: noBoulevard2,
         sharedDriveway: sharedOn, secondDriveway: secondOn,
       },
       viewConfig, viewVersion,
     )),
-    [mode, grid2, busyRoad2, danger2, noBoulevard2, sharedOn, secondOn, viewConfig, viewVersion],
+    [mode, gridRight, busyRoad2, danger2, noBoulevard2, sharedOn, secondOn, viewConfig, viewVersion],
   );
   // From the price's own breakdown — never a separate reading of the toggles.
   const liveMods = price ? activeModifiers(price.addBreakdown, price, viewConfig) : [];
@@ -284,7 +295,8 @@ export default function SnowMaster({
     setGrid(emptyGrid()); setBusyRoad(false); setDanger(0); setNoBoulevard(false);
     setAddress(''); setMapFocus(null); setAddressPoint(null); setMeasurement(undefined);
     setMode('single'); setGrid2(emptyGrid()); setBusyRoad2(false); setDanger2(0);
-    setNoBoulevard2(false); setAddress2(''); setSignedAt(undefined); setPairedQuoteId(null);
+    setNoBoulevard2(false); setAddress2(''); setContractId(undefined); setPairedQuoteId(null);
+    setSplitCol(Math.floor(COLS / 2));
     setLoadedId(null); setLoadedVersion(null); setDirty(false);
   };
 
@@ -303,7 +315,7 @@ export default function SnowMaster({
       id, name: label, client: label || undefined,
       // Encoded to strings: Firestore refuses an array inside an array, which
       // is why nothing saved before. See lib/snowGrid.
-      gridRows: encodeGrid(grid),
+      gridRows: encodeGrid(gridLeft),
       lanes: price.lanes, depth: price.depth, cars: price.cars, dragCount: price.dragCount,
       tier: price.tier, basePrice: price.basePrice,
       // Premium is no longer a toggle: the Standard price is the base, and BOTH
@@ -360,10 +372,12 @@ export default function SnowMaster({
       const addr2 = address2.trim();
       q.sharedDrivewayWith = { quoteId: otherId, address: addr2, pairId };
       q.sharedDriveway = pairingApplies;
-      q.signedAt = signedAt;
+      q.contractId = contractId;
+      // The split is a property of the SLAB, so both records carry it.
+      q.splitCol = splitCol;
       const side2: SnowQuote = {
         id: otherId, name: addr2, client: addr2 || undefined,
-        gridRows: encodeGrid(grid2),
+        gridRows: encodeGrid(gridRight),
         lanes: price2.lanes, depth: price2.depth, cars: price2.cars, dragCount: price2.dragCount,
         tier: price2.tier, basePrice: price2.basePrice,
         premium: false, busyRoad: busyRoad2, danger: danger2, noBoulevard: noBoulevard2,
@@ -377,6 +391,8 @@ export default function SnowMaster({
         pricingConfigVersion: viewVersion,
         sharedDrivewayWith: { quoteId: id, address: label, pairId },
         sharedDriveway: pairingApplies,
+        contractId: pairedQuote?.contractId,
+        splitCol,
         quotedBy: pairedQuote?.quotedBy || currentUser,
         quotedAt: pairedQuote?.quotedAt || Date.now(),
       };
@@ -408,7 +424,7 @@ export default function SnowMaster({
     // Restore the driveway SHAPE. A shared quote reopens with its partner's
     // side loaded from the partner RECORD, not from a copy on this one — the
     // link is the only thing stored, so the two can never disagree.
-    setSignedAt(q.signedAt);
+    setContractId(q.contractId);
     if (q.sharedDrivewayWith?.quoteId) {
       const other = quotes[q.sharedDrivewayWith.quoteId];
       setMode('shared');
@@ -610,6 +626,10 @@ export default function SnowMaster({
                 <AlertTriangle className="w-3.5 h-3.5" /> Showing prices as quoted ({loadedVersion}). Current rates are {activeVersion} — edit to re-quote.
               </div>
             )}
+            {/* ONE DRIVEWAY — the ordinary tracer. The shared and two-driveway
+                shapes replace it below with layouts that match what is on the
+                ground, rather than stacking a small box under a larger one. */}
+            {mode === 'single' && (
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Trace the driveway</div>
@@ -634,6 +654,46 @@ export default function SnowMaster({
               <div className="mt-2 rounded-full h-3" style={{ backgroundColor: GOLD }} />
               <div className="text-center text-[10px] font-black uppercase tracking-widest text-slate-400 mt-1">Street</div>
             </div>
+            )}
+
+            {/* SHARED — ONE tracer with a line down it. Left of the line is
+                Driveway 1, right is Driveway 2. See SnowSplitTracer. */}
+            {mode === 'shared' && (
+              <SnowSplitTracer
+                grid={grid} cols={COLS} splitCol={splitCol}
+                onSplit={(c) => { setDirty(true); setSplitCol(c); }}
+                onCycle={cycle}
+                label1={address.trim() || 'Driveway 1'}
+                label2={address2.trim() || 'Driveway 2'}
+              />
+            )}
+
+            {/* TWO DRIVEWAYS — two tracers SIDE BY SIDE, equal size, as peers.
+                Two separate driveways on one lot are two equal things. */}
+            {mode === 'multi' && (
+              <div className="grid grid-cols-2 gap-3">
+                <SnowDrivewayPanel
+                  title="Driveway 1" subtitle="same quote"
+                  grid={grid} onCycle={cycle}
+                  busyRoad={busyRoad} onBusyRoad={editBusyRoad}
+                  noBoulevard={noBoulevard} onNoBoulevard={editNoBoulevard}
+                  danger={danger} onDanger={editDanger}
+                  price={price} config={viewConfig} premiumAdd={premiumAdd}
+                />
+                <SnowDrivewayPanel
+                  title="Driveway 2" subtitle="same quote"
+                  grid={grid2}
+                  onCycle={(r, c) => {
+                    setDirty(true);
+                    setGrid2(g => g.map((row, i) => i === r ? row.map((v, j) => j === c ? (v + 1) % 3 : v) : row));
+                  }}
+                  busyRoad={busyRoad2} onBusyRoad={() => { setDirty(true); setBusyRoad2(b => !b); }}
+                  noBoulevard={noBoulevard2} onNoBoulevard={() => { setDirty(true); setNoBoulevard2(v => !v); }}
+                  danger={danger2} onDanger={(d) => { setDirty(true); setDanger2(d); }}
+                  price={price2} config={viewConfig} premiumAdd={premiumAdd}
+                />
+              </div>
+            )}
 
             {/* Inputs — Premium is no longer here; it's shown as its own column
                 in the readout, always, so it can be quoted without a tap. */}
@@ -771,15 +831,25 @@ export default function SnowMaster({
                 </b>
                 <span>{pairing.message}</span>
               </div>
+              {/* LINK THE CONTRACT, do not restate its status. Whether this
+                  side is under contract is read from the contract itself, so
+                  moving a contract to booked (or back out) changes the discount
+                  with no second field to keep in step. */}
               <div className="mt-2 flex flex-wrap gap-2 items-center">
-                <button
-                  onClick={() => { setDirty(true); setSignedAt(signedAt ? undefined : Date.now()); }}
-                  className={`text-[11px] font-bold px-2.5 py-1.5 rounded-lg border ${signedAt ? 'text-white' : 'text-slate-600 border-slate-300'}`}
-                  style={signedAt ? { backgroundColor: GREEN, borderColor: GREEN } : undefined}>
-                  {signedAt ? 'This side: under contract' : 'Mark this side signed'}
-                </button>
+                <label className="text-[11px] font-bold text-slate-600">This side's contract</label>
+                <select
+                  value={contractId || ''}
+                  onChange={e => { setDirty(true); setContractId(e.target.value || undefined); }}
+                  className="text-[11px] border border-slate-300 rounded-lg px-2 py-1.5 bg-white max-w-[16rem]">
+                  <option value="">— none linked —</option>
+                  {Object.values(snowContracts || {}).map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.client?.serviceAddress || c.client?.businessName || c.id} · {c.status}
+                    </option>
+                  ))}
+                </select>
                 <span className="text-[11px] text-slate-500">
-                  Other side: {pairing.partnerSigned ? 'under contract' : 'not signed'}
+                  Other side: {pairing.partnerSigned ? 'under contract' : 'not under contract'}
                 </span>
               </div>
               {address2.trim() && (
@@ -790,24 +860,44 @@ export default function SnowMaster({
             </div>
           )}
 
-          <SnowDrivewayPanel
-            title={mode === 'shared' ? 'Driveway 2 — other client' : 'Driveway 2'}
-            subtitle={mode === 'shared' ? 'saved as its own quote' : 'same quote'}
-            address={mode === 'shared' ? address2 : undefined}
-            onAddress={mode === 'shared' ? ((v) => { setDirty(true); setAddress2(v); }) : undefined}
-            grid={grid2}
-            onCycle={(r, c) => {
-              setDirty(true);
-              setGrid2(g => g.map((row, i) => i === r ? row.map((v, j) => j === c ? (v + 1) % 3 : v) : row));
-            }}
-            busyRoad={busyRoad2} onBusyRoad={() => { setDirty(true); setBusyRoad2(b => !b); }}
-            noBoulevard={noBoulevard2} onNoBoulevard={() => { setDirty(true); setNoBoulevard2(v => !v); }}
-            danger={danger2} onDanger={(d) => { setDirty(true); setDanger2(d); }}
-            price={price2} config={viewConfig} premiumAdd={premiumAdd}
-            pendingNote={mode === 'shared' && !pairing.discountApplies
-              ? `$100 shared-driveway discount not applied — ${pairing.state === 'one-sided' ? 'only one side has signed.' : 'pending both signatures.'}`
-              : null}
-          />
+          {/* THE TWO SIDES, as equal peers. No tracer here: the slab is traced
+              once above, and two tracers would contradict the one driveway
+              that is actually there. Each side keeps its own address, its own
+              modifiers and its own price. */}
+          {mode === 'shared' && (
+            <div className="grid grid-cols-2 gap-3">
+              <SnowDrivewayPanel
+                hideTracer
+                title="Driveway 1 — left of the line"
+                subtitle="own quote record"
+                address={address}
+                onAddress={(v) => { setDirty(true); setAddressAndDropFocus(v); }}
+                grid={gridLeft} onCycle={() => {}}
+                busyRoad={busyRoad} onBusyRoad={editBusyRoad}
+                noBoulevard={noBoulevard} onNoBoulevard={editNoBoulevard}
+                danger={danger} onDanger={editDanger}
+                price={price} config={viewConfig} premiumAdd={premiumAdd}
+                pendingNote={!pairing.discountApplies
+                  ? `$100 shared-driveway discount not applied — ${pairing.state === 'one-sided' ? 'only one side is under contract.' : 'pending both contracts.'}`
+                  : null}
+              />
+              <SnowDrivewayPanel
+                hideTracer
+                title="Driveway 2 — right of the line"
+                subtitle="own quote record"
+                address={address2}
+                onAddress={(v) => { setDirty(true); setAddress2(v); }}
+                grid={gridRight} onCycle={() => {}}
+                busyRoad={busyRoad2} onBusyRoad={() => { setDirty(true); setBusyRoad2(b => !b); }}
+                noBoulevard={noBoulevard2} onNoBoulevard={() => { setDirty(true); setNoBoulevard2(v => !v); }}
+                danger={danger2} onDanger={(d) => { setDirty(true); setDanger2(d); }}
+                price={price2} config={viewConfig} premiumAdd={premiumAdd}
+                pendingNote={!pairing.discountApplies
+                  ? `$100 shared-driveway discount not applied — ${pairing.state === 'one-sided' ? 'only one side is under contract.' : 'pending both contracts.'}`
+                  : null}
+              />
+            </div>
+          )}
 
           {/* COMBINED — for the phone conversation only. The records saved are
               still two (shared) or one (multi); this is a talking figure. */}
@@ -875,7 +965,7 @@ export default function SnowMaster({
       )}
 
       {sub === 'saved' && (
-        <SavedSnowQuotes quotes={quotes} currentUser={currentUser} isAdmin={isAdmin} versionMap={versionMap} onOpen={load} onDelete={onDelete} />
+        <SavedSnowQuotes quotes={quotes} contracts={snowContracts} currentUser={currentUser} isAdmin={isAdmin} versionMap={versionMap} onOpen={load} onDelete={onDelete} />
       )}
 
       {sub === 'report' && <SnowReport quotes={quotes} versionMap={versionMap} />}
@@ -977,8 +1067,10 @@ function Toggle({ label, sub, on, onClick }: { label: string; sub: string; on: b
 }
 
 // ── Saved snow quotes ───────────────────────────────────────────────────────
-function SavedSnowQuotes({ quotes, currentUser, isAdmin, versionMap, onOpen, onDelete }: {
+function SavedSnowQuotes({ quotes, contracts, currentUser, isAdmin, versionMap, onOpen, onDelete }: {
   quotes: Record<string, SnowQuote>; currentUser: { email: string; name: string }; isAdmin: boolean;
+  /** The source of truth for "under contract". Never copied onto a quote. */
+  contracts: Record<string, SnowContract>;
   versionMap: Record<string, { version: string; config: SnowConfig }>;
   onOpen: (q: SnowQuote) => void; onDelete: (id: string) => void;
 }) {
@@ -998,7 +1090,7 @@ function SavedSnowQuotes({ quotes, currentUser, isAdmin, versionMap, onOpen, onD
   // were applied they would be paying $100 LESS for it. It is withheld
   // automatically, so this surface exists to get the second signature — and to
   // say plainly that the discount lands the moment it arrives.
-  const flagged = useMemo(() => unpairedSignings(Object.values(quotes)), [quotes]);
+  const flagged = useMemo(() => unpairedSignings(Object.values(quotes), contracts), [quotes, contracts]);
 
   return (
     <div className="space-y-3">

@@ -35,6 +35,9 @@ export interface DrivewayPanelProps {
   premiumAdd: number;
   /** Shown when the discount is not yet applied — the pending/one-sided case. */
   pendingNote?: string | null;
+  /** Shared driveways trace ONE slab above, so the per-side panel omits a
+   *  tracer — two tracers would contradict the single physical driveway. */
+  hideTracer?: boolean;
 }
 
 export default function SnowDrivewayPanel(p: DrivewayPanelProps) {
@@ -60,7 +63,10 @@ export default function SnowDrivewayPanel(p: DrivewayPanelProps) {
         />
       )}
 
+      {!p.hideTracer && (
       <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Trace the driveway</div>
+      )}
+      {!p.hideTracer && (
       <div className="grid grid-cols-4 gap-1.5">
         {p.grid.map((row, r) => row.map((v, c) => (
           <button key={`${r}-${c}`} onClick={() => p.onCycle(r, c)}
@@ -76,8 +82,9 @@ export default function SnowDrivewayPanel(p: DrivewayPanelProps) {
           </button>
         )))}
       </div>
-      <div className="mt-1.5 rounded-full h-2" style={{ backgroundColor: GOLD }} />
-      <div className="text-center text-[9px] font-black uppercase tracking-widest text-slate-400 mt-1 mb-2">Street</div>
+      )}
+      {!p.hideTracer && <div className="mt-1.5 rounded-full h-2" style={{ backgroundColor: GOLD }} />}
+      {!p.hideTracer && <div className="text-center text-[9px] font-black uppercase tracking-widest text-slate-400 mt-1 mb-2">Street</div>}
 
       <div className="flex flex-wrap gap-1.5 mb-2">
         <button onClick={p.onBusyRoad}
