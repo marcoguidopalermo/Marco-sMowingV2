@@ -25,6 +25,12 @@ export interface SnowConfig {
   // Optional on the interface because configs stored before it existed do not
   // carry it; read through noBoulevardRate(), never directly.
   NO_BOULEVARD_PER_LANE?: number;
+  // FLAT per-driveway discounts. Both are $100 and both are per DRIVEWAY, not
+  // per lane — the saving is one fewer trip's worth of setup, which does not
+  // scale with how wide the driveway is. Optional for configs stored before
+  // they existed; read through the helpers below, never directly.
+  SHARED_DRIVEWAY?: number;      // two clients, one physical driveway
+  SECOND_DRIVEWAY?: number;      // one client, a second driveway on the property
   DRAG_COUNTS_TOWARD_SIZE: boolean; // under review
   DANGER_OPTIONS: number[];       // selectable danger amounts ($)
 }
@@ -41,6 +47,8 @@ export const SNOW_CONFIG_V1: SnowConfig = {
   BUSY_ROAD: 100,
   DRAG_RATE: 50,
   NO_BOULEVARD_PER_LANE: 50,
+  SHARED_DRIVEWAY: 100,
+  SECOND_DRIVEWAY: 100,
   DRAG_COUNTS_TOWARD_SIZE: true,
   DANGER_OPTIONS: [0, 50, 100, 200],
 };
@@ -92,6 +100,13 @@ export interface SnowInputs {
   premium?: boolean; busyRoad?: boolean; danger?: number;
   /** No boulevard to clear — subtracts NO_BOULEVARD_PER_LANE for every lane. */
   noBoulevard?: boolean;
+  // SHARED DRIVEWAY (two clients, one driveway). CONDITIONAL: the caller
+  // passes true only when the pairing is ACTIVE — both sides signed. Pending
+  // and one-sided pairs price at full rate; see lib/snowDriveways for why.
+  sharedDriveway?: boolean;
+  // SECOND DRIVEWAY on the same property (one client). Unconditional: there is
+  // one payer and one trip, so there is nothing for it to depend on.
+  secondDriveway?: boolean;
 }
 
 /**
@@ -103,6 +118,14 @@ export const noBoulevardRate = (config: SnowConfig): number => {
   const v = Number(config.NO_BOULEVARD_PER_LANE);
   return Number.isFinite(v) && v >= 0 ? v : (SNOW_CONFIG_V1.NO_BOULEVARD_PER_LANE || 0);
 };
+export const sharedDrivewayRate = (config: SnowConfig): number => {
+  const v = Number(config.SHARED_DRIVEWAY);
+  return Number.isFinite(v) && v >= 0 ? v : (SNOW_CONFIG_V1.SHARED_DRIVEWAY || 0);
+};
+export const secondDrivewayRate = (config: SnowConfig): number => {
+  const v = Number(config.SECOND_DRIVEWAY);
+  return Number.isFinite(v) && v >= 0 ? v : (SNOW_CONFIG_V1.SECOND_DRIVEWAY || 0);
+};
 
 export interface SnowMeasurement { cars: number; lanes: number; depth: number; dragCount: number }
 
@@ -110,6 +133,8 @@ export interface SnowAddBreakdown {
   drag: number; premium: number; busyRoad: number; danger: number;
   /** NEGATIVE (or 0). Kept in the same breakdown so the quote shows one list. */
   noBoulevard: number;
+  sharedDriveway: number;
+  secondDriveway: number;
   /** Lanes the discount was computed over — for the "2 lanes × $50" line. */
   noBoulevardLanes: number;
 }
@@ -209,7 +234,12 @@ function computeAdds(
   // list in order — a discount hidden in a separate structure is a discount
   // that eventually stops being shown.
   const noBoulevard = inputs.noBoulevard ? -(lanes * noBoulevardRate(config)) : 0;
+  // Flat, per driveway, and NOT scaled by lanes — unlike no-boulevard.
+  const sharedDriveway = inputs.sharedDriveway ? -sharedDrivewayRate(config) : 0;
+  const secondDriveway = inputs.secondDriveway ? -secondDrivewayRate(config) : 0;
   return {
+    sharedDriveway,
+    secondDriveway,
     drag: m.dragCount * config.DRAG_RATE,
     premium: inputs.premium ? config.PREMIUM : 0,
     busyRoad: inputs.busyRoad ? config.BUSY_ROAD : 0,
@@ -238,8 +268,15 @@ export function priceSnow(
   //   1. measure the traced shape        → cars, lanes, depth, dragCount
   //   2. tier from the measurement       → basePrice
   //   3. surcharges, each independent    → drag, premium, busy road, danger
-  //   4. no-boulevard discount, LAST     → −(lanes × rate)
-  //   5. total = basePrice + Σ(3) + (4), floored at 0
+  //   4. no-boulevard discount           → −(lanes × rate)   [per LANE]
+  //   5. driveway discounts               → −100 shared, −100 second [FLAT]
+  //   6. total = basePrice + Σ(3) + (4) + (5), floored at 0
+  //
+  // Discounts come after every surcharge and are applied to the TOTAL, so the
+  // amount taken off never depends on how large the surcharges happen to be.
+  // The two driveway discounts are FLAT per driveway; no-boulevard is per lane.
+  // Tier selection is untouched by any of them — a driveway never drops a tier
+  // for being shared, second, or boulevard-free.
   //
   // The discount is applied to the TOTAL, not to the tier base and not as a
   // percentage — so it is unaffected by how large the surcharges happen to be,
@@ -248,7 +285,8 @@ export function priceSnow(
   // a tier because it has no boulevard.
   const breakdown = computeAdds(m, inputs, config);
   const adds = breakdown.drag + breakdown.premium + breakdown.busyRoad
-    + breakdown.danger + breakdown.noBoulevard;
+    + breakdown.danger + breakdown.noBoulevard
+    + breakdown.sharedDriveway + breakdown.secondDriveway;
   const basePrice = tierBase(tier, config);
   const isCustom = tier === 'custom';
   // Floored at 0: a discount can never produce a negative quote, however many
@@ -297,6 +335,23 @@ export function activeModifiers(
       amount: b.noBoulevard,
     });
   }
+  // BOTH DRIVEWAY DISCOUNTS APPEAR HERE. A $100 reduction that is not on the
+  // modifier list is a $100 reduction applied silently, which is the one thing
+  // this list exists to prevent.
+  if (b.sharedDriveway) {
+    out.push({
+      key: 'sharedDriveway',
+      label: 'Shared driveway (both properties under contract)',
+      amount: b.sharedDriveway,
+    });
+  }
+  if (b.secondDriveway) {
+    out.push({
+      key: 'secondDriveway',
+      label: 'Second driveway on the property',
+      amount: b.secondDriveway,
+    });
+  }
   void config;
   return out;
 }
@@ -311,12 +366,17 @@ export function breakdownOfSaved(
   q: {
     dragCount?: number; lanes?: number;
     premium?: boolean; busyRoad?: boolean; danger?: number; noBoulevard?: boolean;
+    sharedDriveway?: boolean; secondDriveway?: boolean;
   },
   config: SnowConfig,
 ): SnowAddBreakdown {
   return computeAdds(
     { cars: 0, lanes: Number(q.lanes) || 0, depth: 0, dragCount: Number(q.dragCount) || 0 },
-    { premium: q.premium, busyRoad: q.busyRoad, danger: q.danger, noBoulevard: q.noBoulevard },
+    {
+      premium: q.premium, busyRoad: q.busyRoad, danger: q.danger,
+      noBoulevard: q.noBoulevard,
+      sharedDriveway: q.sharedDriveway, secondDriveway: q.secondDriveway,
+    },
     config,
   );
 }
@@ -328,6 +388,8 @@ export const SNOW_FIELD_LABELS: Record<keyof SnowConfig, string> = {
   PREMIUM: 'Premium', BUSY_ROAD: 'Busy road', DRAG_RATE: 'Drag rate',
   DRAG_COUNTS_TOWARD_SIZE: 'Drag counts toward size', DANGER_OPTIONS: 'Danger options',
   NO_BOULEVARD_PER_LANE: 'No boulevard (per lane)',
+  SHARED_DRIVEWAY: 'Shared driveway (flat)',
+  SECOND_DRIVEWAY: 'Second driveway (flat)',
 };
 
 const fmtVal = (v: unknown): string =>

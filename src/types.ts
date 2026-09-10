@@ -2101,6 +2101,24 @@ export interface SalesQuote {
 // — this list GROWS (never in the appData main doc). Stores the full grid + the
 // derived numbers + the pricing config version in force at save time, so a
 // quote saved under old rates still explains itself after rates change.
+// ONE DRIVEWAY'S OWN CONFIGURATION. Each side of a shared driveway, and each
+// driveway on a multi-driveway property, carries its own tier, lanes and
+// modifiers — the two sides of a shared driveway genuinely differ (one may
+// have a boulevard, one may front a busy road), and so do two driveways on one
+// property. The MAP and the measurement are shared: it is one property (multi)
+// or one physical driveway (shared).
+export interface SnowDrivewaySpec {
+  id: string;
+  label: string;                // "Driveway 1" / "Driveway 2"
+  address?: string;             // shared case: each side has its own
+  gridRows: string[];
+  busyRoad: boolean;
+  danger: number;
+  noBoulevard?: boolean;
+  /** Sqft reference for THIS driveway, where it was measured separately. */
+  measurement?: PropertyMeasurement;
+}
+
 export interface SnowQuote {
   id: string;
   name: string;                 // free-form label, usually the client / address
@@ -2132,6 +2150,33 @@ export interface SnowQuote {
   // Satellite outline of the property, from the shared PropertyMeasureTool.
   // REFERENCE ONLY — the price comes from the traced grid, never from area.
   measurement?: PropertyMeasurement;
+  // ── DRIVEWAY SHAPE ───────────────────────────────────────────────────────
+  // Two cases, deliberately modelled apart. See lib/snowDriveways.
+  //
+  // SHARED (two clients, one driveway): TWO quote records, each pointing at
+  // the other. Not one merged record — neither client is party to the other's
+  // contract and either can leave without the other. The discount is
+  // CONDITIONAL on both being signed, so nothing here stores "discount
+  // applied"; only the link is stored, and the state is derived.
+  sharedDrivewayWith?: {
+    quoteId: string;
+    address: string;
+    /** Stable id shared by both sides, so a pair survives a rename. */
+    pairId: string;
+  };
+  /** Under contract. Drives the shared-driveway condition. */
+  signedAt?: number;
+  signedBy?: { email: string; name: string };
+  // MULTI (one client, two driveways on one property): ONE record holding
+  // both. Absent or length <= 1 is an ordinary single-driveway quote, and the
+  // top-level grid/tier fields remain the first driveway's — older quotes are
+  // never rewritten.
+  driveways?: SnowDrivewaySpec[];
+  // Applied discounts, stored so a reopened quote reprices identically.
+  // sharedDriveway is only ever true when the pairing was ACTIVE at save time;
+  // the live view always re-derives it from both records.
+  sharedDriveway?: boolean;
+  secondDriveway?: boolean;
   total: number | null;         // STANDARD total; null when custom
   // Premium total (Standard + config.PREMIUM); null when custom. Added when
   // Standard + Premium became always-shown side by side. Older quotes predate
