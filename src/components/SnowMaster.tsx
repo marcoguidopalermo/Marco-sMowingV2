@@ -450,13 +450,6 @@ export default function SnowMaster({
     setSub('quote');
   };
 
-  const chip = (label: string, value: number | string) => (
-    <div className="flex-1 min-w-[64px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-center">
-      <div className="text-2xl font-black text-slate-900 leading-none">{value}</div>
-      <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mt-1">{label}</div>
-    </div>
-  );
-
   return (
     <div className="space-y-4">
       {/* Sub-tabs — Rate sheet is super-admin only (also hard-guarded in the
@@ -673,6 +666,7 @@ export default function SnowMaster({
             {mode === 'multi' && (
               <div className="grid grid-cols-2 gap-3">
                 <SnowDrivewayPanel
+                  hidePricing
                   title="Driveway 1" subtitle="same quote"
                   grid={grid} onCycle={cycle}
                   busyRoad={busyRoad} onBusyRoad={editBusyRoad}
@@ -681,6 +675,7 @@ export default function SnowMaster({
                   price={price} config={viewConfig} premiumAdd={premiumAdd}
                 />
                 <SnowDrivewayPanel
+                  hidePricing
                   title="Driveway 2" subtitle="same quote"
                   grid={grid2}
                   onCycle={(r, c) => {
@@ -727,68 +722,54 @@ export default function SnowMaster({
 
           {/* ── RIGHT: live price + breakdown ─────────────────────────────── */}
           <div className="space-y-4">
-            <PriceReadout price={price} premiumAdd={premiumAdd}
-              stdTotal={stdTotal} premTotal={premTotal} stdFloor={stdFloor} premFloor={premFloor} />
+            {/* ── PRICING, PER DRIVEWAY ────────────────────────────────────
+                Every driveway on this quote prices HERE, one under the other,
+                each with its own address, tier, Standard/Premium and its own
+                discount lines. The prices used to sit apart from each other —
+                one here and the others at the bottom — which meant comparing
+                two sides of a shared driveway involved scrolling between them
+                and doing the arithmetic yourself. */}
+            <DrivewayPricingCard
+              title={mode === 'single' ? null
+                : (address.trim() || (mode === 'shared' ? 'Driveway 1 — left of the line' : 'Driveway 1'))}
+              subtitle={mode === 'shared' ? 'own quote record' : mode === 'multi' ? 'same quote' : null}
+              price={price} config={viewConfig} premiumAdd={premiumAdd}
+              mods={liveMods}
+            />
+            {mode !== 'single' && (
+              <DrivewayPricingCard
+                title={address2.trim() || (mode === 'shared' ? 'Driveway 2 — right of the line' : 'Driveway 2')}
+                subtitle={mode === 'shared' ? 'own quote record' : 'same quote'}
+                price={price2} config={viewConfig} premiumAdd={premiumAdd}
+                mods={price2 ? activeModifiers(price2.addBreakdown, price2, viewConfig) : []}
+                pendingNote={mode === 'shared' && !pairing.discountApplies
+                  ? `$100 shared-driveway discount not applied — ${pairing.state === 'one-sided' ? 'only one side is under contract.' : 'pending both contracts.'}`
+                  : null}
+              />
+            )}
 
-            {price && (
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
-                <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Shape</div>
-                <div className="flex gap-2">
-                  {chip('Lanes', price.lanes)}
-                  {chip('Depth', price.depth)}
-                  {chip('Cars', price.cars)}
-                  {chip('Drag', price.dragCount)}
+            {/* COMBINED — the figure for the phone call, directly under the two
+                it is made of. The records saved are still two (shared) or one
+                (multi); this is a talking total, not a third price. */}
+            {mode !== 'single' && price && price2 && !price.isCustom && !price2.isCustom && (
+              <div className="rounded-2xl p-4 text-white" style={{ backgroundColor: GREEN }}>
+                <div className="text-[10px] font-black uppercase tracking-widest opacity-70">
+                  {mode === 'shared' ? 'Both properties combined' : 'Both driveways combined'}
                 </div>
-
-                {/* ACTIVE MODIFIERS — everything applied, right next to the
-                    price, so a toggle left on from the last quote is seen
-                    rather than discovered. Derived from the SAME breakdown the
-                    total is computed from, so the two cannot disagree. Nothing
-                    that is off appears at all. */}
-                {liveMods.length > 0 && (
-                  <div className="pt-1">
-                    <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1">
-                      Applied · {liveMods.length}
-                    </div>
-                    <ModifierChips mods={liveMods} />
-                  </div>
-                )}
-
-                {/* Breakdown: shared lines once, then Standard + Premium totals. */}
-                <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 pt-1">Breakdown</div>
-                <div className="space-y-1 text-sm">
-                  <Row label={price.isCustom ? `Custom floor` : `Tier ${price.tier} base`} value={money(price.basePrice)} />
-                  {price.addBreakdown.drag > 0 && <Row label={`Drag × ${price.dragCount} @ $${viewConfig.DRAG_RATE}`} value={money(price.addBreakdown.drag)} />}
-                  {price.addBreakdown.busyRoad > 0 && <Row label="Busy road" value={money(price.addBreakdown.busyRoad)} />}
-                  {price.addBreakdown.danger > 0 && <Row label="Danger" value={money(price.addBreakdown.danger)} />}
-                  {/* Its OWN line, showing the arithmetic — a discount folded
-                      silently into a total is a discount nobody can check. */}
-                  {price.addBreakdown.noBoulevard !== 0 && (
-                    <div className="flex justify-between" style={{ color: GREEN }}>
-                      <span>No boulevard — {price.addBreakdown.noBoulevardLanes} lane{price.addBreakdown.noBoulevardLanes === 1 ? '' : 's'} × ${noBoulevardRate(viewConfig)}</span>
-                      <span className="font-mono font-bold">−{money(Math.abs(price.addBreakdown.noBoulevard))}</span>
-                    </div>
-                  )}
-                  {price.addBreakdown.sharedDriveway !== 0 && (
-                    <div className="flex justify-between" style={{ color: GREEN }}>
-                      <span>Shared driveway — both properties under contract</span>
-                      <span className="font-mono font-bold">−{money(Math.abs(price.addBreakdown.sharedDriveway))}</span>
-                    </div>
-                  )}
-                  {price.addBreakdown.secondDriveway !== 0 && (
-                    <div className="flex justify-between" style={{ color: GREEN }}>
-                      <span>Second driveway on the property</span>
-                      <span className="font-mono font-bold">−{money(Math.abs(price.addBreakdown.secondDriveway))}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between border-t-2 border-slate-200 pt-1.5 mt-1 font-bold text-slate-700">
-                    <span className="uppercase tracking-widest text-[12px] text-slate-500 self-center">{price.isCustom ? 'Standard floor' : 'Standard total'}</span>
-                    <span className="text-base font-mono">{money(price.isCustom ? stdFloor! : stdTotal!)}</span>
-                  </div>
-                  <div className="flex justify-between font-black text-slate-900">
-                    <span className="uppercase tracking-widest text-[12px] self-center" style={{ color: GREEN }}>{price.isCustom ? 'Premium floor' : 'Premium total'} <span className="text-slate-400 font-bold normal-case tracking-normal">(+{money(premiumAdd)})</span></span>
-                    <span className="text-lg font-mono">{money(price.isCustom ? premFloor! : premTotal!)}</span>
-                  </div>
+                <div className="flex justify-between items-baseline mt-1">
+                  <span className="text-sm">Standard</span>
+                  <span className="text-2xl font-black">{money((price.total || 0) + (price2.total || 0))}</span>
+                </div>
+                <div className="flex justify-between items-baseline">
+                  <span className="text-sm opacity-80">Premium</span>
+                  <span className="text-lg font-black" style={{ color: GOLD }}>
+                    {money((price.total || 0) + (price2.total || 0) + premiumAdd * 2)}
+                  </span>
+                </div>
+                <div className="text-[10px] mt-1 opacity-70">
+                  {mode === 'shared'
+                    ? 'Two separate quotes will be saved — one per client.'
+                    : 'One quote record covering both driveways.'}
                 </div>
               </div>
             )}
@@ -867,7 +848,7 @@ export default function SnowMaster({
           {mode === 'shared' && (
             <div className="grid grid-cols-2 gap-3">
               <SnowDrivewayPanel
-                hideTracer
+                hideTracer hidePricing
                 title="Driveway 1 — left of the line"
                 subtitle="own quote record"
                 address={address}
@@ -882,7 +863,7 @@ export default function SnowMaster({
                   : null}
               />
               <SnowDrivewayPanel
-                hideTracer
+                hideTracer hidePricing
                 title="Driveway 2 — right of the line"
                 subtitle="own quote record"
                 address={address2}
@@ -899,30 +880,9 @@ export default function SnowMaster({
             </div>
           )}
 
-          {/* COMBINED — for the phone conversation only. The records saved are
-              still two (shared) or one (multi); this is a talking figure. */}
-          {price && price2 && !price.isCustom && !price2.isCustom && (
-            <div className="rounded-2xl p-3 text-white" style={{ backgroundColor: GREEN }}>
-              <div className="text-[10px] font-black uppercase tracking-widest opacity-70">
-                {mode === 'shared' ? 'Both properties combined' : 'Both driveways combined'}
-              </div>
-              <div className="flex justify-between items-baseline mt-1">
-                <span className="text-sm">Standard</span>
-                <span className="text-2xl font-black">{money((price.total || 0) + (price2.total || 0))}</span>
-              </div>
-              <div className="flex justify-between items-baseline">
-                <span className="text-sm opacity-80">Premium</span>
-                <span className="text-lg font-black" style={{ color: GOLD }}>
-                  {money((price.total || 0) + (price2.total || 0) + premiumAdd * 2)}
-                </span>
-              </div>
-              {mode === 'shared' && (
-                <div className="text-[10px] mt-1 opacity-70">
-                  Two separate quotes will be saved — one per client.
-                </div>
-              )}
-            </div>
-          )}
+          {/* The combined total moved UP, into the pricing column directly
+              under the two prices it is made of. It used to sit here, three
+              screens away from one of them. */}
         </div>
       )}
 
@@ -979,6 +939,115 @@ export default function SnowMaster({
           onSave={onSaveConfig || (async () => false)}
           onRevert={onRevertConfig || (async () => false)}
         />
+      )}
+    </div>
+  );
+}
+
+// Shared by the quote body and every per-driveway pricing card.
+const chip = (label: string, value: number | string) => (
+  <div className="flex-1 min-w-[64px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-center">
+    <div className="text-2xl font-black text-slate-900 leading-none">{value}</div>
+    <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mt-1">{label}</div>
+  </div>
+);
+
+// ── ONE DRIVEWAY'S PRICE, IN FULL ───────────────────────────────────────────
+// Standard + Premium, the shape, every applied modifier, and a line-by-line
+// breakdown. Rendered once per driveway on the quote, stacked, so two sides of
+// a shared driveway can be read against each other without scrolling between
+// them.
+//
+// EVERY REDUCTION GETS A LABELLED LINE — no-boulevard with its per-lane
+// arithmetic, and the flat $100 shared / second-driveway discounts. A price
+// reduction that is not on a line is one applied silently, and the whole point
+// of this panel is that nobody has to do the arithmetic to find it.
+function DrivewayPricingCard({
+  title, subtitle, price, config, premiumAdd, mods, pendingNote,
+}: {
+  title: string | null;
+  subtitle?: string | null;
+  price: SnowPrice | null;
+  config: SnowConfig;
+  premiumAdd: number;
+  mods: { key: string; label: string; amount: number }[];
+  pendingNote?: string | null;
+}) {
+  const std = price && !price.isCustom ? price.total! : null;
+  const prem = std != null ? std + premiumAdd : null;
+  const floorStd = price && price.isCustom ? price.floor! : null;
+  const floorPrem = floorStd != null ? floorStd + premiumAdd : null;
+  return (
+    <div className="space-y-3">
+      {title && (
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="text-[11px] font-black uppercase tracking-widest truncate" style={{ color: GREEN }}>{title}</div>
+          {subtitle && <div className="text-[10px] text-slate-400 shrink-0">{subtitle}</div>}
+        </div>
+      )}
+      <PriceReadout price={price} premiumAdd={premiumAdd}
+        stdTotal={std} premTotal={prem} stdFloor={floorStd} premFloor={floorPrem} />
+      {price && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
+          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">Shape</div>
+          <div className="flex gap-2">
+            {chip('Lanes', price.lanes)}
+            {chip('Depth', price.depth)}
+            {chip('Cars', price.cars)}
+            {chip('Drag', price.dragCount)}
+          </div>
+
+          {/* Derived from the SAME breakdown the total is computed from, so the
+              two cannot disagree. Nothing that is off appears at all. */}
+          {mods.length > 0 && (
+            <div className="pt-1">
+              <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1">
+                Applied · {mods.length}
+              </div>
+              <ModifierChips mods={mods} />
+            </div>
+          )}
+
+          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 pt-1">Breakdown</div>
+          <div className="space-y-1 text-sm">
+            <Row label={price.isCustom ? 'Custom floor' : `Tier ${price.tier} base`} value={money(price.basePrice)} />
+            {price.addBreakdown.drag > 0 && <Row label={`Drag × ${price.dragCount} @ $${config.DRAG_RATE}`} value={money(price.addBreakdown.drag)} />}
+            {price.addBreakdown.busyRoad > 0 && <Row label="Busy road" value={money(price.addBreakdown.busyRoad)} />}
+            {price.addBreakdown.danger > 0 && <Row label="Danger" value={money(price.addBreakdown.danger)} />}
+            {price.addBreakdown.noBoulevard !== 0 && (
+              <div className="flex justify-between" style={{ color: GREEN }}>
+                <span>No boulevard — {price.addBreakdown.noBoulevardLanes} lane{price.addBreakdown.noBoulevardLanes === 1 ? '' : 's'} × ${noBoulevardRate(config)}</span>
+                <span className="font-mono font-bold">−{money(Math.abs(price.addBreakdown.noBoulevard))}</span>
+              </div>
+            )}
+            {price.addBreakdown.sharedDriveway !== 0 && (
+              <div className="flex justify-between" style={{ color: GREEN }}>
+                <span>Shared driveway — both properties under contract</span>
+                <span className="font-mono font-bold">−{money(Math.abs(price.addBreakdown.sharedDriveway))}</span>
+              </div>
+            )}
+            {price.addBreakdown.secondDriveway !== 0 && (
+              <div className="flex justify-between" style={{ color: GREEN }}>
+                <span>Second driveway on the property</span>
+                <span className="font-mono font-bold">−{money(Math.abs(price.addBreakdown.secondDriveway))}</span>
+              </div>
+            )}
+            <div className="flex justify-between border-t-2 border-slate-200 pt-1.5 mt-1 font-bold text-slate-700">
+              <span className="uppercase tracking-widest text-[12px] text-slate-500 self-center">{price.isCustom ? 'Standard floor' : 'Standard total'}</span>
+              <span className="text-base font-mono">{money(price.isCustom ? floorStd! : std!)}</span>
+            </div>
+            <div className="flex justify-between font-black text-slate-900">
+              <span className="uppercase tracking-widest text-[12px] self-center" style={{ color: GREEN }}>{price.isCustom ? 'Premium floor' : 'Premium total'} <span className="text-slate-400 font-bold normal-case tracking-normal">(+{money(premiumAdd)})</span></span>
+              <span className="text-lg font-mono">{money(price.isCustom ? floorPrem! : prem!)}</span>
+            </div>
+          </div>
+          {/* Why a discount is NOT on the lines above, when one is pending. */}
+          {pendingNote && (
+            <div className="text-[11px] rounded-lg px-2.5 py-1.5 bg-amber-50 text-amber-900 border border-amber-200">
+              {pendingNote}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

@@ -38,6 +38,10 @@ export interface DrivewayPanelProps {
   /** Shared driveways trace ONE slab above, so the per-side panel omits a
    *  tracer — two tracers would contradict the single physical driveway. */
   hideTracer?: boolean;
+  /** Pricing lives in the quote's pricing column, one card per driveway, so a
+   *  panel used purely for INPUT does not repeat it. Two prices for the same
+   *  driveway in two places is how they end up disagreeing. */
+  hidePricing?: boolean;
 }
 
 export default function SnowDrivewayPanel(p: DrivewayPanelProps) {
@@ -107,7 +111,7 @@ export default function SnowDrivewayPanel(p: DrivewayPanelProps) {
         ))}
       </div>
 
-      {p.price ? (
+      {p.hidePricing ? null : p.price ? (
         <>
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-xl border border-slate-200 p-2 text-center">
