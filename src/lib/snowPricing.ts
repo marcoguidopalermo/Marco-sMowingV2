@@ -131,6 +131,78 @@ export const noBoulevardRate = (config: SnowConfig): number => {
   const v = Number(config.NO_BOULEVARD_PER_LANE);
   return Number.isFinite(v) && v >= 0 ? v : (SNOW_CONFIG_V1.NO_BOULEVARD_PER_LANE || 0);
 };
+/**
+ * PREMIUM IS A SERVICE LEVEL, NOT A PRODUCT — priority response on the visit.
+ * One trip, one upgrade. So config.PREMIUM is the premium for ONE CLEARING,
+ * never a per-driveway charge, and a quote covering two driveways charges it
+ * ONCE.
+ * @param {SnowConfig} config The config for the version being priced.
+ * @return {number} The premium for one clearing.
+ */
+export const premiumRate = (config: SnowConfig): number => {
+  const v = Number(config.PREMIUM);
+  return Number.isFinite(v) && v >= 0 ? v : SNOW_CONFIG_V1.PREMIUM;
+};
+
+export interface PremiumSplit {
+  /** The ONE premium charge for the visit. shares always sums to exactly this. */
+  total: number;
+  /** Per-driveway share, in driveway order. */
+  shares: number[];
+  /** True when every share is identical — lets callers say "half" honestly. */
+  even: boolean;
+}
+
+/**
+ * Split the single premium charge across the driveways it covers.
+ *
+ * WHY THIS EXISTS: premium was being added once per driveway, so a two-driveway
+ * quote charged $400 for one visit's priority response. The fix is not a
+ * per-mode subtraction somewhere in the view — it is that there is one charge
+ * and the driveways divide it, which is what this returns.
+ *
+ * Both two-driveway shapes split it in two, for different reasons that arrive
+ * at the same arithmetic:
+ *   MULTI  — one client, one property, one trip. $200 total, not $400.
+ *   SHARED — one physical driveway cleared once to a premium standard, billed
+ *            to two clients. $200 for the driveway, $100 each.
+ *
+ * THE SHARES SUM TO THE TOTAL EXACTLY. An odd total cannot halve into whole
+ * dollars, so the remainder goes to the earlier driveways ($201 → 101 + 100)
+ * rather than letting both sides round to 101 and bill $202 for a $201 upgrade,
+ * or to 100.50 and put cents on a quote that is whole dollars everywhere else.
+ * @param {SnowConfig} config The config for the version being priced.
+ * @param {number} driveways How many driveways the one premium covers.
+ * @return {PremiumSplit} The total and each driveway's share.
+ */
+export function premiumSplit(config: SnowConfig, driveways = 1): PremiumSplit {
+  const total = premiumRate(config);
+  const n = Math.max(1, Math.floor(Number(driveways) || 1));
+  const base = Math.floor(total / n);
+  const remainder = total - base * n;
+  const shares = Array.from({ length: n }, (_, i) => base + (i < remainder ? 1 : 0));
+  return { total, shares, even: remainder === 0 };
+}
+
+/**
+ * How a driveway's premium share reads on a price line, so nobody takes it for
+ * a charge of its own. "$100" beside one driveway of two is indistinguishable
+ * from the full premium unless the line says what it is a share OF.
+ * @param {number} total The single premium charge for the visit.
+ * @param {number} share This driveway's part of it.
+ * @param {string} what Why it is split — "shared driveway" / "one visit".
+ * @return {string} A parenthetical note, or '' when nothing is being split.
+ */
+export function premiumShareNote(total: number, share: number, what: string): string {
+  if (!(share < total)) return '';               // not a share — the whole charge
+  const usd = (n: number) => `$${Math.round(n).toLocaleString('en-US')}`;
+  // "half" only when it is actually half; an odd total makes one side a dollar
+  // heavier and calling that half is the kind of small lie that gets noticed
+  // on an invoice.
+  const part = share * 2 === total ? 'half' : 'share';
+  return `${part} of ${usd(total)}, ${what}`;
+}
+
 export const sharedDrivewayRate = (config: SnowConfig): number => {
   const v = Number(config.SHARED_DRIVEWAY);
   return Number.isFinite(v) && v >= 0 ? v : (SNOW_CONFIG_V1.SHARED_DRIVEWAY || 0);

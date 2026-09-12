@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {
   sharedPairing, drivewayMode, isSigned, sharedDrivewayClause, unpairedSignings,
   UNDER_CONTRACT, contractIsUnderContract, quoteAddresses, quoteAddressLine,
-  addressLine,
+  addressLine, sharedPremiumClause,
 } from './snowDriveways';
 import { priceSnow, SNOW_CONFIG_V1, activeModifiers } from './snowPricing';
 
@@ -271,4 +271,32 @@ test('a pair saved before the second address was typed is still a pair', () => {
   const x = q({ address: '10 Elm St', sharedDrivewayWith: link('q2', '') });
   assert.ok(x.sharedDrivewayWith, 'the pairing survives an unnamed partner');
   assert.deepEqual(quoteAddresses(x), ['10 Elm St']);
+});
+
+console.log('\nThe premium sentence for a shared driveway');
+test('it names the DRIVEWAY charge and this property SHARE, and both amounts', () => {
+  const c = sharedPremiumClause(100, 200);
+  assert.match(c, /\$200 for the shared driveway/);
+  assert.match(c, /share is \$100/);
+  assert.match(c, /which is half of that/);
+});
+test('it states ALL-OR-NOTHING as a term, not an operational surprise', () => {
+  // You cannot give half a driveway priority response, so the paper has to say
+  // premium is on for both properties or for neither.
+  assert.match(sharedPremiumClause(100, 200), /whole driveway or to neither property/);
+  assert.match(sharedPremiumClause(100, 200), /both\s+properties must take premium/);
+});
+test('THE AMOUNTS ARE PARAMETERS — same reason as the discount rate', () => {
+  // Premium is a rate-sheet number. Hardcoded here, the first change would put
+  // the wrong figure on a contract, and the paper is what gets argued over.
+  const c = sharedPremiumClause(150, 300);
+  assert.match(c, /\$300 for the shared driveway/);
+  assert.match(c, /share is \$150/);
+  assert.ok(!/\$200/.test(c) && !/\$100/.test(c), 'no stale literal survives');
+  assert.match(sharedPremiumClause(1000, 2000), /\$2,000 for the shared driveway/);
+});
+test('an UNEVEN split does not claim to be half', () => {
+  const c = sharedPremiumClause(101, 201);
+  assert.match(c, /share is \$101\./);
+  assert.ok(!/half of that/.test(c));
 });

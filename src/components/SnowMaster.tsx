@@ -8,15 +8,15 @@ import AddressAutocompleteInput from './AddressAutocompleteInput';
 import SnowDrivewayPanel from './SnowDrivewayPanel';
 import SnowSplitTracer from './SnowSplitTracer';
 import {
-  sharedPairing, sharedDrivewayClause, unpairedSignings, quoteAddressLine,
-  quoteAddresses, addressLine,
+  sharedPairing, sharedDrivewayClause, sharedPremiumClause, unpairedSignings,
+  quoteAddressLine, quoteAddresses,
   type DrivewayMode,
 } from '../lib/snowDriveways';
 import type { PropertyMeasurement } from '../types';
 import {
   priceSnow, SnowConfig, SNOW_CONFIG_V1, SnowPrice, resolveSnowConfig,
   noBoulevardRate, sharedDrivewayRate, secondDrivewayRate,
-  activeModifiers, breakdownOfSaved,
+  premiumSplit, premiumShareNote, activeModifiers, breakdownOfSaved,
 } from '../lib/snowPricing';
 import SnowRateSheet from './SnowRateSheet';
 import SnowContractsModule from './SnowContractsModule';
@@ -104,8 +104,14 @@ interface Props {
   configs?: Record<string, SnowRateConfigVersion>;     // all stored versions
   onSaveConfig?: (next: SnowConfig) => Promise<boolean>;
   onRevertConfig?: (versionId: string) => Promise<boolean>;
-  // Optional initial seed for the tracer (used by previews / future deep-links).
-  initial?: { grid?: number[][]; premium?: boolean; busyRoad?: boolean; danger?: number; noBoulevard?: boolean };
+  // Optional initial seed for the tracer (used by previews / future deep-links
+  // and by the render tests). `mode` and the two addresses are here so a SHARED
+  // quote can be rendered without driving the UI — the shape of the quote is
+  // exactly what the address-ordering and premium-split tests need to assert.
+  initial?: {
+    grid?: number[][]; premium?: boolean; busyRoad?: boolean; danger?: number; noBoulevard?: boolean;
+    mode?: DrivewayMode; address?: string; address2?: string; grid2?: number[][];
+  };
   // Commercial contract builder — its own sub-tab.
   snowContracts?: Record<string, SnowContract>;
   onSaveSnowContract?: (c: SnowContract) => Promise<void>;
@@ -139,8 +145,9 @@ export default function SnowMaster({
 
   // ── Traced shape + inputs ────────────────────────────────────────────────
   // Premium is no longer a toggle — Standard and Premium are shown side by side,
-  // always. Premium = Standard + config.PREMIUM. So the live price is computed
-  // WITHOUT premium; the Premium column derives from it.
+  // always. So the live price is computed WITHOUT premium and the Premium
+  // column derives from it — by adding this driveway's SHARE of the visit's one
+  // premium charge, not the whole charge. See premiumSplit below.
   const [grid, setGrid] = useState<number[][]>(() => {
     const g = gridOf(initial);
     return g.length ? g.map(r => [...r]) : emptyGrid();
@@ -164,7 +171,7 @@ export default function SnowMaster({
   // required; it's just there for anyone who wants to find a shape at renewal.
   // THE ADDRESS identifies which driveway this is, so it sits at the top of the
   // quote rather than among the pricing inputs — and seeds the map.
-  const [address, setAddress] = useState('');
+  const [address, setAddress] = useState(initial?.address || '');
   // ONE SURFACE, TWO VIEWS. The point the estimator is looking at, handed
   // between the satellite map and Street View so switching keeps the property
   // and the zoom instead of making them back out and re-enter.
@@ -187,16 +194,18 @@ export default function SnowMaster({
   // 'shared'  two clients, ONE physical driveway. Saves TWO linked records.
   // 'multi'   one client, TWO driveways on one property. Saves ONE record.
   // See lib/snowDriveways for why those two are modelled apart.
-  const [mode, setMode] = useState<DrivewayMode>('single');
+  const [mode, setMode] = useState<DrivewayMode>(initial?.mode || 'single');
   // The SECOND driveway's own configuration. It carries its own tier, lanes and
   // modifiers because the two sides genuinely differ; it does NOT carry its own
   // map or measurement, because it is one property (multi) or one physical
   // driveway (shared).
-  const [grid2, setGrid2] = useState<number[][]>(emptyGrid());
+  const [grid2, setGrid2] = useState<number[][]>(
+    () => initial?.grid2?.length ? initial.grid2.map(r => [...r]) : emptyGrid(),
+  );
   const [busyRoad2, setBusyRoad2] = useState(false);
   const [danger2, setDanger2] = useState(0);
   const [noBoulevard2, setNoBoulevard2] = useState(false);
-  const [address2, setAddress2] = useState('');
+  const [address2, setAddress2] = useState(initial?.address2 || '');
   // A POINTER at this quote's SnowContract. Whether it is under contract is
   // read from that contract's status, never stored here — see lib/snowDriveways.
   const [contractId, setContractId] = useState<string | undefined>(undefined);
@@ -243,7 +252,8 @@ export default function SnowMaster({
   const gridLeft = mode === 'shared' ? sliceCols(grid, 0, splitCol) : grid;
   const gridRight = mode === 'shared' ? sliceCols(grid, splitCol, COLS) : grid2;
 
-  // Standard price (no premium). The Premium column adds config.PREMIUM on top.
+  // Standard price (no premium). The Premium column adds this driveway's share
+  // of the visit's single premium charge on top — see premiumSplit.
   const price = useMemo<SnowPrice | null>(
     () => priceSnow(
       gridLeft,
@@ -273,7 +283,28 @@ export default function SnowMaster({
   );
   // From the price's own breakdown — never a separate reading of the toggles.
   const liveMods = price ? activeModifiers(price.addBreakdown, price, viewConfig) : [];
-  const premiumAdd = viewConfig.PREMIUM;
+  // PREMIUM IS A SERVICE LEVEL, NOT A PER-DRIVEWAY PRODUCT — priority response
+  // on the visit. One trip, one upgrade. This used to be the whole charge
+  // handed to every driveway independently, so a two-driveway quote billed
+  // $400 for one visit's priority response.
+  //
+  //   SINGLE — one driveway, the whole charge.
+  //   MULTI  — one client, one property, one trip: $200 total, not $400.
+  //   SHARED — ONE physical driveway cleared once to the premium standard,
+  //            billed to two clients: $200 for the driveway, $100 each.
+  //
+  // Both two-driveway shapes halve it, for different reasons that land on the
+  // same arithmetic. The split lives in lib/snowPricing so the shares always
+  // sum to exactly one charge, whatever the rate sheet says.
+  const drivewayCount = mode === 'single' ? 1 : 2;
+  const premium = useMemo(() => premiumSplit(viewConfig, drivewayCount), [viewConfig, drivewayCount]);
+  const premShare1 = premium.shares[0];
+  const premShare2 = premium.shares[1] ?? 0;
+  // Why a share is not the whole charge, on the line that shows it. "$100"
+  // beside one driveway of two is indistinguishable from the full premium.
+  const shareWhat = mode === 'shared' ? 'shared driveway' : 'one visit';
+  const premNote1 = premiumShareNote(premium.total, premShare1, shareWhat);
+  const premNote2 = premiumShareNote(premium.total, premShare2, shareWhat);
   // THE DISCOUNT RATES FOR THE VERSION ON SCREEN. Read from viewConfig, not
   // from the live one and never written as a literal, so every sentence below
   // that names a figure names the figure this quote was priced with. A reopened
@@ -286,9 +317,9 @@ export default function SnowMaster({
   // one Standard price + the version's PREMIUM value, so both respect the
   // loaded quote's stamped config.
   const stdTotal = price && !price.isCustom ? price.total! : null;
-  const premTotal = stdTotal != null ? stdTotal + premiumAdd : null;
+  const premTotal = stdTotal != null ? stdTotal + premShare1 : null;
   const stdFloor = price && price.isCustom ? price.floor! : null;
-  const premFloor = stdFloor != null ? stdFloor + premiumAdd : null;
+  const premFloor = stdFloor != null ? stdFloor + premShare1 : null;
 
   // Tap cycles a cell: empty → open → drag → empty. (Tap-cycle, not double-tap.)
   // Any edit marks the trace dirty → prices at the ACTIVE (current) version.
@@ -365,7 +396,9 @@ export default function SnowMaster({
       // The record's headline totals cover BOTH driveways, because that is what
       // this client pays.
       q.total = stdTotal != null && price2.total != null ? stdTotal + price2.total : null;
-      q.premiumTotal = q.total != null ? q.total + premiumAdd * 2 : null;
+      // ONE premium for the visit, not one per driveway. This read
+      // `premiumAdd * 2`, which billed $400 for a single trip's upgrade.
+      q.premiumTotal = q.total != null ? q.total + premium.total : null;
       onSave(q);
       if (wasNew) { clearAll({ silent: true }); return; }
       setLoadedId(id); setLoadedVersion(viewVersion); setDirty(false);
@@ -400,7 +433,9 @@ export default function SnowMaster({
         // both records carry the same outline.
         measurement,
         total: price2.isCustom ? null : price2.total,
-        premiumTotal: price2.isCustom || price2.total == null ? null : price2.total + premiumAdd,
+        // This side's SHARE of the driveway's one premium charge — the pair
+        // together comes to premium.total, not to two of them.
+        premiumTotal: price2.isCustom || price2.total == null ? null : price2.total + premShare2,
         isCustom: price2.isCustom,
         pricingConfigVersion: viewVersion,
         sharedDrivewayWith: { quoteId: id, address: label, pairId },
@@ -498,80 +533,72 @@ export default function SnowMaster({
 
       {sub === 'quote' && (
         <div className="space-y-4">
-          {/* BOTH PROPERTIES, at the top of a shared quote, so what is on
-              screen names the whole driveway rather than half of it. */}
-          {mode === 'shared' && (address.trim() || address2.trim()) && (
-            <div className="rounded-xl border-2 px-3 py-2" style={{ borderColor: GREEN }}>
-              <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">
-                Shared driveway · both properties
-              </div>
-              <div className="text-sm font-bold" style={{ color: GREEN }}>
-                {addressLine([address, address2]) || '—'}
-              </div>
-            </div>
-          )}
-
-          {/* ── DRIVEWAY SHAPE ─────────────────────────────────────────────
-                Two cases that both take a flat per-driveway discount and
-                are otherwise nothing alike. SHARED saves two linked records;
-                TWO DRIVEWAYS saves one. See lib/snowDriveways. ───────── */}
+          {/* ── ADDRESSES — THE FIRST THING ON THE QUOTE, above the shape
+                picker, the map, the tracers and the pricing. An address is what
+                identifies WHICH driveway is being priced; a price with no
+                address is a price nobody can match to a property, and on a
+                SHARED driveway a quote naming one of the two properties names
+                half the job. So both fields come first and neither is something
+                you arrive at later. The map opens from driveway 1.
+                One-driveway and two-driveways-on-one-property keep the single
+                field — those are one property. ─────────────────────────── */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3">
-            <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">
-              Driveway shape
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {([
-                ['single', 'One driveway', 'A single driveway for one client.'],
-                ['shared', 'Shared driveway', `Two clients, ONE physical driveway. Saves two linked quotes; ${money(sharedRate)} off each, while both stay under contract.`],
-                ['multi', 'Two driveways', `One client, two driveways on the property. One quote; ${money(secondRate)} off each, unconditionally.`],
-              ] as const).map(([m, lbl, tip]) => (
-                <button key={m} title={tip}
-                  onClick={() => { setDirty(true); setMode(m); }}
-                  className={`text-xs font-bold px-3 py-2 rounded-lg border ${mode === m ? 'text-white' : 'text-slate-600 border-slate-300'}`}
-                  style={mode === m ? { backgroundColor: GREEN, borderColor: GREEN } : undefined}>
-                  {lbl}
-                </button>
-              ))}
-            </div>
-            {mode === 'shared' && (
-              <div className="mt-2 text-[11px] text-slate-600">
-                Two clients, one driveway. <b>Two separate quote records</b> are saved and linked —
-                two contracts, two properties, two sets of liability. The {money(sharedRate)} discount
-                applies to each side only while <b>both</b> are under contract.
+            {/* SIDE BY SIDE in shared mode: two properties, two fields, equal
+                weight, read together. Stacking them would make driveway 2 look
+                like a follow-up to driveway 1 rather than the other half of the
+                same job. One driveway / two-driveways-on-one-property get the
+                single full-width field — those are one property. */}
+            <div className={mode === 'shared' ? 'grid grid-cols-1 sm:grid-cols-2 gap-3' : ''}>
+              <div>
+                <label className="block text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1">
+                  {mode === 'shared' ? 'Driveway 1 — left of the line' : 'Property address'}
+                </label>
+                <AddressAutocompleteInput
+                  value={address}
+                  onChange={(t) => { setDirty(true); setAddressAndDropFocus(t); }}
+                  // A CHOSEN suggestion carries its coordinates, so the map opens
+                  // on them directly — no second lookup, and nothing for the
+                  // un-geocodable path to catch. Typed text still falls through
+                  // to resolveAddressPoint and its banner.
+                  onPick={(p) => {
+                    setDirty(true);
+                    setAddress(p.address);
+                    setMapFocus({ lat: p.lat, lng: p.lng, zoom: 19 });
+                    setAddressPoint({ lat: p.lat, lng: p.lng });
+                  }}
+                  placeholder="123 Example St, Thunder Bay"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-base font-semibold outline-none"
+                />
               </div>
-            )}
-            {mode === 'multi' && (
-              <div className="mt-2 text-[11px] text-slate-600">
-                One client, two driveways, one trip. <b>One quote record.</b> {money(secondRate)} off
-                each driveway, unconditionally — there is only one payer.
-              </div>
-            )}
-          </div>
 
-          {/* ── ADDRESS — first, and full width. It is what identifies WHICH
-                driveway this is; a price with no address is a price nobody can
-                match to a property. The map opens from it. ─────────────── */}
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3">
-            <label className="block text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1">
-              Property address
-            </label>
-            <div className="flex gap-2">
-              <AddressAutocompleteInput
-                value={address}
-                onChange={(t) => { setDirty(true); setAddressAndDropFocus(t); }}
-                // A CHOSEN suggestion carries its coordinates, so the map opens
-                // on them directly — no second lookup, and nothing for the
-                // un-geocodable path to catch. Typed text still falls through
-                // to resolveAddressPoint and its banner.
-                onPick={(p) => {
-                  setDirty(true);
-                  setAddress(p.address);
-                  setMapFocus({ lat: p.lat, lng: p.lng, zoom: 19 });
-                  setAddressPoint({ lat: p.lat, lng: p.lng });
-                }}
-                placeholder="123 Example St, Thunder Bay"
-                className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-base font-semibold outline-none"
-              />
+              {/* DRIVEWAY 2's ADDRESS. It used to live three screens down
+                  inside the per-side panel, which meant the second property of
+                  a shared quote was entered after the driveway had been traced
+                  and priced — the easiest field on the quote to leave blank,
+                  and a saved pair naming one address cannot be matched to the
+                  driveway it is for. Labelled to match the tracer and pricing
+                  panels below. */}
+              {mode === 'shared' && (
+                <div>
+                  <label className="block text-[11px] font-black uppercase tracking-widest text-slate-500 mb-1">
+                    Driveway 2 — right of the line
+                  </label>
+                  <AddressAutocompleteInput
+                    value={address2}
+                    onChange={(t) => { setDirty(true); setAddress2(t); }}
+                    onPick={(x) => { setDirty(true); setAddress2(x.address); }}
+                    placeholder="123 Example St, Thunder Bay"
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-base font-semibold outline-none"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* ONE MAP, ONE OUTLINE, ONE PIN — below both fields rather than
+                beside either. A shared driveway is ONE physical driveway, so
+                there is one thing to look at; a button per address would imply
+                two properties to measure and two outlines to keep in step. */}
+            <div className="flex gap-2 mt-2">
               <button
                 onClick={() => { setMapFocus(null); setMeasureOpen(true); }}
                 title="Open the satellite view on this property"
@@ -616,7 +643,54 @@ export default function SnowMaster({
                 )}
               </div>
             )}
+
+            {mode === 'shared' && (
+              <div className="text-[11px] text-slate-500 mt-2">
+                Both properties are saved on their own quote record and both appear on the
+                saved-quote list — a shared quote never shows just one of them.
+              </div>
+            )}
           </div>
+
+          {/* ── DRIVEWAY SHAPE ─────────────────────────────────────────────
+                Two cases that both take a flat per-driveway discount and
+                are otherwise nothing alike. SHARED saves two linked records;
+                TWO DRIVEWAYS saves one. See lib/snowDriveways. ───────── */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3">
+            <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">
+              Driveway shape
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {([
+                ['single', 'One driveway', 'A single driveway for one client.'],
+                ['shared', 'Shared driveway', `Two clients, ONE physical driveway. Saves two linked quotes; ${money(sharedRate)} off each, while both stay under contract.`],
+                ['multi', 'Two driveways', `One client, two driveways on the property. One quote; ${money(secondRate)} off each, unconditionally.`],
+              ] as const).map(([m, lbl, tip]) => (
+                <button key={m} title={tip}
+                  onClick={() => { setDirty(true); setMode(m); }}
+                  className={`text-xs font-bold px-3 py-2 rounded-lg border ${mode === m ? 'text-white' : 'text-slate-600 border-slate-300'}`}
+                  style={mode === m ? { backgroundColor: GREEN, borderColor: GREEN } : undefined}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+            {mode === 'shared' && (
+              <div className="mt-2 text-[11px] text-slate-600">
+                Two clients, one driveway. <b>Two separate quote records</b> are saved and linked —
+                two contracts, two properties, two sets of liability. The {money(sharedRate)} discount
+                applies to each side only while <b>both</b> are under contract.
+              </div>
+            )}
+            {mode === 'multi' && (
+              <div className="mt-2 text-[11px] text-slate-600">
+                One client, two driveways, one trip. <b>One quote record.</b> {money(secondRate)} off
+                each driveway, unconditionally — there is only one payer.
+                {' '}Premium is <b>{money(premium.total)} for the visit, not per driveway</b> — one
+                trip, one upgrade.
+              </div>
+            )}
+          </div>
+
 
         <div className="grid md:grid-cols-2 gap-4 items-start">
           {/* ── LEFT: tracer + inputs ─────────────────────────────────────── */}
@@ -699,7 +773,8 @@ export default function SnowMaster({
                   busyRoad={busyRoad} onBusyRoad={editBusyRoad}
                   noBoulevard={noBoulevard} onNoBoulevard={editNoBoulevard}
                   danger={danger} onDanger={editDanger}
-                  price={price} config={viewConfig} premiumAdd={premiumAdd}
+                  price={price} config={viewConfig}
+                  premiumAdd={premShare1} premiumNote={premNote1}
                 />
                 <SnowDrivewayPanel
                   hidePricing
@@ -712,7 +787,8 @@ export default function SnowMaster({
                   busyRoad={busyRoad2} onBusyRoad={() => { setDirty(true); setBusyRoad2(b => !b); }}
                   noBoulevard={noBoulevard2} onNoBoulevard={() => { setDirty(true); setNoBoulevard2(v => !v); }}
                   danger={danger2} onDanger={(d) => { setDirty(true); setDanger2(d); }}
-                  price={price2} config={viewConfig} premiumAdd={premiumAdd}
+                  price={price2} config={viewConfig}
+                  premiumAdd={premShare2} premiumNote={premNote2}
                 />
               </div>
             )}
@@ -760,14 +836,16 @@ export default function SnowMaster({
               title={mode === 'single' ? null
                 : (address.trim() || (mode === 'shared' ? 'Driveway 1 — left of the line' : 'Driveway 1'))}
               subtitle={mode === 'shared' ? 'own quote record' : mode === 'multi' ? 'same quote' : null}
-              price={price} config={viewConfig} premiumAdd={premiumAdd}
+              price={price} config={viewConfig}
+              premiumAdd={premShare1} premiumNote={premNote1}
               mods={liveMods}
             />
             {mode !== 'single' && (
               <DrivewayPricingCard
                 title={address2.trim() || (mode === 'shared' ? 'Driveway 2 — right of the line' : 'Driveway 2')}
                 subtitle={mode === 'shared' ? 'own quote record' : 'same quote'}
-                price={price2} config={viewConfig} premiumAdd={premiumAdd}
+                price={price2} config={viewConfig}
+                premiumAdd={premShare2} premiumNote={premNote2}
                 mods={price2 ? activeModifiers(price2.addBreakdown, price2, viewConfig) : []}
               />
             )}
@@ -787,7 +865,7 @@ export default function SnowMaster({
                 <div className="flex justify-between items-baseline">
                   <span className="text-sm opacity-80">Premium</span>
                   <span className="text-lg font-black" style={{ color: GOLD }}>
-                    {money((price.total || 0) + (price2.total || 0) + premiumAdd * 2)}
+                    {money((price.total || 0) + (price2.total || 0) + premium.total)}
                   </span>
                 </div>
                 <div className="text-[10px] mt-1 opacity-70">
@@ -831,6 +909,28 @@ export default function SnowMaster({
                 <b className="uppercase tracking-widest text-[10px]">Shared driveway</b>
                 <span>{money(sharedRate)} off each side. Link each side's contract so the pair can be tracked.</span>
               </div>
+              {/* PREMIUM IS ALL-OR-NOTHING, and it is stated here because this
+                  is where the pair is managed.
+                  THERE IS NO PER-SIDE PREMIUM TOGGLE TO COUPLE: every driveway
+                  shows Standard and Premium side by side, always, and the
+                  shared premium is ONE charge the two sides divide. So the rule
+                  cannot be broken by a selection — there is no state in which
+                  one side is premium and the other is not. What was missing was
+                  it being VISIBLE: two cards each showing a premium figure look
+                  exactly like two independent premiums, and the halved number
+                  looks like a bug rather than a share. */}
+              <div className="mt-1.5 rounded-lg bg-white border border-slate-200 px-2.5 py-1.5">
+                <b className="uppercase tracking-widest text-[10px]" style={{ color: GREEN }}>
+                  Premium · one charge for the driveway
+                </b>
+                <div className="mt-0.5">
+                  {money(premium.total)} for the driveway, cleared once to the premium standard,
+                  split <b>{money(premShare1)} + {money(premShare2)}</b> across the two properties —
+                  not {money(premium.total)} each.
+                  {' '}<b>Both properties take premium or neither does:</b> you cannot give half a
+                  driveway priority response, so it is never on for one side alone.
+                </div>
+              </div>
               {/* LINK THE CONTRACT, do not restate its status. Whether this
                   side is under contract is read from the contract itself, so
                   moving a contract to booked (or back out) changes the discount
@@ -852,11 +952,16 @@ export default function SnowMaster({
                   Other side: {pairing.partnerSigned ? 'under contract' : 'not under contract'}
                 </span>
               </div>
-              {address2.trim() && (
-                <div className="mt-2 text-[11px] italic text-slate-600">
-                  Contract wording: “{sharedDrivewayClause(address2.trim(), sharedRate)}”
-                </div>
-              )}
+              {/* THE CONTRACT WORDING — both terms, shown for any shared quote
+                  rather than only once the second address is typed. The clause
+                  falls back to "the adjoining property", and the premium term
+                  names no property at all, so waiting on address2 only hid the
+                  sentence a client is most likely to query. Both amounts are
+                  passed in from the version this quote is priced at. */}
+              <div className="mt-2 text-[11px] italic text-slate-600 space-y-1">
+                <div>Contract wording: “{sharedDrivewayClause(address2.trim(), sharedRate)}”</div>
+                <div>“{sharedPremiumClause(premShare1, premium.total)}”</div>
+              </div>
             </div>
           )}
 
@@ -871,24 +976,24 @@ export default function SnowMaster({
                 title="Driveway 1 — left of the line"
                 subtitle="own quote record"
                 address={address}
-                onAddress={(v) => { setDirty(true); setAddressAndDropFocus(v); }}
                 grid={gridLeft} onCycle={() => {}}
                 busyRoad={busyRoad} onBusyRoad={editBusyRoad}
                 noBoulevard={noBoulevard} onNoBoulevard={editNoBoulevard}
                 danger={danger} onDanger={editDanger}
-                price={price} config={viewConfig} premiumAdd={premiumAdd}
+                price={price} config={viewConfig}
+                premiumAdd={premShare1} premiumNote={premNote1}
               />
               <SnowDrivewayPanel
                 hideTracer hidePricing
                 title="Driveway 2 — right of the line"
                 subtitle="own quote record"
                 address={address2}
-                onAddress={(v) => { setDirty(true); setAddress2(v); }}
                 grid={gridRight} onCycle={() => {}}
                 busyRoad={busyRoad2} onBusyRoad={() => { setDirty(true); setBusyRoad2(b => !b); }}
                 noBoulevard={noBoulevard2} onNoBoulevard={() => { setDirty(true); setNoBoulevard2(v => !v); }}
                 danger={danger2} onDanger={(d) => { setDirty(true); setDanger2(d); }}
-                price={price2} config={viewConfig} premiumAdd={premiumAdd}
+                price={price2} config={viewConfig}
+                premiumAdd={premShare2} premiumNote={premNote2}
               />
             </div>
           )}
@@ -976,13 +1081,16 @@ const chip = (label: string, value: number | string) => (
 // reduction that is not on a line is one applied silently, and the whole point
 // of this panel is that nobody has to do the arithmetic to find it.
 function DrivewayPricingCard({
-  title, subtitle, price, config, premiumAdd, mods,
+  title, subtitle, price, config, premiumAdd, premiumNote, mods,
 }: {
   title: string | null;
   subtitle?: string | null;
   price: SnowPrice | null;
   config: SnowConfig;
+  /** THIS driveway's share of the visit's one premium charge — not the charge. */
   premiumAdd: number;
+  /** Why that share is not the whole charge, e.g. "half of $200, shared driveway". */
+  premiumNote?: string;
   mods: { key: string; label: string; amount: number }[];
 }) {
   const std = price && !price.isCustom ? price.total! : null;
@@ -997,7 +1105,7 @@ function DrivewayPricingCard({
           {subtitle && <div className="text-[10px] text-slate-400 shrink-0">{subtitle}</div>}
         </div>
       )}
-      <PriceReadout price={price} premiumAdd={premiumAdd}
+      <PriceReadout price={price} premiumAdd={premiumAdd} premiumNote={premiumNote}
         stdTotal={std} premTotal={prem} stdFloor={floorStd} premFloor={floorPrem} />
       {price && (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
@@ -1054,7 +1162,13 @@ function DrivewayPricingCard({
               <span className="text-base font-mono">{money(price.isCustom ? floorStd! : std!)}</span>
             </div>
             <div className="flex justify-between font-black text-slate-900">
-              <span className="uppercase tracking-widest text-[12px] self-center" style={{ color: GREEN }}>{price.isCustom ? 'Premium floor' : 'Premium total'} <span className="text-slate-400 font-bold normal-case tracking-normal">(+{money(premiumAdd)})</span></span>
+              <span className="uppercase tracking-widest text-[12px] self-center" style={{ color: GREEN }}>
+                {price.isCustom ? 'Premium floor' : 'Premium total'}
+                {' '}
+                <span className="text-slate-400 font-bold normal-case tracking-normal">
+                  (+{money(premiumAdd)}{premiumNote ? ` — ${premiumNote}` : ''})
+                </span>
+              </span>
               <span className="text-lg font-mono">{money(price.isCustom ? floorPrem! : prem!)}</span>
             </div>
           </div>
@@ -1065,8 +1179,8 @@ function DrivewayPricingCard({
 }
 
 // ── Live price readout — Standard + Premium always shown side by side ────────
-function PriceReadout({ price, premiumAdd, stdTotal, premTotal, stdFloor, premFloor }: {
-  price: SnowPrice | null; premiumAdd: number;
+function PriceReadout({ price, premiumAdd, premiumNote, stdTotal, premTotal, stdFloor, premFloor }: {
+  price: SnowPrice | null; premiumAdd: number; premiumNote?: string;
   stdTotal: number | null; premTotal: number | null; stdFloor: number | null; premFloor: number | null;
 }) {
   if (!price) {
@@ -1096,7 +1210,9 @@ function PriceReadout({ price, premiumAdd, stdTotal, premTotal, stdFloor, premFl
           <div className="rounded-xl p-3 text-white shadow-sm min-w-0" style={{ backgroundColor: '#92400e', border: `2px solid ${GOLD}` }}>
             <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: GOLD }}>Premium floor</div>
             <div className={`${floorCls} font-black font-mono leading-tight whitespace-nowrap`}>{money(premFloor!)}<span className="text-xs font-bold text-amber-200"> min</span></div>
-            <div className="text-[10px] font-bold text-amber-200">+{money(premiumAdd)} premium</div>
+            <div className="text-[10px] font-bold text-amber-200">
+              +{money(premiumAdd)} premium{premiumNote ? ` · ${premiumNote}` : ''}
+            </div>
           </div>
         </div>
         <div className="text-[12px] font-black text-amber-900 mt-2">Do not quote below the floor without Marco.</div>
@@ -1121,7 +1237,9 @@ function PriceReadout({ price, premiumAdd, stdTotal, premTotal, stdFloor, premFl
       <div className="rounded-2xl p-4 shadow-sm text-white min-w-0" style={{ backgroundColor: GREEN, border: `2px solid ${GOLD}` }}>
         <div className="text-[10px] font-black uppercase tracking-widest" style={{ color: GOLD }}>Premium · Tier {price.tier}</div>
         <div className={`${premCls} font-black font-mono mt-1 leading-none whitespace-nowrap`}>{money(premTotal!)}</div>
-        <div className="text-[10px] font-bold mt-0.5" style={{ color: GOLD }}>+{money(premiumAdd)} vs standard</div>
+        <div className="text-[10px] font-bold mt-0.5" style={{ color: GOLD }}>
+          +{money(premiumAdd)} vs standard{premiumNote ? ` · ${premiumNote}` : ''}
+        </div>
       </div>
     </div>
   );

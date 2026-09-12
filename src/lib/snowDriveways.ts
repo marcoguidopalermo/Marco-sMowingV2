@@ -176,6 +176,38 @@ export function sharedDrivewayClause(partnerAddress: string, rate: number): stri
     + 'while both properties are under contract.';
 }
 
+/**
+ * The sentence a SHARED driveway's contract should carry about premium.
+ *
+ * Premium is priority response on the VISIT, and a shared driveway is one
+ * visit. So the driveway carries one premium charge and each client pays a
+ * share of it — which the contract has to say, because "$100 premium" on a
+ * page by itself reads as this property's own premium, and the client who
+ * later sees the other side's contract for another $100 has been told the
+ * wrong thing.
+ *
+ * ALL-OR-NOTHING is stated here too. You cannot give half a driveway priority
+ * response; if one side takes premium and the other does not, there is no
+ * coherent service to deliver. The wording makes that a term rather than an
+ * operational surprise.
+ *
+ * The amounts are PARAMETERS, like the discount rate in sharedDrivewayClause
+ * and for the same reason: this is the enforceable copy, so it has to name what
+ * was actually quoted, and callers pass them from the quote's OWN config
+ * version.
+ * @param {number} share This property's part of the premium.
+ * @param {number} total The single premium charge for the driveway.
+ * @return {string} The clause.
+ */
+export function sharedPremiumClause(share: number, total: number): string {
+  const usd = (n: number) => `$${(Number(n) || 0).toLocaleString('en-US')}`;
+  const part = share * 2 === total ? ', which is half of that' : '';
+  return `Premium service is ${usd(total)} for the shared driveway, cleared once to `
+    + `the premium standard. This property's share is ${usd(share)}${part}. `
+    + 'Premium applies to the whole driveway or to neither property — both '
+    + 'properties must take premium for it to be in effect.';
+}
+
 /** Every pair needing attention, for the flag surface. */
 export function unpairedSignings(
   quotes: SnowQuote[],

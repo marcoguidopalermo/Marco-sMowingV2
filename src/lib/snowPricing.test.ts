@@ -8,6 +8,7 @@ import {
   priceSnow, measureGrid, SNOW_PRICING_CONFIG, SNOW_CONFIG_V1, SNOW_PRICING_CONFIG_VERSION, SnowGrid, SnowConfig,
   resolveSnowConfig, activeSnowVersionId, snowVersionId, validateSnowConfig, diffSnowConfig, StoredSnowVersion, noBoulevardRate, activeModifiers, breakdownOfSaved,
   sharedDrivewayRate, secondDrivewayRate, SNOW_FIELD_LABELS,
+  premiumRate, premiumSplit, premiumShareNote,
 } from './snowPricing';
 
 const ROWS = 6;
@@ -409,4 +410,89 @@ test('a NEGATIVE discount is rejected — it would flip into a surcharge', () =>
 test('a discount larger than the base floors at 0, never negative', () => {
   const huge = { ...SNOW_CONFIG_V1, SHARED_DRIVEWAY: 5000 };
   assert.equal(priceSnow(shape(1, 1), { sharedDriveway: true }, huge)!.total, 0);
+});
+
+console.log('\nPREMIUM IS ONE CHARGE FOR THE VISIT, NOT PER DRIVEWAY:');
+
+test('one driveway takes the whole premium', () => {
+  const p = premiumSplit(SNOW_CONFIG_V1, 1);
+  assert.equal(p.total, 200);
+  assert.deepEqual(p.shares, [200]);
+  assert.equal(p.even, true);
+});
+
+test('TWO DRIVEWAYS SPLIT IT — $200 total, not $400', () => {
+  // The bug: premium was added once per driveway, so one visit's priority
+  // response was billed twice.
+  const p = premiumSplit(SNOW_CONFIG_V1, 2);
+  assert.equal(p.total, 200);
+  assert.deepEqual(p.shares, [100, 100]);
+  assert.equal(p.shares[0] + p.shares[1], 200, 'the pair comes to ONE charge');
+  assert.notEqual(p.shares[0] + p.shares[1], 400);
+});
+
+test('THE SHARES ALWAYS SUM TO EXACTLY ONE CHARGE, at any rate', () => {
+  for (const PREMIUM of [0, 1, 7, 200, 201, 250, 999, 1000]) {
+    for (const n of [1, 2, 3, 4]) {
+      const p = premiumSplit({ ...SNOW_CONFIG_V1, PREMIUM }, n);
+      assert.equal(p.shares.length, n);
+      assert.equal(p.shares.reduce((a, b) => a + b, 0), PREMIUM,
+        `${PREMIUM} over ${n} must sum back to ${PREMIUM}`);
+      assert.ok(p.shares.every(x => Number.isInteger(x)), 'whole dollars only');
+    }
+  }
+});
+
+test('an ODD charge gives the remainder to the earlier driveway, not cents', () => {
+  // $201 cannot halve into whole dollars. Rounding both to 101 would bill $202
+  // for a $201 upgrade; 100.50 each would put cents on a quote that is whole
+  // dollars everywhere else.
+  const p = premiumSplit({ ...SNOW_CONFIG_V1, PREMIUM: 201 }, 2);
+  assert.deepEqual(p.shares, [101, 100]);
+  assert.equal(p.even, false, 'and it knows not to call that "half"');
+});
+
+test('premiumSplit follows the RATE SHEET, and a saved quote holds its own', () => {
+  // Premium is a rate-sheet number like any other, so the split moves with it
+  // and a reopened quote resolves against its stamped version.
+  const V4: SnowConfig = { ...SNOW_CONFIG_V1, PREMIUM: 300 };
+  const vs: Record<string, StoredSnowVersion> = { 'snow-v4': { version: 'snow-v4', config: V4 } };
+  assert.deepEqual(premiumSplit(resolveSnowConfig('snow-v4', vs), 2).shares, [150, 150]);
+  assert.deepEqual(premiumSplit(resolveSnowConfig('snow-v1', vs), 2).shares, [100, 100],
+    'the old version still splits its own $200');
+});
+
+test('premiumRate guards a bad stored value rather than producing NaN', () => {
+  assert.equal(premiumRate(SNOW_CONFIG_V1), 200);
+  assert.equal(premiumRate({ ...SNOW_CONFIG_V1, PREMIUM: undefined as unknown as number }), 200);
+  assert.equal(premiumRate({ ...SNOW_CONFIG_V1, PREMIUM: -5 }), 200, 'negative is not a premium');
+  assert.equal(premiumRate({ ...SNOW_CONFIG_V1, PREMIUM: 0 }), 0, 'zero is a real setting');
+});
+
+test('THE LINE SAYS IT IS A SHARE — otherwise it reads as the whole charge', () => {
+  // "$100" beside one driveway of two is indistinguishable from the full
+  // premium, which is what made the doubled charge invisible.
+  assert.equal(premiumShareNote(200, 100, 'shared driveway'), 'half of $200, shared driveway');
+  assert.equal(premiumShareNote(200, 100, 'one visit'), 'half of $200, one visit');
+  // Not a share at all → no note to add.
+  assert.equal(premiumShareNote(200, 200, 'one visit'), '');
+  // An uneven split is a "share", not a "half" — the kind of small lie that
+  // gets noticed on an invoice.
+  assert.equal(premiumShareNote(201, 101, 'shared driveway'), 'share of $201, shared driveway');
+  assert.equal(premiumShareNote(201, 100, 'shared driveway'), 'share of $201, shared driveway');
+});
+
+test('splitting premium does not touch the tier, the discounts or their order', () => {
+  // Premium is added on TOP of the standard total, so it cannot move a tier or
+  // interact with the flat discounts. Guard against a "fix" that folds it in.
+  const g = shape(2, 2);                                     // Tier 2, 699
+  const std = priceSnow(g, { sharedDriveway: true, noBoulevard: true }, SNOW_CONFIG_V1)!;
+  assert.equal(std.tier, 2);
+  assert.equal(std.addBreakdown.sharedDriveway, -100);
+  assert.equal(std.addBreakdown.noBoulevard, -100, '2 lanes × $50');
+  assert.equal(std.total, 499);
+  // The share rides on top; the standard total is untouched by the split.
+  const share = premiumSplit(SNOW_CONFIG_V1, 2).shares[0];
+  assert.equal(std.total! + share, 599);
+  assert.equal(std.addBreakdown.premium, 0, 'premium is never in the breakdown here');
 });

@@ -2193,10 +2193,20 @@ export interface SnowQuote {
   sharedDriveway?: boolean;
   secondDriveway?: boolean;
   total: number | null;         // STANDARD total; null when custom
-  // Premium total (Standard + config.PREMIUM); null when custom. Added when
-  // Standard + Premium became always-shown side by side. Older quotes predate
-  // this field — the other total is derived from the stamped config version and
-  // old records are never rewritten.
+  // Premium total for THIS RECORD; null when custom. Added when Standard +
+  // Premium became always-shown side by side. Older quotes predate this field —
+  // the other total is derived from the stamped config version and old records
+  // are never rewritten.
+  //
+  // NOT ALWAYS Standard + config.PREMIUM. Premium is priority response on the
+  // VISIT, so there is one premium charge per clearing and the driveways it
+  // covers divide it (see premiumSplit):
+  //   single — Standard + the whole charge.
+  //   multi  — ONE record covering both driveways: combined Standard + ONE
+  //            charge. It used to add the charge per driveway, billing $400 for
+  //            a single trip's upgrade.
+  //   shared — each of the two records carries ITS SHARE, so the pair together
+  //            comes to one charge, not two.
   premiumTotal?: number | null;
   isCustom: boolean;
   pricingConfigVersion: string; // snapshot of the config that priced this quote

@@ -21,7 +21,11 @@ const money = (n: number) => `$${Math.round(n).toLocaleString('en-US')}`;
 export interface DrivewayPanelProps {
   title: string;
   subtitle?: string;
-  /** Shared driveways have an address per side; a second driveway does not. */
+  // Shared driveways have an address per side; a second driveway on one
+  // property does not. Pass `address` ALONE to show it read-only, which is
+  // what shared mode does now that both addresses are entered at the top of
+  // the quote — one editable field per property, and this panel names which
+  // property it is pricing without being a second place to change it.
   address?: string;
   onAddress?: (v: string) => void;
   onPickAddress?: (p: { address: string; lat: number; lng: number }) => void;
@@ -32,7 +36,11 @@ export interface DrivewayPanelProps {
   danger: number; onDanger: (d: number) => void;
   price: SnowPrice | null;
   config: SnowConfig;
+  /** THIS driveway's share of the visit's one premium charge — not the charge.
+   *  Premium is priority response on the VISIT, so two driveways split it. */
   premiumAdd: number;
+  /** Why that share is not the whole charge, e.g. "half of $200, shared driveway". */
+  premiumNote?: string;
   /** Shared driveways trace ONE slab above, so the per-side panel omits a
    *  tracer — two tracers would contradict the single physical driveway. */
   hideTracer?: boolean;
@@ -55,7 +63,7 @@ export default function SnowDrivewayPanel(p: DrivewayPanelProps) {
         {p.subtitle && <div className="text-[10px] text-slate-400">{p.subtitle}</div>}
       </div>
 
-      {p.onAddress && (
+      {p.onAddress ? (
         <AddressAutocompleteInput
           value={p.address || ''}
           onChange={p.onAddress}
@@ -63,7 +71,14 @@ export default function SnowDrivewayPanel(p: DrivewayPanelProps) {
           placeholder="Address for this side"
           className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-semibold outline-none mb-2"
         />
-      )}
+      ) : p.address !== undefined ? (
+        /* READ-ONLY. The address is edited once, at the top of the quote, so
+           this says WHICH property is being priced without becoming a second
+           input bound to the same value. */
+        <div className="text-[12px] font-bold text-slate-700 truncate mb-2" title={p.address || undefined}>
+          {p.address.trim() || <span className="text-slate-400 italic font-semibold">No address yet</span>}
+        </div>
+      ) : null}
 
       {!p.hideTracer && (
       <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Trace the driveway</div>
@@ -123,6 +138,13 @@ export default function SnowDrivewayPanel(p: DrivewayPanelProps) {
               <div className="text-xl font-black" style={{ color: GREEN }}>
                 {prem != null ? money(prem) : `${money((floorStd || 0) + p.premiumAdd)}+`}
               </div>
+              {/* A SHARE, not a charge of its own. Without this the figure is
+                  indistinguishable from the full premium. */}
+              {p.premiumNote && (
+                <div className="text-[9px] font-bold text-slate-400 leading-tight mt-0.5">
+                  +{money(p.premiumAdd)} — {p.premiumNote}
+                </div>
+              )}
             </div>
           </div>
           {/* EVERY modifier, from the price's own breakdown — including the
