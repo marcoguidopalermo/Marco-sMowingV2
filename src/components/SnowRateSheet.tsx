@@ -12,14 +12,17 @@ import { Lock, ShieldAlert, History, RotateCcw, Check, X, AlertTriangle, Plus, T
 import { SnowRateConfigVersion } from '../types';
 import {
   SnowConfig, SNOW_CONFIG_V1, validateSnowConfig, diffSnowConfig, RateAuditChange, snowVersionNum,
+  noBoulevardRate, sharedDrivewayRate, secondDrivewayRate,
 } from '../lib/snowPricing';
 
 const GREEN = '#1c4634';
 const GOLD = '#cdbd8f';
 const fmtWhen = (ms?: number) => ms ? new Date(ms).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—';
 
-// The editable numeric price fields, in display order.
-const PRICE_FIELDS: { key: keyof SnowConfig; label: string; note?: string }[] = [
+type RateField = { key: keyof SnowConfig; label: string; note?: string };
+
+// The editable numeric price fields, in display order. Things that ADD.
+const PRICE_FIELDS: RateField[] = [
   { key: 'TIER_1', label: 'Tier 1' },
   { key: 'TIER_2', label: 'Tier 2' },
   { key: 'TIER_3', label: 'Tier 3' },
@@ -27,6 +30,35 @@ const PRICE_FIELDS: { key: keyof SnowConfig; label: string; note?: string }[] = 
   { key: 'PREMIUM', label: 'Premium' },
   { key: 'BUSY_ROAD', label: 'Busy road' },
   { key: 'DRAG_RATE', label: 'Drag rate', note: 'per dragged spot · under active review' },
+];
+
+// DISCOUNTS — things that SUBTRACT. Split into their own group rather than
+// mixed in above, because every value here is entered as a POSITIVE number and
+// comes OFF the total. In one undifferentiated grid of money inputs, "100"
+// next to "Busy road 100" gives no clue which direction it moves the price,
+// and the direction is the whole meaning of the field.
+//
+// THE TWO DRIVEWAY DISCOUNTS ARE SEPARATE RATES ON PURPOSE. Same number today,
+// different things: shared is two clients on ONE driveway, second is one client
+// with TWO driveways. One merged rate would make them equal by construction and
+// force a code change the first time they diverge — exactly what moving them
+// into the sheet was for.
+const DISCOUNT_FIELDS: RateField[] = [
+  {
+    key: 'NO_BOULEVARD_PER_LANE',
+    label: 'No boulevard',
+    note: 'per LANE — scales with driveway width',
+  },
+  {
+    key: 'SHARED_DRIVEWAY',
+    label: 'Shared driveway',
+    note: 'per driveway · two clients, ONE shared driveway',
+  },
+  {
+    key: 'SECOND_DRIVEWAY',
+    label: 'Second driveway',
+    note: 'per driveway · one client, TWO driveways',
+  },
 ];
 
 interface Props {
@@ -73,6 +105,21 @@ function Editor({ config, activeVersion, versions, onSave, onRevert, initial }: 
   const setNum = (key: keyof SnowConfig, v: string) =>
     setDraft(d => ({ ...d, [key]: v === '' ? 0 : Number(v) }));
 
+  // WHAT THE INPUT SHOWS for a key the stored config may not carry. The three
+  // discounts are optional on SnowConfig — a version saved before they existed
+  // has no key — and String(undefined) renders the literal "undefined" into a
+  // number input. Seeding from the SAME helpers the pricer falls back to means
+  // the sheet opens showing the rate quotes are actually being charged, so
+  // editing one field cannot silently commit a different rate for the others.
+  const shown = (key: keyof SnowConfig): string => {
+    const v = draft[key];
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+    if (key === 'NO_BOULEVARD_PER_LANE') return String(noBoulevardRate(draft));
+    if (key === 'SHARED_DRIVEWAY') return String(sharedDrivewayRate(draft));
+    if (key === 'SECOND_DRIVEWAY') return String(secondDrivewayRate(draft));
+    return '0';
+  };
+
   const changes: RateAuditChange[] = useMemo(() => diffSnowConfig(config, draft), [config, draft]);
   const errors = useMemo(() => validateSnowConfig(draft), [draft]);
   const dirty = changes.length > 0;
@@ -105,12 +152,46 @@ function Editor({ config, activeVersion, versions, onSave, onRevert, initial }: 
               <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">{label}</div>
               <div className="flex items-center gap-1 mt-1">
                 <span className="text-slate-400 font-bold">$</span>
-                <input type="number" value={String(draft[key] as number)} onChange={e => setNum(key, e.target.value)}
+                <input type="number" value={shown(key)} onChange={e => setNum(key, e.target.value)}
                   className="w-full border border-slate-300 rounded-lg px-2 py-2 text-right font-mono font-bold" />
               </div>
               {note && <div className="text-[10px] text-amber-600 font-bold mt-0.5">{note}</div>}
             </label>
           ))}
+        </div>
+
+        {/* ── DISCOUNTS ─────────────────────────────────────────────────────
+              Entered POSITIVE, subtracted from the total. The heading and the
+              "−" in front of every input carry that, because the sign is the
+              field's meaning and a bare money grid does not show it. */}
+        <div>
+          <div className="text-[11px] font-black uppercase tracking-widest text-slate-500">
+            Discounts — entered positive, taken OFF the price
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-2">
+            {DISCOUNT_FIELDS.map(({ key, label, note }) => (
+              <label key={key} className="block">
+                <div className="text-[11px] font-black uppercase tracking-widest" style={{ color: GREEN }}>{label}</div>
+                <div className="flex items-center gap-1 mt-1">
+                  <span className="font-bold" style={{ color: GREEN }}>−$</span>
+                  <input type="number" value={shown(key)} onChange={e => setNum(key, e.target.value)}
+                    className="w-full border rounded-lg px-2 py-2 text-right font-mono font-bold"
+                    style={{ borderColor: '#a7c4b5' }} />
+                </div>
+                {note && <div className="text-[10px] text-slate-400 font-bold mt-0.5">{note}</div>}
+              </label>
+            ))}
+          </div>
+          {/* The two driveway discounts read alike at a glance and are not the
+              same thing. Which one a quote gets is decided by the driveway
+              SHAPE, not by anyone picking a rate, so the note says what each
+              one covers rather than when to use it. */}
+          <div className="text-[11px] text-slate-500 mt-2">
+            Shared and second driveway are <b>separate rates</b>. Shared is two clients on one
+            physical driveway (and holds only while both stay under contract); second driveway
+            is one client with two driveways on the property. Both are flat per driveway — not
+            per lane.
+          </div>
         </div>
 
         {/* Drag-counts-toward-size — boolean, under review */}

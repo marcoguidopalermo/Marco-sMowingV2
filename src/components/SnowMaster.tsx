@@ -9,12 +9,14 @@ import SnowDrivewayPanel from './SnowDrivewayPanel';
 import SnowSplitTracer from './SnowSplitTracer';
 import {
   sharedPairing, sharedDrivewayClause, unpairedSignings, quoteAddressLine,
+  quoteAddresses, addressLine,
   type DrivewayMode,
 } from '../lib/snowDriveways';
 import type { PropertyMeasurement } from '../types';
 import {
   priceSnow, SnowConfig, SNOW_CONFIG_V1, SnowPrice, resolveSnowConfig,
-  noBoulevardRate, activeModifiers, breakdownOfSaved,
+  noBoulevardRate, sharedDrivewayRate, secondDrivewayRate,
+  activeModifiers, breakdownOfSaved,
 } from '../lib/snowPricing';
 import SnowRateSheet from './SnowRateSheet';
 import SnowContractsModule from './SnowContractsModule';
@@ -272,6 +274,14 @@ export default function SnowMaster({
   // From the price's own breakdown — never a separate reading of the toggles.
   const liveMods = price ? activeModifiers(price.addBreakdown, price, viewConfig) : [];
   const premiumAdd = viewConfig.PREMIUM;
+  // THE DISCOUNT RATES FOR THE VERSION ON SCREEN. Read from viewConfig, not
+  // from the live one and never written as a literal, so every sentence below
+  // that names a figure names the figure this quote was priced with. A reopened
+  // quote shows the rate it was sold at; the rate sheet moves both without a
+  // code change. sharedRate also goes into the contract wording, which is the
+  // one place a stale number would be argued over.
+  const sharedRate = sharedDrivewayRate(viewConfig);
+  const secondRate = secondDrivewayRate(viewConfig);
   // Standard vs Premium totals (non-custom) / floors (custom). Derived from the
   // one Standard price + the version's PREMIUM value, so both respect the
   // loaded quote's stamped config.
@@ -496,14 +506,14 @@ export default function SnowMaster({
                 Shared driveway · both properties
               </div>
               <div className="text-sm font-bold" style={{ color: GREEN }}>
-                {[address.trim(), address2.trim()].filter(Boolean).join('  +  ') || '—'}
+                {addressLine([address, address2]) || '—'}
               </div>
             </div>
           )}
 
           {/* ── DRIVEWAY SHAPE ─────────────────────────────────────────────
-                Two cases that both take $100 off per driveway and are
-                otherwise nothing alike. SHARED saves two linked records;
+                Two cases that both take a flat per-driveway discount and
+                are otherwise nothing alike. SHARED saves two linked records;
                 TWO DRIVEWAYS saves one. See lib/snowDriveways. ───────── */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-3">
             <div className="text-[11px] font-black uppercase tracking-widest text-slate-500 mb-2">
@@ -512,8 +522,8 @@ export default function SnowMaster({
             <div className="flex flex-wrap gap-1.5">
               {([
                 ['single', 'One driveway', 'A single driveway for one client.'],
-                ['shared', 'Shared driveway', 'Two clients, ONE physical driveway. Saves two linked quotes; $100 off each once BOTH sign.'],
-                ['multi', 'Two driveways', 'One client, two driveways on the property. One quote; $100 off each, unconditionally.'],
+                ['shared', 'Shared driveway', `Two clients, ONE physical driveway. Saves two linked quotes; ${money(sharedRate)} off each, while both stay under contract.`],
+                ['multi', 'Two driveways', `One client, two driveways on the property. One quote; ${money(secondRate)} off each, unconditionally.`],
               ] as const).map(([m, lbl, tip]) => (
                 <button key={m} title={tip}
                   onClick={() => { setDirty(true); setMode(m); }}
@@ -526,14 +536,14 @@ export default function SnowMaster({
             {mode === 'shared' && (
               <div className="mt-2 text-[11px] text-slate-600">
                 Two clients, one driveway. <b>Two separate quote records</b> are saved and linked —
-                two contracts, two properties, two sets of liability. The $100 discount applies to
-                each side only while <b>both</b> are under contract.
+                two contracts, two properties, two sets of liability. The {money(sharedRate)} discount
+                applies to each side only while <b>both</b> are under contract.
               </div>
             )}
             {mode === 'multi' && (
               <div className="mt-2 text-[11px] text-slate-600">
-                One client, two driveways, one trip. <b>One quote record.</b> $100 off each
-                driveway, unconditionally — there is only one payer.
+                One client, two driveways, one trip. <b>One quote record.</b> {money(secondRate)} off
+                each driveway, unconditionally — there is only one payer.
               </div>
             )}
           </div>
@@ -819,7 +829,7 @@ export default function SnowMaster({
                   they get acted on. */}
               <div className="flex items-center gap-2 flex-wrap">
                 <b className="uppercase tracking-widest text-[10px]">Shared driveway</b>
-                <span>$100 off each side. Link each side's contract so the pair can be tracked.</span>
+                <span>{money(sharedRate)} off each side. Link each side's contract so the pair can be tracked.</span>
               </div>
               {/* LINK THE CONTRACT, do not restate its status. Whether this
                   side is under contract is read from the contract itself, so
@@ -844,7 +854,7 @@ export default function SnowMaster({
               </div>
               {address2.trim() && (
                 <div className="mt-2 text-[11px] italic text-slate-600">
-                  Contract wording: “{sharedDrivewayClause(address2.trim())}”
+                  Contract wording: “{sharedDrivewayClause(address2.trim(), sharedRate)}”
                 </div>
               )}
             </div>
@@ -962,7 +972,7 @@ const chip = (label: string, value: number | string) => (
 // them.
 //
 // EVERY REDUCTION GETS A LABELLED LINE — no-boulevard with its per-lane
-// arithmetic, and the flat $100 shared / second-driveway discounts. A price
+// arithmetic, and the flat shared / second-driveway discounts. A price
 // reduction that is not on a line is one applied silently, and the whole point
 // of this panel is that nobody has to do the arithmetic to find it.
 function DrivewayPricingCard({
@@ -1024,7 +1034,12 @@ function DrivewayPricingCard({
             )}
             {price.addBreakdown.sharedDriveway !== 0 && (
               <div className="flex justify-between" style={{ color: GREEN }}>
-                <span>Shared driveway — both properties under contract</span>
+                {/* THE CONDITION, not a claim that it is already met. On a
+                    pair where nobody has signed yet "both properties under
+                    contract" is simply false, and it is the one line on the
+                    quote a client would hold us to. Phrased as the clause
+                    phrases it, the price line and the contract agree. */}
+                <span>Shared driveway — while both properties are under contract</span>
                 <span className="font-mono font-bold">−{money(Math.abs(price.addBreakdown.sharedDriveway))}</span>
               </div>
             )}
@@ -1150,12 +1165,21 @@ function SavedSnowQuotes({ quotes, contracts, currentUser, isAdmin, versionMap, 
   }, [quotes, search]);
   const canDelete = (x: SnowQuote) => isAdmin || (x.quotedBy?.email || '').toLowerCase() === currentUser.email.toLowerCase();
 
-  // ONE SIDE SIGNED, THE OTHER NOT. The case that costs money if nobody
-  // notices: we clear the whole driveway for one payer, and if the discount
-  // were applied they would be paying $100 LESS for it. It is withheld
-  // automatically, so this surface exists to get the second signature — and to
-  // say plainly that the discount lands the moment it arrives.
-  const flagged = useMemo(() => unpairedSignings(Object.values(quotes), contracts), [quotes, contracts]);
+  // ONE SIDE SIGNED, THE OTHER NOT. The case that costs money — and now the
+  // ONLY thing guarding it. The quote shows the discount applied, so nothing
+  // withholds it on our behalf any more: on these pairs we are clearing a whole
+  // driveway for one payer who is getting the discount on it. This list is
+  // therefore not a convenience. It names what it costs and what closes it, and
+  // says nothing about the discount resolving itself, because it does not.
+  //
+  // EACH ROW CARRIES ITS OWN AMOUNT, resolved from that quote's config version
+  // rather than the live rate. Two flagged pairs quoted either side of a rate
+  // change are exposed for different sums, and the aggregate sentence therefore
+  // names no figure — one number across the list would be wrong for some of it.
+  const flagged = useMemo(() => unpairedSignings(Object.values(quotes), contracts).map(f => ({
+    ...f,
+    rate: sharedDrivewayRate(resolveSnowConfig(f.quote.pricingConfigVersion, versionMap)),
+  })), [quotes, contracts, versionMap]);
 
   return (
     <div className="space-y-3">
@@ -1168,8 +1192,10 @@ function SavedSnowQuotes({ quotes, contracts, currentUser, isAdmin, versionMap, 
             </b>
           </div>
           <div className="text-[12px] text-amber-900 mb-2">
-            The $100 discount is withheld on these until both properties are under contract.
-            It applies automatically as soon as the second one signs — nothing to re-issue.
+            These quotes show the shared-driveway discount, so each is giving it to a single
+            payer whose driveway we clear in full. Get the second signature, or re-price the
+            side that signed — the contract makes the discount conditional on both, and this
+            list is the only place that condition gets acted on.
           </div>
           <div className="space-y-1">
             {flagged.map(f => (
@@ -1179,6 +1205,9 @@ function SavedSnowQuotes({ quotes, contracts, currentUser, isAdmin, versionMap, 
                 <span className="text-amber-800"> — {f.pairing.thisSigned ? 'signed' : 'not signed'};
                   {' '}paired with {f.pairing.partnerAddress || 'a property'} which
                   {' '}{f.pairing.partnerSigned ? 'has signed' : 'has not signed'}</span>
+                {/* The amount THIS pair is exposed for, at the rate it was
+                    quoted under — not the rate in the sheet today. */}
+                <span className="font-bold text-amber-900"> · {money(f.rate)} off</span>
               </button>
             ))}
           </div>
@@ -1203,11 +1232,19 @@ function SavedSnowQuotes({ quotes, contracts, currentUser, isAdmin, versionMap, 
                 <div className="font-bold text-slate-800 truncate">{title}</div>
                 {/* BOTH PROPERTIES. A shared-driveway record that names only
                     one of the two is a record you cannot match to the driveway
-                    it is for. The partner's address comes off the link, so the
-                    two can never disagree. */}
-                {x.sharedDrivewayWith?.address && (
+                    it is for. The partner's address comes off the LINK, so the
+                    two can never disagree — and the link, not the address, is
+                    what makes the record shared. Keying this off the address
+                    hid the line on exactly the records that need it most: a
+                    pair saved before the second address was typed. So it shows,
+                    and it says the second property is unnamed rather than
+                    printing one address as though that were the whole
+                    driveway. */}
+                {x.sharedDrivewayWith && (
                   <div className="text-[11px] font-semibold" style={{ color: GREEN }}>
-                    Shared driveway · {quoteAddressLine(x)}
+                    Shared driveway · {quoteAddresses(x).length > 1
+                      ? quoteAddressLine(x)
+                      : `${quoteAddressLine(x) || '—'} + second property not named`}
                   </div>
                 )}
                 {/* When unnamed the title already carries shape + price, so only

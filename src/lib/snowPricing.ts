@@ -25,10 +25,21 @@ export interface SnowConfig {
   // Optional on the interface because configs stored before it existed do not
   // carry it; read through noBoulevardRate(), never directly.
   NO_BOULEVARD_PER_LANE?: number;
-  // FLAT per-driveway discounts. Both are $100 and both are per DRIVEWAY, not
-  // per lane — the saving is one fewer trip's worth of setup, which does not
-  // scale with how wide the driveway is. Optional for configs stored before
-  // they existed; read through the helpers below, never directly.
+  // FLAT per-driveway discounts, both SEEDED at $100 and both per DRIVEWAY,
+  // not per lane — the saving is one fewer trip's worth of setup, which does
+  // not scale with how wide the driveway is.
+  //
+  // TWO RATES, NOT ONE, and deliberately so. They are the same number today
+  // and cover different things: SHARED is two clients on one physical
+  // driveway, SECOND is one client with two driveways on the property. Folding
+  // them into a single "driveway discount" would make them the same number by
+  // construction, and the next time one of them moves it would have to be
+  // un-merged in code — which is the thing putting them in the rate sheet was
+  // meant to stop.
+  //
+  // Stored as POSITIVE magnitudes; computeAdds subtracts them. Optional for
+  // configs stored before they existed; read through the helpers below, never
+  // directly, or an absent key makes the whole total NaN.
   SHARED_DRIVEWAY?: number;      // two clients, one physical driveway
   SECOND_DRIVEWAY?: number;      // one client, a second driveway on the property
   DRAG_COUNTS_TOWARD_SIZE: boolean; // under review
@@ -100,9 +111,11 @@ export interface SnowInputs {
   premium?: boolean; busyRoad?: boolean; danger?: number;
   /** No boulevard to clear — subtracts NO_BOULEVARD_PER_LANE for every lane. */
   noBoulevard?: boolean;
-  // SHARED DRIVEWAY (two clients, one driveway). CONDITIONAL: the caller
-  // passes true only when the pairing is ACTIVE — both sides signed. Pending
-  // and one-sided pairs price at full rate; see lib/snowDriveways for why.
+  // SHARED DRIVEWAY (two clients, one driveway). The quote passes this for
+  // every shared driveway, because a quote shows the client the price they
+  // would pay. The discount stays CONDITIONAL on both staying under contract —
+  // that condition is carried by the contract wording and the saved-list flag,
+  // not by withholding it here. See lib/snowDriveways.
   sharedDriveway?: boolean;
   // SECOND DRIVEWAY on the same property (one client). Unconditional: there is
   // one payer and one trip, so there is nothing for it to depend on.
@@ -269,12 +282,14 @@ export function priceSnow(
   //   2. tier from the measurement       → basePrice
   //   3. surcharges, each independent    → drag, premium, busy road, danger
   //   4. no-boulevard discount           → −(lanes × rate)   [per LANE]
-  //   5. driveway discounts               → −100 shared, −100 second [FLAT]
+  //   5. driveway discounts              → −shared, −second        [FLAT]
   //   6. total = basePrice + Σ(3) + (4) + (5), floored at 0
   //
   // Discounts come after every surcharge and are applied to the TOTAL, so the
   // amount taken off never depends on how large the surcharges happen to be.
   // The two driveway discounts are FLAT per driveway; no-boulevard is per lane.
+  // All three amounts come from the CONFIG, so they move with the rate sheet
+  // and a quote reprices at whatever version it is resolved against.
   // Tier selection is untouched by any of them — a driveway never drops a tier
   // for being shared, second, or boulevard-free.
   //
@@ -335,13 +350,15 @@ export function activeModifiers(
       amount: b.noBoulevard,
     });
   }
-  // BOTH DRIVEWAY DISCOUNTS APPEAR HERE. A $100 reduction that is not on the
-  // modifier list is a $100 reduction applied silently, which is the one thing
-  // this list exists to prevent.
+  // BOTH DRIVEWAY DISCOUNTS APPEAR HERE, with the amount taken from the
+  // breakdown so they follow the rate sheet. A reduction that is not on the
+  // modifier list is a reduction applied silently, which is the one thing this
+  // list exists to prevent — and it gets worse, not better, once the amount is
+  // editable and nobody can assume they know what it was.
   if (b.sharedDriveway) {
     out.push({
       key: 'sharedDriveway',
-      label: 'Shared driveway (both properties under contract)',
+      label: 'Shared driveway (while both properties are under contract)',
       amount: b.sharedDriveway,
     });
   }
@@ -420,6 +437,19 @@ export function validateSnowConfig(c: SnowConfig): string[] {
   const nonNeg: (keyof SnowConfig)[] = ['PREMIUM', 'BUSY_ROAD', 'DRAG_RATE'];
   for (const k of nonNeg) {
     if (!(Number(c[k]) >= 0)) errs.push(`${SNOW_FIELD_LABELS[k]} cannot be negative.`);
+  }
+  // THE DISCOUNTS ARE STORED AS POSITIVE MAGNITUDES and subtracted by
+  // computeAdds. A negative here would flip a discount into a surcharge — the
+  // sheet says "−$100 off" while the total goes UP — so it is rejected rather
+  // than quietly negated. Optional on the interface (older stored versions
+  // predate them), so an absent key is valid and falls back via the rate
+  // helpers; only a present-and-bad value is an error.
+  const discounts: (keyof SnowConfig)[] = ['NO_BOULEVARD_PER_LANE', 'SHARED_DRIVEWAY', 'SECOND_DRIVEWAY'];
+  for (const k of discounts) {
+    if (c[k] === undefined || c[k] === null) continue;
+    if (!(Number(c[k]) >= 0)) {
+      errs.push(`${SNOW_FIELD_LABELS[k]} cannot be negative — enter the amount to take off.`);
+    }
   }
   const opts = c.DANGER_OPTIONS || [];
   if (!opts.length) errs.push('Danger options cannot be empty.');

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   sharedPairing, drivewayMode, isSigned, sharedDrivewayClause, unpairedSignings,
   UNDER_CONTRACT, contractIsUnderContract, quoteAddresses, quoteAddressLine,
+  addressLine,
 } from './snowDriveways';
 import { priceSnow, SNOW_CONFIG_V1, activeModifiers } from './snowPricing';
 
@@ -47,18 +48,34 @@ test('both under contract → active, discount applies', () => {
   assert.equal(p.discountApplies, true);
   assert.equal(p.needsAttention, false);
 });
-test('THE DANGEROUS CASE: one signed → withheld AND flagged', () => {
-  // Otherwise we clear the whole driveway for one payer and discount them for it.
+test('THE DANGEROUS CASE: one signed → flagged, and named as live exposure', () => {
   const p = sharedPairing(
     q({ sharedDrivewayWith: link('q2', '12 Elm'), contractId: 'c1' }),
     q({ id: 'q2' }),
     contracts({ c1: 'booked' }),
   );
   assert.equal(p.state, 'one-sided');
-  assert.equal(p.discountApplies, false, 'must NOT discount a single payer');
+  assert.equal(p.discountApplies, false, 'both sides are NOT under contract');
   assert.equal(p.needsAttention, true);
   assert.match(p.message, /12 Elm has NOT signed/);
-  assert.match(p.message, /applies automatically the moment they sign/);
+  // It must NOT say the discount is withheld or that it resolves itself. The
+  // quote already showed the client the discounted price, so this is money out
+  // the door until somebody acts.
+  assert.ok(!/withheld/i.test(p.message), 'nothing is withheld any more');
+  assert.ok(!/automatically/i.test(p.message), 'it does not resolve itself');
+  assert.match(p.message, /Get the second signature or re-price/);
+});
+test('no pairing message names a dollar figure — the rate lives in the sheet', () => {
+  // These strings have no config, so a figure in one is a copy that goes stale
+  // the first time the rate sheet moves. The price surfaces name the amount.
+  const cases = [
+    sharedPairing(q({ sharedDrivewayWith: link('q2', '12 Elm'), contractId: 'c1' }),
+      q({ id: 'q2', contractId: 'c2' }), contracts({ c1: 'booked', c2: 'booked' })),
+    sharedPairing(q({ sharedDrivewayWith: link('q2', '12 Elm'), contractId: 'c1' }),
+      q({ id: 'q2' }), contracts({ c1: 'booked' })),
+    sharedPairing(q({ sharedDrivewayWith: link('q2', '12 Elm') }), q({ id: 'q2' }), contracts({})),
+  ];
+  for (const p of cases) assert.ok(!/\$/.test(p.message), `no $ in: ${p.message}`);
 });
 test('the unsigned side of a one-sided pair is also flagged, worded from its side', () => {
   const p = sharedPairing(
@@ -131,14 +148,23 @@ test('one-sided pairs surface, matched pairs do not', () => {
 });
 
 console.log('\nThe contract sentence');
-test('it names the paired address', () => {
+test('it names the paired address and the rate that was quoted', () => {
   assert.equal(
-    sharedDrivewayClause('12 Elm St'),
+    sharedDrivewayClause('12 Elm St', 100),
     'Shared driveway with 12 Elm St. $100 shared-driveway discount applies while both properties are under contract.',
   );
 });
+test('THE CLAUSE FOLLOWS THE RATE SHEET — it is not a literal', () => {
+  // The contract wording is what makes the discount conditional rather than a
+  // gift, so a rate change must reach the paper. Hardcoded, the sheet would be
+  // editable and the contract would still promise $100.
+  assert.match(sharedDrivewayClause('12 Elm St', 150), /\$150 shared-driveway discount/);
+  assert.ok(!/\$100/.test(sharedDrivewayClause('12 Elm St', 150)));
+  assert.match(sharedDrivewayClause('12 Elm St', 1250), /\$1,250 shared-driveway discount/);
+  assert.match(sharedDrivewayClause('12 Elm St', 0), /\$0 shared-driveway discount/);
+});
 test('a missing address still reads as a sentence', () => {
-  assert.match(sharedDrivewayClause('   '), /with the adjoining property/);
+  assert.match(sharedDrivewayClause('   ', 100), /with the adjoining property/);
 });
 
 console.log('\nPRICING: both discounts are flat, and compose after everything else');
@@ -213,7 +239,7 @@ test('the pair state still resolves — it just no longer gates the price', () =
   assert.equal(p.needsAttention, true, 'the flag is now the ONLY guard on the money');
 });
 test('the contract wording still carries the condition', () => {
-  assert.match(sharedDrivewayClause('12 Elm St'), /while both properties are under contract/);
+  assert.match(sharedDrivewayClause('12 Elm St', 100), /while both properties are under contract/);
 });
 
 console.log('\nBoth properties on the record');
@@ -228,4 +254,21 @@ test('an ordinary quote names one, with no stray separator', () => {
 test('it falls back to client/name for records predating the address field', () => {
   assert.deepEqual(quoteAddresses({ name: 'Old Record' } as any), ['Old Record']);
   assert.deepEqual(quoteAddresses({} as any), []);
+});
+
+test('one separator serves the saved record and the live quote header', () => {
+  // The header reads two addresses out of the FORM, not off a quote, so it
+  // cannot call quoteAddressLine. Both must still join them identically.
+  const x = q({ address: '10 Elm St', sharedDrivewayWith: link('q2', '12 Elm St') });
+  assert.equal(addressLine(['10 Elm St', '12 Elm St']), quoteAddressLine(x));
+  assert.equal(addressLine([' 10 Elm St ', '']), '10 Elm St', 'blanks and padding tolerated');
+  assert.equal(addressLine(['', '']), '');
+});
+test('a pair saved before the second address was typed is still a pair', () => {
+  // The LINK makes a record shared, not the partner address. The saved-list row
+  // keys off the link for this reason; quoteAddresses reports the one address
+  // it has, and the row is what says the second is unnamed.
+  const x = q({ address: '10 Elm St', sharedDrivewayWith: link('q2', '') });
+  assert.ok(x.sharedDrivewayWith, 'the pairing survives an unnamed partner');
+  assert.deepEqual(quoteAddresses(x), ['10 Elm St']);
 });

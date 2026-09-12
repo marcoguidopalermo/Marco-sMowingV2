@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   priceSnow, measureGrid, SNOW_PRICING_CONFIG, SNOW_CONFIG_V1, SNOW_PRICING_CONFIG_VERSION, SnowGrid, SnowConfig,
   resolveSnowConfig, activeSnowVersionId, snowVersionId, validateSnowConfig, diffSnowConfig, StoredSnowVersion, noBoulevardRate, activeModifiers, breakdownOfSaved,
+  sharedDrivewayRate, secondDrivewayRate, SNOW_FIELD_LABELS,
 } from './snowPricing';
 
 const ROWS = 6;
@@ -297,4 +298,115 @@ test('an older config version rebuilds against ITS rates, not the current ones',
   const rebuilt = breakdownOfSaved({ lanes: 2, dragCount: 0, busyRoad: true, noBoulevard: true }, cheap);
   assert.equal(rebuilt.busyRoad, 40);
   assert.equal(rebuilt.noBoulevard, -40);
+});
+
+console.log('\nTHE TWO DRIVEWAY DISCOUNTS ARE RATE-SHEET RATES:');
+
+// A version where ONLY the two driveway discounts moved, and moved APART —
+// shared to 150, second to 75. The whole point of two separate fields.
+const V3: SnowConfig = { ...SNOW_CONFIG_V1, SHARED_DRIVEWAY: 150, SECOND_DRIVEWAY: 75 };
+const dversions: Record<string, StoredSnowVersion> = {
+  'snow-v2': { version: 'snow-v2', config: V2 },
+  'snow-v3': { version: 'snow-v3', config: V3 },
+};
+
+test('the price reads both discounts from the config, not from a literal', () => {
+  const g = shape(1, 1);                               // Tier 1, 599
+  const c3 = resolveSnowConfig('snow-v3', dversions);
+  assert.equal(priceSnow(g, { sharedDriveway: true }, c3)!.total, 599 - 150);
+  assert.equal(priceSnow(g, { secondDriveway: true }, c3)!.total, 599 - 75);
+  // Both at once (a shared driveway that is also somebody's second) stacks.
+  assert.equal(priceSnow(g, { sharedDriveway: true, secondDriveway: true }, c3)!.total, 599 - 225);
+});
+
+test('THEY DIVERGE WITHOUT A CODE CHANGE — that is why they are two fields', () => {
+  const c3 = resolveSnowConfig('snow-v3', dversions);
+  assert.equal(sharedDrivewayRate(c3), 150);
+  assert.equal(secondDrivewayRate(c3), 75);
+  assert.notEqual(sharedDrivewayRate(c3), secondDrivewayRate(c3), 'one rate could not do this');
+  // Equal today, and that is a coincidence of the seed, not a constraint.
+  assert.equal(sharedDrivewayRate(SNOW_CONFIG_V1), 100);
+  assert.equal(secondDrivewayRate(SNOW_CONFIG_V1), 100);
+});
+
+test('A SAVED QUOTE HOLDS THE DISCOUNT IT WAS QUOTED AT, through a rate change', () => {
+  const g = shape(1, 1);
+  // Quoted under v1, when the shared discount was 100.
+  const quoted = priceSnow(g, { sharedDriveway: true }, resolveSnowConfig('snow-v1', dversions), 'snow-v1');
+  assert.equal(quoted!.total, 499, '599 − 100');
+  assert.equal(quoted!.pricingConfigVersion, 'snow-v1');
+  // The sheet then moves the shared discount to 150 (v3 is now live).
+  assert.equal(activeSnowVersionId(dversions), 'snow-v3');
+  const fresh = priceSnow(g, { sharedDriveway: true }, resolveSnowConfig('snow-v3', dversions), 'snow-v3');
+  assert.equal(fresh!.total, 449, 'a NEW quote gets the new discount: 599 − 150');
+  // The old quote, re-resolved against ITS stamped version, is unchanged.
+  const reopened = priceSnow(g, { sharedDriveway: true }, resolveSnowConfig('snow-v1', dversions), 'snow-v1');
+  assert.equal(reopened!.total, 499, 'historical quote must NOT reprice to 449');
+  assert.equal(reopened!.addBreakdown.sharedDriveway, -100, 'and its breakdown line holds too');
+});
+
+test('the SAVED breakdown resolves per version too — list rows match the quote', () => {
+  // breakdownOfSaved is what the saved-list row and a reopened quote render
+  // from. Handed the quote's own config it must reproduce the quoted amount.
+  const saved = { lanes: 1, sharedDriveway: true, secondDriveway: true };
+  const atV1 = breakdownOfSaved(saved, resolveSnowConfig('snow-v1', dversions));
+  assert.equal(atV1.sharedDriveway, -100);
+  assert.equal(atV1.secondDriveway, -100);
+  const atV3 = breakdownOfSaved(saved, resolveSnowConfig('snow-v3', dversions));
+  assert.equal(atV3.sharedDriveway, -150);
+  assert.equal(atV3.secondDriveway, -75);
+});
+
+test('a config stored BEFORE the discounts existed still prices', () => {
+  // The keys are optional, so an old stored version has neither. An undefined
+  // straight into the arithmetic would make the whole total NaN.
+  const ancient = { ...SNOW_CONFIG_V1 } as SnowConfig;
+  delete ancient.SHARED_DRIVEWAY; delete ancient.SECOND_DRIVEWAY; delete ancient.NO_BOULEVARD_PER_LANE;
+  assert.equal(sharedDrivewayRate(ancient), 100, 'falls back to the shipped default');
+  assert.equal(secondDrivewayRate(ancient), 100);
+  const t = priceSnow(shape(1, 1), { sharedDriveway: true, secondDriveway: true }, ancient)!.total;
+  assert.ok(Number.isFinite(t), 'never NaN');
+  assert.equal(t, 399);
+});
+
+test('BOTH RATES ARE AUDITED — the diff names them separately', () => {
+  const changes = diffSnowConfig(SNOW_CONFIG_V1, V3);
+  const byKey = Object.fromEntries(changes.map(c => [c.key, c]));
+  assert.ok(byKey.SHARED_DRIVEWAY, 'shared shows in the audit trail');
+  assert.ok(byKey.SECOND_DRIVEWAY, 'second shows in the audit trail');
+  assert.equal(byKey.SHARED_DRIVEWAY.from, '100');
+  assert.equal(byKey.SHARED_DRIVEWAY.to, '150');
+  assert.equal(byKey.SECOND_DRIVEWAY.from, '100');
+  assert.equal(byKey.SECOND_DRIVEWAY.to, '75');
+  // Distinct human labels, or the audit history shows two rows reading alike.
+  assert.notEqual(byKey.SHARED_DRIVEWAY.field, byKey.SECOND_DRIVEWAY.field);
+  // Changing ONE leaves the other out of the diff entirely.
+  const onlyShared = diffSnowConfig(SNOW_CONFIG_V1, { ...SNOW_CONFIG_V1, SHARED_DRIVEWAY: 150 });
+  assert.deepEqual(onlyShared.map(c => c.key), ['SHARED_DRIVEWAY']);
+});
+
+test('every rate-sheet field has a label, or it cannot be audited', () => {
+  for (const k of ['NO_BOULEVARD_PER_LANE', 'SHARED_DRIVEWAY', 'SECOND_DRIVEWAY'] as const) {
+    assert.ok(SNOW_FIELD_LABELS[k], `${k} needs a label`);
+  }
+});
+
+test('a NEGATIVE discount is rejected — it would flip into a surcharge', () => {
+  assert.deepEqual(validateSnowConfig(SNOW_CONFIG_V1), []);
+  const bad = validateSnowConfig({ ...SNOW_CONFIG_V1, SHARED_DRIVEWAY: -50 });
+  assert.equal(bad.length, 1);
+  assert.match(bad[0], /Shared driveway/);
+  assert.match(validateSnowConfig({ ...SNOW_CONFIG_V1, SECOND_DRIVEWAY: -1 })[0], /Second driveway/);
+  assert.match(validateSnowConfig({ ...SNOW_CONFIG_V1, NO_BOULEVARD_PER_LANE: -1 })[0], /No boulevard/);
+  // Zero is a legitimate setting — the discount is switched off, not invalid.
+  assert.deepEqual(validateSnowConfig({ ...SNOW_CONFIG_V1, SHARED_DRIVEWAY: 0, SECOND_DRIVEWAY: 0 }), []);
+  // An ABSENT key is valid (old stored versions) and falls back when priced.
+  const absent = { ...SNOW_CONFIG_V1 } as SnowConfig;
+  delete absent.SHARED_DRIVEWAY;
+  assert.deepEqual(validateSnowConfig(absent), []);
+});
+
+test('a discount larger than the base floors at 0, never negative', () => {
+  const huge = { ...SNOW_CONFIG_V1, SHARED_DRIVEWAY: 5000 };
+  assert.equal(priceSnow(shape(1, 1), { sharedDriveway: true }, huge)!.total, 0);
 });

@@ -1,12 +1,12 @@
 // SHARED DRIVEWAYS AND MULTI-DRIVEWAY PROPERTIES.
 //
-// Two cases that both take $100 off per driveway and are otherwise nothing
-// alike. Keeping them apart is the whole point of this module.
+// Two cases that both take a flat per-driveway discount and are otherwise
+// nothing alike. Keeping them apart is the whole point of this module.
 //
 // ── 1. SHARED DRIVEWAY — two clients, one physical driveway ────────────────
-// We clear it once and bill two people, so each pays $100 less. TWO QUOTE
-// RECORDS, linked: two clients, two contracts, two properties, two sets of
-// liability. Merging them into one record would model a relationship that does
+// We clear it once and bill two people, so each pays the discount less. TWO
+// QUOTE RECORDS, linked: two clients, two contracts, two properties, two sets
+// of liability. Merging them into one record would model a relationship that does
 // not exist — neither client is party to the other's contract, and either can
 // leave without the other.
 //
@@ -14,28 +14,35 @@
 // NOT BY THE PRICE.
 //
 // A quote is what a client is shown, so it shows the price they would actually
-// pay: $100 off. "Discount not applied — pending both contracts" is an internal
-// state and does not belong in front of a customer.
+// pay, with the discount in it. "Discount not applied — pending both
+// contracts" is an internal state and does not belong in front of a customer.
 //
 // The condition is still real, and it lives in two places:
-//   1. THE CONTRACT WORDING — "$100 shared-driveway discount applies while both
-//      properties are under contract" (sharedDrivewayClause). That is what
-//      makes it enforceable.
+//   1. THE CONTRACT WORDING — "<rate> shared-driveway discount applies while
+//      both properties are under contract" (sharedDrivewayClause, which takes
+//      the rate so the paper names what was quoted). That is what makes it
+//      enforceable.
 //   2. THE FLAG on the saved-quotes list — every pair where one side is under
 //      contract and the other is not (unpairedSignings).
 //
 // Note what this trades. Because the price is no longer withheld, a one-sided
-// pair means we ARE currently giving $100 off to a single payer whose driveway
-// we clear in full. That is a deliberate choice — the alternative put internal
-// state on a customer's quote — but it makes the flag the thing that protects
-// the money, rather than a convenience. It is the only guard left.
+// pair means we ARE currently giving the discount to a single payer whose
+// driveway we clear in full. That is a deliberate choice — the alternative put
+// internal state on a customer's quote — but it makes the flag the thing that
+// protects the money, rather than a convenience. It is the only guard left.
 //
 // The pair state below is therefore used for the FLAG, not for pricing.
 //
+// BOTH AMOUNTS LIVE IN THE RATE SHEET (SnowConfig.SHARED_DRIVEWAY and
+// SECOND_DRIVEWAY), as two separate rates. They are the same number today and
+// cover different things, so they can move apart without a code change. No
+// figure is written into this file — anything here that named one would be the
+// copy that goes stale.
+//
 // ── 2. TWO DRIVEWAYS, ONE PROPERTY — one client ────────────────────────────
-// One trip, one contract, one payer. $100 off each driveway, UNCONDITIONAL:
-// there is only one party, so there is nothing for the discount to depend on.
-// ONE quote record holding both driveways.
+// One trip, one contract, one payer. The second-driveway discount off each,
+// UNCONDITIONAL: there is only one party, so there is nothing for the discount
+// to depend on. ONE quote record holding both driveways.
 import type { SnowContract, SnowContractStatus, SnowQuote } from '../types';
 
 /** Which shape a quote is. Absent/unknown reads as a plain single driveway. */
@@ -119,7 +126,7 @@ export function sharedPairing(
     return {
       state: 'active', discountApplies: true, needsAttention: false,
       thisSigned: a, partnerSigned: b, partnerAddress,
-      message: `Both properties under contract — the $100 shared-driveway discount applies.`,
+      message: 'Both properties under contract — the shared-driveway discount applies.',
     };
   }
   if (a !== b) {
@@ -131,23 +138,41 @@ export function sharedPairing(
       thisSigned: a, partnerSigned: b, partnerAddress,
       message: a
         ? `Signed, but ${partnerAddress || 'the paired property'} has NOT signed. `
-          + 'The discount is withheld — we would be clearing the whole driveway for one payer. '
-          + 'It applies automatically the moment they sign.'
+          + 'The quoted price already has the shared-driveway discount in it, so we are '
+          + 'clearing the whole driveway for one payer at the shared rate. '
+          + 'Get the second signature or re-price this side.'
         : `${partnerAddress || 'The paired property'} has signed and this one has not. `
-          + 'Neither side has the discount until both are under contract.',
+          + 'Their price already has the shared-driveway discount in it, so the pair is '
+          + 'short a payer until this side is under contract too.',
     };
   }
   return {
     state: 'pending', discountApplies: false, needsAttention: false,
     thisSigned: a, partnerSigned: b, partnerAddress,
-    message: 'Pending — the $100 discount applies once both properties are under contract.',
+    message: 'Pending — the shared-driveway discount holds once both properties are under contract.',
   };
 }
 
-/** The sentence a contract should carry for a shared driveway. */
-export function sharedDrivewayClause(partnerAddress: string): string {
+/**
+ * The sentence a contract should carry for a shared driveway.
+ *
+ * THE RATE IS A PARAMETER, not a literal. This string is the enforceable half
+ * of the whole arrangement — it is what makes the discount conditional rather
+ * than a gift — so it has to name the amount actually quoted. Hardcoded, the
+ * first rate-sheet change would have printed "$100" on a contract carrying a
+ * different discount, and the paper is what gets argued over.
+ *
+ * Callers pass the rate from the quote's OWN config version (sharedDrivewayRate
+ * of the resolved config), never the live one, so reopening an old quote
+ * reproduces the clause it was sent with.
+ * @param {string} partnerAddress The paired property.
+ * @param {number} rate The shared-driveway discount, in dollars.
+ * @return {string} The clause.
+ */
+export function sharedDrivewayClause(partnerAddress: string, rate: number): string {
   const who = partnerAddress.trim() || 'the adjoining property';
-  return `Shared driveway with ${who}. $100 shared-driveway discount applies `
+  const amount = `$${(Number(rate) || 0).toLocaleString('en-US')}`;
+  return `Shared driveway with ${who}. ${amount} shared-driveway discount applies `
     + 'while both properties are under contract.';
 }
 
@@ -179,7 +204,18 @@ export function quoteAddresses(q: Pick<SnowQuote, 'address' | 'name' | 'client' 
   return [own, other].filter(Boolean);
 }
 
+/**
+ * The one way two properties are joined for display. Shared by the saved
+ * record and by the live quote header — which reads its two addresses out of
+ * the form rather than off a quote, and so cannot call quoteAddressLine. One
+ * separator in one place means the two surfaces cannot drift apart.
+ * @param {string[]} addresses The addresses, blanks already tolerated.
+ * @return {string} "10 Elm St + 12 Elm St", or just the one address.
+ */
+export const addressLine = (addresses: string[]): string =>
+  addresses.map(a => a.trim()).filter(Boolean).join('  +  ');
+
 /** "10 Elm St + 12 Elm St", or just the one address. */
 export const quoteAddressLine = (
   q: Pick<SnowQuote, 'address' | 'name' | 'client' | 'sharedDrivewayWith'>,
-): string => quoteAddresses(q).join('  +  ');
+): string => addressLine(quoteAddresses(q));

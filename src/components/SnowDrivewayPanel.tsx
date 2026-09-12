@@ -126,7 +126,8 @@ export default function SnowDrivewayPanel(p: DrivewayPanelProps) {
             </div>
           </div>
           {/* EVERY modifier, from the price's own breakdown — including the
-              $100 discounts, which must never be applied silently. */}
+              driveway discounts, which must never be applied silently. The
+              amounts come off the breakdown, so they follow the rate sheet. */}
           {mods.length > 0 && (
             <div className="mt-2 space-y-0.5">
               {mods.map(m => (

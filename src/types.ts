@@ -2156,8 +2156,10 @@ export interface SnowQuote {
   // SHARED (two clients, one driveway): TWO quote records, each pointing at
   // the other. Not one merged record — neither client is party to the other's
   // contract and either can leave without the other. The discount is
-  // CONDITIONAL on both being signed, so nothing here stores "discount
-  // applied"; only the link is stored, and the state is derived.
+  // CONDITIONAL on both staying under contract, and that condition is carried
+  // by the CONTRACT WORDING and the saved-list flag, not by the stored record:
+  // nothing here stores a pair's signing state, only the link, and the state is
+  // derived live from both contracts. See lib/snowDriveways.
   sharedDrivewayWith?: {
     quoteId: string;
     address: string;
@@ -2179,8 +2181,15 @@ export interface SnowQuote {
   // never rewritten.
   driveways?: SnowDrivewaySpec[];
   // Applied discounts, stored so a reopened quote reprices identically.
-  // sharedDriveway is only ever true when the pairing was ACTIVE at save time;
-  // the live view always re-derives it from both records.
+  //
+  // sharedDriveway IS NOT A SIGNING RECORD. It is true for every shared quote,
+  // because the quote shows the client the discounted price — it says only
+  // "this price has the $100 off in it". It once meant "the pairing was active
+  // when this was saved", and reading it that way now would have you conclude
+  // both properties were under contract at save time when neither may have
+  // been. Whether a pair is signed is read live from both contracts
+  // (sharedPairing); whether one side is unmatched is the saved-list flag
+  // (unpairedSignings).
   sharedDriveway?: boolean;
   secondDriveway?: boolean;
   total: number | null;         // STANDARD total; null when custom
