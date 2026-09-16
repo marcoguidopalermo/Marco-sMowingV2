@@ -29,6 +29,7 @@ import { chunksForMechanic, computeHoursWorkedBetween } from '../lib/payChunkUti
 import TimeOffApprovalPage from './TimeOffApprovalPage';
 import { HoursBankAdmin, MyHoursBank, NewBankEntry } from './HoursBank';
 import { entriesFor } from '../lib/hoursBank';
+import { formatRangeHours, rangeTotalsByPerson } from '../lib/rangeTotals';
 
 interface TimeMasterProps {
   appData: AppData;
@@ -358,6 +359,25 @@ export default function TimeMaster({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allUsers, appData.timeEntries, appData.employees, now, payrollPeriod.startMs, curPeriod.startMs]);
+
+  // PER-PERSON TOTALS FOR THE SELECTED RANGE (All Users). Same range the date
+  // bar / pay-period buttons select, same clock-in rule as the punch list;
+  // hours from computeHoursWorkedBetween via lib/rangeTotals. Running punches
+  // are reported beside the total, never inside it.
+  const rangeTotals = useMemo(
+    () => rangeTotalsByPerson(allUsers, appData.timeEntries, e => filterByDateFilter([e]).length > 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allUsers, appData.timeEntries, dateFilter, customStart, customEnd, now],
+  );
+  const rangeRowByEmail = useMemo(
+    () => new Map(rangeTotals.rows.map(r => [r.email, r] as const)),
+    [rangeTotals],
+  );
+  const rangeLabel = (() => {
+    const { from, to } = activeRangeYmd();
+    const md = (ymd: string) => new Date(`${ymd}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return from === to ? md(from) : `${md(from)} – ${md(to)}`;
+  })();
 
   // Timeline computation: 6 AM (360 min) to 10 PM (1320 min) = 960 min span
   const TL_START_MIN = 6 * 60;
@@ -1326,11 +1346,23 @@ export default function TimeMaster({
           </button>
         )}
       </div>
+      {/* Grand total for the selected range. Closed punches only; running
+          ones are counted and shown separately so the figure reads as final. */}
+      <div className="px-3 py-2 border-b border-gray-200 bg-white shrink-0 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Range · {rangeLabel}</span>
+        <span className="text-sm font-black text-slate-900">Total {formatRangeHours(rangeTotals.total.hours)}</span>
+        <span className="text-[11px] text-slate-500">{rangeTotals.total.people} {rangeTotals.total.people === 1 ? 'person' : 'people'} · closed punches</span>
+        {rangeTotals.total.runningCount > 0 && (
+          <span className="text-[11px] font-bold text-amber-700" title="Running punches are not in the total — it would change every minute.">
+            ⏱ + {rangeTotals.total.runningCount} running ({formatHM(rangeTotals.total.runningHoursSoFar)} so far, not in total)
+          </span>
+        )}
+      </div>
       <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto">
         <table className="w-full text-left">
           <thead className="sticky top-0 bg-gray-50 z-10">
             <tr className="border-b border-gray-200 text-[10px] text-gray-500 uppercase">
-              <th className="px-2 py-1.5">User</th>
+              <th className="px-2 py-1.5">User · <span className="normal-case">{rangeLabel}</span></th>
               <th className="px-2 py-1.5 text-right bg-slate-100 text-slate-700" title={`Pay date ${payDateLabel(payrollPeriod)}`}>Payroll<div className="normal-case font-normal text-[8px] tracking-normal">{periodRangeLabel(payrollPeriod)} · pay {payDateLabel(payrollPeriod)}</div></th>
               <th className="px-2 py-1.5 text-right bg-emerald-50 text-emerald-700" title={`Pays ${payDateLabel(curPeriod)}`}>Current<div className="normal-case font-normal text-[8px] tracking-normal">{periodRangeLabel(curPeriod)} · pays {payDateLabel(curPeriod)}</div></th>
               <th className="px-2 py-1.5 text-right">Today</th>
@@ -1346,7 +1378,24 @@ export default function TimeMaster({
               userSummaries.map(u => (
                 <tr key={u.email} className="hover:bg-slate-50 cursor-pointer transition-colors" onClick={() => setDrilledUserEmail(u.email)}>
                   <td className="px-2 py-1.5">
-                    <div className="font-bold text-slate-800 text-xs leading-tight flex items-center gap-1">{u.name}{u.isContractor && <span className="text-[8px] font-black uppercase tracking-widest px-1 py-0.5 rounded" style={{ backgroundColor: '#2E4053', color: '#B7950B' }}>contractor</span>}</div>
+                    <div className="font-bold text-slate-800 text-xs leading-tight flex flex-wrap items-center gap-1">
+                      {u.name}
+                      {(() => {
+                        const r = rangeRowByEmail.get(u.email);
+                        if (!r) return null;
+                        return (
+                          <>
+                            <span className="font-mono font-black text-slate-900" title={`${r.closedCount} closed punch${r.closedCount === 1 ? '' : 'es'} · ${rangeLabel}`}>— {formatRangeHours(r.hours)}</span>
+                            {r.runningCount > 0 && (
+                              <span className="text-[9px] font-black text-amber-700 bg-amber-50 border border-amber-200 rounded px-1" title="Running punch — not in this total until it is clocked out.">
+                                ⏱ +{formatHM(r.runningHoursSoFar)} running
+                              </span>
+                            )}
+                          </>
+                        );
+                      })()}
+                      {u.isContractor && <span className="text-[8px] font-black uppercase tracking-widest px-1 py-0.5 rounded" style={{ backgroundColor: '#2E4053', color: '#B7950B' }}>contractor</span>}
+                    </div>
                     <div className="text-[9px] text-slate-400 font-medium leading-tight truncate max-w-[180px]" title={u.email}>{u.email}</div>
                   </td>
                   <td className="px-2 py-1.5 text-right font-mono font-black text-slate-800 text-xs bg-slate-50">{formatHM(u.payroll)}</td>
@@ -1602,6 +1651,8 @@ export default function TimeMaster({
           {showAdminAllUsers ? (
             <>
               {renderPayPeriods()}
+              {/* The range the per-person totals in the list are for. */}
+              {renderDateFilter()}
               {renderOverHoursReview()}
               {renderTimeline()}
               {renderUsersTable()}
