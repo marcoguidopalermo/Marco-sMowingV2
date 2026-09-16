@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { AppData, AppSettings, TimeEntry, TimeEntryNote, TimeOffRequest, UserRole, DeletionAuditEntry, HoursBankEntry } from '../types';
 import { formatDate, addDays, getStartOfWeek, formatTodayInToronto } from '../lib/dateUtils';
-import { timeEntryLock } from '../lib/timeEntryLock';
+import { punchDate, timeEntryLock } from '../lib/timeEntryLock';
 import {
   canClockFor, isBackdated, onBehalfLabel, reasonIsUsable, runningPunchFor,
   validateStartTime, validateStopTime,
@@ -682,7 +682,7 @@ export default function TimeMaster({
         entries: appData.timeEntries,
         email: owner,
         name: editingEntry.userName,
-        date: clockInIso.slice(0, 10),
+        date: punchDate(clockInIso),
         addedHours: (new Date(clockOutIso).getTime() - new Date(clockInIso).getTime()) / 3600000,
         threshold: hoursThreshold,
         excludeId: editingEntry.id,
@@ -1025,9 +1025,9 @@ export default function TimeMaster({
             {overHours && (
               <span
                 className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded border bg-rose-50 text-rose-700 border-rose-200"
-                title={`${entry.userName} has ${hoursForEmployeeDate(appData.timeEntries, entry.userEmail, (entry.clockIn || '').slice(0, 10))} hours logged on this day — over the ${hoursThreshold}-hour mark. Usually a punch entered twice.`}
+                title={`${entry.userName} has ${hoursForEmployeeDate(appData.timeEntries, entry.userEmail, punchDate(entry.clockIn || ''))} hours logged on this day — over the ${hoursThreshold}-hour mark. Usually a punch entered twice.`}
               >
-                ⚑ {hoursForEmployeeDate(appData.timeEntries, entry.userEmail, (entry.clockIn || '').slice(0, 10))}h that day
+                ⚑ {hoursForEmployeeDate(appData.timeEntries, entry.userEmail, punchDate(entry.clockIn || ''))}h that day
               </span>
             )}
             {rowLock.locked && (

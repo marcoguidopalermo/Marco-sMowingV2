@@ -10,6 +10,7 @@
 // days, which is worse than an honest 14-hour entry. The point is that it
 // cannot happen ACCIDENTALLY, not that it cannot happen.
 import { TimeEntry } from '../types';
+import { punchDate } from './timeEntryLock';
 
 /** Seeded at 12. Admin-editable via settings.dailyHoursWarnThreshold. */
 export const DAILY_HOURS_WARN_DEFAULT = 12;
@@ -32,9 +33,13 @@ export function punchHours(e: Pick<TimeEntry, 'clockIn' | 'clockOut'>): number {
 }
 
 /**
- * Every closed punch that employee has on that calendar day, by CLOCK-IN date
- * — the same anchor the sync and the pay chunks use, so a shift that runs past
- * midnight belongs to the day it started.
+ * Every punch that employee has on that day. "That day" is punchDate: the
+ * TORONTO calendar date of the clock-in — the one definition the sync and the
+ * time-entry lock use — so a shift that runs past midnight belongs to the day
+ * it STARTED, and a 10pm plow shift is that night's, not tomorrow's.
+ *
+ * It used to be clockIn.slice(0, 10), the UTC date. Every clock-in after 8pm
+ * EDT (7pm EST — when snow crews start) landed on the next day.
  */
 export function entriesForEmployeeDate(
   entries: TimeEntry[] | undefined, email: string, date: string,
@@ -43,7 +48,7 @@ export function entriesForEmployeeDate(
   if (!want || !date) return [];
   return (entries || []).filter(e =>
     (e.userEmail || '').trim().toLowerCase() === want
-    && (e.clockIn || '').slice(0, 10) === date);
+    && punchDate(e.clockIn || '') === date);
 }
 
 export function hoursForEmployeeDate(
@@ -121,7 +126,7 @@ export function overHoursDays(
 ): OverHoursDay[] {
   const byKey = new Map<string, { name: string; hours: number; n: number }>();
   for (const e of entries || []) {
-    const date = (e.clockIn || '').slice(0, 10);
+    const date = punchDate(e.clockIn || '');
     if (!date) continue;
     if (opts?.from && date < opts.from) continue;
     if (opts?.to && date > opts.to) continue;
@@ -150,7 +155,31 @@ export function overHoursDays(
 export function entryIsOverHours(
   entry: TimeEntry, entries: TimeEntry[] | undefined, threshold: number,
 ): boolean {
-  const date = (entry.clockIn || '').slice(0, 10);
+  const date = punchDate(entry.clockIn || '');
   if (!date) return false;
   return hoursForEmployeeDate(entries, entry.userEmail, date) > threshold;
+}
+
+// ── CREW-DAY CORRECTION AFTER A PUNCH IS REMOVED ──────────────────────────
+/**
+ * Which crew-day a removed punch belongs to, and what that employee's hours
+ * and timesheet intervals are there once it is gone. The day is the removed
+ * punch's punchDate — the day the sync credited it to — so the correction is
+ * written to the crew-day that actually carried the duplicate.
+ *
+ * This used to take the UTC date: removing an evening duplicate rewrote the
+ * NEXT day's crew hours and left the real day still carrying it.
+ */
+export function crewDayAfterPunchRemoval(
+  removed: Pick<TimeEntry, 'id' | 'clockIn'>, entries: TimeEntry[] | undefined, email: string,
+): { date: string; hours: number; intervals: { startAt: string; endAt: string | null }[] } | null {
+  const date = punchDate(removed.clockIn || '');
+  if (!date) return null;
+  const remaining = (entries || []).filter(e => e.id !== removed.id);
+  return {
+    date,
+    hours: hoursForEmployeeDate(remaining, email, date),
+    intervals: entriesForEmployeeDate(remaining, email, date)
+      .map(e => ({ startAt: e.clockIn, endAt: e.clockOut ?? null })),
+  };
 }

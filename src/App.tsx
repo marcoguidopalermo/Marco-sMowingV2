@@ -135,11 +135,11 @@ import {
   planCreditApplication,
 } from './lib/contractingPayments';
 import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './lib/scheduledBulletins';
-import { timeEntryLock, crewDayCorrectionTarget } from './lib/timeEntryLock';
+import { timeEntryLock, crewDayCorrectionTarget, punchDate } from './lib/timeEntryLock';
 import { createPunchOutbox, overlayQueued, PUNCH_ACK_TIMEOUT_MS, type PunchOutbox, type QueuedPunch } from './lib/punchOutbox';
 import { resilientListen, type StreamStatus } from './lib/resilientListen';
 import {
-  checkDailyHours, dailyHoursThreshold, entriesForEmployeeDate, hoursForEmployeeDate,
+  checkDailyHours, crewDayAfterPunchRemoval, dailyHoursThreshold, hoursForEmployeeDate,
 } from './lib/dailyHoursGuard';
 import { canSeeMortgages, mortgageAuditDiff } from './lib/mortgages';
 import { validateAdjustment } from './lib/efficiencyAdjustments';
@@ -3806,9 +3806,13 @@ export default function App() {
   // hours are sourced from Jobber timesheets, and rewriting their AH from
   // CrewMaster punches would substitute the wrong source.
   const recalcAHAfterPunchDelete = async (entry: TimeEntry, reason: string) => {
-    const date = (entry.clockIn || '').slice(0, 10);
-    if (!date) return;
     const email = (entry.userEmail || '').trim().toLowerCase();
+    // The crew-day this punch was credited to: its Toronto clock-in date, the
+    // same day the sync used. (Was the UTC date, which sent an evening
+    // correction to the following day's crew.)
+    const correction = crewDayAfterPunchRemoval(entry, appData.timeEntries, email);
+    if (!correction) return;
+    const { date, hours, intervals } = correction;
     const emp = (appData.employees || []).find(e =>
       (e.linkedUserEmail || e.email || '').trim().toLowerCase() === email);
     if (!emp) return;
@@ -3816,9 +3820,6 @@ export default function App() {
       showToastMsg(`Punch removed. ${emp.name}'s crew hours come from Jobber, so the crew-day is unchanged.`);
       return;
     }
-    // Remaining punches for that person on that day, AFTER the deletion.
-    const remaining = (appData.timeEntries || []).filter(e => e.id !== entry.id);
-    const hours = hoursForEmployeeDate(remaining, email, date);
     const dayLogs = (appData.performance || {})[date] || {};
     const touched: string[] = [];
     const nextDay: Record<string, PerformanceLog> = { ...dayLogs };
@@ -3828,8 +3829,6 @@ export default function App() {
       // and never overwritten by a recompute, exactly as the sync treats it.
       if (log.manualAH?.[emp.id]) continue;
       const nextTs = { ...(log.employeeTimesheets || {}) };
-      const intervals = entriesForEmployeeDate(remaining, email, date)
-        .map(e => ({ startAt: e.clockIn, endAt: e.clockOut ?? null }));
       if (intervals.length > 0) nextTs[emp.id] = intervals as any;
       else delete nextTs[emp.id];
       nextDay[crewId] = {
@@ -3946,10 +3945,10 @@ export default function App() {
       // starting a clock for somebody who already has a full day logged is the
       // other half of how the Tyberious duplicate happened.
       {
-        const existing = hoursForEmployeeDate(entries, email, workedIso.slice(0, 10));
+        const existing = hoursForEmployeeDate(entries, email, punchDate(workedIso));
         const thr = dailyHoursThreshold(appData.settings);
         if (existing > thr && !window.confirm(
-          `${target.name} already has ${existing} hours logged on ${workedIso.slice(0, 10)}, `
+          `${target.name} already has ${existing} hours logged on ${punchDate(workedIso)}, `
           + `which is over the ${thr}-hour mark. Over ${thr} hours in a day is usually a `
           + 'punch entered twice.\n\nStart another clock anyway?',
         )) return false;
@@ -3983,7 +3982,7 @@ export default function App() {
     // On the STOP, the span becomes known — check the day's total with it.
     {
       const w = checkDailyHours({
-        entries, email, name: target.name, date: (running.clockIn || '').slice(0, 10),
+        entries, email, name: target.name, date: punchDate(running.clockIn || ''),
         addedHours: (workedMs - Date.parse(running.clockIn)) / 3_600_000,
         threshold: dailyHoursThreshold(appData.settings),
         excludeId: running.id,
