@@ -37,7 +37,7 @@ import {
   projectIsRemovable, invoiceStage, invoiceDueAt, invoiceIsLate,
   projectBillables, projectCompletionPct, fixedCompletionPct, woAssignees, woIsAssignedTo,
   reportIsDeletable, woStatus, woIsOverdue, compareWorkOrders, woWeekStats, nextProgNumber,
-  isContractingWorker,
+  isContractingWorker, punchRowsByClockIn,
 } from '../lib/contracting';
 import { uploadFile } from '../lib/storage';
 import PhotoViewer from './PhotoViewer';
@@ -1410,7 +1410,8 @@ function TimeMasterRefPanel({ report, contractors, payrollTimeEntries, onBreakdo
     const email = emailOf(c);
     const entries = payrollTimeEntries.filter(e => (e.userEmail || '').toLowerCase() === email && (() => { const t = new Date(e.clockIn).getTime(); return t >= startTs && t <= endTs; })());
     // Per-punch rows (with any clock-out note) + the day/period rollup.
-    const punches = entries.map(e => ({ day: new Date(e.clockIn).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }), hours: dur(e), note: e.workNote })).sort((a, b) => a.day.localeCompare(b.day));
+    // Oldest first by clock-in time — never by the "Sep 10" label (see lib).
+    const punches = punchRowsByClockIn(entries, dur);
     const punched = entries.reduce((s, e) => s + dur(e), 0);
     const billed = billedByC.get(c.id) || 0;
     return { c, punched, billed, punches };

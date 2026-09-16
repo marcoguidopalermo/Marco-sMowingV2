@@ -442,3 +442,16 @@ export const PALERMO = {
 export function reportDayN(startAt: number, nowMs: number): number {
   return Math.max(1, Math.floor((nowMs - startAt) / 86_400_000) + 1);
 }
+
+// Per-punch rows for the "TimeMaster hours this period" panel, oldest first.
+// Ordered by the clock-in INSTANT; the "Sep 10" label is display only. It used
+// to be the sort key, and as text "Sep 10" < "Sep 2" — so from the 10th of
+// every month the later days jumped above day 2 and the list read as if it
+// ended on the 9th.
+export function punchRowsByClockIn<E extends { clockIn: string; workNote?: string }>(
+  entries: E[], hoursOf: (e: E) => number,
+): { day: string; hours: number; note?: string }[] {
+  return [...entries]
+    .sort((a, b) => new Date(a.clockIn).getTime() - new Date(b.clockIn).getTime())
+    .map(e => ({ day: new Date(e.clockIn).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }), hours: hoursOf(e), note: e.workNote }));
+}
