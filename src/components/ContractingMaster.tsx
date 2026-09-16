@@ -110,8 +110,10 @@ interface Props {
   // Contractor clock-in/out (minimal surface; writes to payroll time data).
   myActivePunch: TimeEntry | null;
   myTodayPunches: TimeEntry[];
-  onClockIn: () => void;
-  onClockOut: (note?: string) => void;
+  // Resolve true only once the punch is saved (or safely held on the device);
+  // false = refused, and the button offers a retry.
+  onClockIn: () => Promise<boolean>;
+  onClockOut: (note?: string) => Promise<boolean>;
   // Home screen: personal (private) lists + own-hours cards.
   personalItems: Record<string, ContractingPersonalItem>;
   onSavePersonalItem: (it: ContractingPersonalItem) => void;
@@ -261,16 +263,34 @@ export default function ContractingMaster(props: Props) {
 // ────────────────────────────────────────────────────────────── CLOCK ──────
 // Minimal contractor clock in/out (top of Home) — full-width big button, live
 // status, today's punches collapsible. Writes to payroll time data.
-function ContractorClockTab({ active, today, onIn, onOut }: { active: TimeEntry | null; today: TimeEntry[]; onIn: () => void; onOut: (note?: string) => void }) {
+function ContractorClockTab({ active, today, onIn, onOut }: { active: TimeEntry | null; today: TimeEntry[]; onIn: () => Promise<boolean>; onOut: (note?: string) => Promise<boolean> }) {
   const [, force] = useState(0);
   const [showPunches, setShowPunches] = useState(false);
   const [noting, setNoting] = useState(false);
   const [note, setNote] = useState('');
+  // Honest save, same as the mechanic clock: wait for the write, and only a
+  // confirmed save clears the form. This button used to say "Clocked in."
+  // before the write had landed — and a punch that never landed then read as
+  // "never clocked in" at clock-out.
+  const [saving, setSaving] = useState<'in' | 'out' | null>(null);
+  const [error, setError] = useState<'in' | 'out' | null>(null);
   useEffect(() => { const id = setInterval(() => force(n => n + 1), 30000); return () => clearInterval(id); }, []);
   const elapsed = active ? Math.max(0, (Date.now() - new Date(active.clockIn).getTime()) / 3600000) : 0;
   const hm = (h: number) => `${Math.floor(h)}h ${Math.round((h - Math.floor(h)) * 60)}m`;
   const t = (iso?: string) => iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '—';
-  const finish = (n?: string) => { onOut(n); setNoting(false); setNote(''); };
+  const doIn = async () => {
+    if (saving) return;
+    setSaving('in'); setError(null);
+    const ok = await onIn();
+    setSaving(null); if (!ok) setError('in');
+  };
+  const finish = async (n?: string) => {
+    if (saving) return;
+    setSaving('out'); setError(null);
+    const ok = await onOut(n);
+    setSaving(null);
+    if (ok) { setNoting(false); setNote(''); } else { setError('out'); }
+  };
   return (
     <div>
       {active ? (
@@ -283,21 +303,25 @@ function ContractorClockTab({ active, today, onIn, onOut }: { active: TimeEntry 
               </span>
               <span className="block text-[11px] opacity-70">since {t(active.clockIn)}</span>
             </span>
-            {!noting && <button onClick={() => setNoting(true)} className="px-4 py-3 rounded-xl font-black" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>Clock out</button>}
+            {!noting && <button onClick={() => setNoting(true)} disabled={saving === 'out'} className="px-4 py-3 rounded-xl font-black disabled:opacity-70" style={{ backgroundColor: PALERMO.gold, color: PALERMO.slate }}>{saving === 'out' ? 'Saving…' : 'Clock out'}</button>}
           </div>
           {noting && (
             <div className="mt-3 bg-white rounded-xl p-3 text-slate-800">
               <label className="text-[11px] font-black uppercase tracking-widest text-slate-500">What was worked on? (optional)</label>
               <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="e.g. framed the bar wall · ~6 hrs billable" className="w-full mt-1 bg-slate-50 border border-slate-200 rounded-lg p-2 text-sm outline-none focus:ring-2 focus:ring-emerald-400 resize-none" autoFocus />
+              {error === 'out' && <div className="mt-2 text-[12px] font-bold text-rose-600">Couldn’t save your clock-out — you are still clocked in. Try again.</div>}
               <div className="flex gap-2 mt-2">
-                <button onClick={() => finish(note.trim() || undefined)} className="flex-1 py-2 rounded-lg font-black text-white" style={{ backgroundColor: PALERMO.slate }}>Save</button>
-                <button onClick={() => finish(undefined)} className="px-3 py-2 rounded-lg font-semibold border text-slate-600">Save without note</button>
+                <button onClick={() => finish(note.trim() || undefined)} disabled={saving === 'out'} className="flex-1 py-2 rounded-lg font-black text-white disabled:opacity-60" style={{ backgroundColor: PALERMO.slate }}>{saving === 'out' ? 'Saving…' : error === 'out' ? 'Retry clock out' : 'Save'}</button>
+                <button onClick={() => finish(undefined)} disabled={saving === 'out'} className="px-3 py-2 rounded-lg font-semibold border text-slate-600 disabled:opacity-60">Save without note</button>
               </div>
             </div>
           )}
         </div>
       ) : (
-        <button onClick={onIn} className="w-full py-6 rounded-2xl font-black text-2xl text-white shadow" style={{ backgroundColor: PALERMO.gold }}>Clock in</button>
+        <>
+          <button onClick={doIn} disabled={saving === 'in'} className="w-full py-6 rounded-2xl font-black text-2xl text-white shadow disabled:opacity-70" style={{ backgroundColor: PALERMO.gold }}>{saving === 'in' ? 'Saving…' : error === 'in' ? 'Retry clock in' : 'Clock in'}</button>
+          {error === 'in' && <div className="mt-1.5 text-center text-[12px] font-bold text-rose-600">Couldn’t save your clock-in — you are NOT clocked in. Try again.</div>}
+        </>
       )}
       {today.length > 0 && (
         <div className="mt-1.5 text-center">

@@ -136,6 +136,8 @@ import {
 } from './lib/contractingPayments';
 import { canEditScheduled, isScheduled, localHourOf, quietHoursNotice } from './lib/scheduledBulletins';
 import { timeEntryLock, crewDayCorrectionTarget } from './lib/timeEntryLock';
+import { createPunchOutbox, overlayQueued, PUNCH_ACK_TIMEOUT_MS, type PunchOutbox, type QueuedPunch } from './lib/punchOutbox';
+import { resilientListen, type StreamStatus } from './lib/resilientListen';
 import {
   checkDailyHours, dailyHoursThreshold, entriesForEmployeeDate, hoursForEmployeeDate,
 } from './lib/dailyHoursGuard';
@@ -228,6 +230,38 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [weather, setWeather] = useState<Record<string, any>>({});
   const [toast, setToast] = useState<string | null>(null);
+  // Live streams currently down and reconnecting (see lib/resilientListen).
+  // Non-empty = what is on screen may be out of date, and the banner says so.
+  const [downStreams, setDownStreams] = useState<Record<string, true>>({});
+  const onStreamStatus = useCallback((name: string, status: StreamStatus) => {
+    setDownStreams(prev => {
+      if (status === 'retrying') return prev[name] ? prev : { ...prev, [name]: true };
+      if (!prev[name]) return prev;
+      const next = { ...prev }; delete next[name]; return next;
+    });
+  }, []);
+  // PUNCH OUTBOX — self-punches are held on this device until the server has
+  // them (see lib/punchOutbox). One per app instance; the write is a targeted
+  // setDoc of the one punch document, never a whole-appData save.
+  const [queuedPunchesRaw, setQueuedPunches] = useState<QueuedPunch[]>([]);
+  // A punch is in the outbox for the few hundred ms of every normal save; only
+  // one that has outlived the acknowledgement deadline, or has an error, is
+  // "not sent" — otherwise the banner would flash on every clock-in.
+  const queuedPunches = queuedPunchesRaw.filter(q => q.lastError || Date.now() - q.queuedAt >= PUNCH_ACK_TIMEOUT_MS);
+  const punchStorage = useMemo(() => {
+    try { return typeof window !== 'undefined' ? window.localStorage : null; } catch { return null; }
+  }, []);
+  const punchOutboxRef = useRef<PunchOutbox | null>(null);
+  if (!punchOutboxRef.current) {
+    punchOutboxRef.current = createPunchOutbox({
+      storage: punchStorage,
+      write: async (entry) => {
+        const clean = JSON.parse(JSON.stringify(entry, (_k, v) => (v === undefined ? null : v)));
+        await setDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', 'timeEntries'), encodeURIComponent(entry.id)), clean);
+      },
+      onChange: (q) => setQueuedPunches(q),
+    });
+  }
   const [jobberUsers, setJobberUsers] = useState<JobberUser[]>([]);
   const [jobberConnected, setJobberConnected] = useState(false);
   // Forward capacity snapshots, one per SCOPE (projects / lawn). Held
@@ -477,6 +511,19 @@ export default function App() {
     return Object.values(byId).sort(
       (a, b) => String(b.clockIn || '').localeCompare(String(a.clockIn || '')),
     );
+  };
+
+  // What the app shows as timeEntries: doc base, live subcollection over it,
+  // and anything this device is still holding for the server over that — so a
+  // punch that has not sent yet never reads as "not clocked in".
+  const liveTimeEntries = (base: TimeEntry[], sub: TimeEntry[]): TimeEntry[] => {
+    const deleted = new Set<string>();
+    for (const d of [...docDeletionAuditRef.current, ...subDeletionAuditRef.current]) {
+      if (d && d.recordType === 'time_entry' && d.recordId) deleted.add(d.recordId);
+    }
+    const box: Record<string, QueuedPunch> = {};
+    for (const q of punchOutboxRef.current?.queued() || []) box[q.entry.id] = q;
+    return overlayQueued(mergeTimeEntries(base, sub), box, deleted);
   };
 
   const mergeActivityLog = (base: TaskActivity[], sub: TaskActivity[]): TaskActivity[] => {
@@ -1340,7 +1387,7 @@ export default function App() {
           // Doc-base overlaid by the live subcollection (Phase 4).
           activityLog: mergeActivityLog(docActivityLogRef.current, subActivityLogRef.current),
           // Doc-base overlaid by the live subcollection (Phase 6).
-          timeEntries: mergeTimeEntries(docTimeEntriesRef.current, subTimeEntriesRef.current),
+          timeEntries: liveTimeEntries(docTimeEntriesRef.current, subTimeEntriesRef.current),
           overrides: data.overrides || {},
           rolePermissions: (data.rolePermissions && typeof data.rolePermissions === 'object' && !('foreman' in data.rolePermissions && 'canEditSchedule' in (data.rolePermissions as any).foreman))
             ? (data.rolePermissions as RolePermissionsOverride)
@@ -1816,22 +1863,29 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     const teCol = collection(db, 'artifacts', appId, 'public', 'data', 'timeEntries');
-    return onSnapshot(
-      teCol,
-      (snap) => {
-        const list: TimeEntry[] = [];
-        snap.forEach((d) => {
-          const v = d.data() as TimeEntry;
-          if (v && v.id) list.push(v);
-        });
-        subTimeEntriesRef.current = list;
-        setAppData((prev) => ({
-          ...prev,
-          timeEntries: mergeTimeEntries(docTimeEntriesRef.current, list),
-        }));
-      },
-      (err) => { console.error('timeEntries subcollection listen error:', err); },
-    );
+    // Reconnects on error rather than freezing on the last snapshot — a dead
+    // listener here is punches and billing hours silently going stale.
+    return resilientListen({
+      name: 'timeEntries',
+      onStatus: onStreamStatus,
+      subscribe: (markLive, onError) => onSnapshot(
+        teCol,
+        (snap) => {
+          markLive();
+          const list: TimeEntry[] = [];
+          snap.forEach((d) => {
+            const v = d.data() as TimeEntry;
+            if (v && v.id) list.push(v);
+          });
+          subTimeEntriesRef.current = list;
+          setAppData((prev) => ({
+            ...prev,
+            timeEntries: liveTimeEntries(docTimeEntriesRef.current, list),
+          }));
+        },
+        onError,
+      ),
+    });
   }, [user]);
 
   // Phase 5: live deletionAuditLog subcollection listener. Rebuilds
@@ -2009,16 +2063,21 @@ export default function App() {
     if (!user) return;
     const mk = <T extends { id?: string }>(
       name: string, ref: React.MutableRefObject<Record<string, T>>, key: keyof AppData,
-    ) => onSnapshot(
-      collection(db, 'artifacts', appId, 'public', 'data', name),
-      (snap) => {
-        const map: Record<string, T> = {};
-        snap.forEach((d) => { const v = d.data() as T; if (v && v.id) map[v.id] = v; });
-        ref.current = map;
-        setAppData((prev) => ({ ...prev, [key]: map }));
-      },
-      (err) => { console.error(`${name} subcollection listen error:`, err); },
-    );
+    ) => resilientListen({
+      name,
+      onStatus: onStreamStatus,
+      subscribe: (markLive, onError) => onSnapshot(
+        collection(db, 'artifacts', appId, 'public', 'data', name),
+        (snap) => {
+          markLive();
+          const map: Record<string, T> = {};
+          snap.forEach((d) => { const v = d.data() as T; if (v && v.id) map[v.id] = v; });
+          ref.current = map;
+          setAppData((prev) => ({ ...prev, [key]: map }));
+        },
+        onError,
+      ),
+    });
     const u1 = mk('roleMasterRoles', subRoleMasterRolesRef, 'roleMasterRoles');
     const u2 = mk('roleMasterDuties', subRoleMasterDutiesRef, 'roleMasterDuties');
     const u3 = mk('roleTaskInstances', subRoleTaskInstancesRef, 'roleTaskInstances');
@@ -5110,27 +5169,89 @@ export default function App() {
   // Dave's TimeMaster period views. No hours review / periods here.
   const myActivePunch: TimeEntry | null = (appData.timeEntries || []).find(e => e.userEmail === displayEmail && !e.clockOut) || null;
   const myTodayPunches: TimeEntry[] = (appData.timeEntries || []).filter(e => e.userEmail === displayEmail && new Date(e.clockIn).toDateString() === new Date().toDateString()).sort((a, b) => new Date(b.clockIn).getTime() - new Date(a.clockIn).getTime());
-  const contractorClockIn = () => {
-    const ne: TimeEntry = { id: `time-${Date.now()}`, userEmail: displayEmail, userName: displayName, clockIn: new Date().toISOString(), notes: [] };
-    syncToCloud({ ...appData, timeEntries: [ne, ...(appData.timeEntries || [])] });
-    showToastMsg('Clocked in.');
+  // ONE honest path for every self-punch (contractor home, hourly mechanic
+  // home, the TimeMaster widget). The button waits for this and believes it:
+  //   saved   -> true, normal confirmation
+  //   pending -> true, but LOUD: the punch is held on this phone and has not
+  //              reached the server; the banner stays up until it does
+  //   failed  -> false, the local change is rolled back and the button offers
+  //              a retry — never "Clocked in." for a punch the server refused
+  // It writes only the punch document, so it cannot lose to (or clobber) a
+  // whole-appData save made from another device at the same moment.
+  const savePunch = async (entry: TimeEntry, verb: 'in' | 'out'): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!user) { showToastMsg('Not signed in — punch not saved.'); return false; }
+    const previous = (appData.timeEntries || []).find(e => e.id === entry.id) || null;
+    const put = (next: TimeEntry | null) => setAppData(prev => {
+      const rest = (prev.timeEntries || []).filter(e => e.id !== entry.id);
+      return { ...prev, timeEntries: next ? [next, ...rest] : rest };
+    });
+    put(entry);
+    const result = await punchOutboxRef.current!.save(entry);
+    if (result === 'saved') {
+      showToastMsg(verb === 'in' ? 'Clocked in.' : 'Clocked out.');
+      return true;
+    }
+    if (result === 'pending') {
+      showToastMsg(`⚠️ ${verb === 'in' ? 'Clock-in' : 'Clock-out'} NOT sent yet — no connection. It is saved on this phone and will send automatically. Open the app again when you have signal.`);
+      return true;
+    }
+    put(previous);
+    showToastMsg(`Could not ${verb === 'in' ? 'clock in' : 'clock out'} — the server refused the save. Nothing was recorded; try again.`);
+    return false;
   };
-  const contractorClockOut = (note?: string) => {
-    if (!myActivePunch) return;
-    syncToCloud({ ...appData, timeEntries: (appData.timeEntries || []).map(e => e.id === myActivePunch.id ? { ...e, clockOut: new Date().toISOString(), ...(note ? { workNote: note } : {}) } : e) });
-    showToastMsg(note ? 'Clocked out · note saved.' : 'Clocked out.');
+  const buildSelfClockIn = (loc?: { lat: number; lng: number }): TimeEntry => ({
+    id: `time-${Date.now()}`, userEmail: displayEmail, userName: displayName, clockIn: new Date().toISOString(),
+    ...(loc ? { inLocation: loc } : {}), notes: [],
+  });
+  const selfClockIn = async (loc?: { lat: number; lng: number }): Promise<boolean> => {
+    if (myActivePunch) { showToastMsg('Already clocked in.'); return true; }
+    return savePunch(buildSelfClockIn(loc), 'in');
   };
-  // Honest-save clock for the mechanic Home — AWAIT the write and return success
-  // so the button shows saving/retry and never a false success (no optimistic
-  // toast; the state flip is the confirmation).
-  const mechClockIn = async (): Promise<boolean> => {
-    const ne: TimeEntry = { id: `time-${Date.now()}`, userEmail: displayEmail, userName: displayName, clockIn: new Date().toISOString(), notes: [] };
-    return (await syncToCloud({ ...appData, timeEntries: [ne, ...(appData.timeEntries || [])] })) !== false;
+  const selfClockOut = async (note?: string, loc?: { lat: number; lng: number }): Promise<boolean> => {
+    if (!myActivePunch) { showToastMsg('No running clock found to stop.'); return false; }
+    return savePunch({
+      ...myActivePunch, clockOut: new Date().toISOString(),
+      ...(note ? { workNote: note } : {}), ...(loc ? { outLocation: loc } : {}),
+    }, 'out');
   };
-  const mechClockOut = async (note?: string): Promise<boolean> => {
-    if (!myActivePunch) return false;
-    return (await syncToCloud({ ...appData, timeEntries: (appData.timeEntries || []).map(e => e.id === myActivePunch.id ? { ...e, clockOut: new Date().toISOString(), ...(note ? { workNote: note } : {}) } : e) })) !== false;
-  };
+  // Send anything this device is still holding. On sign-in / data load, when
+  // the connection comes back, when the app returns to the foreground, and
+  // every minute while something is queued. Replay reads the server copy first
+  // and never overwrites a correction or resurrects a deleted punch.
+  const replayQueuedPunches = useCallback(async () => {
+    const box = punchOutboxRef.current;
+    if (!box || !user || box.queued().length === 0) { setQueuedPunches(box?.queued() || []); return; }
+    const teCol = collection(db, 'artifacts', appId, 'public', 'data', 'timeEntries');
+    const r = await box.replay({
+      readServer: async (id) => {
+        const snap = await getDoc(doc(teCol, encodeURIComponent(id)));
+        return snap.exists() ? (snap.data() as TimeEntry) : null;
+      },
+      isDeleted: (id) => [...docDeletionAuditRef.current, ...subDeletionAuditRef.current]
+        .some(d => d && d.recordType === 'time_entry' && d.recordId === id),
+    });
+    setQueuedPunches(box.queued());
+    if (r.written > 0) showToastMsg(`✓ ${r.written} held punch${r.written === 1 ? '' : 'es'} sent to the server.`);
+  }, [user]);
+  useEffect(() => {
+    if (!user || !dataLoaded) return;
+    replayQueuedPunches();
+    const onVisible = () => { if (document.visibilityState === 'visible') replayQueuedPunches(); };
+    window.addEventListener('online', replayQueuedPunches);
+    document.addEventListener('visibilitychange', onVisible);
+    const id = setInterval(() => { if ((punchOutboxRef.current?.queued().length || 0) > 0) replayQueuedPunches(); }, 60_000);
+    return () => {
+      window.removeEventListener('online', replayQueuedPunches);
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(id);
+    };
+  }, [user, dataLoaded, replayQueuedPunches]);
+  // Contractor and hourly-mechanic homes both use the honest path above.
+  const contractorClockIn = () => selfClockIn();
+  const contractorClockOut = (note?: string) => selfClockOut(note);
+  const mechClockIn = () => selfClockIn();
+  const mechClockOut = (note?: string) => selfClockOut(note);
   // Contractor home HOURS cards — the pay-period lens over THEIR OWN punches
   // (hours only, never rates/pay). Display-only read of the payroll data.
   const contractorHours = (() => {
@@ -7592,6 +7713,33 @@ export default function App() {
           @page { margin: 1cm; }
         }
       `}</style>
+      {/* Held punches and dropped live streams are said out loud, not left in
+          the console: one is pay that has not reached the server, the other is
+          a screen that may be showing old data. */}
+      {(queuedPunches.length > 0 || Object.keys(downStreams).length > 0) && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[190] w-[min(92vw,34rem)] space-y-2">
+          {queuedPunches.length > 0 && (
+            <div className="rounded-2xl bg-rose-700 text-white shadow-2xl px-4 py-3 flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+              <div className="flex-1 text-sm">
+                <div className="font-black">{queuedPunches.length} punch{queuedPunches.length === 1 ? '' : 'es'} not sent to the server yet</div>
+                <div className="opacity-90">Saved on this device only. {queuedPunches.map(q => `${q.entry.userName || q.entry.userEmail} · ${q.entry.clockOut ? 'clock-out' : 'clock-in'} ${new Date(q.entry.clockOut || q.entry.clockIn).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`).join(' · ')}. Don’t clear this app’s data.</div>
+                {queuedPunches.some(q => q.lastError) && <div className="text-[11px] opacity-80 mt-1">Last error: {queuedPunches.find(q => q.lastError)?.lastError}</div>}
+              </div>
+              <button onClick={() => replayQueuedPunches()} className="shrink-0 bg-white text-rose-700 font-black text-xs px-3 py-2 rounded-lg">Send now</button>
+            </div>
+          )}
+          {Object.keys(downStreams).length > 0 && (
+            <div className="rounded-2xl bg-amber-500 text-slate-900 shadow-2xl px-4 py-3 flex items-start gap-3">
+              <Loader2 className="w-5 h-5 shrink-0 mt-0.5 animate-spin" />
+              <div className="text-sm">
+                <div className="font-black">Live updates dropped — reconnecting</div>
+                <div>What’s on screen may be out of date: {Object.keys(downStreams).join(', ')}.</div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {toast && <div className="fixed top-6 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-6 py-4 rounded-2xl shadow-2xl z-[200] flex items-center gap-3 animate-in slide-in-from-top-4 duration-300"><AlertTriangle className="w-5 h-5 text-lime-400" /><span className="font-bold text-sm">{toast}</span></div>}
       <PushEnablePrompt userEmail={displayEmail} showToast={showToastMsg} />
       {storageMainWarn && (
@@ -7653,7 +7801,8 @@ export default function App() {
               appData={appData}
               userEmail={displayEmail}
               userName={displayName}
-              syncToCloud={syncToCloud}
+              onClockIn={(loc) => selfClockIn(loc)}
+              onClockOut={(loc) => selfClockOut(undefined, loc)}
             />
           )}
           <div className="flex flex-col bg-gray-200 rounded-lg p-1 mt-1 gap-1">
@@ -8116,7 +8265,8 @@ export default function App() {
                 appData={appData}
                 userEmail={displayEmail}
                 userName={displayName}
-                syncToCloud={syncToCloud}
+                onClockIn={(loc) => selfClockIn(loc)}
+                onClockOut={(loc) => selfClockOut(undefined, loc)}
               />
             </div>
           )}
@@ -8158,7 +8308,8 @@ export default function App() {
               appData={appData}
               userEmail={displayEmail}
               userName={displayName}
-              syncToCloud={syncToCloud}
+              onClockIn={(loc) => selfClockIn(loc)}
+              onClockOut={(loc) => selfClockOut(undefined, loc)}
             />
           </div>
           <MyCrewToday

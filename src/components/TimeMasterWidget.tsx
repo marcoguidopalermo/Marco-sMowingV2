@@ -1,12 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Clock, MapPin, LogOut } from 'lucide-react';
-import { AppData, TimeEntry } from '../types';
+import { AppData } from '../types';
+
+type Loc = { lat: number; lng: number } | undefined;
 
 interface TimeMasterWidgetProps {
   appData: AppData;
   userEmail: string;
   userName: string;
-  syncToCloud: (data: AppData) => Promise<boolean | undefined>;
+  // App's honest punch path (savePunch): resolves true once the punch is saved
+  // or safely held on the device, false if it was refused. The widget used to
+  // fire a whole-appData save and move on without knowing whether it landed.
+  onClockIn: (loc: Loc) => Promise<boolean>;
+  onClockOut: (loc: Loc) => Promise<boolean>;
 }
 
 const formatElapsed = (fromIso: string, now: Date) => {
@@ -21,8 +27,9 @@ const formatElapsed = (fromIso: string, now: Date) => {
 const formatClockTime = (iso: string) =>
   new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
-export default function TimeMasterWidget({ appData, userEmail, userName, syncToCloud }: TimeMasterWidgetProps) {
+export default function TimeMasterWidget({ appData, userEmail, onClockIn, onClockOut }: TimeMasterWidgetProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [now, setNow] = useState(() => new Date());
 
   // Tick every 60s to update elapsed time display
@@ -45,7 +52,7 @@ export default function TimeMasterWidget({ appData, userEmail, userName, syncToC
 
   const activeEntry = appData.timeEntries.find(e => e.userEmail === userEmail && !e.clockOut) || null;
 
-  const getLocation = (cb: (loc: { lat: number; lng: number } | undefined) => void) => {
+  const getLocation = (cb: (loc: Loc) => void) => {
     if (!navigator.geolocation) { cb(undefined); return; }
     navigator.geolocation.getCurrentPosition(
       (pos) => cb({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
@@ -55,32 +62,22 @@ export default function TimeMasterWidget({ appData, userEmail, userName, syncToC
   };
 
   const handleClockIn = () => {
-    getLocation((loc) => {
-      const newEntry: TimeEntry = {
-        id: `time-${Date.now()}`,
-        userEmail,
-        userName,
-        clockIn: new Date().toISOString(),
-        inLocation: loc,
-        notes: [],
-      };
-      syncToCloud({ ...appData, timeEntries: [newEntry, ...appData.timeEntries] });
+    if (saving) return;
+    setSaving(true);
+    getLocation(async (loc) => {
+      try { await onClockIn(loc); } finally { setSaving(false); }
     });
   };
 
   const handleClockOut = () => {
-    if (!activeEntry) return;
-    getLocation((loc) => {
-      const updated: TimeEntry = {
-        ...activeEntry,
-        clockOut: new Date().toISOString(),
-        outLocation: loc,
-      };
-      syncToCloud({
-        ...appData,
-        timeEntries: appData.timeEntries.map(e => e.id === activeEntry.id ? updated : e),
-      });
-      setPopoverOpen(false);
+    if (!activeEntry || saving) return;
+    setSaving(true);
+    getLocation(async (loc) => {
+      try {
+        // Close the popover only on success; on a refusal the person is still
+        // clocked in and the button is right there to try again.
+        if (await onClockOut(loc)) setPopoverOpen(false);
+      } finally { setSaving(false); }
     });
   };
 
@@ -88,9 +85,10 @@ export default function TimeMasterWidget({ appData, userEmail, userName, syncToC
     return (
       <button
         onClick={handleClockIn}
-        className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2.5 rounded-lg font-black text-xs uppercase tracking-widest shadow-sm shadow-emerald-600/20 transition-colors"
+        disabled={saving}
+        className="disabled:opacity-70 w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2.5 rounded-lg font-black text-xs uppercase tracking-widest shadow-sm shadow-emerald-600/20 transition-colors"
       >
-        <Clock className="w-4 h-4" /> Clock In
+        <Clock className="w-4 h-4" /> {saving ? 'Saving…' : 'Clock In'}
       </button>
     );
   }
@@ -133,9 +131,10 @@ export default function TimeMasterWidget({ appData, userEmail, userName, syncToC
             <div className="p-3">
               <button
                 onClick={handleClockOut}
-                className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 text-white px-3 py-2.5 rounded-lg font-black text-xs uppercase tracking-widest shadow-sm transition-colors"
+                disabled={saving}
+                className="disabled:opacity-70 w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 text-white px-3 py-2.5 rounded-lg font-black text-xs uppercase tracking-widest shadow-sm transition-colors"
               >
-                <LogOut className="w-4 h-4" /> Clock Out
+                <LogOut className="w-4 h-4" /> {saving ? 'Saving…' : 'Clock Out'}
               </button>
             </div>
           </div>
