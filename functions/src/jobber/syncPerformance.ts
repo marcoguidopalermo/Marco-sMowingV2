@@ -25,6 +25,13 @@ import {
   runNotificationScan, runQuietFlush, runScheduledBulletins,
 } from "../notifications.js";
 import {runStorageMeasurement} from "./storageMeasure.js";
+import {
+  creditPunchesToDay,
+  shiftYmd,
+  TimeEntryDoc,
+  torontoBoundariesIso,
+  torontoWindow7DayBackIso,
+} from "./torontoDay.js";
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -332,16 +339,6 @@ interface VisitBHSplit {
   lastUpdatedAt: number;
 }
 
-// TimeMaster clock record. Only the fields the sync needs to source
-// hours for a non-Jobber crew member. userEmail keys to an employee's
-// linkedUserEmail/email; clockOut is absent on an open (unclosed)
-// shift, in which case duration runs to "now".
-interface TimeEntryDoc {
-  userEmail: string;
-  clockIn: string;
-  clockOut?: string;
-}
-
 interface AppDataShape {
   schedules?: Record<string, CrewSchedule[]>;
   employees?: EmployeeDoc[];
@@ -598,80 +595,6 @@ export interface JobberBhConflict {
   newTotalBH?: number;
   lockState: "approved" | "waived";
   detectedAt: number;
-}
-
-/**
- * Returns the UTC offset in minutes for America/Toronto on a given date.
- * Handles EST/EDT transitions automatically.
- * @param {Date} probe A date roughly in the period of interest.
- * @return {number} Offset in minutes (negative for west of UTC).
- */
-function torontoOffsetMinutes(probe: Date): number {
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: TIMEZONE,
-    timeZoneName: "shortOffset",
-  });
-  const parts = fmt.formatToParts(probe);
-  const tzPart = parts.find((p) => p.type === "timeZoneName")?.value || "";
-  const m = tzPart.match(/GMT([+-]\d+)(?::(\d+))?/);
-  if (!m) return 0;
-  const hours = parseInt(m[1], 10);
-  const minutes = m[2] ? parseInt(m[2], 10) : 0;
-  return hours * 60 + (hours < 0 ? -minutes : minutes);
-}
-
-/**
- * Computes UTC ISO strings for the start and end of a Toronto calendar day.
- * @param {string} dateStr A YYYY-MM-DD date string.
- * @return {object} Object with `after` and `before` ISO strings.
- */
-function torontoBoundariesIso(
-  dateStr: string,
-): {after: string; before: string} {
-  const utcMidnight = Date.parse(`${dateStr}T00:00:00Z`);
-  const probe = new Date(`${dateStr}T12:00:00Z`);
-  const offsetMin = torontoOffsetMinutes(probe);
-  const afterMs = utcMidnight - offsetMin * 60_000;
-  const beforeMs = afterMs + 24 * 60 * 60 * 1000;
-  return {
-    after: new Date(afterMs).toISOString(),
-    before: new Date(beforeMs).toISOString(),
-  };
-}
-
-/**
- * Returns YYYY-MM-DD (Toronto) shifted by `offsetDays` from `dateStr`.
- * @param {string} dateStr Anchor YYYY-MM-DD.
- * @param {number} offsetDays Negative or positive day delta.
- * @return {string} Shifted YYYY-MM-DD.
- */
-function shiftYmd(dateStr: string, offsetDays: number): string {
-  const probe = new Date(`${dateStr}T12:00:00Z`);
-  probe.setUTCDate(probe.getUTCDate() + offsetDays);
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: TIMEZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(probe);
-}
-
-/**
- * Returns a UTC window spanning [targetDate-7, targetDate+1] in Toronto.
- * Catches visits whose startAt was up to a week ago but completedAt is in
- * the current sync's attribution range (rain-day catch-up, late
- * completions). Trade-off: ~9× the page count vs a 1-day window — usually
- * still well under throttle limits for a single crew-day sync.
- * @param {string} targetDate Anchor YYYY-MM-DD.
- * @return {object} `after` (Toronto midnight of -7 day) and `before`
- *                  (Toronto midnight after next day), both UTC ISO.
- */
-function torontoWindow7DayBackIso(
-  targetDate: string,
-): {after: string; before: string} {
-  const prev = torontoBoundariesIso(shiftYmd(targetDate, -7));
-  const next = torontoBoundariesIso(shiftYmd(targetDate, 1));
-  return {after: prev.after, before: next.before};
 }
 
 /**
@@ -1708,15 +1631,6 @@ async function runPerformanceSync(args: {
     // frontend recomputes at read time, exactly like Jobber ticking
     // shifts. Below-noise entries are dropped from both maps, mirroring
     // the Jobber attribution above.
-    const {after: dayAfterIso, before: dayBeforeIso} =
-      torontoBoundariesIso(targetDate);
-    const dayAfterMs = Date.parse(dayAfterIso);
-    const dayBeforeMs = Date.parse(dayBeforeIso);
-    const secondsByEmail = new Map<string, number>();
-    const intervalsByEmail = new Map<
-      string,
-      Array<{ startAt: string; endAt: string | null }>
-    >();
     // PUNCHES COME FROM THE SUBCOLLECTION, NOT THE DOC.
     //
     // These used to be read from appData.timeEntries. That field was emptied
@@ -1752,23 +1666,11 @@ async function runPerformanceSync(args: {
     logger.info("timemaster_punches_loaded", {
       date: targetDate, count: punches.length,
     });
-    for (const te of punches) {
-      const email = (te.userEmail || "").toLowerCase();
-      if (!email) continue;
-      const inMs = Date.parse(te.clockIn);
-      if (!Number.isFinite(inMs)) continue;
-      // Bucket by the Toronto date of clock-in (full duration attributed
-      // to that day, same as the Jobber finalDuration treatment above).
-      if (inMs < dayAfterMs || inMs >= dayBeforeMs) continue;
-      const outMs = te.clockOut ? Date.parse(te.clockOut) : nowMs;
-      if (!Number.isFinite(outMs) || outMs <= inMs) continue;
-      const sec = (outMs - inMs) / 1000;
-      if (sec < MIN_TIMESHEET_SECONDS) continue;
-      secondsByEmail.set(email, (secondsByEmail.get(email) || 0) + sec);
-      const list = intervalsByEmail.get(email) || [];
-      list.push({startAt: te.clockIn, endAt: te.clockOut ?? null});
-      intervalsByEmail.set(email, list);
-    }
+    // Window and crediting live in torontoDay (tested across both DST
+    // changeovers): clock-in in this Toronto day's window, full duration.
+    const {secondsByEmail, intervalsByEmail} = creditPunchesToDay(
+      punches, targetDate, nowMs, MIN_TIMESHEET_SECONDS,
+    );
     logger.info("ah_attribution_email", {
       emailsWithSeconds: secondsByEmail.size,
     });
