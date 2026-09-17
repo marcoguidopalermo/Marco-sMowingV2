@@ -2076,6 +2076,16 @@ export interface SalesQuoteLine {
   // Coverage-calc provenance (when qty was computed from area + depth).
   coverageNote?: string; area?: number; depthInches?: number;
 }
+// A ONE-OFF material typed on the quote ("Artificial turf — $1,500"). Not on
+// the rate sheet and never added to it. `charge` is what the client pays.
+// `cost` is optional: absent means UNKNOWN — never zero — and the profit panel
+// says so rather than counting the whole charge as profit.
+export interface SalesCustomMaterial {
+  id: string;
+  description: string;
+  charge: number;
+  cost?: number;
+}
 export interface SalesQuote {
   id: string;
   name: string;
@@ -2083,6 +2093,11 @@ export interface SalesQuote {
   serviceName: string;          // snapshot
   serviceChargeRate: number;    // snapshot
   lines: SalesQuoteLine[];      // charge-side snapshot
+  // One-off materials. Charge AND the optional cost are stored: a custom line
+  // has no rate sheet to recompute cost from, so the quote is the only place
+  // its cost can live. (Same exposure as the rate sheet's own costs, which sit
+  // in settings; the cost is only ever rendered to admins.)
+  customMaterials?: SalesCustomMaterial[];
   bh: number;
   materialsCharged: number;     // snapshot
   labourCharge: number;         // snapshot

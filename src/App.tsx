@@ -4746,7 +4746,8 @@ export default function App() {
     showToastMsg('Rates saved.');
   };
   // SalesMaster saved quotes — own subcollection (grows). Admin + manager
-  // create/edit (working documents, charge-side + BH only — no cost data).
+  // create/edit (working documents, charge-side + BH; a custom one-off
+  // material also keeps its typed cost — it has no rate sheet to live on).
   // Delete: admin OR the quote's creator.
   const saveSalesQuote = async (q: SalesQuote) => {
     if (!isManager) { showToastMsg(PERMISSION_DENIED); return; }

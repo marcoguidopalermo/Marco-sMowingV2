@@ -2,7 +2,7 @@
 // contact with PerformanceMaster's live BH/pay data. The BH identity mirrors
 // PerformanceMaster's formula (BH = (quote − materials) ÷ serviceRate) for
 // consistency only — this is a pre-job estimator.
-import { SalesRates, SalesService, SalesMaterial, SalesQuote } from '../types';
+import { SalesRates, SalesService, SalesMaterial, SalesQuote, SalesCustomMaterial } from '../types';
 
 // ── SEED (the coded default when settings.salesMaster is absent). Admins add
 // the rest in-app. Real numbers only — no placeholder costs.
@@ -75,13 +75,27 @@ export function coverageWorking(unit: string, area: number, depthInches: number,
 }
 
 export interface QuoteBreakdown {
-  materialsCharged: number;
-  materialsCost: number;                    // admin only
+  materialsCharged: number;                 // rate-sheet + custom
+  materialsCost: number;                    // admin only — KNOWN costs only
   labourCharge: number;
   quoteTotal: number;
   bh: number;
   serviceRate: number;
   lines: MaterialLineDetail[];
+  // One-off materials typed on the quote, as entered (charge rounded to cents).
+  customLines: SalesCustomMaterial[];
+  presetMaterialsCharged: number;
+  customMaterialsCharged: number;
+  // Custom lines with no cost entered. Their charge is NOT profit and must not
+  // be counted as if it were — see computeProfitTable.
+  unknownCostLines: SalesCustomMaterial[];
+  unknownCostCharge: number;
+}
+
+/** A custom line's cost, or null when it was left blank (unknown — not zero). */
+export function customCost(c: Pick<SalesCustomMaterial, 'cost'>): number | null {
+  const v = c.cost;
+  return v == null || !Number.isFinite(Number(v)) ? null : Number(v);
 }
 
 // Base quote from service + material lines + budgeted BH.
@@ -90,6 +104,7 @@ export function computeQuote(
   lines: MaterialLine[],
   bh: number,
   rates: SalesRates,
+  customMaterials: SalesCustomMaterial[] = [],
 ): QuoteBreakdown {
   const serviceRate = Number(service?.chargeRatePerHr) || 0;
   const matById = new Map(rates.materials.map(m => [m.id, m]));
@@ -106,12 +121,34 @@ export function computeQuote(
     materialsCost += lineCost;
     details.push({ materialId: m.id, name: m.name, unit: m.unit, qty, chargePerUnit: m.chargePerUnit, lineCharge, costPerUnit: m.costPerUnit, lineCost, coverageNote: ln.coverageNote, area: ln.area, depthInches: ln.depthInches });
   }
-  materialsCharged = round2(materialsCharged);
+  const presetMaterialsCharged = round2(materialsCharged);
+  // One-off materials: the charge is added exactly like a preset line's, so
+  // the total, the BH identity and the price-first working all include it.
+  // Cost is added only when it was entered.
+  const customLines: SalesCustomMaterial[] = [];
+  const unknownCostLines: SalesCustomMaterial[] = [];
+  let customMaterialsCharged = 0;
+  let unknownCostCharge = 0;
+  for (const c of customMaterials) {
+    const charge = round2(Number(c.charge) || 0);
+    const line: SalesCustomMaterial = { id: c.id, description: c.description, charge };
+    const cost = customCost(c);
+    if (cost != null) { line.cost = round2(cost); materialsCost += line.cost; }
+    customLines.push(line);
+    customMaterialsCharged += charge;
+    if (cost == null && charge !== 0) { unknownCostLines.push(line); unknownCostCharge += charge; }
+  }
+  customMaterialsCharged = round2(customMaterialsCharged);
+  materialsCharged = round2(presetMaterialsCharged + customMaterialsCharged);
   materialsCost = round2(materialsCost);
   const bhNum = Number(bh) || 0;
   const labourCharge = round2(bhNum * serviceRate);
   const quoteTotal = round2(materialsCharged + labourCharge);
-  return { materialsCharged, materialsCost, labourCharge, quoteTotal, bh: bhNum, serviceRate, lines: details };
+  return {
+    materialsCharged, materialsCost, labourCharge, quoteTotal, bh: bhNum, serviceRate, lines: details,
+    customLines, presetMaterialsCharged, customMaterialsCharged,
+    unknownCostLines, unknownCostCharge: round2(unknownCostCharge),
+  };
 }
 
 // Two-way manipulation. Materials are held constant; every added dollar flows
@@ -202,14 +239,15 @@ export interface ProfitPanel {
 // this computation on the manager side (the component gates it on isAdmin).
 export function computeProfit(q: QuoteBreakdown, service: SalesService | undefined, rates: SalesRates): ProfitPanel {
   const cost = labourCostFor(service, rates);
+  const revenue = profitRevenue(q);
   const labourCostBudget = round2(q.bh * cost);
   const labourCost80 = round2((q.bh / 0.8) * cost);
   const totalCostBudget = round2(q.materialsCost + labourCostBudget);
   const totalCost80 = round2(q.materialsCost + labourCost80);
-  const gpBudget = round2(q.quoteTotal - totalCostBudget);
-  const gp80 = round2(q.quoteTotal - totalCost80);
-  const marginBudget = q.quoteTotal > 0 ? round2((gpBudget / q.quoteTotal) * 100) : 0;
-  const margin80 = q.quoteTotal > 0 ? round2((gp80 / q.quoteTotal) * 100) : 0;
+  const gpBudget = round2(revenue - totalCostBudget);
+  const gp80 = round2(revenue - totalCost80);
+  const marginBudget = revenue > 0 ? round2((gpBudget / revenue) * 100) : 0;
+  const margin80 = revenue > 0 ? round2((gp80 / revenue) * 100) : 0;
   return { materialsCost: q.materialsCost, labourCostBudget, labourCost80, totalCostBudget, totalCost80, gpBudget, marginBudget, gp80, margin80 };
 }
 
@@ -217,6 +255,15 @@ export function computeProfit(q: QuoteBreakdown, service: SalesService | undefin
 // BH ÷ eff; labour cost scales with actual hours; material cost is constant;
 // overhead is per BUDGETED BH (BH × overheadPerBH — constant across columns).
 export const PROFIT_EFFS = [1.0, 0.8, 0.6] as const;
+
+// The revenue profit is measured against. A custom line with no cost has an
+// UNKNOWN margin: counting its charge while counting zero cost would report
+// the whole charge as profit. So its charge is left out of the revenue here —
+// gross profit and margin describe the rest of the job, and the panel names
+// the line it could not include. With every cost known this is quoteTotal.
+export function profitRevenue(q: Pick<QuoteBreakdown, 'quoteTotal' | 'unknownCostCharge'>): number {
+  return round2(q.quoteTotal - (Number(q.unknownCostCharge) || 0));
+}
 export interface ProfitCol {
   eff: number;
   actualHours: number;
@@ -230,30 +277,41 @@ export interface ProfitTable {
   overheadPerBH: number;
   hasOverhead: boolean;         // false when overheadPerBH is 0/unset → hide net rows
   cols: ProfitCol[];
+  // Revenue the columns measure against (quoteTotal less unknown-cost charges).
+  revenue: number;
+  // Custom lines left out because their cost is unknown; empty when all known.
+  excludedLines: SalesCustomMaterial[];
+  excludedCharge: number;
 }
 export function computeProfitTable(q: QuoteBreakdown, service: SalesService | undefined, rates: SalesRates): ProfitTable {
   const cost = labourCostFor(service, rates);
   const overheadPerBH = Number(rates.overheadPerBH) || 0;
+  const revenue = profitRevenue(q);
   const cols: ProfitCol[] = PROFIT_EFFS.map(eff => {
     const hoursPrecise = q.bh / eff;
     const labourCost = round2(hoursPrecise * cost);
     const materialCost = q.materialsCost;
-    const gp = round2(q.quoteTotal - (materialCost + labourCost));
-    const margin = q.quoteTotal > 0 ? round2((gp / q.quoteTotal) * 100) : 0;
+    const gp = round2(revenue - (materialCost + labourCost));
+    const margin = revenue > 0 ? round2((gp / revenue) * 100) : 0;
     // Overhead burns per ACTUAL shop-hour — a slower job consumes more shop
     // time, so it scales with actual hours (BH ÷ eff), not budgeted BH.
     const overhead = round2(hoursPrecise * overheadPerBH);
     const net = round2(gp - overhead);
-    const netMargin = q.quoteTotal > 0 ? round2((net / q.quoteTotal) * 100) : 0;
+    const netMargin = revenue > 0 ? round2((net / revenue) * 100) : 0;
     return { eff, actualHours: round2(hoursPrecise), labourCost, materialCost, gp, margin, overhead, net, netMargin };
   });
-  return { overheadPerBH, hasOverhead: overheadPerBH > 0, cols };
+  return {
+    overheadPerBH, hasOverhead: overheadPerBH > 0, cols,
+    revenue, excludedLines: q.unknownCostLines || [], excludedCharge: Number(q.unknownCostCharge) || 0,
+  };
 }
 
 export const money = (n: number): string => `$${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-// Snapshot the current calculator state into a saveable quote. CHARGE-SIDE
-// ONLY — no cost fields (managers never see cost; GP stays live/admin-only).
+// Snapshot the current calculator state into a saveable quote. Rate-sheet lines
+// are CHARGE-SIDE ONLY (their cost is recomputed live from the sheet). Custom
+// lines also carry their cost when one was entered: they have no sheet to
+// recompute from. Cost is only ever rendered to admins.
 // Rates are captured here so a later rate change never rewrites this quote.
 export function buildQuoteSnapshot(id: string, name: string, service: SalesService | undefined, q: QuoteBreakdown, rates: SalesRates): SalesQuote {
   return {
@@ -262,6 +320,7 @@ export function buildQuoteSnapshot(id: string, name: string, service: SalesServi
     serviceName: service?.name || '',
     serviceChargeRate: q.serviceRate,
     lines: q.lines.map(l => ({ materialId: l.materialId, name: l.name, unit: l.unit, qty: l.qty, chargePerUnit: l.chargePerUnit, coverageNote: l.coverageNote, area: l.area, depthInches: l.depthInches })),
+    customMaterials: q.customLines.map(c => ({ ...c })),
     bh: q.bh,
     materialsCharged: q.materialsCharged,
     labourCharge: q.labourCharge,

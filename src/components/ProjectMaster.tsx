@@ -3,8 +3,8 @@
 // container. Firestore keys are unchanged: quotes still live in the
 // salesMasterQuotes subcollection; only the on-screen label moved.
 import { useMemo, useState } from 'react';
-import { Sliders, Plus, Trash2, DollarSign, TrendingUp, Info, RotateCcw, Save, FilePlus, Search, FolderOpen, Ruler } from 'lucide-react';
-import { SalesRates, SalesService, SalesMaterial, SalesMaterialUnit, SalesQuote } from '../types';
+import { Sliders, Plus, Trash2, DollarSign, TrendingUp, Info, RotateCcw, Save, FilePlus, Search, FolderOpen, Ruler, PenLine } from 'lucide-react';
+import { SalesRates, SalesService, SalesMaterial, SalesMaterialUnit, SalesQuote, SalesCustomMaterial } from '../types';
 import {
   computeQuote, computeProfitTable, bhFromPrice, labourCostFor, money, buildQuoteSnapshot, MaterialLine, round2,
   coverageQty, roundUpHalf, hasCoverage, coverageWorking, priceFirstWorking,
@@ -31,6 +31,11 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
 
   const [serviceId, setServiceId] = useState(activeServices[0]?.id || '');
   const [lines, setLines] = useState<MaterialLine[]>([]);
+  // One-off materials typed on this quote. Never written to the rate sheet.
+  const [customs, setCustoms] = useState<SalesCustomMaterial[]>([]);
+  const patchCustom = (id: string, patch: Partial<SalesCustomMaterial>) =>
+    setCustoms(cs => cs.map(c => (c.id === id ? { ...c, ...patch } : c)));
+  const addCustom = () => setCustoms(cs => [...cs, { id: uid('cmat'), description: '', charge: 0 }]);
   const [bh, setBh] = useState<number>(0);
   const [baselineBH, setBaselineBH] = useState<number>(0);
   const [priceInput, setPriceInput] = useState('');
@@ -50,7 +55,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
   }));
 
   const service = rates.services.find(s => s.id === serviceId);
-  const q = useMemo(() => computeQuote(service, lines, bh, rates), [service, lines, bh, rates]);
+  const q = useMemo(() => computeQuote(service, lines, bh, rates, customs), [service, lines, bh, rates, customs]);
   const profit = useMemo(() => computeProfitTable(q, service, rates), [q, service, rates]);
   // BH is kept full-precision internally; round only for display. The price
   // delta reads from the quote difference so a +$1000 nudge shows exactly.
@@ -58,7 +63,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
   const delta = round2(q.bh - baselineBH);
   const baselineQuote = round2(q.materialsCharged + baselineBH * q.serviceRate);
   const priceDelta = round2(q.quoteTotal - baselineQuote);
-  const hasContent = !!serviceId && (lines.length > 0 || bh > 0);
+  const hasContent = !!serviceId && (lines.length > 0 || customs.length > 0 || bh > 0);
 
   const setBudgetBH = (v: number) => { const n = Number(v) || 0; setBh(n); setBaselineBH(n); };
   // Free-typing buffers so a half-typed "45" in the price box doesn't get
@@ -83,7 +88,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
 
   const resetCalc = () => {
     if (hasContent && !window.confirm('Clear the calculator? This discards the current quote.')) return;
-    setServiceId(activeServices[0]?.id || ''); setLines([]); setBh(0); setBaselineBH(0); setPriceInput('');
+    setServiceId(activeServices[0]?.id || ''); setLines([]); setCustoms([]); setBh(0); setBaselineBH(0); setPriceInput('');
     setBhDraft(null); setPriceDraft(null);
     setLoadedQuoteId(null); setLoadedQuoteName('');
   };
@@ -100,6 +105,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
   const loadQuote = (sq: SalesQuote) => {
     setServiceId(sq.serviceId);
     setLines(sq.lines.map(l => ({ materialId: l.materialId, qty: l.qty, coverageNote: l.coverageNote, area: l.area, depthInches: l.depthInches })));
+    setCustoms((sq.customMaterials || []).map(c => ({ ...c })));
     setBh(sq.bh); setBaselineBH(sq.bh); setPriceInput(''); setBhDraft(null); setPriceDraft(null);
     setLoadedQuoteId(sq.id); setLoadedQuoteName(sq.name);
     setTab('calculator');
@@ -144,10 +150,13 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[11px] font-black uppercase tracking-widest text-slate-500">Materials</label>
-                    <button onClick={addLine} className="text-[11px] font-bold text-emerald-700 inline-flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Add line</button>
+                    <span className="flex items-center gap-3">
+                      <button onClick={addLine} className="text-[11px] font-bold text-emerald-700 inline-flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Add line</button>
+                      <button onClick={addCustom} title="A one-off material that isn't on the rate sheet — typed here, never added to the sheet" className="text-[11px] font-bold text-amber-700 inline-flex items-center gap-1"><PenLine className="w-3.5 h-3.5" /> Add custom material</button>
+                    </span>
                   </div>
                   <div className="space-y-2">
-                    {lines.length === 0 && <div className="text-[12px] text-slate-400 italic">No materials — labour-only job.</div>}
+                    {lines.length === 0 && customs.length === 0 && <div className="text-[12px] text-slate-400 italic">No materials — labour-only job.</div>}
                     {lines.map((ln, i) => {
                       const m = rates.materials.find(x => x.id === ln.materialId);
                       const coverable = hasCoverage(m);
@@ -174,6 +183,49 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
                             </div>
                           )}
                           {ln.coverageNote && <div className="text-[10px] text-slate-500 pl-1 font-medium">{ln.coverageNote}</div>}
+                        </div>
+                      );
+                    })}
+                    {/* CUSTOM (one-off) materials — typed on this quote, not
+                        from the rate sheet. Charge is what the client pays;
+                        cost is optional and admin-only. */}
+                    {customs.map(c => {
+                      const costBlank = c.cost == null;
+                      return (
+                        <div key={c.id} className="space-y-1 border-l-4 border-amber-300 pl-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[9px] font-black uppercase tracking-widest text-amber-700 bg-amber-50 border border-amber-200 rounded px-1">custom</span>
+                            <input
+                              value={c.description}
+                              placeholder="Description — e.g. Artificial turf"
+                              onChange={e => patchCustom(c.id, { description: e.target.value })}
+                              className="flex-1 min-w-[140px] border border-slate-300 rounded-lg p-2 text-sm font-medium"
+                            />
+                            <label className="relative" title="Charge — what the client pays">
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
+                              <input
+                                type="number" step="0.01" inputMode="decimal"
+                                value={c.charge || ''} placeholder="charge"
+                                onChange={e => patchCustom(c.id, { charge: Number(e.target.value) || 0 })}
+                                className="w-28 border border-slate-300 rounded-lg p-2 pl-5 text-sm text-right"
+                              />
+                            </label>
+                            {isAdmin && (
+                              <label className="relative" title="Cost to us — optional. Leave blank if unknown.">
+                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
+                                <input
+                                  type="number" step="0.01" inputMode="decimal"
+                                  value={c.cost ?? ''} placeholder="cost (optional)"
+                                  onChange={e => patchCustom(c.id, { cost: e.target.value === '' ? undefined : (Number(e.target.value) || 0) })}
+                                  className="w-32 border border-slate-300 rounded-lg p-2 pl-5 text-sm text-right"
+                                />
+                              </label>
+                            )}
+                            <button onClick={() => setCustoms(cs => cs.filter(x => x.id !== c.id))} title="Remove custom material" className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
+                          </div>
+                          {isAdmin && costBlank && (c.charge || 0) !== 0 && (
+                            <div className="text-[10px] font-bold text-amber-700 pl-1">No cost entered — margin on this line is unknown. It is left out of the profit figures, not counted as profit.</div>
+                          )}
                         </div>
                       );
                     })}
@@ -286,6 +338,21 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
                   {q.lines.map(l => (
                     <div key={l.materialId} className="flex justify-between text-slate-600"><span>{l.name} — {l.qty} {l.unit} × {money(l.chargePerUnit)}</span><span className="font-mono">{money(l.lineCharge)}</span></div>
                   ))}
+                  {/* Typed one-offs, marked apart from the rate-sheet lines above. */}
+                  {q.customLines.map(c => (
+                    <div key={c.id} className="flex justify-between text-slate-600 border-l-4 border-amber-300 pl-2">
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-amber-700 bg-amber-50 border border-amber-200 rounded px-1 shrink-0">custom</span>
+                        <span className="truncate">{c.description.trim() || <span className="italic text-slate-400">untitled</span>}</span>
+                      </span>
+                      <span className="font-mono">{money(c.charge)}</span>
+                    </div>
+                  ))}
+                  {q.customLines.length > 0 && q.lines.length > 0 && (
+                    <div className="flex justify-between text-[11px] text-slate-400 pt-0.5">
+                      <span>rate sheet {money(q.presetMaterialsCharged)} · custom {money(q.customMaterialsCharged)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between border-t border-slate-100 pt-1 font-medium text-slate-700"><span>Material charge</span><span className="font-mono">{money(q.materialsCharged)}</span></div>
                   <div className="flex justify-between text-slate-700"><span>Labour ({bhDisp} BH × {money(q.serviceRate)}/hr)</span><span className="font-mono">{money(q.labourCharge)}</span></div>
                 </div>
@@ -302,7 +369,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
                   <button onClick={() => saveCurrent(false)} disabled={!hasContent} title={loadedQuoteId ? 'Update the loaded quote' : 'Save this quote'} className="min-h-[44px] inline-flex items-center justify-center gap-1.5 rounded-xl bg-slate-900 text-white hover:bg-slate-800 text-xs font-black uppercase tracking-widest disabled:opacity-40"><Save className="w-4 h-4" /> Save</button>
                   <button onClick={() => saveCurrent(true)} disabled={!hasContent} title="Save a copy under a new name" className="min-h-[44px] inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-black uppercase tracking-widest disabled:opacity-40"><FilePlus className="w-4 h-4" /> Save as</button>
                 </div>
-                <div className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1"><Info className="w-3 h-3" /> Internal pricing workbench — build the client quote in Jobber. Saved quotes store charge-side numbers + BH only.</div>
+                <div className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1"><Info className="w-3 h-3" /> Internal pricing workbench — build the client quote in Jobber. Saved quotes store charge-side numbers + BH, plus any cost typed on a custom line.</div>
               </div>
             </div>
             </div>{/* end inputs + breakdown grid */}
@@ -313,6 +380,21 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
             {isAdmin && (
               <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-sm p-4 md:p-5 text-slate-100">
                 <div className="text-[11px] font-black uppercase tracking-widest text-amber-400 mb-3 flex items-center gap-1.5"><TrendingUp className="w-3.5 h-3.5" /> Profit (admin only) · labour {money(labourCostFor(service, rates))}/hr{profit.hasOverhead ? ` · overhead ${money(profit.overheadPerBH)}/BH` : ''}</div>
+                {/* UNKNOWN COST. A custom line with no cost has no knowable
+                    margin; counting its charge against zero cost would report
+                    all of it as profit. It is left out, and named. */}
+                {profit.excludedLines.length > 0 && (
+                  <div className="mb-3 rounded-lg border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-200">
+                    <div className="font-black text-amber-300">Margin unknown on {profit.excludedLines.length} custom line{profit.excludedLines.length === 1 ? '' : 's'} — no cost entered</div>
+                    <ul className="mt-0.5">
+                      {profit.excludedLines.map(c => <li key={c.id}>· {c.description.trim() || 'untitled'} — {money(c.charge)} charge</li>)}
+                    </ul>
+                    <div className="mt-1 text-amber-100/80">
+                      The figures below cover the rest of the job: {money(profit.revenue)} of the {money(q.quoteTotal)} total.
+                      That {money(profit.excludedCharge)} is not counted as profit. Enter a cost on the line to include it.
+                    </div>
+                  </div>
+                )}
 
                 {/* Desktop / tablet table */}
                 <div className="hidden sm:block">
@@ -327,7 +409,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
                       <tr><td className="text-left font-sans text-slate-400 py-1.5 pr-4">Actual hours</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-200 px-4">{c.actualHours}</td>)}</tr>
                       <tr><td className="text-left font-sans text-slate-400 py-1.5 pr-4">Labour cost</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-200 px-4">{money(c.labourCost)}</td>)}</tr>
                       <tr><td className="text-left font-sans text-slate-400 py-1.5 pr-4">Material cost</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-200 px-4">{money(c.materialCost)}</td>)}</tr>
-                      <tr className="border-t border-slate-700"><td className="text-left font-sans font-black text-emerald-400 py-2 pr-4">Gross profit</td>{profit.cols.map(c => <td key={c.eff} className="text-right font-black text-emerald-400 text-base px-4">{money(c.gp)}</td>)}</tr>
+                      <tr className="border-t border-slate-700"><td className="text-left font-sans font-black text-emerald-400 py-2 pr-4">Gross profit{profit.excludedLines.length > 0 && <span className="block text-[10px] font-bold text-amber-400">excl. unknown-cost line{profit.excludedLines.length === 1 ? '' : 's'}</span>}</td>{profit.cols.map(c => <td key={c.eff} className="text-right font-black text-emerald-400 text-base px-4">{money(c.gp)}</td>)}</tr>
                       <tr><td className="text-left font-sans text-slate-400 pb-2 text-[12px] pr-4">margin</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-400 text-[12px] px-4">{c.margin.toFixed(1)}%</td>)}</tr>
                       {profit.hasOverhead && (<>
                         <tr className="border-t border-slate-700"><td className="text-left font-sans text-slate-400 py-2 pr-4">Overhead (actual hrs × {money(profit.overheadPerBH)})</td>{profit.cols.map(c => <td key={c.eff} className="text-right text-slate-200 px-4">{money(c.overhead)}</td>)}</tr>
@@ -347,7 +429,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
                         <span className="text-slate-400 font-sans">Actual hours</span><span className="text-right text-slate-200">{c.actualHours}</span>
                         <span className="text-slate-400 font-sans">Labour cost</span><span className="text-right text-slate-200">{money(c.labourCost)}</span>
                         <span className="text-slate-400 font-sans">Material cost</span><span className="text-right text-slate-200">{money(c.materialCost)}</span>
-                        <span className="text-emerald-400 font-sans font-black border-t border-slate-700 pt-1">Gross profit</span><span className="text-right text-emerald-400 font-black border-t border-slate-700 pt-1">{money(c.gp)}</span>
+                        <span className="text-emerald-400 font-sans font-black border-t border-slate-700 pt-1">Gross profit{profit.excludedLines.length > 0 && <span className="block text-[10px] text-amber-400">excl. unknown-cost</span>}</span><span className="text-right text-emerald-400 font-black border-t border-slate-700 pt-1">{money(c.gp)}</span>
                         <span className="text-slate-400 font-sans text-[11px]">margin</span><span className="text-right text-slate-400 text-[11px]">{c.margin.toFixed(1)}%</span>
                         {profit.hasOverhead && (<>
                           <span className="text-slate-400 font-sans border-t border-slate-700 pt-1">Overhead</span><span className="text-right text-slate-200 border-t border-slate-700 pt-1">{money(c.overhead)}</span>
