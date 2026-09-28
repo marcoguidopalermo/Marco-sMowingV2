@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import logo from '@/assets/logo/logowhite.png';
-import logoBlack from '@/assets/logo/LOGOBLACK.png';
 import { LoginDemo } from './components/blocks/LoginDemo';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, sendPasswordResetEmail } from 'firebase/auth';
@@ -7789,7 +7788,9 @@ export default function App() {
         {!crewBuilderMode && (
         <div className="p-4 bg-white border-b border-gray-200 shadow-sm flex flex-col gap-3">
           <div className="relative flex items-center justify-center py-2">
-            <img src={logoBlack} alt="Logo" className="h-24 w-auto" />
+            {/* Wordmark only — the header's background is white, so it's set in
+                near-black in the app's heading font (Outfit, black weight). */}
+            <span className="text-[2rem] leading-none font-black uppercase tracking-tight text-slate-900 whitespace-nowrap select-none py-3">MARCO’S</span>
             <div className="absolute right-0 top-0">
               <NotificationCenter userEmail={displayEmail} isAdmin={isAdmin} onNavigate={handleNotifNavigate} showToast={showToastMsg} employees={appData.employees || []} />
             </div>
