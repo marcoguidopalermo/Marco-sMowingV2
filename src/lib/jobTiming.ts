@@ -64,8 +64,6 @@ export interface TimingFilters {
   from: string; to: string;
   division: string;          // '' = all
   crewKey: string;           // '' = all
-  serviceType: string;       // '' = all
-  lush: 'all' | 'only' | 'exclude';
   includeNoCrew: boolean;    // visits with no crew on that day's schedule
 }
 
@@ -75,9 +73,6 @@ export function filterRecords(recs: JobTimingRecord[], f: TimingFilters): JobTim
     if (!f.includeNoCrew && !r.crewKey) return false;
     if (f.division && r.division !== f.division) return false;
     if (f.crewKey && !r.crewKey.split('+').includes(f.crewKey)) return false;
-    if (f.serviceType && serviceTypeOf(r) !== f.serviceType) return false;
-    if (f.lush === 'only' && !r.lush) return false;
-    if (f.lush === 'exclude' && r.lush) return false;
     return true;
   });
 }
@@ -262,15 +257,15 @@ export function rankJobs(rows: JobRow[], dir: 'under' | 'over', by: 'median' | '
 }
 
 // ── Date presets ─────────────────────────────────────────────────────────
-// Default is the last 8 weeks: spring visits (first cuts, overgrown lawns)
-// run long and would skew a whole-season figure.
+// The view opens on the full season; the shorter presets leave out spring
+// visits (first cuts, overgrown lawns), which run long.
 export const DATE_PRESETS = [
-  { id: '8w', label: 'Last 8 weeks' },
   { id: '4w', label: 'Last 4 weeks' },
+  { id: '8w', label: 'Last 8 weeks' },
   { id: '12w', label: 'Last 12 weeks' },
   { id: 'month', label: 'This month' },
   { id: 'summer', label: 'Since July 1' },
-  { id: 'season', label: 'Whole season' },
+  { id: 'season', label: 'Full season' },
 ] as const;
 export type DatePreset = typeof DATE_PRESETS[number]['id'] | 'custom';
 

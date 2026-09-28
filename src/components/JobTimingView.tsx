@@ -4,7 +4,7 @@ import { Timer, Download, RefreshCw, ChevronDown, ChevronRight, AlertTriangle, S
 import { db } from '../lib/firebase';
 import {
   aggregateJobs, coverageRows, CoverageDoc, DATE_PRESETS, DatePreset, divisionStats, filterRecords, JobRow,
-  JobTimingRecord, jobsCsv, MIN_RELIABLE_VISITS, presetRange, rankJobs, SERVICE_TYPES, serviceTypeOf,
+  JobTimingRecord, jobsCsv, MIN_RELIABLE_VISITS, presetRange, rankJobs, serviceTypeOf,
   TimingFilters, visitsCsv,
 } from '../lib/jobTiming';
 
@@ -76,9 +76,9 @@ export default function JobTimingView({ today }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const [preset, setPreset] = useState<DatePreset>('8w');
+  const [preset, setPreset] = useState<DatePreset>('season');
   const [filters, setFilters] = useState<TimingFilters>({
-    ...presetRange('8w', today), division: '', crewKey: '', serviceType: '', lush: 'all', includeNoCrew: false,
+    ...presetRange('season', today), division: '', crewKey: '', includeNoCrew: false,
   });
   const [dir, setDir] = useState<'under' | 'over'>('under');
   const [rankBy, setRankBy] = useState<'median' | 'average'>('median');
@@ -92,8 +92,8 @@ export default function JobTimingView({ today }: Props) {
   };
   const setDate = (k: 'from' | 'to', v: string) => { setPreset('custom'); set(k, v); };
   const resetFilters = () => {
-    setPreset('8w');
-    setFilters({ ...presetRange('8w', today), division: '', crewKey: '', serviceType: '', lush: 'all', includeNoCrew: false });
+    setPreset('season');
+    setFilters({ ...presetRange('season', today), division: '', crewKey: '', includeNoCrew: false });
   };
 
   const load = async () => {
@@ -162,11 +162,19 @@ export default function JobTimingView({ today }: Props) {
     };
   }, [filtered, jobs, ranked]);
 
-  const activeFilters = [filters.division, filters.crewKey, filters.serviceType, filters.lush !== 'all' ? 'l' : '', filters.includeNoCrew ? 'n' : '', preset !== '8w' ? 'd' : ''].filter(Boolean).length;
+  const activeFilters = [filters.division, filters.crewKey, filters.includeNoCrew ? 'n' : '', preset !== 'season' ? 'd' : ''].filter(Boolean).length;
 
   const th = 'py-2 px-2 text-[10px] font-black uppercase tracking-widest text-slate-400 whitespace-nowrap';
   const sel = 'border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white min-w-0';
   const lbl = 'text-[10px] font-black uppercase tracking-widest text-slate-500';
+  // Filter buttons: the active one is solid green so the current view reads
+  // at a glance.
+  const chip = (label: string, active: boolean, onClick: () => void) => (
+    <button key={label} onClick={onClick} aria-pressed={active}
+      className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${active ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}>
+      {label}
+    </button>
+  );
   // First column stays pinned while the numbers scroll sideways on a phone.
   const stick = 'sticky left-0 z-[1] bg-inherit';
 
@@ -323,45 +331,29 @@ export default function JobTimingView({ today }: Props) {
         <div>
           <div className={lbl}>Dates</div>
           <div className="flex flex-wrap items-center gap-1.5 mt-1">
-            {DATE_PRESETS.map(p => (
-              <button key={p.id} onClick={() => pickPreset(p.id)}
-                className={`px-2.5 py-1 rounded-full text-xs font-bold border ${preset === p.id ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}>
-                {p.label}{p.id === '8w' ? ' (default)' : ''}
-              </button>
-            ))}
-            <span className="flex items-center gap-1">
-              <input type="date" className={`${sel} ${preset === 'custom' ? 'border-emerald-500' : ''}`} value={filters.from} onChange={e => setDate('from', e.target.value)} aria-label="From" />
-              <span className="text-slate-400 text-xs">to</span>
-              <input type="date" className={`${sel} ${preset === 'custom' ? 'border-emerald-500' : ''}`} value={filters.to} onChange={e => setDate('to', e.target.value)} aria-label="To" />
-            </span>
+            {DATE_PRESETS.map(p => chip(p.label, preset === p.id, () => pickPreset(p.id)))}
+          </div>
+          {/* Custom range — editing either date switches off the presets. */}
+          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+            <span className={`text-xs font-bold ${preset === 'custom' ? 'text-emerald-700' : 'text-slate-400'}`}>Custom</span>
+            <input type="date" className={`${sel} ${preset === 'custom' ? 'border-emerald-600 ring-2 ring-emerald-200' : ''}`} value={filters.from} onChange={e => setDate('from', e.target.value)} aria-label="From" />
+            <span className="text-slate-400 text-xs">to</span>
+            <input type="date" className={`${sel} ${preset === 'custom' ? 'border-emerald-600 ring-2 ring-emerald-200' : ''}`} value={filters.to} onChange={e => setDate('to', e.target.value)} aria-label="To" />
           </div>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <label className="flex flex-col gap-1 min-w-0"><span className={lbl}>Division</span>
-            <select className={sel} value={filters.division} onChange={e => setFilters(f => ({ ...f, division: e.target.value, crewKey: '' }))}>
-              <option value="">All divisions</option>
-              {divisions.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 min-w-0"><span className={lbl}>Crew</span>
-            <select className={sel} value={filters.crewKey} onChange={e => set('crewKey', e.target.value)}>
-              <option value="">All crews</option>
-              {crews.map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 min-w-0"><span className={lbl}>Service</span>
-            <select className={sel} value={filters.serviceType} onChange={e => set('serviceType', e.target.value)}>
-              <option value="">All services</option>
-              {SERVICE_TYPES.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 min-w-0"><span className={lbl}>Lush accounts</span>
-            <select className={sel} value={filters.lush} onChange={e => set('lush', e.target.value as TimingFilters['lush'])}>
-              <option value="all">Lush + others</option>
-              <option value="only">Lush only</option>
-              <option value="exclude">Exclude Lush</option>
-            </select>
-          </label>
+        <div>
+          <div className={lbl}>Division</div>
+          <div className="flex flex-wrap items-center gap-1.5 mt-1">
+            {chip('All', filters.division === '', () => setFilters(f => ({ ...f, division: '', crewKey: '' })))}
+            {divisions.map(d => chip(d, filters.division === d, () => setFilters(f => ({ ...f, division: d, crewKey: '' }))))}
+          </div>
+        </div>
+        <div>
+          <div className={lbl}>Crew{filters.division ? ` — ${filters.division}` : ''}</div>
+          <div className="flex flex-wrap items-center gap-1.5 mt-1">
+            {chip('All', filters.crewKey === '', () => set('crewKey', ''))}
+            {crews.map(([k, c]) => chip(filters.division ? c.label.replace(`${filters.division} `, '') : c.label, filters.crewKey === k, () => set('crewKey', k)))}
+          </div>
         </div>
         <label className="flex items-center gap-1.5 text-xs text-slate-600">
           <input type="checkbox" checked={filters.includeNoCrew} onChange={e => set('includeNoCrew', e.target.checked)} />

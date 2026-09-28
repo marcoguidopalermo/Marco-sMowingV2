@@ -13,7 +13,7 @@ const rec = (p: Partial<JobTimingRecord>): JobTimingRecord => ({
   details: { property: { address: { street: '224 Victoria Avenue West', city: 'Thunder Bay' } } },
   ...p,
 });
-const ALL: TimingFilters = { from: '2026-04-01', to: '2026-12-31', division: '', crewKey: '', serviceType: '', lush: 'all', includeNoCrew: false };
+const ALL: TimingFilters = { from: '2026-04-01', to: '2026-12-31', division: '', crewKey: '', includeNoCrew: false };
 
 describe('job timing trends', () => {
   test('groups by Jobber job, so a cleanup is never averaged with the weekly cut', () => {
