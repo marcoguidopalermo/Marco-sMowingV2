@@ -203,5 +203,23 @@ service cloud.firestore {
       allow create: if isAuthorized() || isSuperAdmin();
       allow update, delete: if false;
     }
+
+    // JOB TIMING — per-visit labour hours from Jobber visit timers, with the
+    // nightly coverage figures and run log. Repricing data: ADMIN-ONLY read,
+    // and no client writes at all — only the Cloud Functions (admin SDK, which
+    // bypasses rules) write here. Kept outside artifacts/** because that rule
+    // would open it to every authorized user.
+    match /jobTimings/{visitId} {
+      allow read: if isContentAdmin() || isSuperAdmin();
+      allow write: if false;
+    }
+    match /jobTimingMeta/{docId} {
+      allow read: if isContentAdmin() || isSuperAdmin();
+      allow write: if false;
+    }
+    match /jobTimingRuns/{runId} {
+      allow read: if isContentAdmin() || isSuperAdmin();
+      allow write: if false;
+    }
   }
 }

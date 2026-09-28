@@ -25,6 +25,7 @@ import {
   runNotificationScan, runQuietFlush, runScheduledBulletins,
 } from "../notifications.js";
 import {runStorageMeasurement} from "./storageMeasure.js";
+import {runJobTimingForDay, TIMER_TARGET_FIELDS} from "./jobTiming.js";
 import {
   creditPunchesToDay,
   shiftYmd,
@@ -103,6 +104,7 @@ const TIMESHEETS_QUERY = `query TimesheetsOnDate(
       startAt
       endAt
       user { id name { full } }
+      ${TIMER_TARGET_FIELDS}
     }
     pageInfo { endCursor hasNextPage }
   }
@@ -136,6 +138,10 @@ interface TimesheetNode {
   startAt: string;
   endAt: string | null;
   user: {id: string; name: {full: string}};
+  // What the timer was running against. Only Visit targets matter, and only
+  // to job timing (jobTiming.ts) — AH above still sums every entry exactly
+  // as before, targeted or not.
+  targetItem?: {__typename: string; id?: string} | null;
 }
 
 interface PageInfo {
@@ -2875,6 +2881,36 @@ async function runPerformanceSync(args: {
           });
         }
       }));
+    }
+
+    // JOB TIMING — per-visit labour hours from visit timers, for repricing.
+    // Runs only AFTER the performance write above, so the sync's crediting
+    // is already done and has had first call on the Jobber budget; the step
+    // itself stands down below its own budget floor. Isolated: a failure here
+    // never fails the sync, and it writes nothing but the jobTimings
+    // collection — no pay, bonus or crew-day figure reads it.
+    try {
+      const jt = await runJobTimingForDay({
+        client,
+        targetDate,
+        timesheets,
+        knownVisits: jobberResponseVisits,
+        live: {
+          schedules: appData.schedules,
+          employees: appData.employees,
+          dailyAbsences: appData.dailyAbsences,
+        },
+      });
+      summary.warnings.push(
+        `job_timing visits=${jt.timedVisits} written=${jt.written} ` +
+        `running=${jt.skippedRunning} removedDays=${jt.removedDays} ` +
+        `detailFetches=${jt.detailFetches} deferred=${jt.deferredNoBudget}`,
+      );
+    } catch (err) {
+      logger.warn("job timing step failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      summary.warnings.push("job_timing_error");
     }
 
     // SERVER-SIDE ARCHIVE. On the scheduled run (targetDate === Toronto

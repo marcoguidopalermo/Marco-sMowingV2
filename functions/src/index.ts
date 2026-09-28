@@ -40,6 +40,9 @@ export {
   jobberSyncPerformance,
   jobberSyncPerformanceScheduled,
 } from "./jobber/syncPerformance.js";
+// Job timing: nightly re-read of the season's visit timers (the per-cycle
+// part runs inside the performance sync). Repricing data only.
+export {jobberJobTimingNightly} from "./jobber/jobTiming.js";
 // Staleness watchdog for the performance sync. Runs only inside operating
 // hours so the expected overnight gap can't be read as a stall.
 export {jobberSyncStaleCheck} from "./jobber/syncHealth.js";
