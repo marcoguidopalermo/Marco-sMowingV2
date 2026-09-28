@@ -26,6 +26,7 @@ import {
 } from "../notifications.js";
 import {runStorageMeasurement} from "./storageMeasure.js";
 import {runJobTimingForDay, TIMER_TARGET_FIELDS} from "./jobTiming.js";
+import {headcountSplit} from "./bhSplit.js";
 import {
   creditPunchesToDay,
   shiftYmd,
@@ -1445,37 +1446,13 @@ async function runPerformanceSync(args: {
       ).length;
     };
     const round2 = (n: number): number => Math.round(n * 100) / 100;
+    // Shared with job timing (bhSplit.ts) so both split a multi-crew visit
+    // the same way.
     const buildHeadcountSplit = (
       crewIds: string[],
       totalBH: number,
-    ): Array<{ crewId: string; bh: number }> => {
-      const heads = crewIds.map((c) => headcountFor(c));
-      const totalHead = heads.reduce((a, b) => a + b, 0);
-      let result: Array<{ crewId: string; bh: number }>;
-      if (totalHead === 0) {
-        const per = round2(totalBH / crewIds.length);
-        result = crewIds.map((c) => ({crewId: c, bh: per}));
-      } else {
-        result = crewIds.map((c, i) => ({
-          crewId: c,
-          bh: round2(totalBH * (heads[i] / totalHead)),
-        }));
-      }
-      // Fix any rounding drift so the sum lands exactly on totalBH.
-      const sum = result.reduce((a, s) => a + s.bh, 0);
-      const drift = round2(totalBH - sum);
-      if (Math.abs(drift) >= 0.005) {
-        let maxIdx = 0;
-        for (let i = 1; i < result.length; i++) {
-          if (result[i].bh > result[maxIdx].bh) maxIdx = i;
-        }
-        result[maxIdx] = {
-          ...result[maxIdx],
-          bh: round2(result[maxIdx].bh + drift),
-        };
-      }
-      return result;
-    };
+    ): Array<{ crewId: string; bh: number }> =>
+      headcountSplit(crewIds, crewIds.map((c) => headcountFor(c)), totalBH);
     for (const [visitId, crewIds] of visitCrewMap) {
       // Need the visit's parsed total BH — find via visitsByCrew.
       const sample = (visitsByCrew.get(crewIds[0]) || [])
@@ -2899,6 +2876,8 @@ async function runPerformanceSync(args: {
           schedules: appData.schedules,
           employees: appData.employees,
           dailyAbsences: appData.dailyAbsences,
+          // This run's splits (just recomputed above), not the snapshot.
+          visitBHSplits,
         },
       });
       summary.warnings.push(

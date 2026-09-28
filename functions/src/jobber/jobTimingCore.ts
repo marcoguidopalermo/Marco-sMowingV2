@@ -25,6 +25,7 @@ export interface VisitTimerEntry {
 }
 
 export interface DayCrew {
+  id: string; // that day's schedule crew id (what visitBHSplits is keyed by)
   key: string; // stable "<division-lower>-<crewNumber>"
   label: string; // "Lawn Division #3"
   division: string;
@@ -57,6 +58,23 @@ export interface VisitDayTiming {
   people: PersonTime[];
   entryIds: string[];
   crewSource: "assignee" | "timer" | "none";
+  // Visits assigned to 2+ crews: the BH is split between crews (the
+  // performance sync's split) and each crew that timed it is measured on its
+  // own. Crews that didn't time it are left out, not estimated.
+  multiCrew?: MultiCrewDay;
+}
+
+export interface MultiCrewDay {
+  assigned: number;
+  timed: number;
+  splitSource: "sync" | "headcount";
+  bhShare: number; // Σ BH shares of the crews that timed it
+  offCrewHours: number; // timers not on any assigned crew — not counted
+  crews: Array<{
+    key: string; label: string; shareBh: number; timed: boolean;
+    labourHours: number | null; method: string | null;
+    quality: TimingQuality | null; crewSize: number;
+  }>;
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -265,6 +283,83 @@ export function computeLabour(
 }
 
 /**
+ * A visit assigned to several crews on one day. Each crew's BH share (from
+ * `shares`, the performance sync's split) is compared against THAT crew's own
+ * labour — its members' timers under the usual all-timed / 1 × N / span × N
+ * rules. Crews that didn't time it are left out entirely. Timers by people on
+ * none of the assigned crews can't be placed against a share, so they're
+ * reported but not counted.
+ * @param {VisitTimerEntry[]} entries The day's entries.
+ * @param {DayCrew[]} crews The assigned crews (2+).
+ * @param {Map<string, number>} shares crew id → BH share.
+ * @param {"sync" | "headcount"} splitSource Where the shares came from.
+ * @return {object | null} Day timing, or null if nothing measurable.
+ */
+export function computeMultiCrewDay(
+  entries: VisitTimerEntry[],
+  crews: DayCrew[],
+  shares: Map<string, number>,
+  splitSource: "sync" | "headcount",
+): Omit<VisitDayTiming, "date" | "crewSource"> | null {
+  const crewOf = new Map<string, DayCrew>();
+  for (const c of crews) {
+    for (const m of c.members) {
+      if (m.jobberUserId && !crewOf.has(m.jobberUserId)) {
+        crewOf.set(m.jobberUserId, c);
+      }
+    }
+  }
+  const perCrew = crews.map((c) => {
+    const mine = entries.filter((e) => crewOf.get(e.userId) === c);
+    const t = mine.length ? computeLabour(mine, [c]) : null;
+    return {c, t};
+  });
+  const off = entries.filter((e) => !crewOf.has(e.userId));
+  const offT = off.length ? computeLabour(off, []) : null;
+  const timed = perCrew.filter((x) => x.t);
+  if (timed.length === 0 && !offT) return null;
+  const people = [
+    ...timed.flatMap((x) => x.t?.people || []),
+    ...(offT?.people || []).map((p) => ({...p, onCrew: false})),
+  ].sort((a, b) => a.start.localeCompare(b.start));
+  const labour = timed.reduce((a, x) => a + (x.t?.labourHours || 0), 0);
+  const bhShare = timed.reduce((a, x) => a + (shares.get(x.c.id) || 0), 0);
+  const methods = [...new Set(timed.map((x) => x.t?.method))];
+  return {
+    crewKeys: timed.map((x) => x.c.key),
+    crewLabel: timed.map((x) => x.c.label).join(" + "),
+    division: (timed[0] || perCrew[0]).c.division,
+    crewSize: timed.reduce((a, x) => a + (x.t?.crewSize || 0), 0),
+    headcount: timed.reduce((a, x) => a + (x.t?.headcount || 0), 0),
+    labourHours: round2(labour),
+    method: `${timed.length} of ${crews.length} crews timed` +
+      (methods.length ? ` (${methods.join(", ")})` : ""),
+    quality: timed.length > 0 && timed.every((x) => x.t?.quality === "full") ?
+      "full" : "estimate",
+    spanHours: round2(Math.max(0, ...timed.map((x) => x.t?.spanHours || 0))),
+    people,
+    entryIds: entries.map((e) => e.entryId).sort(),
+    multiCrew: {
+      assigned: crews.length,
+      timed: timed.length,
+      splitSource,
+      bhShare: round2(bhShare),
+      offCrewHours: round2(offT ? offT.labourHours : 0),
+      crews: perCrew.map((x) => ({
+        key: x.c.key,
+        label: x.c.label,
+        shareBh: shares.get(x.c.id) || 0,
+        timed: !!x.t,
+        labourHours: x.t ? x.t.labourHours : null,
+        method: x.t ? x.t.method : null,
+        quality: x.t ? x.t.quality : null,
+        crewSize: x.c.members.length,
+      })),
+    },
+  };
+}
+
+/**
  * Groups visit-targeted entries by visit, then by the Toronto day the timer
  * STARTED on. Days with a running timer are reported separately so the
  * caller can leave them alone until the timer stops.
@@ -316,7 +411,11 @@ export interface JobTimingRecord {
   jobId: string | null;
   jobNumber: string | null;
   title: string;
-  bh: number | null; // visit BH (title, same parser as everywhere)
+  // BH compared against labour: the visit's BH, or for a multi-crew visit
+  // the shares of the crews that timed it.
+  bh: number | null;
+  visitBh: number | null; // the visit's whole BH (title, same parser)
+  multiCrew: {assigned: number; timed: number} | null;
   hourly: boolean; // [hourly] visits carry no BH to compare against
   recurring: boolean;
   lineItems: string[];
@@ -365,7 +464,23 @@ export function buildRecord(
   const methods = [...new Set(ds.map((d) => d.method))];
   const quality: TimingQuality =
     ds.every((d) => d.quality === "full") ? "full" : "estimate";
-  const bh = parsed && !parsed.isHourly ? parsed.bh : null;
+  const visitBh = parsed && !parsed.isHourly ? parsed.bh : null;
+  // Multi-crew: compare only the BH shares of the crews that timed it. A
+  // visit timed as one crew on any day keeps the whole BH, as before. Over
+  // several multi-crew days a crew counts once, at its largest share.
+  const multi = ds.filter((d) => d.multiCrew);
+  let bh = visitBh;
+  if (visitBh != null && multi.length > 0 && multi.length === ds.length) {
+    const byCrew = new Map<string, number>();
+    for (const d of multi) {
+      for (const c of d.multiCrew?.crews || []) {
+        if (!c.timed) continue;
+        byCrew.set(c.key, Math.max(byCrew.get(c.key) || 0, c.shareBh));
+      }
+    }
+    const share = [...byCrew.values()].reduce((a, b) => a + b, 0);
+    bh = share > 0 ? round2(Math.min(visitBh, share)) : null;
+  }
   const street = v.property?.address?.street || "";
   const clientName = v.client?.name || "";
   const tags = (v.client?.tags?.nodes || [])
@@ -377,6 +492,11 @@ export function buildRecord(
     jobNumber: v.job?.jobNumber != null ? String(v.job.jobNumber) : null,
     title: v.title || v.job?.title || "",
     bh,
+    visitBh,
+    multiCrew: multi.length > 0 ? {
+      assigned: Math.max(...multi.map((d) => d.multiCrew?.assigned || 0)),
+      timed: Math.max(...multi.map((d) => d.multiCrew?.timed || 0)),
+    } : null,
     hourly: !!parsed?.isHourly,
     recurring: v.job?.jobType === "RECURRING",
     lineItems: (v.lineItems?.nodes || [])

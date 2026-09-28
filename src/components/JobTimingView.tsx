@@ -189,6 +189,12 @@ export default function JobTimingView({ today }: Props) {
             <span className="text-[10px] text-slate-400">{j.serviceType} · {j.crews.join(', ') || 'no crew'}</span>
             {j.lush && <span className="text-[10px] font-bold uppercase bg-lime-100 text-lime-800 rounded px-1">Lush</span>}
             {!j.reliable && <span className="text-[10px] font-bold uppercase bg-slate-100 text-slate-500 rounded px-1">Not yet reliable</span>}
+            {j.multiCrewVisits > 0 && (
+              <span className="text-[10px] font-bold bg-sky-100 text-sky-800 rounded px-1"
+                title={`${j.multiCrewVisits} of ${j.visits} visits were assigned to several crews. Each crew that timed it is compared on its own share of the BH (the performance sync's split); crews that didn't time it are left out.`}>
+                Multi-crew · {j.multiCrewNote}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -234,18 +240,36 @@ export default function JobTimingView({ today }: Props) {
                 </tr></thead>
                 <tbody>
                   {j.records.map(r => (
-                    <tr key={r.visitId} className="border-t border-slate-200/70">
+                    <Fragment key={r.visitId}>
+                    <tr className="border-t border-slate-200/70">
                       <td className="py-1 font-mono whitespace-nowrap">{r.date}</td>
                       <td className="truncate max-w-[14rem]" title={r.title}>{r.title} <span className="text-slate-400">· {serviceTypeOf(r)}</span></td>
                       <td className="whitespace-nowrap">{r.crewLabel || <span className="text-slate-400">no crew</span>}</td>
                       <td className="whitespace-nowrap">
+                        {r.multiCrew && <span className="rounded px-1 font-bold bg-sky-100 text-sky-800 mr-1">multi-crew</span>}
                         <span className={`rounded px-1 font-bold ${r.quality === 'full' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>{r.method}</span>
                       </td>
                       <td className="text-right font-mono">{fmtHrs(r.labourHours)}</td>
-                      <td className="text-right font-mono">{r.bh ?? (r.hourly ? 'hourly' : '—')}</td>
+                      <td className="text-right font-mono whitespace-nowrap">
+                        {r.bh ?? (r.hourly ? 'hourly' : '—')}
+                        {r.multiCrew && r.visitBh != null && <span className="text-slate-400"> of {r.visitBh}</span>}
+                      </td>
                       <td className="text-right font-mono">{fmtPct(r.efficiency)}</td>
                       <td className="pl-3 text-slate-500">{Object.values(r.days).flatMap(d => d.people.map(x => `${x.name} ${x.hours.toFixed(2)}h${x.onCrew ? '' : ' (off crew)'}`)).join(', ')}</td>
                     </tr>
+                    {Object.values(r.days).filter(d => d.multiCrew).map(d => (
+                      <tr key={`${r.visitId}-${d.date}-mc`}>
+                        <td />
+                        <td colSpan={7} className="pb-1.5 text-[11px] text-slate-500">
+                          <span className="font-semibold text-sky-800">Split {d.multiCrew!.splitSource === 'sync' ? '(as credited by the sync)' : '(headcount)'}:</span>{' '}
+                          {d.multiCrew!.crews.map(c => c.timed
+                            ? `${c.label} ${c.shareBh} BH ÷ ${fmtHrs(c.labourHours)}h (${c.method})`
+                            : `${c.label} ${c.shareBh} BH — didn't time, left out`).join(' · ')}
+                          {d.multiCrew!.offCrewHours > 0 && ` · ${fmtHrs(d.multiCrew!.offCrewHours)}h by people on none of these crews not counted`}
+                        </td>
+                      </tr>
+                    ))}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

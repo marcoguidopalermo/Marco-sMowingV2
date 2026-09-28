@@ -14,10 +14,17 @@ export interface JobTimingDay {
   crewSize: number; headcount: number; labourHours: number; method: string;
   quality: TimingQuality; spanHours: number; people: JobTimingPerson[];
   crewSource: 'assignee' | 'timer' | 'none';
+  multiCrew?: {
+    assigned: number; timed: number; splitSource: 'sync' | 'headcount'; bhShare: number; offCrewHours: number;
+    crews: Array<{ key: string; label: string; shareBh: number; timed: boolean; labourHours: number | null;
+      method: string | null; quality: TimingQuality | null; crewSize: number }>;
+  };
 }
 export interface JobTimingRecord {
   visitId: string; jobId: string | null; jobNumber: string | null; title: string;
-  bh: number | null; hourly: boolean; recurring: boolean; lineItems: string[];
+  // bh = BH compared against labour (for a multi-crew visit, only the shares
+  // of the crews that timed it); visitBh = the visit's whole BH.
+  bh: number | null; visitBh?: number | null; multiCrew?: { assigned: number; timed: number } | null; hourly: boolean; recurring: boolean; lineItems: string[];
   propertyId: string; propertyLabel: string; clientId: string | null; clientName: string;
   lush: boolean; date: string; lastDate: string; month: string; dayList: string[];
   division: string; crewKey: string; crewLabel: string; crewSize: number; headcount: number;
@@ -125,6 +132,8 @@ export interface JobRow {
   divisionAvg: number | null;
   vsDivision: number | null;        // median efficiency ÷ division median − 1
   vsDivisionAvg: number | null;     // average efficiency ÷ division average − 1
+  multiCrewVisits: number;          // visits assigned to 2+ crews
+  multiCrewNote: string;            // "2 of 3 crews timed"
   skewed: boolean;                  // average and median disagree a lot
   skewNote: string;
   reliable: boolean;
@@ -192,8 +201,15 @@ export function aggregateJobs(recs: JobTimingRecord[], div: Record<string, Divis
     const effGap = efficiency != null && medianEfficiency ? Math.abs(efficiency - medianEfficiency) / medianEfficiency : 0;
     const labGap = medianLabour > 0 ? Math.abs(avgLabour - medianLabour) / medianLabour : 0;
     const skewed = rs.length >= 3 && (effGap > SKEW_FLAG || labGap > SKEW_FLAG);
+    const multi = rs.filter(r => r.multiCrew);
+    const multiCrewNote = multi.length
+      ? mode(multi.map(r => `${r.multiCrew!.timed} of ${r.multiCrew!.assigned} crews timed`))
+        + (new Set(multi.map(r => `${r.multiCrew!.timed}/${r.multiCrew!.assigned}`)).size > 1 ? ' (usually)' : '')
+      : '';
     rows.push({
       jobKey,
+      multiCrewVisits: multi.length,
+      multiCrewNote,
       jobId: last.jobId,
       jobNumber: last.jobNumber,
       jobTitle: jobTitleOf(last.title, last.clientName),
@@ -309,13 +325,13 @@ export function jobsCsv(rows: JobRow[]): string {
     ['Client', 'Address', 'Job #', 'Job', 'Service type', 'Division', 'Crews', 'Lush', 'Timed visits', 'Visits with BH',
       'Fully timed visits', 'Median labour hrs', 'Avg labour hrs', 'Avg BH', 'Median efficiency %', 'Avg efficiency %',
       'Fully-timed efficiency %', 'Division median %', 'Vs division (median) %', 'Division avg %', 'Vs division (avg) %',
-      'Measured share of hours %', 'Trend (pts)', 'Avg/median disagree', 'Reliable'],
+      'Measured share of hours %', 'Trend (pts)', 'Avg/median disagree', 'Multi-crew', 'Reliable'],
     ...rows.map(r => [
       r.clientName, r.address, r.jobNumber, r.jobTitle, r.serviceType, r.division, r.crews.join(' / '), r.lush ? 'yes' : '',
       r.visits, r.bhVisits, r.fullVisits, n2(r.medianLabour), n2(r.avgLabour), n2(r.avgBh), pct(r.medianEfficiency),
       pct(r.efficiency), pct(r.fullEfficiency), pct(r.divisionMedian), pct(r.vsDivision), pct(r.divisionAvg),
       pct(r.vsDivisionAvg), pct(r.measuredShare), r.trendDelta == null ? '' : (r.trendDelta * 100).toFixed(1),
-      r.skewed ? 'yes' : '', r.reliable ? 'yes' : 'not yet',
+      r.skewed ? 'yes' : '', r.multiCrewVisits ? `${r.multiCrewVisits} visits, ${r.multiCrewNote}` : '', r.reliable ? 'yes' : 'not yet',
     ]),
   ]);
 }
@@ -323,10 +339,11 @@ export function jobsCsv(rows: JobRow[]): string {
 export function visitsCsv(recs: JobTimingRecord[]): string {
   return toCsv([
     ['Date', 'Address', 'Client', 'Title', 'Job #', 'Service type', 'Division', 'Crew', 'Crew size', 'Headcount',
-      'Method', 'Measured', 'Labour hrs', 'BH', 'Efficiency %', 'Timed by', 'Lush'],
+      'Method', 'Measured', 'Labour hrs', 'BH compared', 'Visit BH', 'Multi-crew', 'Efficiency %', 'Timed by', 'Lush'],
     ...[...recs].sort((a, b) => a.date.localeCompare(b.date)).map(r => [
       r.date, addressOf(r), r.clientName, r.title, r.jobNumber, serviceTypeOf(r), r.division, r.crewLabel,
-      r.crewSize, r.headcount, r.method, r.quality === 'full' ? 'yes' : 'estimate', n2(r.labourHours), r.bh ?? '',
+      r.crewSize, r.headcount, r.method, r.quality === 'full' ? 'yes' : 'estimate', n2(r.labourHours), r.bh ?? '', r.visitBh ?? r.bh ?? '',
+      r.multiCrew ? `${r.multiCrew.timed} of ${r.multiCrew.assigned} crews timed` : '',
       pct(r.efficiency), Object.values(r.days).flatMap(d => d.people.map(p => `${p.name} ${p.hours.toFixed(2)}h`)).join('; '),
       r.lush ? 'yes' : '',
     ]),

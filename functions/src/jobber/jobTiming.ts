@@ -28,10 +28,12 @@ import {
 } from "./oauth.js";
 import {makeJobberClient, JobberClient, sleep} from "./client.js";
 import {parseBh} from "./bhParser.js";
+import {headcountSplit} from "./bhSplit.js";
 import {torontoBoundariesIso, torontoYmd} from "./torontoDay.js";
 import {
   buildRecord,
   computeLabour,
+  computeMultiCrewDay,
   DayCrew,
   groupByVisitDay,
   JobTimingRecord,
@@ -93,10 +95,15 @@ interface Emp {
   jobberUserId?: string;
   isTestUser?: boolean;
 }
+interface VisitBHSplit {
+  splits: Array<{crewId: string; bh: number}>;
+}
 interface ScheduleContext {
   schedules: Record<string, ScheduleCrew[]>;
   employees: Emp[];
   absences: Record<string, string[]>;
+  // The performance sync's per-crew BH shares for multi-crew visits.
+  visitBHSplits: Record<string, VisitBHSplit>;
 }
 
 type StoredRecord = JobTimingRecord & {
@@ -154,6 +161,7 @@ function dayCrewsFor(
   const empById = new Map(ctx.employees.map((e) => [e.id, e]));
   const absent = new Set(ctx.absences[date] || []);
   return (ctx.schedules[date] || []).map((c) => ({
+    id: c.id,
     key: crewKey(c),
     label: `${c.division} #${c.crewNumber}`,
     division: c.division,
@@ -181,6 +189,7 @@ async function loadScheduleContext(
     schedules?: Record<string, ScheduleCrew[]>;
     employees?: Emp[];
     dailyAbsences?: Record<string, string[]>;
+    visitBHSplits?: Record<string, VisitBHSplit>;
   },
 ): Promise<ScheduleContext> {
   let base = live;
@@ -205,6 +214,7 @@ async function loadScheduleContext(
     schedules,
     employees: base?.employees || [],
     absences: base?.dailyAbsences || {},
+    visitBHSplits: base?.visitBHSplits || {},
   };
 }
 
@@ -322,25 +332,56 @@ function visitEntries(
 
 /**
  * One visit-day's timing: crew picked from THAT day's schedule, then the
- * labour rules.
+ * labour rules. A visit assigned to 2+ crews that day is measured crew by
+ * crew against each crew's BH share — the share the performance sync stored
+ * in visitBHSplits when it matches the day's crews, otherwise the same
+ * headcount split the sync would compute (bhSplit.ts).
  * @param {ScheduleContext} ctx Schedule context.
  * @param {string} date Day the timers started.
  * @param {VisitTimerEntry[]} entries That day's entries.
+ * @param {string} visitId The visit.
  * @param {string[]} assigneeIds Visit assignees.
+ * @param {number | null} visitBh The visit's BH (null: hourly / untagged).
  * @return {VisitDayTiming | null} Timing or null if nothing measurable.
  */
 function timeVisitDay(
   ctx: ScheduleContext,
   date: string,
   entries: VisitTimerEntry[],
+  visitId: string,
   assigneeIds: string[],
+  visitBh: number | null,
 ): VisitDayTiming | null {
+  const dayCrews = dayCrewsFor(ctx, date);
+  const assigneeSet = new Set(assigneeIds);
+  const assigned = dayCrews.filter((c) =>
+    c.assigneeIds.some((a) => assigneeSet.has(a)));
+  if (assigned.length >= 2 && visitBh != null && visitBh > 0) {
+    const ids = new Set(assigned.map((c) => c.id));
+    const stored = ctx.visitBHSplits[visitId]?.splits || [];
+    const storedMatches = stored.length === ids.size &&
+      stored.every((sp) => ids.has(sp.crewId));
+    const split = storedMatches ? stored : headcountSplit(
+      assigned.map((c) => c.id), assigned.map((c) => c.members.length),
+      visitBh,
+    );
+    const shares = new Map(split.map((sp) => [sp.crewId, sp.bh]));
+    const t = computeMultiCrewDay(
+      entries, assigned, shares, storedMatches ? "sync" : "headcount",
+    );
+    return t ? {...t, date, crewSource: "assignee"} : null;
+  }
   const {crews, source} = pickCrews(
-    dayCrewsFor(ctx, date), assigneeIds, entries.map((e) => e.userId),
+    dayCrews, assigneeIds, entries.map((e) => e.userId),
   );
   const t = computeLabour(entries, crews);
   return t ? {...t, date, crewSource: source} : null;
 }
+
+const visitBhOf = (v: VisitDetails): number | null => {
+  const p = parseVisitBh(v);
+  return p && !p.isHourly ? p.bh : null;
+};
 
 const parseVisitBh = (v: VisitDetails) =>
   parseBh(v.title) || parseBh(v.job?.title);
@@ -412,6 +453,7 @@ export async function runJobTimingForDay(args: {
     schedules?: Record<string, ScheduleCrew[]>;
     employees?: Emp[];
     dailyAbsences?: Record<string, string[]>;
+    visitBHSplits?: Record<string, VisitBHSplit>;
   };
 }): Promise<CycleTimingResult> {
   const {client, targetDate} = args;
@@ -489,8 +531,9 @@ export async function runJobTimingForDay(args: {
     const todays = g?.days.get(targetDate);
     if (todays) {
       const t = timeVisitDay(
-        ctx, targetDate, todays,
+        ctx, targetDate, todays, visitId,
         (details.assignedUsers?.nodes || []).map((n) => n.id),
+        visitBhOf(details),
       );
       if (t) days[targetDate] = t;
     }
@@ -622,7 +665,8 @@ export async function runJobTimingSeason(
         if (prev?.days?.[date]) days[date] = prev.days[date];
         continue;
       }
-      const t = timeVisitDay(ctx, date, entries, assignees);
+      const t = timeVisitDay(ctx, date, entries, visitId, assignees,
+        visitBhOf(d));
       if (t) days[date] = t;
     }
     const rec = buildRecord(d, days, parseVisitBh(d));
