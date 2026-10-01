@@ -126,6 +126,7 @@ import { buildMonthlySummary } from './lib/monthlySummary';
 import { decideAuthGate, computeAllowlistUpdate } from './lib/authGate';
 import { seedRefusalReason } from './lib/seedGuard';
 import { checkDocWrite } from './lib/docWriteGuard';
+import { reportDocWriteRefusal } from './lib/docWriteRefusalLog';
 import ContractingStatementDocument from './components/ContractingStatementDocument';
 import { clearJobberConflict } from './lib/clearJobberConflict';
 import { adminEmailsFrom, computeRosterUpdate } from './lib/rosterWrite';
@@ -227,6 +228,18 @@ export default function App() {
   // Crew Today. Reset whenever `user` changes so a new sign-in re-waits.
   const [dataLoaded, setDataLoaded] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // REAL DATA RECEIVED. True only once a snapshot carrying the actual
+  // appData document has been applied. Until then the session holds the
+  // built-in DEMO defaults (John Doe, an empty access list…), and nothing may
+  // be written: on 2026-10-01 a phone that never received the document ran an
+  // automatic save on those defaults and replaced production with them.
+  // `dataLoaded` is not this — it also means "first install seeded".
+  const [realDataReady, setRealDataReady] = useState(false);
+  const realDataRef = useRef(false);
+  // Why the document could not be loaded, when it could not. Shown full-screen
+  // instead of the app: rendering the app on demo data is what made the wipe
+  // possible.
+  const [loadFailure, setLoadFailure] = useState<string | null>(null);
   const [weather, setWeather] = useState<Record<string, any>>({});
   const [toast, setToast] = useState<string | null>(null);
   // Live streams currently down and reconnecting (see lib/resilientListen).
@@ -904,6 +917,8 @@ export default function App() {
   // arriving while the user is on the page is auto-marked, not surfaced as
   // an unread on next leave/return.
   useEffect(() => {
+    // Never on demo data: this is the save that wiped production on 2026-10-01.
+    if (!realDataReady) return;
     if (currentView !== 'bulletins' || !bulletinReadKey) return;
     if (bulletinUnreadCount === 0) return;
     const list: any[] = appData.bulletins || [];
@@ -914,7 +929,7 @@ export default function App() {
       bulletinReads: { ...(appData.bulletinReads || {}), [bulletinReadKey]: newest },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentView, bulletinUnreadCount]);
+  }, [currentView, bulletinUnreadCount, realDataReady]);
 
   // --- TaskMaster badge ----------------------------------------------------
   // Counts tasks assigned to the effective user that haven't been
@@ -941,6 +956,7 @@ export default function App() {
   // timestamp is stale relative to createdAt so concurrent re-renders
   // don't churn the document.
   useEffect(() => {
+    if (!realDataReady) return;   // never acknowledge against demo data
     if (currentView !== 'taskmaster') return;
     const me = (displayEmail || '').trim().toLowerCase();
     if (!me) return;
@@ -960,7 +976,7 @@ export default function App() {
     }
     syncToCloud({ ...appData, tasks: next });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentView, appData.tasks]);
+  }, [currentView, appData.tasks, realDataReady]);
 
   // --- Time-off badges ----------------------------------------------------
   // Admin badge — pending requests this approver hasn't acknowledged
@@ -1000,6 +1016,7 @@ export default function App() {
   // (The approver-side acknowledgment is handled inside TimeMaster
   // now that the approval queue is a tab there, not its own view.)
   useEffect(() => {
+    if (!realDataReady) return;   // never acknowledge against demo data
     if (currentView !== 'timemaster') return;
     const me = (displayEmail || '').trim().toLowerCase();
     if (!me) return;
@@ -1017,7 +1034,7 @@ export default function App() {
     }
     syncToCloud({ ...appData, timeOffRequests: next });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentView, appData.timeOffRequests]);
+  }, [currentView, appData.timeOffRequests, realDataReady]);
 
   // Modal-clobber protection. When the Personnel modal is open and an
   // external write changes appData.employees (awayDates approval) or
@@ -1116,7 +1133,7 @@ export default function App() {
   // edits via another path, rollout backfill creating an already-
   // overdue chunk, etc.).
   useEffect(() => {
-    if (!user || loading) return;
+    if (!user || loading || !realDataReady) return;
     if (isViewingAs) return; // view-only: no background writes while impersonating
     const chunks = appData.mechanicPayChunks || {};
     // Hourly mechanics are excluded from the chunk state machine — if one was
@@ -1147,7 +1164,7 @@ export default function App() {
     // changes to the inputs that matter for the chunk math should
     // trigger this safety net.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appData.timeEntries, appData.employees, appData.mechanicPayChunks, user, loading]);
+  }, [appData.timeEntries, appData.employees, appData.mechanicPayChunks, user, loading, realDataReady]);
 
   // Test User bootstrap. INITIAL_EMPLOYEES seeds the sentinel on
   // fresh installs; this useEffect handles existing Firestore
@@ -1155,7 +1172,7 @@ export default function App() {
   // the snapshot listener will include it and `exists` short-
   // circuits forever after.
   useEffect(() => {
-    if (loading || !user) return;
+    if (loading || !user || !realDataReady) return;
     if (isViewingAs) return; // view-only: don't seed while impersonating
     if (!Array.isArray(appData.employees)) return;
     const exists = appData.employees.some(e => e.isTestUser);
@@ -1178,7 +1195,7 @@ export default function App() {
     };
     saveEmployees([...appData.employees, seed], appData.employees);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appData.employees, user, loading]);
+  }, [appData.employees, user, loading, realDataReady]);
 
   // --- INIT EFFECTS ---
   useEffect(() => {
@@ -1210,6 +1227,9 @@ export default function App() {
     // New sign-in (or sign-out): the next authorization decision for this
     // user is a genuine first check, not a re-check of an active session.
     sessionAuthorizedRef.current = false;
+    realDataRef.current = false;
+    setRealDataReady(false);
+    setLoadFailure(null);
     sessionGateLoggedRef.current = false;
     // Re-wait for this user's first appData snapshot before rendering any
     // role/employee-dependent UI (keeps the loader up; the snapshot handler
@@ -1494,6 +1514,9 @@ export default function App() {
         }
 
         setAppData(newAppData);
+        realDataRef.current = true;
+        setRealDataReady(true);
+        setLoadFailure(null);
       } else {
         // ── FIRST-INSTALL SEED — GUARDED ───────────────────────────────────
         // This branch writes the app's in-memory DEFAULTS over appData/main.
@@ -1536,6 +1559,17 @@ export default function App() {
             + 'is absent from this snapshot but the conditions for a first '
             + 'install are not met. No write attempted.', { refusedBecause: refusal, ...seedFacts },
           );
+          reportDocWriteRefusal({ where: 'seed', reason: String(refusal), email: user.email, detail: JSON.stringify(seedFacts) });
+          // DO NOT fall through to "loaded". The app would render on its demo
+          // defaults with every automatic save live — the 2026-10-01 path. A
+          // cache-only "absent" (offline, nothing cached) is not an answer:
+          // keep the loader up and wait for the server. A server-confirmed
+          // absence with the seed refused is a real fault: say so.
+          if (!snapFromCache && !realDataRef.current) {
+            setLoadFailure('CrewMaster could not find its data on the server. Nothing has been changed. Reload to try again; if this keeps happening, contact an administrator.');
+            setLoading(false);
+          }
+          return;
         }
       }
       // First snapshot applied — role/employee now derive from real data,
@@ -1570,6 +1604,15 @@ export default function App() {
           + `[AUTH-RULES${userEmail ? ` · ${userEmail}` : ''}]`,
         );
         signOut(auth).catch(() => { /* ignore */ });
+      } else if (!realDataRef.current) {
+        // The listener failed BEFORE the document ever arrived. This used to
+        // set dataLoaded and render the app on its demo defaults, with no
+        // listener left to ever correct them — the state the 2026-10-01 wipe
+        // was written from. Show the failure instead; nothing renders, so
+        // nothing can save.
+        setLoadFailure(`CrewMaster couldn't load its data (${(error as { code?: string }).code || error.message}). Nothing has been changed. Check your connection and reload.`);
+        setLoading(false);
+        return;
       } else {
         setErrorMsg(`Cloud connection lost: ${error.message}`);
       }
@@ -2640,6 +2683,14 @@ export default function App() {
       showToastMsg('View Only — exit "View As" to make changes.');
       return false;
     }
+    // NO WRITES BEFORE REAL DATA. Whatever this session holds before the
+    // document arrives is the built-in demo data; saving it is the wipe.
+    if (!realDataRef.current) {
+      console.error('[doc-write] REFUSED — this session has not received the real document yet');
+      reportDocWriteRefusal({ where: 'no-real-data', reason: 'no-real-data', email: user?.email, detail: 'syncToCloud before the appData document arrived' });
+      showToastMsg('⚠️ Still loading — nothing was saved. Try again in a moment.');
+      return false;
+    }
     // Defensive normalize-on-save for authorizedEmails. Firestore rules
     // compare the request token's lowercased email against the stored
     // array AS-IS, so any uppercase/whitespace entry silently denies
@@ -3068,6 +3119,7 @@ export default function App() {
         bytes: JSON.stringify(cleanData).length,
         employees: Array.isArray(cleanData.employees) ? cleanData.employees : [],
         allowlist: Array.isArray(cleanData.authorizedEmails) ? cleanData.authorizedEmails : [],
+        adminEmails: Array.isArray(cleanData.adminEmails) ? cleanData.adminEmails : [],
       },
       serverDocShapeRef.current,
       SUPER_ADMIN_EMAIL,
@@ -3084,6 +3136,18 @@ export default function App() {
         payloadBytes: JSON.stringify(cleanData).length,
         payloadEmployees: Array.isArray(cleanData.employees) ? cleanData.employees.length : 0,
         payloadAllowlist: Array.isArray(cleanData.authorizedEmails) ? cleanData.authorizedEmails.length : 0,
+      });
+      reportDocWriteRefusal({
+        where: 'syncToCloud',
+        reason: verdict.reason || 'unknown',
+        detail: verdict.detail,
+        email: user?.email,
+        payloadBytes: JSON.stringify(cleanData).length,
+        payloadEmployees: Array.isArray(cleanData.employees) ? cleanData.employees.length : 0,
+        payloadAllowlist: Array.isArray(cleanData.authorizedEmails) ? cleanData.authorizedEmails.length : 0,
+        serverBytes: serverDocShapeRef.current?.bytes ?? null,
+        serverEmployees: serverDocShapeRef.current?.employeeCount ?? null,
+        serverAllowlist: serverDocShapeRef.current?.allowlistCount ?? null,
       });
       showToastMsg(
         `⚠️ Save blocked — it would have wiped data (${verdict.reason}). `
@@ -7558,6 +7622,15 @@ export default function App() {
   // rendering role/employee-dependent UI against the seed (admin flashing
   // as worker / "no record"). Signed-out users fall through to the login
   // screen immediately (loading cleared on null user; dataLoaded ignored).
+  if (user && loadFailure && !realDataReady) return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white p-6">
+      <div className="max-w-sm text-center space-y-4">
+        <AlertTriangle className="w-10 h-10 text-amber-400 mx-auto" />
+        <p className="text-sm leading-relaxed">{loadFailure}</p>
+        <button onClick={() => window.location.reload()} className="bg-lime-500 hover:bg-lime-400 text-slate-900 font-black uppercase text-xs tracking-widest px-5 py-3 rounded-lg">Reload</button>
+      </div>
+    </div>
+  );
   if (loading || (user && !dataLoaded)) return <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white"><Loader2 className="w-8 h-8 animate-spin text-lime-500" /></div>;
   
   const handleGoogleLogin = async () => {

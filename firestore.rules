@@ -221,5 +221,26 @@ service cloud.firestore {
       allow read: if isContentAdmin() || isSuperAdmin();
       allow write: if false;
     }
+
+    // REFUSED WRITES — every time a client-side guard (whole-document write
+    // guard, first-install seed guard, real-data gate) refuses a write, the
+    // browser records it here, so an attempted wipe is known about the same
+    // day instead of living only in one phone's console (2026-10-01).
+    // CREATE: any signed-in user — the session being refused may be one the
+    // access list no longer includes, and that is exactly the report we want.
+    // Shape-checked so it cannot be used as general storage. READ: admins.
+    // Never edited or deleted.
+    match /docWriteRefusals/{id} {
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly([
+          'at', 'clientAt', 'where', 'reason', 'detail', 'email',
+          'payloadBytes', 'payloadEmployees', 'payloadAllowlist',
+          'serverBytes', 'serverEmployees', 'serverAllowlist',
+          'online', 'userAgent', 'build', 'url'])
+        && request.resource.data.detail is string
+        && request.resource.data.detail.size() <= 500;
+      allow read: if isContentAdmin() || isSuperAdmin();
+      allow update, delete: if false;
+    }
   }
 }
