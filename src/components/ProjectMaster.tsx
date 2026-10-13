@@ -7,7 +7,7 @@ import { Sliders, Plus, Trash2, DollarSign, TrendingUp, Info, RotateCcw, Save, F
 import { SalesRates, SalesService, SalesMaterial, SalesMaterialUnit, SalesQuote, SalesCustomMaterial } from '../types';
 import {
   computeQuote, computeProfitTable, bhFromPrice, labourCostFor, money, buildQuoteSnapshot, MaterialLine, round2,
-  coverageQty, roundUpHalf, hasCoverage, coverageWorking, priceFirstWorking,
+  coverageQty, roundUpHalf, hasCoverage, coverageWorking, priceFirstWorking, normalizeCustom, customQtyLabel,
 } from '../lib/salesMaster';
 
 interface Props {
@@ -35,7 +35,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
   const [customs, setCustoms] = useState<SalesCustomMaterial[]>([]);
   const patchCustom = (id: string, patch: Partial<SalesCustomMaterial>) =>
     setCustoms(cs => cs.map(c => (c.id === id ? { ...c, ...patch } : c)));
-  const addCustom = () => setCustoms(cs => [...cs, { id: uid('cmat'), description: '', charge: 0 }]);
+  const addCustom = () => setCustoms(cs => [...cs, { id: uid('cmat'), description: '', qty: 1, unitCharge: 0, charge: 0 }]);
   const [bh, setBh] = useState<number>(0);
   const [baselineBH, setBaselineBH] = useState<number>(0);
   const [priceInput, setPriceInput] = useState('');
@@ -105,7 +105,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
   const loadQuote = (sq: SalesQuote) => {
     setServiceId(sq.serviceId);
     setLines(sq.lines.map(l => ({ materialId: l.materialId, qty: l.qty, coverageNote: l.coverageNote, area: l.area, depthInches: l.depthInches })));
-    setCustoms((sq.customMaterials || []).map(c => ({ ...c })));
+    setCustoms((sq.customMaterials || []).map(normalizeCustom));
     setBh(sq.bh); setBaselineBH(sq.bh); setPriceInput(''); setBhDraft(null); setPriceDraft(null);
     setLoadedQuoteId(sq.id); setLoadedQuoteName(sq.name);
     setTab('calculator');
@@ -187,10 +187,13 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
                       );
                     })}
                     {/* CUSTOM (one-off) materials — typed on this quote, not
-                        from the rate sheet. Charge is what the client pays;
-                        cost is optional and admin-only. */}
+                        from the rate sheet. QTY × UNIT CHARGE = the line total
+                        (computed, not typed); a lump sum is qty 1. Unit cost is
+                        optional and admin-only. */}
                     {customs.map(c => {
-                      const costBlank = c.cost == null;
+                      const n = normalizeCustom(c);
+                      const costBlank = n.cost == null;
+                      const num = (v: string) => (v === '' ? undefined : (Number(v) || 0));
                       return (
                         <div key={c.id} className="space-y-1 border-l-4 border-amber-300 pl-2">
                           <div className="flex items-center gap-2 flex-wrap">
@@ -201,29 +204,47 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
                               onChange={e => patchCustom(c.id, { description: e.target.value })}
                               className="flex-1 min-w-[140px] border border-slate-300 rounded-lg p-2 text-sm font-medium"
                             />
-                            <label className="relative" title="Charge — what the client pays">
+                            <button onClick={() => setCustoms(cs => cs.filter(x => x.id !== c.id))} title="Remove custom material" className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-wrap text-sm">
+                            <input
+                              type="number" step="any" inputMode="decimal"
+                              value={c.qty ?? ''} placeholder="1" title="Quantity — leave at 1 for a lump sum"
+                              onChange={e => patchCustom(c.id, { qty: num(e.target.value) })}
+                              className="w-20 border border-slate-300 rounded-lg p-2 text-right"
+                            />
+                            <input
+                              value={c.unit ?? ''} placeholder="unit" title="Unit — sq ft, yards, bags, each…"
+                              onChange={e => patchCustom(c.id, { unit: e.target.value })}
+                              className="w-20 border border-slate-300 rounded-lg p-2"
+                            />
+                            <span className="text-slate-400">@</span>
+                            <label className="relative" title="Unit charge — what the client pays per unit">
                               <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
                               <input
                                 type="number" step="0.01" inputMode="decimal"
-                                value={c.charge || ''} placeholder="charge"
-                                onChange={e => patchCustom(c.id, { charge: Number(e.target.value) || 0 })}
-                                className="w-28 border border-slate-300 rounded-lg p-2 pl-5 text-sm text-right"
+                                value={c.unitCharge || ''} placeholder="unit charge"
+                                onChange={e => patchCustom(c.id, { unitCharge: Number(e.target.value) || 0 })}
+                                className="w-28 border border-slate-300 rounded-lg p-2 pl-5 text-right"
                               />
                             </label>
                             {isAdmin && (
-                              <label className="relative" title="Cost to us — optional. Leave blank if unknown.">
+                              <label className="relative" title="Unit cost to us — optional. Leave blank if unknown.">
                                 <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
                                 <input
                                   type="number" step="0.01" inputMode="decimal"
-                                  value={c.cost ?? ''} placeholder="cost (optional)"
-                                  onChange={e => patchCustom(c.id, { cost: e.target.value === '' ? undefined : (Number(e.target.value) || 0) })}
-                                  className="w-32 border border-slate-300 rounded-lg p-2 pl-5 text-sm text-right"
+                                  value={c.unitCost ?? ''} placeholder="unit cost (opt.)"
+                                  onChange={e => patchCustom(c.id, { unitCost: num(e.target.value) })}
+                                  className="w-32 border border-slate-300 rounded-lg p-2 pl-5 text-right"
                                 />
                               </label>
                             )}
-                            <button onClick={() => setCustoms(cs => cs.filter(x => x.id !== c.id))} title="Remove custom material" className="text-slate-300 hover:text-rose-500"><Trash2 className="w-4 h-4" /></button>
+                            <span className="ml-auto text-[12px] text-slate-500 whitespace-nowrap">
+                              = <span className="font-mono font-bold text-slate-700">{money(n.charge)}</span>
+                              {isAdmin && !costBlank && <span className="text-slate-400"> · cost {money(n.cost!)}</span>}
+                            </span>
                           </div>
-                          {isAdmin && costBlank && (c.charge || 0) !== 0 && (
+                          {isAdmin && costBlank && n.charge !== 0 && (
                             <div className="text-[10px] font-bold text-amber-700 pl-1">No cost entered — margin on this line is unknown. It is left out of the profit figures, not counted as profit.</div>
                           )}
                         </div>
@@ -343,7 +364,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
                     <div key={c.id} className="flex justify-between text-slate-600 border-l-4 border-amber-300 pl-2">
                       <span className="flex items-center gap-1.5 min-w-0">
                         <span className="text-[9px] font-black uppercase tracking-widest text-amber-700 bg-amber-50 border border-amber-200 rounded px-1 shrink-0">custom</span>
-                        <span className="truncate">{c.description.trim() || <span className="italic text-slate-400">untitled</span>}</span>
+                        <span className="truncate">{c.description.trim() || <span className="italic text-slate-400">untitled</span>}{customQtyLabel(c) && ` — ${customQtyLabel(c)}`}</span>
                       </span>
                       <span className="font-mono">{money(c.charge)}</span>
                     </div>
@@ -387,7 +408,7 @@ export default function ProjectMaster({ rates, quotes, isAdmin, currentUser, onS
                   <div className="mb-3 rounded-lg border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-200">
                     <div className="font-black text-amber-300">Margin unknown on {profit.excludedLines.length} custom line{profit.excludedLines.length === 1 ? '' : 's'} — no cost entered</div>
                     <ul className="mt-0.5">
-                      {profit.excludedLines.map(c => <li key={c.id}>· {c.description.trim() || 'untitled'} — {money(c.charge)} charge</li>)}
+                      {profit.excludedLines.map(c => <li key={c.id}>· {c.description.trim() || 'untitled'}{customQtyLabel(c) && ` — ${customQtyLabel(c)}`} — {money(c.charge)} charge</li>)}
                     </ul>
                     <div className="mt-1 text-amber-100/80">
                       The figures below cover the rest of the job: {money(profit.revenue)} of the {money(q.quoteTotal)} total.

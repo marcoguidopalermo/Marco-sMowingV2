@@ -7,7 +7,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
-  bhFromPrice, buildQuoteSnapshot, computeProfitTable, computeQuote, DEFAULT_SALES_RATES,
+  bhFromPrice, buildQuoteSnapshot, computeProfitTable, computeQuote, customQtyLabel, DEFAULT_SALES_RATES,
   priceFirstWorking, priceFromBH, profitRevenue,
 } from './salesMaster';
 import type { SalesCustomMaterial, SalesRates } from '../types';
@@ -31,7 +31,7 @@ test('the charge is in materials, the total, and the breakdown split', () => {
   assert.equal(q.materialsCharged, 2500);
   assert.equal(q.labourCharge, 2400);
   assert.equal(q.quoteTotal, 4900);
-  assert.deepEqual(q.customLines, [{ id: 'c1', description: 'Artificial turf', charge: 1500 }]);
+  assert.deepEqual(q.customLines, [{ id: 'c1', description: 'Artificial turf', qty: 1, unitCharge: 1500, charge: 1500 }]);
 });
 
 test('price ⇄ BH identity holds with the custom charge in materials', () => {
@@ -107,8 +107,8 @@ test('a saved quote keeps its custom lines (charge and cost) and reopens to the 
   const q = computeQuote(SOD, LINES, 20, RATES, [{ ...TURF, cost: 1100 }, { id: 'c2', description: 'Boulder', charge: 400 }]);
   const snap = buildQuoteSnapshot('quote-1', 'Backyard', SOD, q, RATES);
   assert.deepEqual(snap.customMaterials, [
-    { id: 'c1', description: 'Artificial turf', charge: 1500, cost: 1100 },
-    { id: 'c2', description: 'Boulder', charge: 400 },
+    { id: 'c1', description: 'Artificial turf', qty: 1, unitCharge: 1500, charge: 1500, unitCost: 1100, cost: 1100 },
+    { id: 'c2', description: 'Boulder', qty: 1, unitCharge: 400, charge: 400 },
   ]);
   const reopened = computeQuote(SOD, snap.lines.map(l => ({ materialId: l.materialId, qty: l.qty })), snap.bh, RATES, snap.customMaterials);
   assert.equal(reopened.quoteTotal, snap.quoteTotal);
@@ -128,4 +128,81 @@ test('custom lines never touch the rate sheet', () => {
   computeProfitTable(q, SOD, RATES);
   assert.equal(JSON.stringify(RATES), before);
   assert.equal(RATES.materials.some(m => /turf/i.test(m.name)), false);
+});
+
+console.log('\nQuantity × unit charge');
+// "Artificial turf — 300 sq ft × $5.00 = $1,500" — the same turf as above,
+// entered by the unit instead of as a lump sum.
+const TURF_QTY: SalesCustomMaterial = { id: 'c1', description: 'Artificial turf', qty: 300, unit: 'sq ft', unitCharge: 5, charge: 0 };
+
+test('the line total is qty × unit charge — a typed charge is ignored', () => {
+  const q = computeQuote(SOD, LINES, 20, RATES, [{ ...TURF_QTY, charge: 99999 }]);
+  assert.equal(q.customLines[0].charge, 1500);
+  assert.equal(q.customMaterialsCharged, 1500);
+  assert.equal(q.materialsCharged, 2500);
+  assert.equal(q.quoteTotal, 4900);
+});
+
+test('by-the-unit and lump-sum entries of the same turf give identical quotes and profit', () => {
+  const a = computeQuote(SOD, LINES, 20, RATES, [{ ...TURF_QTY, unitCost: 11 / 3 }]);
+  const b = computeQuote(SOD, LINES, 20, RATES, [{ ...TURF, cost: 1100 }]);
+  assert.equal(a.quoteTotal, b.quoteTotal);
+  assert.equal(a.materialsCost, b.materialsCost);
+  assert.deepEqual(computeProfitTable(a, SOD, RATES).cols, computeProfitTable(b, SOD, RATES).cols);
+});
+
+test('unit cost: line cost = qty × unit cost, all three scenarios', () => {
+  const q = computeQuote(SOD, LINES, 20, RATES, [{ ...TURF_QTY, unitCost: 3.5 }]);
+  assert.equal(q.customLines[0].cost, 1050);
+  assert.equal(q.materialsCost, 740 + 1050);
+  // 4900 − (1790 + 600/750/1000)
+  assert.deepEqual(computeProfitTable(q, SOD, RATES).cols.map(c => c.gp), [2510, 2360, 2110]);
+});
+
+test('unit cost blank: margin unknown, the line total is left out of profit', () => {
+  const q = computeQuote(SOD, LINES, 20, RATES, [TURF_QTY]);
+  const pt = computeProfitTable(q, SOD, RATES);
+  assert.equal(q.unknownCostCharge, 1500);
+  assert.equal(pt.revenue, 3400);
+  assert.deepEqual(pt.cols.map(c => c.gp), [2060, 1910, 1660]);
+});
+
+test('price ⇄ BH and price-first use the computed line total', () => {
+  const q = computeQuote(SOD, LINES, 20, RATES, [TURF_QTY]);
+  assert.equal(bhFromPrice(6100, q.materialsCharged, q.serviceRate), 30);
+  assert.match(priceFirstWorking(6100, q.materialsCharged, q.serviceRate).working, /− \$2,500\.00 materials/);
+});
+
+test('blank qty is the default 1; qty 0 is zero', () => {
+  assert.equal(computeQuote(SOD, [], 0, RATES, [{ ...TURF_QTY, qty: undefined }]).customLines[0].charge, 5);
+  assert.equal(computeQuote(SOD, [], 0, RATES, [{ ...TURF_QTY, qty: 0 }]).customLines[0].charge, 0);
+});
+
+test('a saved quantity line reopens with its qty, unit and prices', () => {
+  const q = computeQuote(SOD, LINES, 20, RATES, [{ ...TURF_QTY, unitCost: 3.5 }]);
+  const snap = buildQuoteSnapshot('quote-3', 'Turf', SOD, q, RATES);
+  assert.deepEqual(snap.customMaterials, [
+    { id: 'c1', description: 'Artificial turf', qty: 300, unit: 'sq ft', unitCharge: 5, charge: 1500, unitCost: 3.5, cost: 1050 },
+  ]);
+  const reopened = computeQuote(SOD, LINES, 20, RATES, snap.customMaterials);
+  assert.equal(reopened.quoteTotal, snap.quoteTotal);
+  assert.equal(reopened.materialsCost, q.materialsCost);
+});
+
+test('a lump-sum line saved before quantities existed reads as 1 × its amount', () => {
+  // Exactly the stored shape of a pre-quantity quote.
+  const old = [{ id: 'c1', description: 'Artificial turf', charge: 1500, cost: 1100 }, { id: 'c2', description: 'Boulder', charge: 400 }];
+  const q = computeQuote(SOD, LINES, 20, RATES, old);
+  assert.equal(q.quoteTotal, 5300);
+  assert.equal(q.materialsCost, 1840);
+  assert.equal(q.unknownCostCharge, 400);
+  assert.deepEqual(q.customLines.map(c => [c.qty, c.unitCharge, c.charge, c.cost]), [[1, 1500, 1500, 1100], [1, 400, 400, undefined]]);
+  assert.deepEqual(q.customLines.map(customQtyLabel), ['', '']);   // breakdown reads as before
+});
+
+test('breakdown label: "300 sq ft @ $5.00"', () => {
+  assert.equal(customQtyLabel({ qty: 300, unit: 'sq ft', unitCharge: 5 }), '300 sq ft @ $5.00');
+  assert.equal(customQtyLabel({ qty: 12, unitCharge: 8.5 }), '12 @ $8.50');
+  assert.equal(customQtyLabel({ qty: 1, unit: 'each', unitCharge: 400 }), '1 each @ $400.00');
+  assert.equal(customQtyLabel({ qty: 1, unitCharge: 400 }), '');
 });

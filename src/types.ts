@@ -2080,11 +2080,19 @@ export interface SalesQuoteLine {
 // the rate sheet and never added to it. `charge` is what the client pays.
 // `cost` is optional: absent means UNKNOWN — never zero — and the profit panel
 // says so rather than counting the whole charge as profit.
+// A one-off material typed on a quote. The entered fields are qty, unit,
+// unitCharge and (optional) unitCost; charge and cost are the LINE TOTALS
+// (qty × unit figure), computed by computeQuote — never typed. An older line
+// saved before qty existed has only charge/cost: it reads as 1 × that amount.
 export interface SalesCustomMaterial {
   id: string;
   description: string;
-  charge: number;
-  cost?: number;
+  qty?: number;          // defaults to 1
+  unit?: string;         // free text — sq ft, yards, bags, each…
+  unitCharge?: number;
+  unitCost?: number;     // blank = unknown, not zero
+  charge: number;        // line total charge
+  cost?: number;         // line total cost, only when unitCost is known
 }
 export interface SalesQuote {
   id: string;

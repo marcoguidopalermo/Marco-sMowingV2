@@ -82,7 +82,8 @@ export interface QuoteBreakdown {
   bh: number;
   serviceRate: number;
   lines: MaterialLineDetail[];
-  // One-off materials typed on the quote, as entered (charge rounded to cents).
+  // One-off materials typed on the quote, normalized (see normalizeCustom):
+  // charge/cost are the computed line totals.
   customLines: SalesCustomMaterial[];
   presetMaterialsCharged: number;
   customMaterialsCharged: number;
@@ -96,6 +97,34 @@ export interface QuoteBreakdown {
 export function customCost(c: Pick<SalesCustomMaterial, 'cost'>): number | null {
   const v = c.cost;
   return v == null || !Number.isFinite(Number(v)) ? null : Number(v);
+}
+
+const finiteOrNull = (v: unknown): number | null =>
+  v == null || (v as unknown) === '' || !Number.isFinite(Number(v)) ? null : Number(v);
+
+// A custom line in its quantity form, with the line totals computed from it:
+//   charge = qty × unitCharge, cost = qty × unitCost (only when unitCost known).
+// A line saved before qty existed ({ charge, cost? } only) is 1 × its amount,
+// so it totals exactly as it did. A blank qty is the default 1.
+export function normalizeCustom(c: SalesCustomMaterial): SalesCustomMaterial {
+  const legacy = c.qty == null && c.unitCharge == null;
+  const qty = finiteOrNull(c.qty) ?? 1;
+  const unitCharge = finiteOrNull(legacy ? c.charge : c.unitCharge) ?? 0;
+  const unitCost = finiteOrNull(legacy ? c.cost : c.unitCost);
+  const line: SalesCustomMaterial = { id: c.id, description: c.description || '', qty, unitCharge, charge: round2(qty * unitCharge) };
+  const unit = (c.unit || '').trim();
+  if (unit) line.unit = unit;
+  if (unitCost != null) { line.unitCost = unitCost; line.cost = round2(qty * unitCost); }
+  return line;
+}
+
+// "300 sq ft @ $5.00" — or '' for a plain lump sum (qty 1, no unit), which
+// displays exactly as it did before quantities existed.
+export function customQtyLabel(c: Pick<SalesCustomMaterial, 'qty' | 'unit' | 'unitCharge'>): string {
+  const qty = c.qty ?? 1;
+  const unit = (c.unit || '').trim();
+  if (qty === 1 && !unit) return '';
+  return `${qty.toLocaleString('en-US', { maximumFractionDigits: 3 })}${unit ? ` ${unit}` : ''} @ ${money(Number(c.unitCharge) || 0)}`;
 }
 
 // Base quote from service + material lines + budgeted BH.
@@ -129,11 +158,11 @@ export function computeQuote(
   const unknownCostLines: SalesCustomMaterial[] = [];
   let customMaterialsCharged = 0;
   let unknownCostCharge = 0;
-  for (const c of customMaterials) {
-    const charge = round2(Number(c.charge) || 0);
-    const line: SalesCustomMaterial = { id: c.id, description: c.description, charge };
-    const cost = customCost(c);
-    if (cost != null) { line.cost = round2(cost); materialsCost += line.cost; }
+  for (const c of customMaterials || []) {
+    const line = normalizeCustom(c);
+    const charge = line.charge;
+    const cost = customCost(line);
+    if (cost != null) materialsCost += cost;
     customLines.push(line);
     customMaterialsCharged += charge;
     if (cost == null && charge !== 0) { unknownCostLines.push(line); unknownCostCharge += charge; }
