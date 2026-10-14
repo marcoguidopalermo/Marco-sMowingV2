@@ -2,10 +2,13 @@ rules_version = '2';
 
 // Firebase Storage rules for crewmaster-73f31.
 // Principles:
-//   - Only signed-in users can read or write anything.
+//   - Only users ON THE ALLOWLIST can read or write anything. Signed in is
+//     not enough: email/password sign-up is open, so anyone can create a
+//     Firebase account (2026-10-14). Same allowlist and super-admin bypass as
+//     firestore.rules isAuthorized(); read cross-service from Firestore.
 //   - Writes are confined to the app's known path prefixes.
 //   - Every uploaded object must be an image or a PDF, <= 10 MB.
-//   - Deletes are allowed for signed-in users (app enforces
+//   - Deletes are allowed for allowlisted users (app enforces
 //     uploader/admin at the UI + metadata layer; Storage just gates auth).
 // Path conventions (keep in sync with src/lib/storage.ts):
 //   repairs/{taskId}/{timestamp}-{filename}
@@ -16,8 +19,13 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
 
-    function signedIn() {
-      return request.auth != null;
+    function onAllowlist() {
+      // token.get(): anonymous accounts have no email claim at all.
+      return request.auth != null
+        && request.auth.token.get('email', '') != ''
+        && (request.auth.token.email.lower() == 'marcoguidopalermo@gmail.com'
+          || request.auth.token.email.lower() in
+            firestore.get(/databases/(default)/documents/artifacts/crewmaster/public/data/appData/main).data.authorizedEmails);
     }
 
     // Upload guard: image/* or application/pdf, capped at 10 MB.
@@ -31,39 +39,39 @@ service firebase.storage {
 
     // Repair photos (MechanicMaster) — the first live surface.
     match /repairs/{taskId}/{fileName} {
-      allow read: if signedIn();
-      allow write: if signedIn() && validUpload();
-      allow delete: if signedIn();
+      allow read: if onAllowlist();
+      allow write: if onAllowlist() && validUpload();
+      allow delete: if onAllowlist();
     }
 
     // Fleet documents (registration, insurance, safety certs, etc.).
     match /fleet/{unitId}/{docType}/{fileName} {
-      allow read: if signedIn();
-      allow write: if signedIn() && validUpload();
-      allow delete: if signedIn();
+      allow read: if onAllowlist();
+      allow write: if onAllowlist() && validUpload();
+      allow delete: if onAllowlist();
     }
 
     // Company / HR policy documents.
     match /policies/{policyId}/{fileName} {
-      allow read: if signedIn();
-      allow write: if signedIn() && validUpload();
-      allow delete: if signedIn();
+      allow read: if onAllowlist();
+      allow write: if onAllowlist() && validUpload();
+      allow delete: if onAllowlist();
     }
 
     // RoleMaster duty-completion photos.
     match /roleMaster/{instanceId}/{fileName} {
-      allow read: if signedIn();
-      allow write: if signedIn() && validUpload();
-      allow delete: if signedIn();
+      allow read: if onAllowlist();
+      allow write: if onAllowlist() && validUpload();
+      allow delete: if onAllowlist();
     }
 
     // ContractingMaster (Palermo's) — receipt/material photos and work-order
     // photos. Namespaced under contracting/ (e.g. contracting/{projectId}/...
-    // and contracting/wo-{workOrderId}/...). Own tenant, same auth gate.
+    // and contracting/wo-{workOrderId}/...). Own tenant, same allowlist gate.
     match /contracting/{scope}/{fileName} {
-      allow read: if signedIn();
-      allow write: if signedIn() && validUpload();
-      allow delete: if signedIn();
+      allow read: if onAllowlist();
+      allow write: if onAllowlist() && validUpload();
+      allow delete: if onAllowlist();
     }
 
     // SnowMaster commercial contract site maps — aerial + street view for the
@@ -71,9 +79,9 @@ service firebase.storage {
     // compressed client-side to 1600px on the long edge before upload, so the
     // 10 MB guard is a backstop rather than the working limit.
     match /snowContracts/{contractId}/{fileName} {
-      allow read: if signedIn();
-      allow write: if signedIn() && validUpload();
-      allow delete: if signedIn();
+      allow read: if onAllowlist();
+      allow write: if onAllowlist() && validUpload();
+      allow delete: if onAllowlist();
     }
 
     // Everything else: locked down.
