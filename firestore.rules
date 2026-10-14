@@ -24,8 +24,26 @@ service cloud.firestore {
     }
 
     // All artifacts (public app data + private subcollections) require auth.
+    //
+    // ONE EXCEPTION (roles step 3): appData/main.adminEmails is the old admin
+    // mirror, still read by isContentAdmin() until step 4. Only the server
+    // (setUserRole, Admin SDK) may change it. A client — including an old
+    // version of the app with a stale roster — may not change it, may not
+    // create the document carrying it, and may not delete the document (a
+    // delete + re-create would otherwise forge it). Ordinary saves that carry
+    // it back unchanged pass, because diff() only lists keys whose VALUE
+    // changed. Every other artifacts path is exactly as before.
+    function isAppDataMain() {
+      return request.path == /databases/$(database)/documents/artifacts/crewmaster/public/data/appData/main;
+    }
     match /artifacts/{document=**} {
-      allow read, write: if isAuthorized() || isSuperAdmin();
+      allow read: if isAuthorized() || isSuperAdmin();
+      allow create: if (isAuthorized() || isSuperAdmin())
+        && !(isAppDataMain() && 'adminEmails' in request.resource.data);
+      allow update: if (isAuthorized() || isSuperAdmin())
+        && !(isAppDataMain()
+          && request.resource.data.diff(resource.data).affectedKeys().hasAny(['adminEmails']));
+      allow delete: if (isAuthorized() || isSuperAdmin()) && !isAppDataMain();
     }
 
     // SnowMaster commercial contracts. These are CLIENT-FACING legal
@@ -136,7 +154,11 @@ service cloud.firestore {
     // (only the server, via setUserRole). appData.adminEmails lives on a
     // document every authorized user can write, so it can't be trusted.
     //
-    // STEP 2 (now): DUAL-READ. An admin is anyone in access/roles.admins OR in
+    // STEP 3: clients can no longer change adminEmails at all (see the
+    // artifacts/** rule) — only setUserRole, which keeps it equal to
+    // access/roles.admins.
+    //
+    // STEP 2 (still in force): DUAL-READ. An admin is anyone in access/roles.admins OR in
     // the old appData.adminEmails, so nobody loses access while the writers
     // switch over. Each half is guarded with exists()/get(..., default) so a
     // missing document or field makes that half false, never an error.

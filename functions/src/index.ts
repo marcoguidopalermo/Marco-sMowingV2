@@ -17,6 +17,7 @@ export const helloJobber = onCall(
 );
 
 export {checkEmailAuthorized, blockUnlistedSignUp} from "./authGate.js";
+export {setUserRole, accessDriftCheck} from "./access.js";
 export {
   registerPushToken,
   pushAnnouncement,

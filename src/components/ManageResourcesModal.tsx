@@ -175,6 +175,10 @@ interface ManageResourcesModalProps {
   localPartialTimeOff: PartialTimeOffDraft[];
   setLocalPartialTimeOff: Dispatch<SetStateAction<PartialTimeOffDraft[]>>;
   isAdmin: boolean;
+  /** Roles step 3: role changes go to the server (setUserRole), never a roster save. */
+  onChangeRole: (employeeId: string, role: UserRole) => Promise<boolean>;
+  /** Ids of employees that exist on the server (the rest are new, unsaved). */
+  persistedEmployeeIds: Set<string>;
   isSuperAdmin: boolean;
   currentUserRole: UserRole;
   jobberUsersList: JobberUser[];
@@ -217,6 +221,8 @@ export default function ManageResourcesModal({
   localPartialTimeOff,
   setLocalPartialTimeOff,
   isAdmin,
+  onChangeRole,
+  persistedEmployeeIds,
   isSuperAdmin,
   currentUserRole,
   jobberUsersList,
@@ -225,6 +231,7 @@ export default function ManageResourcesModal({
   ClassAIcon,
   SkidSteerIcon,
 }: ManageResourcesModalProps) {
+  const [roleBusyId, setRoleBusyId] = useState<string | null>(null);
   const canManageJobber =
     isSuperAdmin || (isAdmin && can('canManageJobberIntegration', currentUserRole));
   const storageStats = useStorageStats();
@@ -472,9 +479,29 @@ export default function ManageResourcesModal({
                       <div className="w-44">
                         <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 block mb-1">System Role</label>
                         <select
-                          disabled={!isAdmin}
+                          disabled={!isAdmin || roleBusyId === emp.id}
                           value={emp.systemRole || 'worker'}
-                          onChange={e => { const ne = [...localEmployees]; ne[idx].systemRole = e.target.value as any; setLocalEmployees(ne); }}
+                          onChange={async e => {
+                            // Roles step 3: a saved employee's role changes on
+                            // the server, immediately (setUserRole) — a roster
+                            // save can't change it. A new, unsaved employee
+                            // gets a local role, but not admin/manager.
+                            const role = e.target.value as UserRole;
+                            const label = e.target.selectedOptions[0]?.text || role;
+                            if (!persistedEmployeeIds.has(emp.id)) {
+                              if (role === 'admin' || role === 'manager') {
+                                showToastMsg('Save the new employee first, then set Admin or Manager.');
+                                return;
+                              }
+                              const ne = [...localEmployees]; ne[idx].systemRole = role; setLocalEmployees(ne);
+                              return;
+                            }
+                            if (!window.confirm(`Change ${emp.name || 'this employee'}'s role to ${label}? This takes effect immediately.`)) return;
+                            setRoleBusyId(emp.id);
+                            const ok = await onChangeRole(emp.id, role);
+                            setRoleBusyId(null);
+                            if (ok) setLocalEmployees(prev => prev.map(x => (x.id === emp.id ? { ...x, systemRole: role } : x)));
+                          }}
                           className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-lime-400 disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed"
                         >
                           <option value="admin">Admin</option>

@@ -33,7 +33,7 @@ import {
 import { processMaintenanceForHourUpdate, processMaintenanceForOdometerUpdate, resetMaintenanceItem, isKmMaintenanceUnit, isHourMaintenanceUnit } from './lib/maintenanceUtils';
 import { processPayChunksOnTimeUpdate, isHourlyMechanic } from './lib/payChunkUtils';
 import { assigneesForTask } from './lib/workCredit';
-import { can, canForCrew, resolveRole, canAccessView, firstAccessibleView, defaultLandingView, AppView, setPermissionOverrides, ROLE_PERMISSIONS } from './lib/permissions';
+import { can, canForCrew, canAccessView, firstAccessibleView, defaultLandingView, AppView, setPermissionOverrides, ROLE_PERMISSIONS } from './lib/permissions';
 import { getResourceAvailability, describeUnavailability, ResourceType } from './lib/availability';
 import AIInsightModal from './components/AIInsightModal';
 import ManualTaskModal from './components/ManualTaskModal';
@@ -130,6 +130,7 @@ import { reportDocWriteRefusal } from './lib/docWriteRefusalLog';
 import ContractingStatementDocument from './components/ContractingStatementDocument';
 import { clearJobberConflict } from './lib/clearJobberConflict';
 import { adminEmailsFrom, computeRosterUpdate } from './lib/rosterWrite';
+import { AccessRoles, effectiveRoleFromAccess, parseAccessRoles, preserveServerRoles } from './lib/accessRoles';
 import {
   validatePayment, reconstructPaymentsFromPaidFlags, invoiceSettlement,
   planCreditApplication,
@@ -347,6 +348,13 @@ export default function App() {
   // updateDoc on this one field. It is deliberately not editable via the
   // whole-document path at all.
   const serverAuthorizedEmailsRef = useRef<string[]>([]);
+  // ROLES (rollout step 3): access/roles is who is an admin or manager. The
+  // roster's systemRole only counts for the other roles. null until loaded.
+  const [accessRoles, setAccessRoles] = useState<AccessRoles | null>(null);
+  // The server's adminEmails, verbatim. Whole-document saves carry it back
+  // unchanged — the rules refuse any client write that changes it; only
+  // setUserRole (server) does.
+  const serverAdminEmailsRef = useRef<string[] | null>(null);
   // THE ROSTER, as the server last reported it. Same reasoning as the allowlist
   // above, and for the highest-consequence field on the document: employees
   // carries payMode and hourlyRate (what somebody is paid) and linkedUserEmail
@@ -741,7 +749,12 @@ export default function App() {
   const realCurrentUserEmployee: Employee | null = realCurrentEmail
     ? (appData.employees.find(e => normalizeEmail(e.linkedUserEmail) === realCurrentEmail) || null)
     : null;
-  const realCurrentUserRole: UserRole = isSuperAdmin ? 'admin' : resolveRole(realCurrentUserEmployee);
+  const realCurrentUserRole: UserRole = isSuperAdmin
+    ? 'admin'
+    : effectiveRoleFromAccess(realCurrentUserEmployee?.systemRole, realCurrentEmail, accessRoles);
+  // Any roster record's role, with admin/manager taken from access/roles.
+  const roleOf = (emp: Employee | null | undefined): UserRole =>
+    effectiveRoleFromAccess(emp?.systemRole, emp?.linkedUserEmail || emp?.email, accessRoles);
 
   // Test User impersonation. The sentinel Employee record is found
   // by flag, not by id, so a renamed record keeps working. Only
@@ -775,7 +788,7 @@ export default function App() {
     ? impersonatedEmployee
     : realCurrentUserEmployee;
   const currentUserRole: UserRole = isImpersonatingIdentity
-    ? resolveRole(impersonatedEmployee)
+    ? roleOf(impersonatedEmployee)
     : realCurrentUserRole;
   const displayEmail = isImpersonatingIdentity
     ? (impersonatedEmployee!.linkedUserEmail || impersonatedEmployee!.email || realDisplayEmail)
@@ -787,7 +800,7 @@ export default function App() {
   // VIEW PERMISSIONS (admin's role/employee switcher). Identity
   // impersonation supersedes the simple role switcher.
   const effectiveRole: UserRole = isImpersonatingIdentity
-    ? resolveRole(impersonatedEmployee)
+    ? roleOf(impersonatedEmployee)
     : ((realCurrentUserRole === 'admin' && viewAsRole) ? viewAsRole : realCurrentUserRole);
   const isViewingAs =
     isImpersonatingIdentity ||
@@ -1281,6 +1294,7 @@ export default function App() {
         // colour-backfilled copy below: this is what the document actually
         // holds, and writing it back must be a no-op.
         serverEmployeesRef.current = (Array.isArray(data.employees) ? data.employees : []) as Employee[];
+        serverAdminEmailsRef.current = Array.isArray(data.adminEmails) ? data.adminEmails as string[] : null;
         // Track the server's allowlist verbatim (normalized) for the doc write.
         serverAuthorizedEmailsRef.current = Array.from(
           new Set((Array.isArray(data.authorizedEmails) ? data.authorizedEmails : [])
@@ -1624,6 +1638,11 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
+    const rolesUnsub = onSnapshot(
+      doc(db, 'access', 'roles'),
+      snap => setAccessRoles(snap.exists() ? parseAccessRoles(snap.data()) : null),
+      () => setAccessRoles(null),
+    );
     const authRef = doc(db, 'artifacts', appId, 'private', 'data', 'jobberAuth', 'main');
     const usersRef = doc(db, 'artifacts', appId, 'private', 'data', 'jobberUsers', 'main');
     const unsubAuth = onSnapshot(
@@ -1639,7 +1658,7 @@ export default function App() {
       },
       () => setJobberUsers([]),
     );
-    return () => { unsubAuth(); unsubUsers(); };
+    return () => { rolesUnsub(); unsubAuth(); unsubUsers(); };
   }, [user]);
 
   // CAPACITY CALENDAR: live listeners on the forward forecast snapshots —
@@ -3048,7 +3067,11 @@ export default function App() {
       // Derived here from the SAME roster this write is about to persist, so
       // it cannot drift from it and every save self-heals the field. Never
       // taken from the caller: a stale client cannot narrow who is an admin.
-      adminEmails: adminEmailsFrom(
+      //
+      // Roles step 3: carried back VERBATIM from the server once known — the
+      // rules now refuse a client write that changes it (only setUserRole
+      // can). Derived only before the first snapshot (seed / first write).
+      adminEmails: serverAdminEmailsRef.current ?? adminEmailsFrom(
         (serverEmployeesRef.current ?? safeData.employees) as Employee[],
       ),
       // Likewise: a whole-document save can no longer change any setting, any
@@ -4539,10 +4562,13 @@ export default function App() {
     if (serverEmployeesRef.current === null) {
       return (await syncToCloud({ ...appData, employees: nextList })) !== false;
     }
+    // Roles step 3: a roster save never changes anyone's role (stale copies
+    // can't re-add a demoted admin; nobody promotes themselves). Roles change
+    // only through setUserRole.
     const plan = computeRosterUpdate<Employee>({
       serverList: serverEmployeesRef.current,
       baseline,
-      next: nextList,
+      next: preserveServerRoles(nextList, serverEmployeesRef.current),
     });
     if (plan.refused) {
       // Loud: this is pay and account-binding data, and a refusal here means
@@ -4562,16 +4588,12 @@ export default function App() {
       return false;
     }
     if (plan.noop) return true;
-    // adminEmails travels WITH the roster in one write. Firestore rules cannot
-    // find an admin inside an array of employee maps, so the rule protecting
-    // efficiency adjustments reads this list instead — and a list written by
-    // any path other than the one that changes the roster would eventually
-    // disagree with it.
-    const nextAdminEmails = adminEmailsFrom(plan.finalList);
+    // Roles step 3: adminEmails is no longer written here. Roles can't change
+    // in a roster save (above), and the rules refuse any client change to
+    // adminEmails — setUserRole keeps it equal to access/roles.
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'), {
         employees: plan.finalList,
-        adminEmails: nextAdminEmails,
       });
     } catch (err: any) {
       console.error('roster save failed', err);
@@ -4582,6 +4604,23 @@ export default function App() {
     serverEmployeesRef.current = plan.finalList;
     setAppData(prev => ({ ...prev, employees: plan.finalList }));
     return true;
+  };
+
+  // ROLES (rollout step 3): the only way a role changes. The server checks
+  // the caller is an admin (access/roles), and writes access/roles, the
+  // roster role, the old adminEmails mirror and a change-log entry together.
+  const changeUserRole = async (employeeId: string, role: UserRole): Promise<boolean> => {
+    if (!isRealAdmin || isViewingAs) { showToastMsg(PERMISSION_DENIED); return false; }
+    try {
+      const res = await httpsCallable<{ employeeId: string; role: string }, { changed: boolean; from: string; to: string }>(
+        functions, 'setUserRole',
+      )({ employeeId, role });
+      showToastMsg(res.data.changed ? `Role changed: ${res.data.from} → ${res.data.to}.` : 'Role unchanged.');
+      return true;
+    } catch (err: any) {
+      showToastMsg(`Role change failed: ${err?.message || String(err)}`);
+      return false;
+    }
   };
 
   const saveAuthorizedEmails = async (
@@ -8133,7 +8172,7 @@ export default function App() {
                         setViewAsEmployeeId(null);
                         setViewAsTestUser(true);
                         setViewAsMenuOpen(false);
-                        goToImpersonatedHome(resolveRole(testUserEmployee));
+                        goToImpersonatedHome(roleOf(testUserEmployee));
                       }}
                       className={`w-full text-left px-3 py-2 text-xs font-bold flex flex-col gap-0.5 transition-colors ${isImpersonatingTestUser ? 'bg-fuchsia-50 text-fuchsia-700' : 'text-slate-700 hover:bg-slate-50'}`}
                     >
@@ -8141,7 +8180,7 @@ export default function App() {
                         Test User
                         <span className="text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded bg-fuchsia-100 text-fuchsia-700 border border-fuchsia-200">TEST</span>
                       </span>
-                      <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">full identity — {resolveRole(testUserEmployee)}</span>
+                      <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">full identity — {roleOf(testUserEmployee)}</span>
                     </button>
                   )}
                   {/* Users — real CrewMaster employees (every role incl.
@@ -8162,12 +8201,12 @@ export default function App() {
                           setViewAsTestUser(false);
                           setViewAsEmployeeId(emp.id);
                           setViewAsMenuOpen(false);
-                          goToImpersonatedHome(resolveRole(emp));
+                          goToImpersonatedHome(roleOf(emp));
                         }}
                         className={`w-full text-left px-3 py-2 text-xs font-bold flex flex-col gap-0.5 transition-colors ${selected ? 'bg-sky-50 text-sky-700' : 'text-slate-700 hover:bg-slate-50'}`}
                       >
                         <span className="truncate">{emp.name || emp.linkedUserEmail || 'Unnamed'}</span>
-                        <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">{resolveRole(emp)}</span>
+                        <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">{roleOf(emp)}</span>
                       </button>
                     );
                   })}
@@ -8239,7 +8278,7 @@ export default function App() {
                           setViewAsEmployeeId(null);
                           setViewAsTestUser(true);
                           setViewAsMenuOpen(false);
-                          goToImpersonatedHome(resolveRole(testUserEmployee));
+                          goToImpersonatedHome(roleOf(testUserEmployee));
                         }}
                         className={`w-full text-left px-3 py-2.5 text-xs font-bold flex items-center gap-1.5 ${isImpersonatingTestUser ? 'bg-fuchsia-50 text-fuchsia-700' : 'text-slate-700 hover:bg-slate-50'}`}
                       >
@@ -8262,12 +8301,12 @@ export default function App() {
                             setViewAsTestUser(false);
                             setViewAsEmployeeId(emp.id);
                             setViewAsMenuOpen(false);
-                            goToImpersonatedHome(resolveRole(emp));
+                            goToImpersonatedHome(roleOf(emp));
                           }}
                           className={`w-full text-left px-3 py-2.5 text-xs font-bold ${selected ? 'bg-sky-50 text-sky-700' : 'text-slate-700 hover:bg-slate-50'}`}
                         >
                           <span className="truncate block">{emp.name || emp.linkedUserEmail || 'Unnamed'}</span>
-                          <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">{resolveRole(emp)}</span>
+                          <span className="text-[9px] font-medium tracking-wide text-slate-400 normal-case">{roleOf(emp)}</span>
                         </button>
                       );
                     })}
@@ -9001,6 +9040,8 @@ export default function App() {
 
       {/* MANAGE RESOURCES MODAL */}
       <ManageResourcesModal
+        onChangeRole={changeUserRole}
+        persistedEmployeeIds={new Set((appData.employees || []).map(e => e.id))}
         isOpen={isManageModalOpen}
         onClose={() => setIsManageModalOpen(false)}
         manageTab={manageTab}

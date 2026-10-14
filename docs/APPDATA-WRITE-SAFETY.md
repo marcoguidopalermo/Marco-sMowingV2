@@ -181,52 +181,81 @@ The last three sit on `appData/main`, so moving them is a larger job than
 them, but they do not stop a *deliberate* write. Different threat, different
 mechanism; worth being clear which one is in place.
 
-## The `adminEmails` mirror on appData/main — do not break this
+## Who is an admin or manager — `access/roles` (roles rollout, Oct 2026)
 
-`appData/main.adminEmails` is a derived, lowercased, sorted list of the sign-in
-addresses of every employee with `systemRole === 'admin'`.
+**`access/roles` is the single source of truth** for the two privileged
+roles: `{ admins: [], managers: [] }`, lowercased sign-in addresses. It is a
+root document **no client can write** (`firestore.rules`: `allow write: if
+false`); authorized users can read it.
 
-**It exists because Firestore rules cannot identify an admin any other way.**
-Rules have no way to search an array of employee maps for a field value, so a
-rule that needs "is this caller an admin" — currently `isContentAdmin()`,
-guarding `efficiencyAdjustments` — has to read a flat list of strings.
+### Why it moved
 
-```
-function isContentAdmin() {
-  return request.auth != null
-    && request.auth.token.email != null
-    && request.auth.token.email.lower() in
-      get(/databases/$(database)/documents/artifacts/crewmaster/public/data/appData/main).data.adminEmails;
-}
-```
+`appData/main` is writable by every authorized user (the `artifacts/**`
+rule), so anything on it — `employees[].systemRole`, `adminEmails`,
+`authorizedEmails` — could be edited by any signed-in employee with a direct
+Firestore call. The rules trusted `adminEmails` to decide who may write
+bonus-feeding efficiency adjustments and read job timings, and the app
+trusted `systemRole` to decide who is an admin.
 
-### The dependency
+### How a role changes
 
-- **`saveEmployees` in `App.tsx` is the only thing that writes it.** It derives
-  the list with `adminEmailsFrom()` (`lib/rosterWrite`) and writes it in the
-  **same targeted `updateDoc`** as `employees`. One write, so the two cannot
-  drift.
-- `employees` is itself protected by the server-tracking ref, so no other save
-  path touches the roster — which is what makes this hook reliable.
-- `adminEmailsFrom()` is a tested pure function precisely because a security
-  rule depends on it.
+**Only through the `setUserRole` Cloud Function** (`functions/src/access.ts`,
+logic in `accessRolesCore.ts`). It checks the caller is an admin in
+`access/roles` (or the super admin) and, in one transaction, writes:
 
-### If it goes stale
+- `access/roles` (admins/managers),
+- that employee's `systemRole` on the roster,
+- `appData.adminEmails` (the old mirror, kept equal to `access/roles.admins`
+  until step 4),
+- an `accessRoleChanges` entry with who changed what, from and to.
 
-There is no safe direction:
+It refuses to leave no admins and never demotes the super admin.
+**A roster save can't change a role**: `saveEmployees` runs
+`preserveServerRoles()` (`src/lib/accessRoles.ts`) so every existing
+employee keeps the server's role, and new employees can't be created as
+admin/manager. The role dropdown in Manage Resources calls `setUserRole`.
 
-- **Missing an admin** → they are locked out of writing adjustments, with a
-  permission error and no obvious cause.
-- **Holding somebody who is no longer an admin** → they keep write access to
-  data that feeds bonus, after their role was changed specifically to stop that.
+### How a role is read
 
-The super admin bypass (`isSuperAdmin()`) is the break-glass path for the first
-case. Nothing recovers the second automatically.
+- **App:** `effectiveRoleFromAccess()` — admin/manager only if listed in
+  `access/roles`; a roster saying admin/manager for anyone else counts as
+  worker. Other roles come from the roster.
+- **Functions:** `effectiveRole()` in `accessRolesCore.ts`, applied once in
+  `notifications.ts` `loadEmployees()`.
+- **Rules:** `isContentAdmin()` — during the rollout, `access/roles.admins`
+  **or** `appData.adminEmails` (dual-read); from step 4, `access/roles` only.
 
-### If you add a rule that needs it
+### The old `adminEmails` mirror (until step 5)
 
-Read it the same way, and do **not** introduce a second source of truth for who
-is an admin. Two lists is the failure this one was created to avoid.
+Clients **cannot change it at all**: the `artifacts/**` rule refuses an update
+to `appData/main` that changes `adminEmails`, a create of `appData/main` that
+carries it, and any client delete of `appData/main`. Ordinary saves that
+carry it back unchanged still pass. `syncToCloud` carries the server's value
+back verbatim (`serverAdminEmailsRef`); `saveEmployees` no longer writes it.
+This is what stops an old, stale copy of the app from re-adding a demoted
+admin.
+
+### Drift
+
+`accessDriftCheck` (daily 06:05 Toronto, or "Force run" in Cloud Scheduler)
+compares `access/roles`, `adminEmails` and the roster's roles and logs
+"Access roles in sync" or every disagreement ("Access roles drift").
+
+### Do not
+
+- Write `access/**` from a client, or add a client path that changes roles
+  other than `setUserRole`.
+- Read admin/manager from `employees[].systemRole` for anything that grants
+  access.
+- Introduce another list of admins. One source of truth.
+
+### Rollout
+
+1. Seed `access/roles` (done 2026-10-14). 2. Dual-read rules (done). 3. Switch
+writers — this section. 4. Rules read `access/roles` only (pre-flight: every
+current admin present, super admin present, non-empty). 5. After a clean
+week: remove `adminEmails` and its guard; turn off Firestore write audit
+logging.
 
 ## Not on the main document at all
 
@@ -240,7 +269,7 @@ enter this problem in the first place:
 | `crewDayFlags` | daily-audit flags. Rules forbid delete and make the *raised* half immutable — a resolution can add an answer, never rewrite the question |
 | `crewDayAudits` | one marker per audited date; rules forbid delete, so a missed day stays visible |
 | `contractingMortgages` | lender, balance, rate; read and write restricted to two addresses |
-| `efficiencyAdjustments` | feeds efficiency and bonus; admin-only create/update via `adminEmails`, delete forbidden |
+| `efficiencyAdjustments` | feeds efficiency and bonus; admin-only create/update via `isContentAdmin()` (`access/roles`), delete forbidden |
 
 The `artifacts/**` rule grants full write to every authorized user and its
 OR-semantics cannot be narrowed, which is why anything needing a real

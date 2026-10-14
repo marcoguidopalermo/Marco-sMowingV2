@@ -6,6 +6,7 @@ import {onCall, HttpsError} from "firebase-functions/v2/https";
 import {onDocumentWritten} from "firebase-functions/v2/firestore";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
+import {effectiveRole} from "./accessRolesCore.js";
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -333,11 +334,32 @@ export async function cleanupNotifications(): Promise<void> {
 }
 
 // ── Audience resolution helpers ────────────────────────────────────────────
-async function loadEmployees(): Promise<any[]> {
-  const main = (await db.doc(`${PUB}/appData/main`).get()).data() as any;
-  return (main?.employees || []) as any[];
-}
 const empEmail = (e: any): string => normEmail(e.linkedUserEmail || e.email);
+// Roles: admin/manager come from access/roles (server-written only), not the
+// roster, which any signed-in user can write. Every audience and permission
+// check below reads systemRole from this list, so it's applied once, here.
+// If access/roles can't be read, fall back to the raw roster (the pre-roles
+// behaviour) rather than break notifications mid-rollout.
+async function loadEmployees(): Promise<any[]> {
+  const [mainSnap, rolesSnap] = await Promise.all([
+    db.doc(`${PUB}/appData/main`).get(),
+    db.doc("access/roles").get().catch(() => null),
+  ]);
+  const main = mainSnap.data() as any;
+  const emps = (main?.employees || []) as any[];
+  if (!rolesSnap || !rolesSnap.exists) {
+    logger.warn("loadEmployees: access/roles unavailable — using roster roles");
+    return emps;
+  }
+  const access = {
+    admins: (rolesSnap.get("admins") as string[]) || [],
+    managers: (rolesSnap.get("managers") as string[]) || [],
+  };
+  return emps.map((e) => ({
+    ...e,
+    systemRole: effectiveRole(e?.systemRole, empEmail(e), access),
+  }));
+}
 async function emailsForRole(roles: string[]): Promise<string[]> {
   const emps = await loadEmployees();
   return emps.filter((e) => roles.includes(e.systemRole || "worker")).map(empEmail).filter(Boolean);
