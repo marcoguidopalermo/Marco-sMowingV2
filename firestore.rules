@@ -131,20 +131,36 @@ service cloud.firestore {
     // between any signed-in employee and a hand-crafted request that credits
     // their own crew. Here the check is the database's.
     //
-    // WHO IS AN ADMIN comes from appData.adminEmails, which saveEmployees
-    // writes in the same targeted update as the roster it derives from — rules
-    // cannot search an array of employee maps for systemRole, and a separately
-    // maintained list would drift. The super admin is a break-glass path for
-    // the case where that list is empty or wrong.
+    // WHO IS AN ADMIN — MOVING (roles rollout, 2026-10-14). The source of
+    // truth is becoming access/roles, a root document no client can write
+    // (only the server, via setUserRole). appData.adminEmails lives on a
+    // document every authorized user can write, so it can't be trusted.
+    //
+    // STEP 2 (now): DUAL-READ. An admin is anyone in access/roles.admins OR in
+    // the old appData.adminEmails, so nobody loses access while the writers
+    // switch over. Each half is guarded with exists()/get(..., default) so a
+    // missing document or field makes that half false, never an error.
+    // STEP 4 will drop the old half. The super admin is the break-glass path.
     //
     // READ is open to any authorized user: a crew sees the adjustment itemized
     // on their own crew-day, which is the point — an unexplained number is
     // worse than an explained one.
+    function callerEmail() {
+      return request.auth.token.email.lower();
+    }
+    function inAccessRolesAdmins() {
+      return exists(/databases/$(database)/documents/access/roles)
+        && callerEmail() in
+          get(/databases/$(database)/documents/access/roles).data.get('admins', []);
+    }
+    function inLegacyAdminEmails() {
+      return callerEmail() in
+        get(/databases/$(database)/documents/artifacts/crewmaster/public/data/appData/main).data.get('adminEmails', []);
+    }
     function isContentAdmin() {
       return request.auth != null
-        && request.auth.token.email != null
-        && request.auth.token.email.lower() in
-          get(/databases/$(database)/documents/artifacts/crewmaster/public/data/appData/main).data.adminEmails;
+        && request.auth.token.get('email', '') != ''
+        && (inAccessRolesAdmins() || inLegacyAdminEmails());
     }
     match /efficiencyAdjustments/{adjustmentId} {
       allow read: if isAuthorized() || isSuperAdmin();
@@ -218,6 +234,19 @@ service cloud.firestore {
       allow write: if false;
     }
     match /jobTimingRuns/{runId} {
+      allow read: if isContentAdmin() || isSuperAdmin();
+      allow write: if false;
+    }
+
+    // ACCESS ROLES — who is an admin or manager. Written ONLY by the server
+    // (Admin SDK: the seed, and setUserRole once it ships), never by a client.
+    // Readable by authorized users so the app can show who holds which role.
+    // accessRoleChanges is the append-only record of every change; admins read.
+    match /access/{docId} {
+      allow read: if isAuthorized() || isSuperAdmin();
+      allow write: if false;
+    }
+    match /accessRoleChanges/{changeId} {
       allow read: if isContentAdmin() || isSuperAdmin();
       allow write: if false;
     }
