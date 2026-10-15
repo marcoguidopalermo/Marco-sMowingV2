@@ -114,7 +114,7 @@ to that doc in every session. Fix is in item 3.
 |---|---|
 | 2. Immediate "Jobber disconnected" alert | **Built, not deployed.** The log line is emitted by the shared token helper; `scripts/setup-jobber-disconnect-alert.sh` creates the metric + policy (run it *before* deploying the functions). |
 | 3. Shared token helper with a refresh lease | **Built, not deployed** (branch `jobber-token-hardening`). `functions/src/jobber/tokenCore.ts` (rules, 13 tests incl. "8 concurrent callers → one refresh" and a control proving the race kills the connection without the lease) + `token.ts` (Firestore wrapper; lease transaction verified in the emulator). All four token paths + the 401 retry use it; `jobberDisconnect` replaces the client-side delete. Tokens move to server-only `jobberAuthSecrets/main` (dual-write to the old doc this release). |
-| 4. Separate "CrewMaster Dev" app | **Steps written:** `docs/jobber-dev-app.md`. Needs Marco in the Developer Center. |
+| 4. Separate "CrewMaster Dev" app | **Skipped** (2026-10-15). Rule instead: never use "Test in GraphiQL" on the production app, renamed "CrewMaster — PRODUCTION (no GraphiQL)" on 2026-10-15 (`docs/jobber-dev-app.md`). |
 | Tokens readable by every signed-in user | Release 1 adds the server-only home; **release 2** strips the tokens from `artifacts/.../jobberAuth/main`. Exposure ends with release 2. |
 
 
