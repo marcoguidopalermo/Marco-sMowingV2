@@ -1,26 +1,36 @@
-# Jobber GraphiQL — the rule
+# The Jobber production app — hands off
 
-**Never use "Test in GraphiQL" on the production Jobber app.**
+**Never edit, save, or use "Test in GraphiQL" on the production app in the
+Jobber Developer Center.** Any change there requires an **immediate reconnect
+in CrewMaster** (sign in as an admin → Manage Resources → Jobber → **Connect**,
+finish on the "connected" page).
 
-The production app was renamed **"CrewMaster — PRODUCTION (no GraphiQL)"** in
-the Jobber Developer Center on 2026-10-15 so it's obvious.
+The production app is named **"CrewMaster — PRODUCTION (no GraphiQL)"**.
 
-**Why:** GraphiQL runs as the app you open it from, against the Jobber account
-that app is connected to. On 2026-10-14 opening it on the production app most
-likely re-authorized that app on our live account and replaced the
-authorization CrewMaster's syncs depended on — every Jobber sync stopped for
-about 3 hours (docs/incidents/2026-10-14-jobber-token.md, cause probable, not
-confirmed).
+## Why
+
+Both Jobber disconnections came from the Developer Center
+(docs/incidents/2026-10-14-jobber-token.md):
+
+- **2026-10-15 — confirmed.** Renaming the production app (~13:50 Toronto,
+  name only) invalidated CrewMaster's refresh token; the next refresh, at
+  14:00:44, was refused and every Jobber sync stopped until an admin
+  reconnected.
+- **2026-10-14 — most likely the same mechanism.** A "Test in GraphiQL"
+  session on the production app at ~10:51 preceded the refused 11:00 refresh;
+  syncs were down for about 3 hours.
+
+GraphiQL also runs as the app you open it from, against the Jobber account that
+app is connected to.
 
 A separate "CrewMaster Dev" app was considered and **not set up** (decision
 2026-10-15). If GraphiQL is ever needed, create that app first — read scopes
 only, no callback URL pointing at production, connected to a Jobber developer
-test account — rather than using the production app.
+test account — rather than touching the production app.
 
 ## If production gets disconnected anyway
 
 The "Jobber disconnected — reconnect in CrewMaster" alert emails within a few
-minutes. Fix: sign in to CrewMaster as an admin → Manage Resources → Jobber →
-**Connect**, and finish on the "connected" page. Reconnecting from the
-Developer Center or Jobber's Connected Apps does **not** give CrewMaster new
-tokens.
+minutes. Reconnect as above. Reconnecting from the Developer Center or Jobber's
+Connected Apps does **not** give CrewMaster new tokens. If the outage crossed
+midnight Toronto, run a manual Sync for the missed day.

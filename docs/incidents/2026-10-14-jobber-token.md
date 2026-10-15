@@ -66,7 +66,32 @@ entries, including the 22 that started during the outage. Today's 8
 **Who noticed, and how fast:** the stale alert first reported at ~11:57,
 about an hour after the first failure. That delay is what item 2 below removes.
 
-## Probable cause — NOT CONFIRMED
+## Second occurrence, 2026-10-15 — cause CONFIRMED
+
+| Time (Toronto) | Event |
+|---|---|
+| 13:00:44 | Routine token refresh succeeds; new refresh token saved |
+| 13:15, 13:30, 13:45 | Syncs succeed on the access token (no refresh, no 401 retry — nothing else touched the token) |
+| **~13:49–13:50** | **The production app is renamed in the Jobber Developer Center** ("CrewMaster — PRODUCTION (no GraphiQL)"), name only |
+| 14:00:44 | First refresh after the save: **refused** — `Jobber refresh 401: The provided refresh token is not valid.` |
+| 14:03:17 | Admin reconnects in CrewMaster; new token pair saved |
+
+**Confirmed cause of disconnection:** saving the production app's settings in
+the Developer Center — even a name-only change — invalidated CrewMaster's
+refresh token. The only change in the hour between a good refresh and the
+refused one was that save.
+
+**What this says about 2026-10-14:** the first incident is **most likely** the
+same mechanism — the GraphiQL session on the production app at ~10:51, nine
+minutes before the refused 11:00 refresh. Developer Center activity on the
+production app is the common factor in both. Claude's schema check (same
+window, access token only) remains a much less likely second candidate.
+
+**Rule (both incidents):** never edit, save, or use "Test in GraphiQL" on the
+production app in the Developer Center. Any change there requires an
+immediate reconnect in CrewMaster (Manage Resources → Jobber → Connect).
+
+## Probable cause of the first incident (2026-10-14) — see above
 
 Jobber has refresh-token rotation on. Each refresh returns a new refresh
 token, and Jobber rejects a refresh token that "expired, was revoked, or has
@@ -114,7 +139,7 @@ to that doc in every session. Fix is in item 3.
 |---|---|
 | 2. Immediate "Jobber disconnected" alert | **Built, not deployed.** The log line is emitted by the shared token helper; `scripts/setup-jobber-disconnect-alert.sh` creates the metric + policy (run it *before* deploying the functions). |
 | 3. Shared token helper with a refresh lease | **Built, not deployed** (branch `jobber-token-hardening`). `functions/src/jobber/tokenCore.ts` (rules, 13 tests incl. "8 concurrent callers → one refresh" and a control proving the race kills the connection without the lease) + `token.ts` (Firestore wrapper; lease transaction verified in the emulator). All four token paths + the 401 retry use it; `jobberDisconnect` replaces the client-side delete. Tokens move to server-only `jobberAuthSecrets/main` (dual-write to the old doc this release). |
-| 4. Separate "CrewMaster Dev" app | **Skipped** (2026-10-15). Rule instead: never use "Test in GraphiQL" on the production app, renamed "CrewMaster — PRODUCTION (no GraphiQL)" on 2026-10-15 (`docs/jobber-dev-app.md`). |
+| 4. Separate "CrewMaster Dev" app | **Skipped** (2026-10-15). Rule instead: never edit, save, or use "Test in GraphiQL" on the production app; any change there needs an immediate reconnect in CrewMaster (`docs/jobber-dev-app.md`). The rename itself caused the second disconnection. |
 | Tokens readable by every signed-in user | Release 1 adds the server-only home; **release 2** strips the tokens from `artifacts/.../jobberAuth/main`. Exposure ends with release 2. |
 
 
