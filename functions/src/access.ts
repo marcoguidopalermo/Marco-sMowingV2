@@ -58,7 +58,10 @@ export const setUserRole = onCall({region: REGION}, async (req) => {
       access, employees, employeeId, newRole: role, callerEmail,
     });
     if (!plan.ok) throw new HttpsError(plan.code, plan.message);
-    if (plan.noop) return {changed: false, from: plan.from, to: plan.to};
+    if (plan.noop) {
+      return {changed: false, from: plan.from, to: plan.to,
+        adminEmails: plan.nextAdminEmails};
+    }
 
     const caller = employees.find((e) => employeeEmail(e) === callerEmail);
     const byName = String(caller?.name || req.auth?.token?.name || callerEmail);
@@ -88,7 +91,9 @@ export const setUserRole = onCall({region: REGION}, async (req) => {
       adminsAfter: plan.nextAccess.admins,
       managersAfter: plan.nextAccess.managers,
     });
-    return {changed: true, from: plan.from, to: plan.to};
+    // adminEmails returned so the caller's app can update its copy at once.
+    return {changed: true, from: plan.from, to: plan.to,
+      adminEmails: plan.nextAdminEmails};
   });
   logger.info("setUserRole", {employeeId, ...result, by: callerEmail});
   return result;

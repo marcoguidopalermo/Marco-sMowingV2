@@ -126,3 +126,35 @@ export function adminEmailsFrom(
   }
   return [...out].sort();
 }
+
+// ── UNDEFINED IS NEVER WRITTEN ─────────────────────────────────────────────
+// Firestore rejects a whole update if any value anywhere is `undefined`, and
+// for array elements the error doesn't even say which field (2026-10-14: a
+// role change followed by Save failed this way). Plain objects and arrays are
+// walked; keys whose value is undefined, and undefined array elements, are
+// dropped and their paths returned so the caller can report them. null is a
+// real value and is kept. Class instances (Timestamp, FieldValue) are left as
+// they are.
+export function stripUndefined<T>(value: T): { value: T; paths: string[] } {
+  const paths: string[] = [];
+  const walk = (v: unknown, path: string): unknown => {
+    if (Array.isArray(v)) {
+      const out: unknown[] = [];
+      v.forEach((x, i) => {
+        if (x === undefined) { paths.push(`${path}[${i}]`); return; }
+        out.push(walk(x, `${path}[${i}]`));
+      });
+      return out;
+    }
+    if (v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {
+      const out: Record<string, unknown> = {};
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+        if (x === undefined) { paths.push(path ? `${path}.${k}` : k); continue; }
+        out[k] = walk(x, path ? `${path}.${k}` : k);
+      }
+      return out;
+    }
+    return v;
+  };
+  return { value: walk(value, '') as T, paths };
+}

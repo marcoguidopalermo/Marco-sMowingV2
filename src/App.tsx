@@ -129,8 +129,8 @@ import { checkDocWrite } from './lib/docWriteGuard';
 import { reportDocWriteRefusal } from './lib/docWriteRefusalLog';
 import ContractingStatementDocument from './components/ContractingStatementDocument';
 import { clearJobberConflict } from './lib/clearJobberConflict';
-import { adminEmailsFrom, computeRosterUpdate } from './lib/rosterWrite';
-import { AccessRoles, effectiveRoleFromAccess, parseAccessRoles, preserveServerRoles } from './lib/accessRoles';
+import { adminEmailsFrom } from './lib/rosterWrite';
+import { AccessRoles, applyRoleChange, effectiveRoleFromAccess, parseAccessRoles, planRosterSave } from './lib/accessRoles';
 import {
   validatePayment, reconstructPaymentsFromPaidFlags, invoiceSettlement,
   planCreditApplication,
@@ -4565,10 +4565,10 @@ export default function App() {
     // Roles step 3: a roster save never changes anyone's role (stale copies
     // can't re-add a demoted admin; nobody promotes themselves). Roles change
     // only through setUserRole.
-    const plan = computeRosterUpdate<Employee>({
-      serverList: serverEmployeesRef.current,
+    const { plan, employees: employeesToWrite, strippedPaths } = planRosterSave({
+      next: nextList,
       baseline,
-      next: preserveServerRoles(nextList, serverEmployeesRef.current),
+      server: serverEmployeesRef.current,
     });
     if (plan.refused) {
       // Loud: this is pay and account-binding data, and a refusal here means
@@ -4592,8 +4592,14 @@ export default function App() {
     // in a roster save (above), and the rules refuse any client change to
     // adminEmails — setUserRole keeps it equal to access/roles.
     try {
+      // Never write undefined (Firestore rejects the whole save). If anything
+      // had to be stripped, say where — that's a bug upstream worth knowing.
+      if (strippedPaths.length) {
+        console.warn('[roster] stripped undefined values before saving', strippedPaths);
+        reportDocWriteRefusal({ where: 'saveEmployees', reason: 'undefined-stripped', email: user?.email, detail: strippedPaths.join(', ') });
+      }
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appData', 'main'), {
-        employees: plan.finalList,
+        employees: employeesToWrite,
       });
     } catch (err: any) {
       console.error('roster save failed', err);
@@ -4601,8 +4607,8 @@ export default function App() {
       return false;
     }
     // Keep the ref in step immediately; the snapshot confirms it shortly.
-    serverEmployeesRef.current = plan.finalList;
-    setAppData(prev => ({ ...prev, employees: plan.finalList }));
+    serverEmployeesRef.current = employeesToWrite;
+    setAppData(prev => ({ ...prev, employees: employeesToWrite }));
     return true;
   };
 
@@ -4612,9 +4618,15 @@ export default function App() {
   const changeUserRole = async (employeeId: string, role: UserRole): Promise<boolean> => {
     if (!isRealAdmin || isViewingAs) { showToastMsg(PERMISSION_DENIED); return false; }
     try {
-      const res = await httpsCallable<{ employeeId: string; role: string }, { changed: boolean; from: string; to: string }>(
+      const res = await httpsCallable<{ employeeId: string; role: string }, { changed: boolean; from: string; to: string; adminEmails?: string[] }>(
         functions, 'setUserRole',
       )({ employeeId, role });
+      // Take the new role into our own copies NOW, before the snapshot lands:
+      // an automatic whole-document save in that gap would otherwise carry
+      // the old role (or the old adminEmails, which the rules would refuse).
+      if (serverEmployeesRef.current) serverEmployeesRef.current = applyRoleChange(serverEmployeesRef.current, employeeId, role);
+      if (Array.isArray(res.data.adminEmails)) serverAdminEmailsRef.current = res.data.adminEmails;
+      setAppData(prev => ({ ...prev, employees: applyRoleChange(prev.employees, employeeId, role) }));
       showToastMsg(res.data.changed ? `Role changed: ${res.data.from} → ${res.data.to}.` : 'Role unchanged.');
       return true;
     } catch (err: any) {
