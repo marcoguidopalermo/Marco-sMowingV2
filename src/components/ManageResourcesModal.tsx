@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import type { ComponentType, Dispatch, SetStateAction } from 'react';
 import { httpsCallable } from 'firebase/functions';
-import { doc, onSnapshot, deleteDoc } from 'firebase/firestore';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { functions, db, appId } from '../lib/firebase';
 import {
   Settings, X, Users, Truck, Package, Hammer, Map as MapIcon, ShieldCheck,
@@ -2149,7 +2149,9 @@ export default function ManageResourcesModal({
                             if (!window.confirm('Disconnect from Jobber? CrewMaster will stop syncing until you reconnect.')) return;
                             setJobberBusy(true);
                             try {
-                              await deleteDoc(doc(db, 'artifacts', appId, 'private', 'data', 'jobberAuth', 'main'));
+                              // Server-side: the token documents are not
+                              // writable from the app (incident 2026-10-14).
+                              await httpsCallable(functions, 'jobberDisconnect')({});
                               showToastMsg('Disconnected from Jobber.');
                             } catch (err: any) {
                               showToastMsg(`Disconnect failed: ${err?.message || String(err)}`);

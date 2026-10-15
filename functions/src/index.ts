@@ -35,7 +35,9 @@ export {
   onMarketingPostQueueWrite,
   onMarketingTodoWrite,
 } from "./notifications.js";
-export {jobberOAuthStart, jobberOAuthCallback} from "./jobber/oauth.js";
+export {
+  jobberOAuthStart, jobberOAuthCallback, jobberDisconnect,
+} from "./jobber/oauth.js";
 export {jobberSyncUsers} from "./jobber/syncUsers.js";
 export {
   jobberSyncPerformance,

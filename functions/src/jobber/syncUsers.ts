@@ -2,11 +2,10 @@ import {onCall, HttpsError} from "firebase-functions/v2/https";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
 import {
-  JOBBER_AUTH_DOC,
   JOBBER_CLIENT_ID,
   JOBBER_CLIENT_SECRET,
-  refreshJobberAccessToken,
 } from "./oauth.js";
+import {getJobberAccessToken} from "./token.js";
 import {makeJobberClient} from "./client.js";
 
 if (!admin.apps.length) {
@@ -19,7 +18,6 @@ const REGION = "us-central1";
 const APP_ID = "crewmaster";
 const JOBBER_USERS_DOC =
   `artifacts/${APP_ID}/private/data/jobberUsers/main`;
-const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 
 // Preferred query — includes isArchived so we can filter inactive Jobber
 // users out of the frontend dropdown. isArchived is an educated guess based
@@ -47,11 +45,6 @@ const USERS_QUERY_LEGACY = `query {
   }
 }`;
 
-interface JobberAuthDoc {
-  accessToken: string;
-  refreshToken: string;
-  accessTokenExpiresAt: number | null;
-}
 
 interface JobberUserNode {
   id: string;
@@ -79,41 +72,9 @@ export const jobberSyncUsers = onCall(
     // TODO: server-side admin/super-admin verification — currently trusts
     // the client-side canManageJobberIntegration gate.
 
-    const authSnap = await db.doc(JOBBER_AUTH_DOC).get();
-    if (!authSnap.exists) {
-      throw new HttpsError(
-        "failed-precondition",
-        "Jobber is not connected. Connect from App Settings first.",
-      );
-    }
-    const auth = authSnap.data() as JobberAuthDoc;
-
-    let accessToken = auth.accessToken;
-    const expiresAt = auth.accessTokenExpiresAt;
-    // Refresh whenever expiry is unknown (null/missing) or within buffer.
-    // Older auth docs stored before the expires_in default fix can have null.
-    const needsRefresh =
-      typeof expiresAt !== "number" ||
-      expiresAt < Date.now() + TOKEN_REFRESH_BUFFER_MS;
-    if (needsRefresh) {
-      try {
-        const refreshed = await refreshJobberAccessToken();
-        if (!refreshed) {
-          throw new HttpsError(
-            "failed-precondition",
-            "Could not refresh Jobber token — reconnect from App Settings.",
-          );
-        }
-        accessToken = refreshed.access_token;
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        logger.error("Jobber token refresh failed", {error: msg});
-        throw new HttpsError(
-          "internal",
-          `Token refresh failed: ${msg}`,
-        );
-      }
-    }
+    // One shared path for tokens (lease-guarded refresh; incident 2026-10-14).
+    const accessToken =
+      await getJobberAccessToken({service: "jobberSyncUsers"});
 
     const client = makeJobberClient(accessToken);
     let data: {users?: {nodes?: JobberUserNode[]}};

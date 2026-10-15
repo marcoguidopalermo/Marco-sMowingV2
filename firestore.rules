@@ -273,6 +273,18 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // JOBBER TOKENS (incident 2026-10-14). The OAuth token pair and the
+    // refresh lease are SERVER-ONLY (Cloud Functions, Admin SDK). Before this
+    // the pair lived only under artifacts/**, readable and writable by every
+    // signed-in user. The app now sees connection status only (still on
+    // artifacts/.../jobberAuth/main; tokens are stripped from it in release 2).
+    match /jobberAuthSecrets/{docId} {
+      allow read, write: if false;
+    }
+    match /jobberTokenLock/{docId} {
+      allow read, write: if false;
+    }
+
     // REFUSED WRITES — every time a client-side guard (whole-document write
     // guard, first-install seed guard, real-data gate) refuses a write, the
     // browser records it here, so an attempted wipe is known about the same

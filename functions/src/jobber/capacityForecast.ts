@@ -24,11 +24,10 @@ import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
 import {
-  JOBBER_AUTH_DOC,
   JOBBER_CLIENT_ID,
   JOBBER_CLIENT_SECRET,
-  refreshJobberAccessToken,
 } from "./oauth.js";
+import {getJobberAccessToken} from "./token.js";
 import {makeJobberClient, JobberClient, sleep} from "./client.js";
 import {parseBh, stripBhTag} from "./bhParser.js";
 
@@ -55,7 +54,6 @@ const forecastDoc = (scope: ForecastScope): string =>
 const LEGACY_FORECAST_DOC =
   `artifacts/${APP_ID}/public/data/capacityForecast/current`;
 const TIMEZONE = "America/Toronto";
-const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 // Paced so the shared Jobber budget can refill between pages rather than
 // being pinned at the floor. Measured on the live account: a page of this
 // query costs enough that a 250ms gap drains 10,000 points to under 1,000
@@ -204,11 +202,6 @@ const SCHEMA_ERROR = new RegExp([
   "Validation failed",
 ].join("|"), "i");
 
-interface JobberAuthDoc {
-  accessToken: string;
-  refreshToken: string;
-  accessTokenExpiresAt: number | null;
-}
 
 interface ForwardVisitNode {
   id: string;
@@ -436,27 +429,9 @@ function torontoMidnightIso(dateStr: string): string {
  * @return {Promise<string>} A usable bearer token.
  */
 async function getValidAccessToken(): Promise<string> {
-  const snap = await db.doc(JOBBER_AUTH_DOC).get();
-  if (!snap.exists) {
-    throw new HttpsError(
-      "failed-precondition",
-      "Jobber is not connected. Connect from App Settings first.",
-    );
-  }
-  const auth = snap.data() as JobberAuthDoc;
-  const expiresAt = auth.accessTokenExpiresAt;
-  const needsRefresh =
-    typeof expiresAt !== "number" ||
-    expiresAt < Date.now() + TOKEN_REFRESH_BUFFER_MS;
-  if (!needsRefresh) return auth.accessToken;
-  const refreshed = await refreshJobberAccessToken();
-  if (!refreshed) {
-    throw new HttpsError(
-      "failed-precondition",
-      "Could not refresh Jobber token — reconnect from App Settings.",
-    );
-  }
-  return refreshed.access_token;
+  // One shared path: refreshes under a lease so two functions can never
+  // spend the same rotating refresh token (incident 2026-10-14).
+  return getJobberAccessToken({service: "jobberSyncCapacity"});
 }
 
 /**

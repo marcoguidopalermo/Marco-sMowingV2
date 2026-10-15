@@ -16,16 +16,14 @@
 // A separate measurement for repricing. Nothing here feeds pay, bonus or
 // crew-day BH/AH/efficiency.
 
-import {HttpsError} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
 import {
-  JOBBER_AUTH_DOC,
   JOBBER_CLIENT_ID,
   JOBBER_CLIENT_SECRET,
-  refreshJobberAccessToken,
 } from "./oauth.js";
+import {getJobberAccessToken} from "./token.js";
 import {makeJobberClient, JobberClient, sleep} from "./client.js";
 import {parseBh} from "./bhParser.js";
 import {headcountSplit} from "./bhSplit.js";
@@ -223,22 +221,9 @@ async function loadScheduleContext(
  * @return {Promise<string>} A usable bearer token.
  */
 async function getValidAccessToken(): Promise<string> {
-  const snap = await db.doc(JOBBER_AUTH_DOC).get();
-  if (!snap.exists) {
-    throw new HttpsError("failed-precondition", "Jobber is not connected.");
-  }
-  const auth = snap.data() as {
-    accessToken: string; accessTokenExpiresAt: number | null;
-  };
-  const exp = auth.accessTokenExpiresAt;
-  if (typeof exp === "number" && exp > Date.now() + 60_000) {
-    return auth.accessToken;
-  }
-  const refreshed = await refreshJobberAccessToken();
-  if (!refreshed) {
-    throw new HttpsError("failed-precondition", "Jobber token refresh failed.");
-  }
-  return refreshed.access_token;
+  // One shared path: refreshes under a lease so two functions can never
+  // spend the same rotating refresh token (incident 2026-10-14).
+  return getJobberAccessToken({service: "jobberJobTiming"});
 }
 
 /**

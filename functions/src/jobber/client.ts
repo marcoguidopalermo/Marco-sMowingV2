@@ -1,5 +1,5 @@
 import * as logger from "firebase-functions/logger";
-import {refreshJobberAccessToken} from "./oauth.js";
+import {getJobberAccessToken} from "./token.js";
 
 const JOBBER_GRAPHQL_URL = "https://api.getjobber.com/api/graphql";
 const JOBBER_API_VERSION = "2025-04-16";
@@ -106,12 +106,10 @@ export function makeJobberClient(initialToken: string): JobberClient {
     let resp = await post(query, variables);
     if (resp.status === 401 && !alreadyRefreshed) {
       alreadyRefreshed = true;
-      logger.info("Jobber 401 — refreshing access token and retrying");
-      const refreshed = await refreshJobberAccessToken();
-      if (!refreshed) {
-        throw new Error("Jobber HTTP 401 and refresh returned no tokens");
-      }
-      token = refreshed.access_token;
+      logger.info("Jobber 401 — getting a fresh access token and retrying");
+      // Shared helper: if another function already replaced this token we
+      // just pick up the new one; otherwise it refreshes under the lease.
+      token = await getJobberAccessToken({rejectedToken: token});
       resp = await post(query, variables);
     }
     if (!resp.ok) {

@@ -9,11 +9,10 @@ import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
 import {
-  JOBBER_AUTH_DOC,
   JOBBER_CLIENT_ID,
   JOBBER_CLIENT_SECRET,
-  refreshJobberAccessToken,
 } from "./oauth.js";
+import {getJobberAccessToken} from "./token.js";
 import {makeJobberClient, JobberClient, sleep} from "./client.js";
 // The [BH] tag parser now lives in its own module (moved verbatim) so the
 // forward capacity forecast reads titles through the SAME parser. Behavior
@@ -53,7 +52,6 @@ const MULTIDAY_COLLECTION = `artifacts/${APP_ID}/public/data/multiDayJobs`;
 const TIMEENTRIES_COLLECTION = `artifacts/${APP_ID}/public/data/timeEntries`;
 const mdjDocId = (visitId: string): string => encodeURIComponent(visitId);
 const SYNC_LOG_COLLECTION = `artifacts/${APP_ID}/private/data/syncLog`;
-const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 const MIN_TIMESHEET_SECONDS = 60;
 const TIMEZONE = "America/Toronto";
 const PAGE_DELAY_MS = 250;
@@ -111,11 +109,6 @@ const TIMESHEETS_QUERY = `query TimesheetsOnDate(
   }
 }`;
 
-interface JobberAuthDoc {
-  accessToken: string;
-  refreshToken: string;
-  accessTokenExpiresAt: number | null;
-}
 
 interface VisitNode {
   id: string;
@@ -702,29 +695,9 @@ function formatYesterdayInToronto(): string {
  * @return {Promise<string>} A usable Bearer access token.
  */
 async function getValidAccessToken(): Promise<string> {
-  const snap = await db.doc(JOBBER_AUTH_DOC).get();
-  if (!snap.exists) {
-    throw new HttpsError(
-      "failed-precondition",
-      "Jobber is not connected. Connect from App Settings first.",
-    );
-  }
-  const auth = snap.data() as JobberAuthDoc;
-  const expiresAt = auth.accessTokenExpiresAt;
-  // Refresh whenever expiry is unknown (null/missing) or within the buffer.
-  // Older auth docs stored before the expires_in default fix can have null.
-  const needsRefresh =
-    typeof expiresAt !== "number" ||
-    expiresAt < Date.now() + TOKEN_REFRESH_BUFFER_MS;
-  if (!needsRefresh) return auth.accessToken;
-  const refreshed = await refreshJobberAccessToken();
-  if (!refreshed) {
-    throw new HttpsError(
-      "failed-precondition",
-      "Could not refresh Jobber token — reconnect from App Settings.",
-    );
-  }
-  return refreshed.access_token;
+  // One shared path: refreshes under a lease so two functions can never
+  // spend the same rotating refresh token (incident 2026-10-14).
+  return getJobberAccessToken({service: "jobberSyncPerformance"});
 }
 
 /**

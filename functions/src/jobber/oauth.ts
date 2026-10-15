@@ -118,14 +118,30 @@ export const jobberOAuthCallback = onRequest(
 
     const accessTokenExpiresAt = computeExpiresAt(tokens.expires_in);
 
-    await db.doc(JOBBER_AUTH_DOC).set({
+    // A fresh connection legitimately replaces everything: the token pair
+    // goes to the server-only jobberAuthSecrets/main, and (release 1 only,
+    // for rollback) also to the old doc, which carries the status the app
+    // shows. Any refresh lease left over from the old connection is cleared.
+    const now = Date.now();
+    const pair = {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
       accessTokenExpiresAt,
-      connectedAt: Date.now(),
+    };
+    const batch = db.batch();
+    batch.set(db.doc("jobberAuthSecrets/main"), {
+      ...pair, connectedAt: now, lastRefreshedAt: now,
+      lastRefreshedBy: "jobberOAuthCallback",
+    });
+    batch.set(db.doc(JOBBER_AUTH_DOC), {
+      ...pair,
+      status: "connected",
+      connectedAt: now,
       connectedBy: stateData.userId,
       accountName: "",
     });
+    batch.delete(db.doc("jobberTokenLock/main"));
+    await batch.commit();
 
     logger.info("Jobber connected", {userId: stateData.userId});
     res.status(200).send(renderSuccess());
@@ -156,42 +172,6 @@ async function exchangeCodeForToken(code: string): Promise<TokenResponse> {
     );
   }
   return (await resp.json()) as TokenResponse;
-}
-
-/**
- * Refreshes the stored Jobber access token using the saved refresh token.
- * Persists the new tokens back to Firestore. Returns null if no auth doc
- * exists yet.
- * @return {Promise<TokenResponse | null>} New tokens, or null if none stored.
- */
-export async function refreshJobberAccessToken():
-  Promise<TokenResponse | null> {
-  const snap = await db.doc(JOBBER_AUTH_DOC).get();
-  if (!snap.exists) return null;
-  const current = snap.data() as {refreshToken?: string};
-  if (!current.refreshToken) return null;
-  const body = new URLSearchParams();
-  body.set("client_id", JOBBER_CLIENT_ID.value());
-  body.set("client_secret", JOBBER_CLIENT_SECRET.value());
-  body.set("grant_type", "refresh_token");
-  body.set("refresh_token", current.refreshToken);
-  const resp = await fetch(JOBBER_TOKEN_URL, {
-    method: "POST",
-    headers: {"Content-Type": "application/x-www-form-urlencoded"},
-    body: body.toString(),
-  });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`Jobber refresh ${resp.status}: ${text.slice(0, 200)}`);
-  }
-  const tokens = (await resp.json()) as TokenResponse;
-  const accessTokenExpiresAt = computeExpiresAt(tokens.expires_in);
-  await db.doc(JOBBER_AUTH_DOC).update({
-    accessToken: tokens.access_token,
-    refreshToken: tokens.refresh_token,
-    accessTokenExpiresAt,
-  });
-  return tokens;
 }
 
 /**
@@ -267,3 +247,25 @@ function renderError(msg: string): string {
     "</body></html>",
   ].join("");
 }
+
+/**
+ * Disconnect Jobber (Manage Resources). Server-side so the token documents
+ * stay unwritable from the app. Admins only (access/roles), or the super admin.
+ */
+export const jobberDisconnect = onCall({region: REGION}, async (request) => {
+  const email = (request.auth?.token?.email || "").trim().toLowerCase();
+  if (!email) throw new HttpsError("unauthenticated", "Sign in required.");
+  const roles = await db.doc("access/roles").get();
+  const admins = ((roles.get("admins") as string[]) || [])
+    .map((a) => a.trim().toLowerCase());
+  if (email !== "marcoguidopalermo@gmail.com" && !admins.includes(email)) {
+    throw new HttpsError("permission-denied", "Admins only.");
+  }
+  const batch = db.batch();
+  batch.delete(db.doc("jobberAuthSecrets/main"));
+  batch.delete(db.doc(JOBBER_AUTH_DOC));
+  batch.delete(db.doc("jobberTokenLock/main"));
+  await batch.commit();
+  logger.info("Jobber disconnected by an admin", {by: email});
+  return {ok: true};
+});
