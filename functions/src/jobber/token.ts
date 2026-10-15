@@ -17,7 +17,7 @@ import * as admin from "firebase-admin";
 import {randomBytes} from "node:crypto";
 import {
   getAccessToken, JobberDisconnectedError, JobberNotConnectedError,
-  RefreshResult, StoredTokens, TokenDeps,
+  newerTokens, RefreshResult, StoredTokens, TokenDeps,
 } from "./tokenCore.js";
 import {
   JOBBER_AUTH_DOC, JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET,
@@ -52,10 +52,14 @@ export function firestoreDeps(service: string): TokenDeps {
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     readTokens: async () => {
-      const s = await db.doc(JOBBER_SECRETS_DOC).get();
-      const fromSecrets = asTokens(s.data());
-      if (fromSecrets) return fromSecrets;
-      return asTokens((await db.doc(JOBBER_AUTH_DOC).get()).data());
+      // Read BOTH and take the newer pair. During a deploy, old function
+      // code (which only writes the old doc) runs beside new code; if the
+      // old code refreshes last, the secrets doc holds a spent refresh token
+      // and using it would disconnect us. Newer = later expiry.
+      const [s, l] = await Promise.all([
+        db.doc(JOBBER_SECRETS_DOC).get(), db.doc(JOBBER_AUTH_DOC).get(),
+      ]);
+      return newerTokens(asTokens(s.data()), asTokens(l.data()));
     },
     tryAcquireLease: (holder, leaseUntil) =>
       db.runTransaction(async (tx) => {

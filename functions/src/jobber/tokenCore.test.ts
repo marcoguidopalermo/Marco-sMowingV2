@@ -4,7 +4,7 @@
 import {test} from "vitest";
 import assert from "node:assert/strict";
 import {
-  DISCONNECTED_LOG, getAccessToken, JobberDisconnectedError, JobberNotConnectedError,
+  DISCONNECTED_LOG, getAccessToken, JobberDisconnectedError, JobberNotConnectedError, newerTokens,
   LEASE_MS, REFRESH_BUFFER_MS, StoredTokens, TokenDeps,
 } from "./tokenCore";
 
@@ -172,4 +172,15 @@ test("a refreshed pair that can't be saved is retried, then surfaces (never sile
   };
   assert.equal(await getAccessToken(w.deps, {holder: "h1"}), "a1");
   assert.equal(w.state.tokens?.refreshToken, "r1");
+});
+
+console.log("\nDeploy window: old and new code side by side");
+test("the newer of the two stored pairs is used (old code may have refreshed last)", async () => {
+  const secrets = {accessToken: "a1", refreshToken: "r1", accessTokenExpiresAt: 1000};
+  const legacy = {accessToken: "a2", refreshToken: "r2", accessTokenExpiresAt: 2000};
+  assert.equal(newerTokens(secrets, legacy)?.refreshToken, "r2");
+  assert.equal(newerTokens(legacy, secrets)?.refreshToken, "r2");
+  assert.equal(newerTokens(null, legacy)?.refreshToken, "r2");
+  assert.equal(newerTokens(secrets, null)?.refreshToken, "r1");
+  assert.equal(newerTokens({...secrets, accessTokenExpiresAt: null}, legacy)?.refreshToken, "r2");
 });

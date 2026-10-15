@@ -59,6 +59,22 @@ export class JobberNotConnectedError extends Error {}
 /** Jobber refused our refresh token: an admin must reconnect. */
 export class JobberDisconnectedError extends Error {}
 
+/**
+ * The more recent of two stored token pairs (later expiry wins; a pair with
+ * a known expiry beats one without).
+ * @param {StoredTokens|null} a One pair.
+ * @param {StoredTokens|null} b The other.
+ * @return {StoredTokens|null} The newer, or whichever exists.
+ */
+export function newerTokens(
+  a: StoredTokens | null, b: StoredTokens | null,
+): StoredTokens | null {
+  if (!a) return b;
+  if (!b) return a;
+  return (a.accessTokenExpiresAt ?? -1) >= (b.accessTokenExpiresAt ?? -1) ?
+    a : b;
+}
+
 const isFresh = (t: StoredTokens, now: number): boolean =>
   typeof t.accessTokenExpiresAt === "number" &&
   t.accessTokenExpiresAt > now + REFRESH_BUFFER_MS;
