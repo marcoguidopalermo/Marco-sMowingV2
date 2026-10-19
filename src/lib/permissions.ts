@@ -608,7 +608,7 @@ export function resolveRole(employee: Employee | null | undefined): UserRole {
   return employee.systemRole || 'worker';
 }
 
-export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'dashboard' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster' | 'rolemaster' | 'salesmaster' | 'contracting' | 'marketing';
+export type AppView = 'schedule' | 'mechanic' | 'mymechanic' | 'performance' | 'dashboard' | 'mycrew' | 'timemaster' | 'bulletins' | 'taskmaster' | 'rolemaster' | 'salesmaster' | 'contracting' | 'marketing' | 'finance';
 
 export const APP_VIEW_ORDER: AppView[] = ['schedule', 'mechanic', 'mymechanic', 'performance', 'dashboard', 'mycrew', 'timemaster', 'bulletins', 'taskmaster', 'rolemaster', 'salesmaster', 'contracting', 'marketing'];
 
@@ -642,6 +642,9 @@ export function canAccessView(view: AppView, role: UserRole | null | undefined):
     // App.tsx), not by role. App.tsx ORs that email grant on top of this;
     // see `marketingViewAllowed` there.
     case 'marketing': return can('canViewMarketing', role);
+    // FinanceMaster: no role grants it. Access is by sign-in address only
+    // (FINANCE_VIEWERS in lib/finance/access), checked in App.tsx.
+    case 'finance': return false;
   }
 }
 

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
+import { operationalFleet } from '../lib/fleetDisposal';
+import { useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import {
   PenTool, List, LayoutDashboard, ClipboardList, Plus, AlertCircle,
   CheckCircle, CheckCircle2, Flame, Trash2, Save, X, Clock, AlertTriangle, Wrench,
@@ -56,6 +57,8 @@ function formatCompletedAt(ts: string | number | undefined): string {
 
 interface MechanicBoardProps {
   appData: AppData;
+  // Finance badge per unit — passed ONLY for the finance viewer (App.tsx).
+  financeBadgeFor?: (unitId: string) => ReactNode;
   fleet: FleetItem[];
   mechanicTasks: MechanicTask[];
   repairLog: any[];
@@ -166,6 +169,7 @@ interface MechanicBoardProps {
 export default function MechanicBoard({
   appData,
   fleet,
+  financeBadgeFor,
   mechanicTasks,
   repairLog,
   cvorExpiry,
@@ -289,7 +293,7 @@ export default function MechanicBoard({
     const cvorIsExpired = isExpired(cvorExpiry);
     const cvorIsSoon = isExpiringSoon(cvorExpiry);
 
-    fleet.forEach(f => {
+    operationalFleet(fleet).forEach(f => {
       if (f.isWinterized) return; // winterized units don't surface in alerts
       const plateGate = needsPlateRenewal(f);
       const safetyGate = needsCommercialSafety(f);
@@ -1130,7 +1134,7 @@ export default function MechanicBoard({
               Manage Resources fleet tab (second mount, no re-implementation).
               Collapsible here so it doesn't crowd the mobile fleet list; taps
               open the unit's documents via the App-level modal. */}
-          <FleetRenewalsStrip fleet={fleet} onJump={onOpenUnitDocuments} collapsible />
+          <FleetRenewalsStrip fleet={operationalFleet(fleet)} onJump={onOpenUnitDocuments} collapsible />
 
           {/* Fleet-list header: CVOR expiry editor + Missing-Odo summary.
               These used to live above the view conditional (visible on
@@ -1229,7 +1233,7 @@ export default function MechanicBoard({
 
         <div>
           <FleetGroupedList
-            fleet={fleet}
+            fleet={operationalFleet(fleet)}
             subtypes={appData.equipmentSubtypes || []}
             mechanicTasks={mechanicTasks}
             highlightId={highlightedFleetId}
@@ -1240,6 +1244,7 @@ export default function MechanicBoard({
                   {fleetItemLabel(f)}
                   {f.status !== 'Active' && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded">{f.status}</span>}
                   <DocRenewalChip unit={f} />
+                  {financeBadgeFor?.(f.id)}
                   {f.isRental && <span className="bg-purple-100 text-purple-800 text-[10px] px-1.5 py-0.5 rounded">Rental</span>}
                   {f.isWinterized && <span className="bg-sky-100 text-sky-800 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">Winterized</span>}
                   {(() => {

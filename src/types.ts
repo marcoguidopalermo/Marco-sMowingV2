@@ -220,6 +220,9 @@ export interface FleetItem {
   name: string;
   type: string;
   status: string;
+  // Left the fleet (FinanceMaster prerequisite): kept, not deleted, so
+  // history and finance agreements still resolve. See lib/fleetDisposal.
+  disposal?: { kind: 'sold' | 'retired' | 'written_off'; date: string; note?: string; by?: string; at?: number };
   // Uploaded documents for this unit (metadata only; bytes in Storage).
   documents?: FleetDocument[];
   // Legacy weight-class label. New records derive their band from

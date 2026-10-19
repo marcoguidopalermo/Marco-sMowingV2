@@ -126,6 +126,7 @@ export interface FleetDocRenewal {
 }
 
 function unitRenewals(unit: FleetItem): FleetDocRenewal[] {
+  if (unit.disposal?.kind) return []; // retired / sold / written off
   const docs = unit.documents || [];
   const rec = unit as unknown as Record<string, unknown>;
   const rows: FleetDocRenewal[] = [];

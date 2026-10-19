@@ -66,3 +66,10 @@ test("an old date-less marker counts only for the same window", () => {
   assert.equal(legacyMarkerCovers(a, ymdToMs("2025-10-15"), ymdToMs), false); // last year's renewal
   assert.equal(legacyMarkerCovers(a, null, ymdToMs), false);
 });
+
+console.log("\nRetired units");
+test("a retired / sold unit never alerts", () => {
+  const sold = {...TRUCKS[0], disposal: {kind: "sold", date: "2026-10-20"}};
+  assert.deepEqual(fleetExpiryAlertsDue(sold, on("2026-10-31")), []);
+  assert.equal(fleetExpiryAlertsDue(TRUCKS[0], on("2026-10-31")).length, 1);
+});

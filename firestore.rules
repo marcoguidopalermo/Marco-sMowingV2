@@ -207,6 +207,28 @@ service cloud.firestore {
       allow read, write: if isMortgageViewer();
     }
 
+    // FINANCEMASTER — equipment finance agreements (docs/financemaster-spec.md).
+    // ONE account, by address (Marco, 2026-10-19) — not admins, not office@,
+    // not the mortgage list. Root collections, outside artifacts/** for the
+    // same reason as mortgages. The SAME list must appear in storage.rules
+    // and in FINANCE_VIEWERS (src/lib/finance/access.ts); a test checks.
+    // Adding someone: one line in each of the three lists.
+    function isFinanceViewer() {
+      return request.auth != null
+        && request.auth.token.get('email_verified', false) == true
+        && request.auth.token.get('email', '').lower() in [
+          'marcoguidopalermo@gmail.com'
+        ];
+    }
+    match /equipmentFinance/{agreementId} {
+      allow read, write: if isFinanceViewer();
+    }
+    // Maturity alert records (residual, options) — written by the server.
+    match /equipmentFinanceAlerts/{alertId} {
+      allow read, update: if isFinanceViewer();
+      allow create, delete: if false;
+    }
+
     match /crewDayFlags/{flagId} {
       allow read: if isAuthorized() || isSuperAdmin();
       allow create: if isAuthorized() || isSuperAdmin();

@@ -6,8 +6,9 @@ import { functions, db, appId } from '../lib/firebase';
 import {
   Settings, X, Users, Truck, Package, Hammer, Map as MapIcon, ShieldCheck,
   Plus, Trash2, Calendar as CalendarIcon, CreditCard as IdCard,
-  AlertTriangle, CheckSquare, UserCircle, Clock, Sliders, Link2, Mail, FileText, GraduationCap
+  AlertTriangle, CheckSquare, UserCircle, Clock, Sliders, Link2, Mail, FileText, GraduationCap, Archive, RotateCcw
 } from 'lucide-react';
+import { DISPOSAL_LABEL, DisposalKind, isDisposed, operationalFleet } from '../lib/fleetDisposal';
 import FleetRenewalsStrip, { DocRenewalChip } from './FleetRenewalsStrip';
 import { Employee, FleetItem, InventoryItem, Job, AppSettings, RolePermissionsOverride, UserRole, JobberUser, PRIMARY_CREWS, EquipmentSubtypeDefinition, PartialTimeOff, ContractingRateCard, ContractingBillingRole } from '../types';
 import { ratesOrDefault as contractingRatesOrDefault, ROLE_LABEL as CONTRACTING_ROLE_LABEL, money as contractingMoney } from '../lib/contracting';
@@ -179,6 +180,10 @@ interface ManageResourcesModalProps {
   onChangeRole: (employeeId: string, role: UserRole) => Promise<boolean>;
   /** Ids of employees that exist on the server (the rest are new, unsaved). */
   persistedEmployeeIds: Set<string>;
+  /** Signed-in user, recorded on a retired/sold unit. */
+  currentUserEmail?: string;
+  // Finance badge per unit — passed ONLY for the finance viewer (App.tsx).
+  financeBadgeFor?: (unitId: string) => React.ReactNode;
   isSuperAdmin: boolean;
   currentUserRole: UserRole;
   jobberUsersList: JobberUser[];
@@ -223,6 +228,8 @@ export default function ManageResourcesModal({
   isAdmin,
   onChangeRole,
   persistedEmployeeIds,
+  currentUserEmail,
+  financeBadgeFor,
   isSuperAdmin,
   currentUserRole,
   jobberUsersList,
@@ -232,6 +239,7 @@ export default function ManageResourcesModal({
   SkidSteerIcon,
 }: ManageResourcesModalProps) {
   const [roleBusyId, setRoleBusyId] = useState<string | null>(null);
+  const [retireDraft, setRetireDraft] = useState<{ id: string; kind: DisposalKind; date: string; note: string } | null>(null);
   const canManageJobber =
     isSuperAdmin || (isAdmin && can('canManageJobberIntegration', currentUserRole));
   const storageStats = useStorageStats();
@@ -920,10 +928,10 @@ export default function ManageResourcesModal({
 
               {/* Renewals needing attention — one row per expiring/expired
                   document, soonest-first. Tap jumps to that unit's documents. */}
-              <FleetRenewalsStrip fleet={localFleet} onJump={onOpenUnitDocuments} />
+              <FleetRenewalsStrip fleet={operationalFleet(localFleet)} onJump={onOpenUnitDocuments} />
 
               <FleetGroupedList
-                fleet={localFleet}
+                fleet={operationalFleet(localFleet)}
                 subtypes={localEquipmentSubtypes}
                 renderSummary={(f) => (
                   <span className="font-bold text-slate-800 flex items-center gap-2 flex-wrap">
@@ -931,6 +939,7 @@ export default function ManageResourcesModal({
                     {fleetItemLabel(f)}
                     {f.status !== 'Active' && <span className="bg-red-100 text-red-700 text-[10px] px-1.5 py-0.5 rounded">{f.status}</span>}
                     <DocRenewalChip unit={f} />
+                    {financeBadgeFor?.(f.id)}
                   </span>
                 )}
                 renderDetails={(f) => {
@@ -950,6 +959,37 @@ export default function ManageResourcesModal({
                           onChange={e => { const nf = [...localFleet]; const v = e.target.value; nf[realIdx].unitNumber = v === '' ? undefined : Number(v); setLocalFleet(nf); }}
                           className={`w-20 border-2 rounded-lg px-2 py-2 text-lg font-black text-center outline-none focus:ring-2 ${typeof f.unitNumber === 'number' ? 'border-slate-300 text-slate-900 focus:ring-slate-400' : 'border-amber-300 text-amber-900 focus:ring-amber-400'}`}
                         />
+
+              {/* RETIRED / SOLD / WRITTEN OFF — kept for history and finance,
+                  out of every operational list. Restore or (admin) delete for good. */}
+              {localFleet.some(isDisposed) && (
+                <details className="bg-white rounded-xl border border-slate-200">
+                  <summary className="cursor-pointer px-4 py-3 text-sm font-black text-slate-600">
+                    Retired units ({localFleet.filter(isDisposed).length})
+                  </summary>
+                  <div className="divide-y divide-slate-100">
+                    {localFleet.filter(isDisposed).map(u => (
+                      <div key={u.id} className="px-4 py-2 flex flex-wrap items-center gap-2 text-sm">
+                        <span className="font-bold text-slate-700">{fleetItemLabel(u)}</span>
+                        <span className="text-[10px] font-black uppercase tracking-widest bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">{DISPOSAL_LABEL[u.disposal!.kind]} {u.disposal!.date}</span>
+                        {u.disposal!.note && <span className="text-xs text-slate-500">{u.disposal!.note}</span>}
+                        {isAdmin && (
+                          <span className="ml-auto flex gap-2">
+                            <button className="inline-flex items-center gap-1 text-xs font-bold text-slate-600 border border-slate-200 rounded px-2 py-1 hover:bg-slate-50"
+                              onClick={() => setLocalFleet(localFleet.map(item => { if (item.id !== u.id) return item; const { disposal: _d, ...rest } = item; void _d; return rest; }))}>
+                              <RotateCcw className="w-3.5 h-3.5" /> Restore
+                            </button>
+                            <button className="inline-flex items-center gap-1 text-xs font-bold text-rose-600 border border-rose-200 rounded px-2 py-1 hover:bg-rose-50"
+                              onClick={() => { if (window.confirm(`Delete ${fleetItemLabel(u)} permanently? Only for a unit added by mistake — its history will no longer show its name.`)) setLocalFleet(localFleet.filter(item => item.id !== u.id)); }}>
+                              <Trash2 className="w-3.5 h-3.5" /> Delete permanently
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
                       </div>
                       <input
                         className={`flex-1 min-w-[180px] border-2 rounded-lg px-3 py-2.5 text-xl font-black tracking-wide outline-none focus:ring-2 ${f.type === 'truck' ? 'border-emerald-300 text-emerald-900 focus:ring-emerald-400' : f.type === 'trailer' ? 'border-amber-300 text-amber-900 focus:ring-amber-400' : f.type === 'tractor' ? 'border-orange-300 text-orange-900 focus:ring-orange-400' : 'border-sky-300 text-sky-900 focus:ring-sky-400'}`}
@@ -972,7 +1012,28 @@ export default function ManageResourcesModal({
                       </div>
                       <button onClick={() => onOpenUnitDocuments(f.id)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-sky-50 text-sky-700 border border-sky-200 hover:bg-sky-100 text-xs font-black uppercase tracking-widest ml-auto" title="Insurance, registration, ownership, safety docs"><FileText className="w-4 h-4" /> Documents</button>
                       {isAdmin && (
-                        <button onClick={() => setLocalFleet(localFleet.filter(item => item.id !== f.id))} className="text-red-400 hover:bg-red-50 p-2 rounded-lg transition-colors" title="Delete fleet (admin only)"><Trash2 className="w-5 h-5" /></button>
+                        // Units are retired, not deleted: history, inspections and
+                        // finance agreements still point at them (lib/fleetDisposal).
+                        <button onClick={() => setRetireDraft({ id: f.id, kind: 'sold', date: new Date().toLocaleDateString('en-CA', { timeZone: 'America/Toronto' }), note: '' })}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-slate-600 border border-slate-200 hover:bg-slate-50 text-xs font-black uppercase tracking-widest" title="Retire, sell or write off this unit (admin only)">
+                          <Archive className="w-4 h-4" /> Retire
+                        </button>
+                      )}
+                      {retireDraft?.id === f.id && (
+                        <div className="w-full flex flex-wrap items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg p-2 text-sm">
+                          <select value={retireDraft.kind} onChange={e => setRetireDraft({ ...retireDraft, kind: e.target.value as DisposalKind })} className="border border-slate-300 rounded p-1.5 font-bold" aria-label="How it left the fleet">
+                            {(Object.keys(DISPOSAL_LABEL) as DisposalKind[]).map(k => <option key={k} value={k}>{DISPOSAL_LABEL[k]}</option>)}
+                          </select>
+                          <input type="date" value={retireDraft.date} onChange={e => setRetireDraft({ ...retireDraft, date: e.target.value })} className="border border-slate-300 rounded p-1.5" aria-label="Date" />
+                          <input value={retireDraft.note} onChange={e => setRetireDraft({ ...retireDraft, note: e.target.value })} placeholder="Note (buyer, reason…)" className="flex-1 min-w-[140px] border border-slate-300 rounded p-1.5" />
+                          <button className="px-3 py-1.5 rounded bg-slate-800 text-white text-xs font-black uppercase tracking-widest" onClick={() => {
+                            if (!retireDraft.date) return;
+                            setLocalFleet(localFleet.map(item => item.id === f.id ? { ...item, disposal: { kind: retireDraft.kind, date: retireDraft.date, ...(retireDraft.note.trim() ? { note: retireDraft.note.trim() } : {}), ...(currentUserEmail ? { by: currentUserEmail } : {}), at: Date.now() } } : item));
+                            setRetireDraft(null);
+                            showToastMsg(`${fleetItemLabel(f)} marked ${DISPOSAL_LABEL[retireDraft.kind].toLowerCase()} — press Save to keep it.`);
+                          }}>Confirm</button>
+                          <button className="text-xs font-bold text-slate-500 underline" onClick={() => setRetireDraft(null)}>Cancel</button>
+                        </div>
                       )}
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-1">

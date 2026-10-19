@@ -67,6 +67,9 @@ export function fleetExpiryAlertsDue(
 ): ExpiryAlert[] {
   const id = String(unit.id || "");
   const out: ExpiryAlert[] = [];
+  // Retired / sold / written off: no renewals to chase.
+  const disposal = unit.disposal as {kind?: string} | undefined;
+  if (disposal && disposal.kind) return out;
   for (const e of fleetExpiryDates(unit)) {
     const days = daysUntil(e.ymd);
     const kind = days <= 0 ? "exp" : days <= 30 ? "30d" : null;

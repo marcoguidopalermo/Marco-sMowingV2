@@ -12,7 +12,7 @@ import {
   Target, Award, CalendarDays, FileSignature, Map, CheckSquare, Info, Sparkles, Loader2,
   MessageSquareText, Leaf, Download, LogOut, ShieldCheck, UserPlus, Megaphone, Lock,
   Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown, Hammer, Calculator,
-  ChevronUp, Layers, Eye, MoreHorizontal, Sliders, Home
+  ChevronUp, Layers, Eye, MoreHorizontal, Sliders, Home, Landmark
 } from 'lucide-react';
 
 import {
@@ -68,6 +68,7 @@ import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
 import MarketingMaster from './components/MarketingMaster';
+import FinanceMaster, { FinanceBadge } from './components/FinanceMaster';
 import { clipKey, commentSubject } from './components/MarketingComments';
 import { migrateContract as migrateSnowContract } from './lib/snowContracts';
 import { entriesFor as bankEntriesFor } from './lib/hoursBank';
@@ -130,6 +131,7 @@ import { reportDocWriteRefusal } from './lib/docWriteRefusalLog';
 import ContractingStatementDocument from './components/ContractingStatementDocument';
 import { clearJobberConflict } from './lib/clearJobberConflict';
 import { adminEmailsFrom } from './lib/rosterWrite';
+import { operationalFleet } from './lib/fleetDisposal';
 import { AccessRoles, applyRoleChange, effectiveRoleFromAccess, parseAccessRoles, planRosterSave } from './lib/accessRoles';
 import {
   validatePayment, reconstructPaymentsFromPaidFlags, invoiceSettlement,
@@ -143,6 +145,10 @@ import {
   checkDailyHours, crewDayAfterPunchRemoval, dailyHoursThreshold, hoursForEmployeeDate,
 } from './lib/dailyHoursGuard';
 import { canSeeMortgages, mortgageAuditDiff } from './lib/mortgages';
+import { canSeeFinance } from './lib/finance/access';
+import type { FinanceAgreement } from './lib/finance/types';
+import { financeAuditEntry, prepareForSave } from './lib/finance/edit';
+import { financeByUnit } from './lib/finance/portfolio';
 import { validateAdjustment } from './lib/efficiencyAdjustments';
 import {
   applyOnBehalfStop, buildOnBehalfStart, canClockFor, guardStart, guardStop,
@@ -402,6 +408,9 @@ export default function App() {
   // the firestore rule, not by this listener). The listener is not even
   // attached for anyone else, so a denied read never fires.
   const [contractingMortgages, setContractingMortgages] = useState<ContractingMortgage[]>([]);
+  // FinanceMaster agreements — loaded only for the finance viewer (below).
+  const [financeAgreements, setFinanceAgreements] = useState<FinanceAgreement[]>([]);
+  const [financeFocusId, setFinanceFocusId] = useState<string | null>(null);
   // EFFICIENCY ADJUSTMENTS — applied on read, never written into a crew-day.
   const [efficiencyAdjustments, setEfficiencyAdjustments] = useState<EfficiencyAdjustment[]>([]);
   const [crewDayFlags, setCrewDayFlags] = useState<CrewDayFlag[]>([]);
@@ -861,8 +870,31 @@ export default function App() {
     (MARKETING_EMAILS.has(currentEmail) && (!isViewingAs || isImpersonatingIdentity));
   // canAccessView() is role-only and can't see the email grant above, so every
   // generic view-permission check goes through this instead.
+  // FinanceMaster: the REAL sign-in address only, and never while viewing
+  // as someone else — View As must not carry finance onto another identity,
+  // nor show it while previewing a role. The rules enforce the same list.
+  const canViewFinance = canSeeFinance(realCurrentEmail) && !isViewingAs;
   const viewAllowed = (v: AppView): boolean =>
-    v === 'marketing' ? canViewMarketing : canAccessView(v, effectiveRole);
+    v === 'marketing' ? canViewMarketing : v === 'finance' ? canViewFinance : canAccessView(v, effectiveRole);
+
+  // Finance agreements: subscribed only while the finance viewer is signed in
+  // as themselves. Everyone else never attaches, so the rule is never hit.
+  useEffect(() => {
+    if (!canViewFinance) { setFinanceAgreements([]); return; }
+    return onSnapshot(collection(db, 'equipmentFinance'), (snap) => {
+      const list: FinanceAgreement[] = [];
+      snap.forEach((d) => { const v = d.data() as FinanceAgreement; if (v && v.id) list.push(v); });
+      setFinanceAgreements(list);
+    }, (err) => { console.error('equipmentFinance listen error:', err); });
+  }, [canViewFinance]);
+  // fleetUnitId → current agreements, for the viewer-only Finance badge.
+  const financeUnitIndex = useMemo(
+    () => (canViewFinance ? financeByUnit(financeAgreements, formatTodayInToronto()).current : null),
+    [canViewFinance, financeAgreements],
+  );
+  const financeBadgeFor = financeUnitIndex
+    ? (unitId: string) => <FinanceBadge items={financeUnitIndex.get(unitId)} onOpen={(id) => { setIsManageModalOpen(false); setFinanceFocusId(id); setCurrentView('finance'); }} />
+    : undefined;
 
   // Real CrewMaster employees an admin can impersonate — sourced from
   // appData.employees (the actual personnel roster), NOT Jobber users.
@@ -4093,6 +4125,34 @@ export default function App() {
   // fields and appends what moved: rates and balances are exactly the numbers
   // somebody reconciles against a statement months later, and "edited the
   // mortgage" answers nothing then.
+  // FINANCE WRITES. The finance viewer only — checked here and enforced by
+  // the equipmentFinance rule. Every save appends what moved to the audit.
+  const saveFinanceAgreement = async (a: FinanceAgreement): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!canViewFinance) { showToastMsg(PERMISSION_DENIED); return false; }
+    const before = financeAgreements.find(x => x.id === a.id);
+    const now = Date.now();
+    const who = displayName || realCurrentEmail;
+    const entry = financeAuditEntry(before, a, now, who);
+    const next: FinanceAgreement = {
+      ...prepareForSave(a),
+      createdAt: before?.createdAt ?? now,
+      createdBy: before?.createdBy ?? realCurrentEmail,
+      updatedAt: now,
+      updatedBy: realCurrentEmail,
+      audit: [...(before?.audit || []), ...(entry ? [entry] : [])].slice(-300),
+    };
+    try {
+      await setDoc(doc(collection(db, 'equipmentFinance'), a.id), cleanRM(next));
+    } catch (err: any) {
+      console.error('finance save failed', err);
+      showToastMsg(`Could not save that agreement: ${err?.message || String(err)}`);
+      return false;
+    }
+    showToastMsg(a.deletedAt && !before?.deletedAt ? 'Agreement deleted.' : entry ? `Agreement saved${before ? ` — ${entry.changes.length} change${entry.changes.length === 1 ? '' : 's'}` : ''}.` : 'Agreement saved.');
+    return true;
+  };
+
   const saveContractingMortgage = async (m: ContractingMortgage): Promise<boolean> => {
     if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
     if (!canSeeMortgages(displayEmail)) { showToastMsg(PERMISSION_DENIED); return false; }
@@ -6608,6 +6668,7 @@ export default function App() {
     <MechanicBoard
       appData={appData}
       fleet={appData.fleet}
+      financeBadgeFor={financeBadgeFor}
       mechanicTasks={appData.mechanicTasks}
       repairLog={appData.repairLog}
       cvorExpiry={appData.cvorExpiry}
@@ -8012,6 +8073,12 @@ export default function App() {
                 <Megaphone className="w-4 h-4" /> Marketing
               </button>
             )}
+            {/* Finance — one account, by address (lib/finance/access). */}
+            {canViewFinance && (
+              <button onClick={() => setCurrentView('finance')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'finance' ? 'bg-white shadow-sm text-emerald-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}>
+                <Landmark className="w-4 h-4" /> Finance
+              </button>
+            )}
             {canAccessView('schedule', effectiveRole) && canEditSchedule && (
               <button
                 onClick={() => {
@@ -8104,7 +8171,7 @@ export default function App() {
                   </select>
                   <div className={`space-y-1 ${crewBuilderMode ? 'flex-1 overflow-y-auto' : 'max-h-[320px] overflow-y-auto'} pr-1`}>
                     {sortFleetGrouped(
-                      appData.fleet.filter(f => sidebarFleetFilter === 'All' || f.type === sidebarFleetFilter),
+                      operationalFleet(appData.fleet).filter(f => sidebarFleetFilter === 'All' || f.type === sidebarFleetFilter),
                       appData.equipmentSubtypes || [],
                     ).map(f => renderSidebarItem(f, 'fleet'))}
                   </div>
@@ -8663,6 +8730,16 @@ export default function App() {
           canDeleteSnowContracts={canDeleteSnowContracts}
           canEditSnowContracts={canEditSnowContracts}
         />
+      ) : currentView === 'finance' && canViewFinance ? (
+        <FinanceMaster
+          agreements={financeAgreements}
+          fleet={appData.fleet || []}
+          today={formatTodayInToronto()}
+          currentUser={{ email: realCurrentEmail, name: displayName || realCurrentEmail }}
+          onSave={saveFinanceAgreement}
+          focusAgreementId={financeFocusId}
+          onFocusHandled={() => setFinanceFocusId(null)}
+        />
       ) : currentView === 'contracting' ? (
         <ContractingMaster
           mortgages={contractingMortgages}
@@ -8890,6 +8967,10 @@ export default function App() {
               isActive: currentView === 'marketing',
               onClick: () => setCurrentView('marketing'),
               visible: canViewMarketing },
+            { key: 'finance', label: 'Finance', Icon: Landmark, badge: 0,
+              isActive: currentView === 'finance',
+              onClick: () => setCurrentView('finance'),
+              visible: canViewFinance },
           ];
           // Highest-traffic destinations per role fill the first slots; the
           // rest fold into a "More" sheet so the bar never exceeds 5 slots.
@@ -9054,6 +9135,8 @@ export default function App() {
       <ManageResourcesModal
         onChangeRole={changeUserRole}
         persistedEmployeeIds={new Set((appData.employees || []).map(e => e.id))}
+        currentUserEmail={displayEmail}
+        financeBadgeFor={financeBadgeFor}
         isOpen={isManageModalOpen}
         onClose={() => setIsManageModalOpen(false)}
         manageTab={manageTab}
@@ -9345,7 +9428,7 @@ export default function App() {
       <ManualTaskModal
         state={manualTaskModal}
         setState={setManualTaskModal}
-        fleet={appData.fleet}
+        fleet={operationalFleet(appData.fleet)}
         employees={appData.employees || []}
         defaultReporterId={currentUserEmployee?.id}
         uploaderEmail={displayEmail}
@@ -9419,7 +9502,7 @@ export default function App() {
       <RequestPartsModal
         state={requestPartsModal}
         onClose={() => setRequestPartsModal({ isOpen: false })}
-        fleet={appData.fleet}
+        fleet={operationalFleet(appData.fleet)}
         onSubmit={async (payload: RequestPartsSubmit) => {
           if (!can('canCreateRepairs', effectiveRole)) {
             showToastMsg(PERMISSION_DENIED);
@@ -9509,7 +9592,7 @@ export default function App() {
       <InspectionModal
         state={activeInspection}
         setState={setActiveInspection}
-        fleet={appData.fleet}
+        fleet={operationalFleet(appData.fleet)}
         showToastMsg={showToastMsg}
         onSubmit={async (unit, type) => {
           const odoEl = document.getElementById('insp-odo') as HTMLInputElement | null;
@@ -9832,7 +9915,7 @@ export default function App() {
           without closing. */}
       <MyMechanicTaskModal
         task={myMechanicTaskId ? (appData.mechanicTasks || []).find(t => t.id === myMechanicTaskId) || null : null}
-        fleet={appData.fleet}
+        fleet={operationalFleet(appData.fleet)}
         onClose={() => setMyMechanicTaskId(null)}
         currentUserEmail={displayEmail}
         currentUserName={displayName}

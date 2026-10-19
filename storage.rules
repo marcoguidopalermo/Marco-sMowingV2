@@ -84,6 +84,23 @@ service firebase.storage {
       allow delete: if onAllowlist();
     }
 
+    // FinanceMaster agreement documents (leases, invoices, buyout quotes).
+    // financing/{agreementId}/{fileName}. ONE account, by address — the same
+    // list as isFinanceViewer() in firestore.rules and FINANCE_VIEWERS in
+    // src/lib/finance/access.ts (a test checks they match).
+    function isFinanceViewer() {
+      return request.auth != null
+        && request.auth.token.get('email_verified', false) == true
+        && request.auth.token.get('email', '').lower() in [
+          'marcoguidopalermo@gmail.com'
+        ];
+    }
+    match /financing/{agreementId}/{fileName} {
+      allow read: if isFinanceViewer();
+      allow write: if isFinanceViewer() && validUpload();
+      allow delete: if isFinanceViewer();
+    }
+
     // Everything else: locked down.
     match /{allPaths=**} {
       allow read, write: if false;

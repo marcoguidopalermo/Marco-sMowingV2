@@ -1,3 +1,4 @@
+import { isDisposed } from '../lib/fleetDisposal';
 import { useState, useMemo, useEffect, useRef } from 'react';
 import type { Dispatch, SetStateAction, ReactNode, DragEvent, ComponentType } from 'react';
 import {
@@ -545,7 +546,7 @@ export default function ScheduleBoard({
       .filter(e => !crew.employees.includes(e.id))
       .map(e => ({ emp: e, avail: getResourceAvailability(e.id, 'employee', dateString, appData) }))
       .sort((a, b) => Number(a.avail.status !== 'available') - Number(b.avail.status !== 'available'));
-    const fleetOptions: FleetOpt[] = sortFleetGrouped(appData.fleet.filter(f => !crew.fleet.includes(f.id)), appData.equipmentSubtypes || [])
+    const fleetOptions: FleetOpt[] = sortFleetGrouped(appData.fleet.filter(f => !crew.fleet.includes(f.id) && !isDisposed(f)), appData.equipmentSubtypes || [])
       .map(f => ({ f, avail: getResourceAvailability(f.id, 'fleet', dateString, appData) }))
       .sort((a, b) => Number(a.avail.status !== 'available') - Number(b.avail.status !== 'available'));
 
