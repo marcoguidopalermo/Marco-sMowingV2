@@ -7,6 +7,7 @@ import {onDocumentWritten} from "firebase-functions/v2/firestore";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
 import {effectiveRole} from "./accessRolesCore.js";
+import {fleetExpiryAlertsDue, legacyMarkerCovers} from "./fleetExpiryCore.js";
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -236,6 +237,11 @@ export async function runQuietFlush(nowMs: number, warnings: string[]): Promise<
 // ── Dedupe markers (scheduled types) — bounded, TTL-cleaned ────────────────
 export async function alreadySent(marker: string): Promise<boolean> {
   return (await db.doc(`${PRIV}/notificationDedupe/${encodeURIComponent(marker)}`).get()).exists;
+}
+async function markerAt(marker: string): Promise<number | null> {
+  const snap = await db.doc(`${PRIV}/notificationDedupe/${encodeURIComponent(marker)}`).get();
+  const at = snap.exists ? Number(snap.get("at")) : NaN;
+  return Number.isFinite(at) ? at : null;
 }
 export async function markSent(marker: string): Promise<void> {
   await db.doc(`${PRIV}/notificationDedupe/${encodeURIComponent(marker)}`).set({at: Date.now()});
@@ -1020,28 +1026,22 @@ export async function runNotificationScan(nowMs: number, warnings: string[]): Pr
   }
 
   // ── Fleet document expiry (30 days + at expiry) → admins + managers ──
+  // Dates and markers: fleetExpiryCore.ts (fixed 2026-10-19 — it now reads
+  // regExpiry/commercialSafetyExpire, and markers carry the date).
   if (cfg.globals?.fleet !== false) {
     const recips = await audienceFor(cfg, "fleet", adminsAndManagers);
     const main = (await db.doc(`${PUB}/appData/main`).get()).data() as any;
     const fleet = (main?.fleet || []) as any[];
     for (const unit of fleet) {
-      const docs = collectFleetDocExpiries(unit);
-      for (const {id, label, ymd} of docs) {
-        const d = daysUntil(ymd, nowMs);
-        if (d <= 30 && d > 0) {
-          const marker = `fleetdoc-${id}-30d`;
-          if (!(await alreadySent(marker))) {
-            await sendNotification(recips, "fleet", {title: `${label} expiring in ${d} days`, body: `${unit.name || unit.id}`, url: "/#mechanic"});
-            await markSent(marker);
-          }
+      for (const a of fleetExpiryAlertsDue(unit, (ymd) => daysUntil(ymd, nowMs))) {
+        if (await alreadySent(a.marker)) continue;
+        if (legacyMarkerCovers(a, await markerAt(a.legacyMarker), ymdToMs)) {
+          await markSent(a.marker); // already sent under the old, date-less marker
+          continue;
         }
-        if (d <= 0) {
-          const marker = `fleetdoc-${id}-exp`;
-          if (!(await alreadySent(marker))) {
-            await sendNotification(recips, "fleet", {title: `${label} expired`, body: `${unit.name || unit.id}`, url: "/#mechanic"});
-            await markSent(marker);
-          }
-        }
+        const title = a.kind === "30d" ? `${a.label} expiring in ${a.days} days` : `${a.label} expired`;
+        await sendNotification(recips, "fleet", {title, body: `${unit.name || unit.id}`, url: "/#mechanic"});
+        await markSent(a.marker);
       }
     }
   }
@@ -1050,18 +1050,3 @@ export async function runNotificationScan(nowMs: number, warnings: string[]): Pr
   warnings.push("notification_scan_ok");
 }
 
-// Fleet doc expiry dates carried on the unit (registration/insurance/safety/
-// plate/CVOR). Defensive — reads whatever ISO/ymd fields exist.
-function collectFleetDocExpiries(unit: any): {id: string; label: string; ymd: string}[] {
-  const out: {id: string; label: string; ymd: string}[] = [];
-  const push = (field: string, label: string) => {
-    const v = unit[field];
-    if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v)) out.push({id: `${unit.id}-${field}`, label, ymd: v.slice(0, 10)});
-  };
-  push("registrationExpiry", "Registration");
-  push("insuranceExpiry", "Insurance");
-  push("safetyExpiry", "Safety");
-  push("plateExpiry", "Plate");
-  push("cvorExpiry", "CVOR");
-  return out;
-}
