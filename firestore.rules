@@ -154,15 +154,11 @@ service cloud.firestore {
     // (only the server, via setUserRole). appData.adminEmails lives on a
     // document every authorized user can write, so it can't be trusted.
     //
-    // STEP 3: clients can no longer change adminEmails at all (see the
-    // artifacts/** rule) — only setUserRole, which keeps it equal to
-    // access/roles.admins.
-    //
-    // STEP 2 (still in force): DUAL-READ. An admin is anyone in access/roles.admins OR in
-    // the old appData.adminEmails, so nobody loses access while the writers
-    // switch over. Each half is guarded with exists()/get(..., default) so a
-    // missing document or field makes that half false, never an error.
-    // STEP 4 will drop the old half. The super admin is the break-glass path.
+    // STEP 4 (now): access/roles ONLY. The old appData.adminEmails no
+    // longer grants anything (it's still guarded from client writes and
+    // kept equal by setUserRole until step 5 removes it). The super admin
+    // (isSuperAdmin) is the break-glass path wherever isContentAdmin() is
+    // used. Rollback: the step-2 dual-read version (commit f44eb73).
     //
     // READ is open to any authorized user: a crew sees the adjustment itemized
     // on their own crew-day, which is the point — an unexplained number is
@@ -175,14 +171,10 @@ service cloud.firestore {
         && callerEmail() in
           get(/databases/$(database)/documents/access/roles).data.get('admins', []);
     }
-    function inLegacyAdminEmails() {
-      return callerEmail() in
-        get(/databases/$(database)/documents/artifacts/crewmaster/public/data/appData/main).data.get('adminEmails', []);
-    }
     function isContentAdmin() {
       return request.auth != null
         && request.auth.token.get('email', '') != ''
-        && (inAccessRolesAdmins() || inLegacyAdminEmails());
+        && inAccessRolesAdmins();
     }
     match /efficiencyAdjustments/{adjustmentId} {
       allow read: if isAuthorized() || isSuperAdmin();
