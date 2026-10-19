@@ -4,7 +4,7 @@ Equipment financing attached to the **existing fleet records**. No second
 equipment database: each fleet unit stays the record of the asset; finance
 agreements point at units by their fleet `id`.
 
-Status: **agreed approach, not built.** Order of work: roles step 4 and the
+Status: **agreed approach, not built.** Access: **marcoguidopalermo@gmail.com only.** Order of work: roles step 4 and the
 Jobber hardening deploy first; then the registration-alert fix; then this, in
 the phase order below.
 
@@ -13,10 +13,11 @@ the phase order below.
 | Question | Decision |
 |---|---|
 | Placement | A restricted **Finance** nav item — not a "Master", not a tab in the Manage Resources modal (draft/whole-save model, too narrow for timelines), not MechanicMaster. Plus a Finance panel on each fleet unit. |
-| Who sees anything | **Marco and Dave** only (`marcoguidopalermo@gmail.com`, `office@marcosmowing.com`), enforced by a Firestore rule and a Storage rule, like mortgages. |
-| "Financed" badge | **Marco and Dave only** (fleet list, Manage Resources, MechanicMaster). |
-| Alerts | Pushes carry **no amounts**; details (residual, options) live in the restricted Finance area. |
-| Open | **Tony** — include or not (Marco leans no). **`office@marcosmowing.com`** — Dave only, or shared? (If shared, everyone with that mailbox gets access.) |
+| **Access list** | **ONE account, for now: `marcoguidopalermo@gmail.com`.** Nobody else — not Dave (`office@`), not Tony, not other admins. Hard-coded in the Firestore rule, the Storage rule and the client gate, exactly like mortgages. |
+| Adding someone later | **A one-line change in each of three places**, which must stay identical: `FINANCE_VIEWERS` in `src/lib/finance.ts` (client gate), the list in `isFinanceViewer()` in `firestore.rules`, and the same list in `storage.rules`. A test asserts the three lists match. |
+| "Financed" badge | Visible **only to the finance viewer** (fleet list, Manage Resources, MechanicMaster). |
+| Alerts | Sent **only to the finance viewer(s)** — the same hard-coded list, never the editable notification audience. Pushes carry **no amounts**; details (residual, options) live in the restricted Finance area. |
+| Tony | **No.** |
 
 ## What the code has today (facts the design rests on)
 
@@ -40,7 +41,7 @@ the phase order below.
 ## Data model
 
 One document per agreement, root collection **`equipmentFinance/{agreementId}`**
-(rule: Marco + Dave). Asset links are **embedded** (an agreement covers ≤ ~15
+(rule: the finance viewer list). Asset links are **embedded** (an agreement covers ≤ ~15
 assets: one document, atomic edits, one rule), with `assetIds: string[]`
 alongside for server-side `array-contains` queries. The app loads all
 agreements (tens) and builds the per-unit view in memory.
@@ -78,7 +79,8 @@ APR); leases — remaining payments + residual, not a "balance"; a lender
 balance with an as-of date overrides the estimate.
 
 Restricted collections: `equipmentFinance/*`, `equipmentFinanceAlerts/*`
-(rule: Marco + Dave, read + write; View-As must not read or write). Storage:
+(rule: `isFinanceViewer()`, read + write; View-As must not read or write — the
+client gate checks the REAL sign-in email, as mortgages do). Storage:
 `financing/{agreementId}/{file}` with the same email check.
 
 ## Reuse
@@ -109,7 +111,8 @@ scheduled payment was made. Out of V1: owned-outright purchases, rentals.
   (a changed date re-alerts).
 - On entry, only the most urgent current threshold fires (no backlog).
 - Proposed and ended agreements never alert.
-- Recipients hard-coded to Marco + Dave (not the editable audience).
+- Recipients: the finance viewer list only (today just Marco), hard-coded —
+  never the editable notification audience.
 - **Push:** no amounts, e.g. "Kubota Credit agreement (7 units) matures in 60
   days — decision required. Open Finance." Not written to `notificationLog`.
 - **Restricted alert record** (`equipmentFinanceAlerts`) carries the residual
@@ -142,14 +145,14 @@ change); allocations must sum to the financed amount and residual (warn);
 deferred first payments; trade-ins as down payment; HST on lease payments and
 on lease buyouts; leases running past maturity undecided ("Past maturity",
 keep alerting); early buyout / payoff; a different borrowing company; View-As
-leakage; a shared office mailbox; mortgages are Marco + Tony while finance is
-Marco + Dave.
+leakage; mortgages are Marco + Tony while finance is Marco only — two
+separate lists on purpose.
 
-## Implementation plan (each phase behind the Marco-and-Dave gate)
+## Implementation plan (each phase behind the single-account gate)
 
 0. **Prerequisites:** add the L6070 tractors and the snow blowers to the
    fleet; add Sold / Retired / Written off statuses with a date and turn
-   Delete into Retire; settle Tony and the office mailbox.
+   Delete into Retire.
 1. **Calculation + rules (no UI):** types, schedule generator, cash flow,
    maturity and residual buckets, balance estimates — tested against real
    agreements; Firestore + Storage rules tested in the emulator.
