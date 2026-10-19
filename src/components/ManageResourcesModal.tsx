@@ -184,6 +184,7 @@ interface ManageResourcesModalProps {
   currentUserEmail?: string;
   // Finance badge per unit — passed ONLY for the finance viewer (App.tsx).
   financeBadgeFor?: (unitId: string) => React.ReactNode;
+  financePanelFor?: (unitId: string) => React.ReactNode;
   isSuperAdmin: boolean;
   currentUserRole: UserRole;
   jobberUsersList: JobberUser[];
@@ -230,6 +231,7 @@ export default function ManageResourcesModal({
   persistedEmployeeIds,
   currentUserEmail,
   financeBadgeFor,
+  financePanelFor,
   isSuperAdmin,
   currentUserRole,
   jobberUsersList,
@@ -947,6 +949,7 @@ export default function ManageResourcesModal({
                   if (realIdx < 0) return null;
                   return (
                   <div className="flex flex-col gap-3">
+                    {financePanelFor?.(f.id)}
                     <div className="flex flex-wrap gap-3 items-center">
                       <div className="flex flex-col">
                         <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-0.5">Unit #</label>

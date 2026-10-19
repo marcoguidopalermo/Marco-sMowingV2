@@ -163,8 +163,17 @@ export function validateAgreement(a: FinanceAgreement): Issue[] {
   if (a.status === 'ended' && !isValidYmd(a.endedAt)) err('An ended agreement needs an end date.');
   if ((a.plan.skipMonths || []).length >= 12) err('Every month is skipped.');
 
+  const expectFinanced = (a.acquisitionCost || 0) - (a.downPayment || 0) - (a.tradeInCredit || 0) + (a.taxFinanced || 0);
+  if (a.acquisitionCost > 0 && expectFinanced !== a.financedAmount) {
+    warn(`Price − down − trade-ins${a.taxFinanced ? ' + financed HST' : ''} = ${(expectFinanced / 100).toFixed(2)}, but the financed amount is ${(a.financedAmount / 100).toFixed(2)}.`);
+  }
+  if ((a.tradeIns || []).length) {
+    const tr = (a.tradeIns || []).reduce((s, x) => s + (x.value || 0), 0);
+    if (tr !== (a.tradeInCredit || 0)) warn(`Trade-ins add up to ${(tr / 100).toFixed(2)}, not the trade-in credit ${((a.tradeInCredit || 0) / 100).toFixed(2)}.`);
+  }
   const live = liveAssets(a);
   if (!live.length) warn('No equipment on this agreement.');
+  for (const x of live) if (x.disposal && !x.disposal.date) warn(`${x.labelSnapshot || x.description || 'A unit'} is marked ${x.disposal.kind} — date not entered yet.`);
   const alloc = live.reduce((s, x) => s + (x.allocatedValue || 0), 0);
   if (live.length && alloc !== a.financedAmount && alloc !== a.acquisitionCost) {
     warn(`Allocations add up to ${(alloc / 100).toFixed(2)}, not the financed amount ${(a.financedAmount / 100).toFixed(2)} or the acquisition cost.`);
@@ -180,4 +189,48 @@ export function validateAgreement(a: FinanceAgreement): Issue[] {
   if (a.balanceOverride && !isValidYmd(a.balanceOverride.asOf)) err('The lender balance needs an as-of date.');
   if (a.type === 'lease_1_buyout' && (a.residual || 0) > 100) warn('A $1-buyout lease with a residual over $1.');
   return out;
+}
+
+// ── "What's left" bars ──────────────────────────────────────────────────────
+// Down payment / trade-ins, then what has been paid, what is still owing in
+// regular payments, and the residual / balloon still due. All before tax —
+// the lender's figures, so the bar adds up to the price that was financed.
+export interface WhatsLeftBar {
+  down: Cents;          // cash down + trade-in credit
+  paid: Cents;          // payments made so far (incl. any one-offs already paid)
+  owing: Cents;         // regular payments (and fees / payoffs) still ahead
+  residual: Cents;      // residual / balloon still ahead
+  unscheduled: Cents;   // financed amount the schedule doesn't cover (flag)
+  total: Cents;
+  made: number;
+  count: number;        // regular payments in all
+}
+const isEndPayment = (k: string) => k === 'residual' || k === 'balloon' || k === 'residual_buyout';
+
+export function whatsLeft(a: FinanceAgreement, f: AgreementFigures, today: Ymd): WhatsLeftBar {
+  let paid = 0, owing = 0, residual = 0;
+  for (const p of f.schedule) {
+    if (p.date <= today) paid += p.preTax;
+    else if (isEndPayment(p.kind)) residual += p.preTax;
+    else owing += p.preTax;
+  }
+  if (f.displayStatus === 'past_maturity') residual = f.residualRemaining;
+  const down = (a.downPayment || 0) + (a.tradeInCredit || 0);
+  const unscheduled = Math.max(0, a.financedAmount - f.totalPayments);
+  return {
+    down: cents(down), paid: cents(paid), owing: cents(owing), residual: cents(residual), unscheduled: cents(unscheduled),
+    total: cents(down + paid + owing + residual + unscheduled),
+    made: f.paymentsMade, count: f.paymentsMade + f.paymentsRemaining,
+  };
+}
+
+/** One unit's slice of the agreement bar: its share by allocated value (residual by its own share when set). */
+export function unitWhatsLeft(a: FinanceAgreement, bar: WhatsLeftBar, asset: AgreementAsset): WhatsLeftBar {
+  const s = assetShare(a, asset);
+  const k = (n: number) => cents(Math.round(n * s.fraction));
+  const residual = asset.residualShare != null && (a.residual || 0) > 0
+    ? cents(Math.round(bar.residual * (asset.residualShare / (a.residual || 1))))
+    : k(bar.residual);
+  const out = { ...bar, down: k(bar.down), paid: k(bar.paid), owing: k(bar.owing), residual, unscheduled: k(bar.unscheduled) };
+  return { ...out, total: cents(out.down + out.paid + out.owing + out.residual + out.unscheduled) };
 }

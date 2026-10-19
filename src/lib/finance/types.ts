@@ -24,7 +24,9 @@ export type Frequency = 'monthly' | 'quarterly' | 'semi_annual' | 'annual';
 export type TaxMode = 'included' | 'added' | 'none';
 export type ExtraKind = 'balloon' | 'residual_buyout' | 'payoff' | 'fee' | 'other';
 export type EndOfTermPlan = 'undecided' | 'keep_buyout' | 'trade' | 'sell' | 'return' | 'refinance';
-export type FinanceDocType = 'lease_contract' | 'purchase_agreement' | 'invoice' | 'financing_contract' | 'warranty' | 'insurance' | 'registration' | 'buyout_quote' | 'other';
+export type FinanceDocType = 'lease_contract' | 'financing_contract' | 'purchase_agreement' | 'quote' | 'bill_of_sale' | 'payment_schedule' | 'invoice' | 'buyout_quote' | 'warranty' | 'insurance' | 'registration' | 'other';
+/** The documents that count as "the contract" for the missing-contract list. */
+export const CONTRACT_DOC_TYPES: FinanceDocType[] = ['lease_contract', 'financing_contract', 'purchase_agreement'];
 
 export interface PaymentPlan {
   frequency: Frequency;
@@ -46,12 +48,20 @@ export interface AgreementAsset {
   labelSnapshot: string;            // unit label when linked — survives renumber/delete
   serialSnapshot?: string;
   description?: string;             // for items without a fleet unit
+  purchasePrice?: CentsNum;         // the unit's price on the quote / bill of sale
   allocatedValue: CentsNum;         // share of the financed amount / acquisition
   residualShare?: CentsNum;         // share of the residual
   paymentShare?: CentsNum;          // optional explicit share of the regular payment
-  removedAt?: Ymd;                  // left the agreement mid-term (paid out, sold)
+  removedAt?: Ymd;                  // left the agreement mid-term (paid out) — no longer financed
   removedReason?: string;
+  // Sold / gone but STILL on the agreement: still part of the financed
+  // amount and the payments (the sale did not pay down the loan).
+  // date null = sold, date not known yet.
+  disposal?: { kind: 'sold' | 'traded' | 'written_off'; date: Ymd | null; note?: string } | null;
 }
+
+/** A unit traded in as (part of) the down payment. */
+export interface TradeIn { description: string; serial?: string; value: CentsNum; fleetUnitId?: string | null }
 
 export interface FinanceDocument extends StoredFile { docType: FinanceDocType; label?: string }
 
@@ -71,7 +81,9 @@ export interface FinanceAgreement {
   termMonths: number;
   acquisitionCost: CentsNum;
   downPayment?: CentsNum;
-  tradeInCredit?: CentsNum;
+  tradeInCredit?: CentsNum;         // = sum of tradeIns when they are listed
+  tradeIns?: TradeIn[];
+  taxFinanced?: CentsNum;           // HST charged on the purchase and rolled into the loan
   financedAmount: CentsNum;
   aprPct?: number | null;           // often unknown on leases
   plan: PaymentPlan;
@@ -88,6 +100,8 @@ export interface FinanceAgreement {
   assetIds: string[];               // = assets' fleetUnitIds (for queries)
   documents?: FinanceDocument[];
   notes?: string;
+  /** Open questions to settle ("sale date unknown", "agreement # unknown"). */
+  flags?: string[];
   audit?: AuditEntry[];
   createdAt?: number;
   createdBy?: string;
@@ -114,7 +128,8 @@ export const END_REASON_LABEL: Record<EndReason, string> = {
   paid_off: 'Paid off', bought_out: 'Bought out', refinanced: 'Refinanced', traded: 'Traded', sold: 'Sold', returned: 'Returned', written_off: 'Written off',
 };
 export const DOC_TYPE_LABEL: Record<FinanceDocType, string> = {
-  lease_contract: 'Lease contract', purchase_agreement: 'Purchase agreement', invoice: 'Invoice', financing_contract: 'Financing contract',
-  warranty: 'Warranty', insurance: 'Insurance', registration: 'Registration', buyout_quote: 'Buyout quote', other: 'Other',
+  lease_contract: 'Lease contract', financing_contract: 'Financing contract', purchase_agreement: 'Purchase agreement',
+  quote: 'Quote', bill_of_sale: 'Bill of sale', payment_schedule: 'Payment schedule', invoice: 'Invoice', buyout_quote: 'Buyout quote',
+  warranty: 'Warranty', insurance: 'Insurance', registration: 'Registration', other: 'Other',
 };
 export const isLease = (t: AgreementType) => t === 'lease_residual' || t === 'lease_1_buyout';

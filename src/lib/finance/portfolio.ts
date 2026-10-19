@@ -210,3 +210,16 @@ export function splitEvenly(total: number, n: number): Cents[] {
   const each = Math.floor(total / n);
   return Array.from({ length: n }, (_, i) => cents(i === n - 1 ? total - each * (n - 1) : each));
 }
+
+/** Splits a total in proportion to weights; the shares add back up exactly (largest remainders). */
+export function allocateByWeight(total: number, weights: number[]): Cents[] {
+  const sum = weights.reduce((s, w) => s + Math.max(0, w), 0);
+  if (!weights.length) return [];
+  if (sum <= 0) return splitEvenly(total, weights.length);
+  const raw = weights.map(w => (total * Math.max(0, w)) / sum);
+  const out = raw.map(Math.floor);
+  let left = total - out.reduce((s, x) => s + x, 0);
+  const order = raw.map((r, i) => [r - Math.floor(r), i] as const).sort((x, y) => y[0] - x[0]);
+  for (let k = 0; left > 0; k = (k + 1) % order.length, left--) out[order[k][1]]++;
+  return out.map(n => cents(n));
+}

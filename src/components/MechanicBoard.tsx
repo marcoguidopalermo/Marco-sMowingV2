@@ -59,6 +59,7 @@ interface MechanicBoardProps {
   appData: AppData;
   // Finance badge per unit — passed ONLY for the finance viewer (App.tsx).
   financeBadgeFor?: (unitId: string) => ReactNode;
+  financePanelFor?: (unitId: string) => ReactNode;
   fleet: FleetItem[];
   mechanicTasks: MechanicTask[];
   repairLog: any[];
@@ -170,6 +171,7 @@ export default function MechanicBoard({
   appData,
   fleet,
   financeBadgeFor,
+  financePanelFor,
   mechanicTasks,
   repairLog,
   cvorExpiry,
@@ -1274,6 +1276,7 @@ export default function MechanicBoard({
               const isHrsStale = isHourMaintenanceUnit(f) && !f.isWinterized && (!f.lastHourUpdateAt || (Date.now() - f.lastHourUpdateAt) > 7 * 24 * 60 * 60 * 1000);
               return (
                 <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-4">
+                  {financePanelFor && <div className="md:col-span-3 empty:hidden">{financePanelFor(f.id)}</div>}
                   <div className="align-top">
                         {/* Legacy odometer cell — hidden for trailers
                             (N/A) AND for hour-tracked equipment (whose

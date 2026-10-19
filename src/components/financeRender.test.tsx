@@ -63,3 +63,38 @@ test('audit: lists what moved; nothing when nothing did; asset ids kept in step'
   assert.deepEqual(financeAuditEntry(undefined, L6070, 1, 'Marco')!.changes, ['Created']);
   assert.deepEqual(prepareForSave({ ...L6070, assetIds: [], assets: [...L6070.assets, { fleetUnitId: null, labelSnapshot: 'blower', allocatedValue: 0 }] }).assetIds, ['f-l1', 'f-l2']);
 });
+
+import { ContractsView, WhatsLeftBarView, FinanceUnitPanel } from './FinanceMaster';
+import { agreementFigures, whatsLeft } from '../lib/finance/calc';
+import { MOWER_LOAN } from '../lib/finance/mowerLoan.fixture';
+
+test('the bar: segments with amounts and "17 of 36 payments made"', () => {
+  const bar = whatsLeft(MOWER_LOAN, agreementFigures(MOWER_LOAN, TODAY), TODAY);
+  const html = renderToStaticMarkup(h(WhatsLeftBarView, { bar }));
+  assert.match(html, /Down \/ trade-in <b[^>]*>\$30,500<\/b>/);
+  assert.match(html, /Paid <b[^>]*>\$47,694\.18<\/b>/);
+  assert.match(html, /Still owing <b[^>]*>\$53,305\.26<\/b>/);
+  assert.match(html, /Not in the schedule <b[^>]*>\$35\.55<\/b>/);
+  assert.doesNotMatch(html, /Residual due/);
+  assert.match(html, /17 of 36 payments made/);
+});
+test('the unit panel shows that unit\'s slice of the bar', () => {
+  const idx = financeByUnit([MOWER_LOAN], TODAY).current;
+  const html = renderToStaticMarkup(h(FinanceUnitPanel, { unitId: 'f-1779209397523', items: idx.get('f-1779209397523'), today: TODAY }));
+  assert.match(html, /only you see this/);
+  assert.match(html, /\$2,805\.54\/mo group · 0%/);
+  assert.match(html, /17 of 36 payments made/);
+});
+test('Contracts: lists every document with its agreement; missing-contract list shows gaps', () => {
+  const doc = (name: string, docType: any, at: number) => ({ url: 'https://x/' + name, path: 'financing/x/' + name, name, size: 1, contentType: 'application/pdf', uploadedAt: at, uploadedBy: { email: '', name: '' }, kind: 'pdf' as const, docType });
+  const withQuote = { ...MOWER_LOAN, documents: [doc('quote-2001190.pdf', 'quote', Date.UTC(2026, 9, 19))] };
+  const withContract = { ...L6070, documents: [doc('kubota-lease.pdf', 'lease_contract', Date.UTC(2026, 7, 1))] };
+  const fleetById = new Map(FLEET.map(u => [u.id, u]));
+  const html = renderToStaticMarkup(h(ContractsView, { agreements: [withQuote, withContract], fleetById, currentUser: { email: '', name: '' }, onSave: async () => true }));
+  assert.match(html, /quote-2001190\.pdf/);
+  assert.match(html, /kubota-lease\.pdf/);
+  assert.match(html, /Lease contract/);
+  assert.match(html, /Missing contract \(1\)/);           // the mower loan has only a quote
+  assert.match(html, /Kubota Credit \(via Kubota Thunder Bay\)/);
+  assert.ok(html.indexOf('quote-2001190') < html.indexOf('kubota-lease')); // newest first
+});

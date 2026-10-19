@@ -9,9 +9,10 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Landmark, Plus, ArrowLeft, Lock, Trash2, Upload, FileText, X, AlertTriangle, ChevronDown, ChevronRight, RefreshCw, Scissors } from 'lucide-react';
 import type { FleetItem } from '../types';
 import type { FinanceAgreement, AgreementAsset, AgreementType, Frequency, TaxMode, EndOfTermPlan, EndReason, ExtraKind, FinanceDocType, AgreementStatus } from '../lib/finance/types';
-import { AGREEMENT_TYPE_LABEL, FREQUENCY_LABEL, END_PLAN_LABEL, END_REASON_LABEL, DOC_TYPE_LABEL, isLease } from '../lib/finance/types';
-import { agreementFigures, validateAgreement, DISPLAY_STATUS_LABEL, liveAssets, type DisplayStatus } from '../lib/finance/calc';
-import { portfolio, splitEvenly, type UnitFinance } from '../lib/finance/portfolio';
+import { AGREEMENT_TYPE_LABEL, FREQUENCY_LABEL, END_PLAN_LABEL, END_REASON_LABEL, DOC_TYPE_LABEL, CONTRACT_DOC_TYPES, isLease } from '../lib/finance/types';
+import type { FinanceDocument } from '../lib/finance/types';
+import { agreementFigures, validateAgreement, DISPLAY_STATUS_LABEL, liveAssets, whatsLeft, unitWhatsLeft, type DisplayStatus, type WhatsLeftBar } from '../lib/finance/calc';
+import { portfolio, splitEvenly, allocateByWeight, type UnitFinance } from '../lib/finance/portfolio';
 import { addMonths, isValidYmd, monthsBetween } from '../lib/finance/schedule';
 import { blankAgreement, newAgreementId } from '../lib/finance/edit';
 import { fmtMoney } from '../lib/finance/money';
@@ -50,6 +51,7 @@ export default function FinanceMaster({ agreements, fleet, today, currentUser, o
   const [editing, setEditing] = useState<FinanceAgreement | null>(null);
   const [isNew, setIsNew] = useState(false);
   const [filter, setFilter] = useState<'current' | 'proposed' | 'ended' | 'all'>('current');
+  const [tab, setTab] = useState<'agreements' | 'contracts'>('agreements');
   const [q, setQ] = useState('');
 
   const visible = useMemo(() => agreements.filter(a => !a.deletedAt), [agreements]);
@@ -110,6 +112,18 @@ export default function FinanceMaster({ agreements, fleet, today, currentUser, o
         </button>
       </div>
 
+      <div className="flex gap-1 border-b border-slate-200">
+        {(['agreements', 'contracts'] as const).map(k => (
+          <button key={k} onClick={() => setTab(k)} className={`px-3 py-2 text-sm font-bold border-b-2 -mb-px ${tab === k ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
+            {k === 'agreements' ? 'Agreements' : 'Contracts'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'contracts' ? (
+        <ContractsView agreements={visible} fleetById={fleetById} currentUser={currentUser} onSave={onSave}
+          onOpenAgreement={(id) => { const x = visible.find(v => v.id === id); if (x) { setEditing(x); setIsNew(false); } }} />
+      ) : (<>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         <Stat label="Monthly payments" value={M(t.monthly)} sub="before HST" />
         <Stat label="Still to pay" value={M(t.remaining)} sub="incl. residuals" />
@@ -156,11 +170,13 @@ export default function FinanceMaster({ agreements, fleet, today, currentUser, o
                   <Fig label="Residual" value={M(a.residual || 0)} />
                   <Fig label="Matures" value={fmtMonth(a.maturityDate)} sub={months != null && f.displayStatus !== 'ended' && f.displayStatus !== 'paid_off' ? (months >= 0 ? `${months} mo` : `${-months} mo ago`) : undefined} warn={months != null && months <= 6 && f.displayStatus !== 'ended' && f.displayStatus !== 'paid_off'} />
                 </div>
+                <div className="mt-2"><WhatsLeftBarView bar={whatsLeft(a, f, today)} /></div>
               </button>
             );
           })}
         </div>
       )}
+      </>)}
     </div>
   );
 }
@@ -295,7 +311,10 @@ function AgreementEditor({ initial, isNew, all, fleet, fleetById, today, current
   };
   const leave = () => { if (!dirty || window.confirm('Leave without saving your changes?')) onClose(); };
 
-  const fillFinanced = () => set({ financedAmount: Math.max(0, (a.acquisitionCost || 0) - (a.downPayment || 0) - (a.tradeInCredit || 0)) });
+  const expectFinanced = (a.acquisitionCost || 0) - (a.downPayment || 0) - (a.tradeInCredit || 0) + (a.taxFinanced || 0);
+  const fillFinanced = () => set({ financedAmount: Math.max(0, expectFinanced) });
+  const setTradeIns = (tradeIns: NonNullable<FinanceAgreement['tradeIns']>) =>
+    set({ tradeIns, tradeInCredit: tradeIns.length ? tradeIns.reduce((s, x) => s + (x.value || 0), 0) : a.tradeInCredit });
   const fillMaturity = () => {
     if (!isValidYmd(a.startDate) || !(a.termMonths > 0)) return;
     set({ maturityDate: addMonths(a.startDate, a.termMonths) });
@@ -313,6 +332,11 @@ function AgreementEditor({ initial, isNew, all, fleet, fleetById, today, current
   const splitAlloc = () => {
     const idx = a.assets.map((x, i) => (!x.removedAt ? i : -1)).filter(i => i >= 0);
     const shares = splitEvenly(a.acquisitionCost || a.financedAmount, idx.length);
+    setA(prev => ({ ...prev, assets: prev.assets.map((x, i) => (idx.includes(i) ? { ...x, allocatedValue: shares[idx.indexOf(i)] } : x)) }));
+  };
+  const allocByPrice = () => {
+    const idx = a.assets.map((x, i) => (!x.removedAt ? i : -1)).filter(i => i >= 0);
+    const shares = allocateByWeight(a.financedAmount, idx.map(i => a.assets[i].purchasePrice || 0));
     setA(prev => ({ ...prev, assets: prev.assets.map((x, i) => (idx.includes(i) ? { ...x, allocatedValue: shares[idx.indexOf(i)] } : x)) }));
   };
   const splitResidual = () => {
@@ -396,6 +420,20 @@ function AgreementEditor({ initial, isNew, all, fleet, fleetById, today, current
         </div>
       )}
 
+      <Section title={`To confirm (${(a.flags || []).length})`} defaultOpen={(a.flags || []).length > 0} right={<button type="button" onClick={() => set({ flags: [...(a.flags || []), ''] })} className="text-xs font-bold text-emerald-700">+ Add</button>}>
+        {(a.flags || []).length === 0 ? <div className="text-xs text-slate-500">Nothing open.</div> : (
+          <div className="space-y-1">
+            {(a.flags || []).map((fl, i) => (
+              <div key={i} className="flex gap-2 items-center">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                <input className={inputCls} value={fl} onChange={e => set({ flags: (a.flags || []).map((y, j) => (j === i ? e.target.value : y)) })} />
+                <button type="button" title="Settled" onClick={() => set({ flags: (a.flags || []).filter((_, j) => j !== i) })}><X className="w-4 h-4 text-slate-400 hover:text-emerald-700" /></button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+
       {(from || by) && (
         <div className="text-sm bg-sky-50 border border-sky-200 text-sky-900 rounded-md px-3 py-2 space-y-0.5">
           {from && <div>Refinances <button className="underline font-bold" onClick={() => onOpen(from, false)}>{from.lender} (matured {fmtMonth(from.maturityDate)})</button>.</div>}
@@ -404,6 +442,7 @@ function AgreementEditor({ initial, isNew, all, fleet, fleetById, today, current
       )}
 
       <FiguresPanel a={a} f={figures} />
+      <div className="bg-white rounded-lg border border-slate-200 p-3"><WhatsLeftBarView bar={whatsLeft(a, figures, today)} /></div>
 
       <Section title="Agreement">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -453,14 +492,37 @@ function AgreementEditor({ initial, isNew, all, fleet, fleetById, today, current
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <Field label="Acquisition cost (all units)"><MoneyInput value={a.acquisitionCost} onChange={c => set({ acquisitionCost: c || 0 })} /></Field>
           <Field label="Down payment"><MoneyInput value={a.downPayment} allowEmpty onChange={c => set({ downPayment: c ?? undefined })} /></Field>
-          <Field label="Trade-in credit"><MoneyInput value={a.tradeInCredit} allowEmpty onChange={c => set({ tradeInCredit: c ?? undefined })} /></Field>
-          <Field label="Financed amount" hint={(a.acquisitionCost || 0) - (a.downPayment || 0) - (a.tradeInCredit || 0) !== a.financedAmount ? `Cost − down − trade-in = ${MC((a.acquisitionCost || 0) - (a.downPayment || 0) - (a.tradeInCredit || 0))}` : undefined}>
+          <Field label="Trade-in credit" hint={(a.tradeIns || []).length ? 'Sum of the trade-ins below' : undefined}>
+            {(a.tradeIns || []).length
+              ? <div className={`${inputCls} bg-slate-50`}>{MC(a.tradeInCredit || 0)}</div>
+              : <MoneyInput value={a.tradeInCredit} allowEmpty onChange={c => set({ tradeInCredit: c ?? undefined })} />}
+          </Field>
+          <Field label="HST financed" hint="Tax on the purchase rolled into the loan"><MoneyInput value={a.taxFinanced} allowEmpty onChange={c => set({ taxFinanced: c ?? undefined })} /></Field>
+          <Field label="Financed amount" hint={expectFinanced !== a.financedAmount ? `Cost − down − trade-in${a.taxFinanced ? ' + HST' : ''} = ${MC(expectFinanced)}` : undefined}>
             <div className="flex gap-1">
               <MoneyInput value={a.financedAmount} onChange={c => set({ financedAmount: c || 0 })} />
-              <button type="button" title="Cost − down − trade-in" onClick={fillFinanced} className="px-2 rounded-md border border-slate-300 text-xs font-bold text-slate-600">=</button>
+              <button type="button" title="Cost − down − trade-in + HST financed" onClick={fillFinanced} className="px-2 rounded-md border border-slate-300 text-xs font-bold text-slate-600">=</button>
             </div>
           </Field>
           <Field label="APR %" hint={isLease(a.type) ? 'Often unknown on a lease — leave blank' : 'Blank if unknown'}><NumInput step="0.01" allowEmpty value={a.aprPct ?? null} onChange={v => set({ aprPct: v })} /></Field>
+        </div>
+        <div className="mt-4">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Trade-ins</span>
+            <span className="text-[11px] text-slate-400">part of the down payment</span>
+            <button type="button" onClick={() => setTradeIns([...(a.tradeIns || []), { description: '', value: 0 }])} className="ml-auto text-xs font-bold text-emerald-700">+ Add</button>
+          </div>
+          {(a.tradeIns || []).map((t, i) => {
+            const upd = (patch: Partial<typeof t>) => setTradeIns((a.tradeIns || []).map((y, j) => (j === i ? { ...y, ...patch } : y)));
+            return (
+              <div key={i} className="grid grid-cols-2 sm:grid-cols-[3fr_1fr_1fr_auto] gap-2 mb-1 items-center">
+                <input className={`${inputCls} col-span-2 sm:col-span-1`} placeholder="2008 Kubota F2880 bagging mower" value={t.description} onChange={e => upd({ description: e.target.value })} />
+                <input className={inputCls} placeholder="Serial" value={t.serial || ''} onChange={e => upd({ serial: e.target.value })} />
+                <MoneyInput value={t.value} onChange={v => upd({ value: v || 0 })} />
+                <button type="button" onClick={() => setTradeIns((a.tradeIns || []).filter((_, j) => j !== i))}><X className="w-4 h-4 text-slate-400 hover:text-red-600" /></button>
+              </div>
+            );
+          })}
         </div>
       </Section>
 
@@ -550,6 +612,7 @@ function AgreementEditor({ initial, isNew, all, fleet, fleetById, today, current
 
       <Section title={`Equipment (${live.length})`} right={
         <div className="flex gap-2">
+          {live.some(x => x.purchasePrice) && <button type="button" onClick={allocByPrice} className="text-xs font-bold text-slate-600 inline-flex items-center gap-1" title="Split the financed amount in proportion to purchase prices"><Scissors className="w-3.5 h-3.5" /> By price</button>}
           <button type="button" onClick={splitAlloc} className="text-xs font-bold text-slate-600 inline-flex items-center gap-1" title="Split the acquisition cost evenly"><Scissors className="w-3.5 h-3.5" /> Split cost</button>
           {(a.residual || 0) > 0 && <button type="button" onClick={splitResidual} className="text-xs font-bold text-slate-600 inline-flex items-center gap-1" title="Split the residual evenly"><Scissors className="w-3.5 h-3.5" /> Split residual</button>}
         </div>
@@ -559,7 +622,7 @@ function AgreementEditor({ initial, isNew, all, fleet, fleetById, today, current
             const u = x.fleetUnitId ? fleetById.get(x.fleetUnitId) : undefined;
             return (
               <div key={i} className={`border rounded-md p-2 ${x.removedAt ? 'bg-slate-50 border-slate-200 opacity-70' : 'border-slate-200'}`}>
-                <div className="grid grid-cols-1 sm:grid-cols-[2fr_1fr_1fr_auto] gap-2 items-end">
+                <div className="grid grid-cols-1 sm:grid-cols-[2fr_1fr_1fr_1fr_auto] gap-2 items-end">
                   <div>
                     {x.fleetUnitId ? (
                       <div className="text-sm">
@@ -572,15 +635,26 @@ function AgreementEditor({ initial, isNew, all, fleet, fleetById, today, current
                       <Field label="Item (not in the fleet)"><input className={inputCls} value={x.description || ''} onChange={e => setAsset(i, { description: e.target.value, labelSnapshot: e.target.value })} placeholder="e.g. 3-pt snow blower" /></Field>
                     )}
                   </div>
+                  <Field label="Purchase price"><MoneyInput value={x.purchasePrice} allowEmpty onChange={c => setAsset(i, { purchasePrice: c ?? undefined })} /></Field>
                   <Field label="Allocated value"><MoneyInput value={x.allocatedValue} onChange={c => setAsset(i, { allocatedValue: c || 0 })} /></Field>
                   <Field label="Residual share"><MoneyInput value={x.residualShare} allowEmpty onChange={c => setAsset(i, { residualShare: c ?? undefined })} /></Field>
                   <div className="flex gap-1 pb-1">
+                    {!x.removedAt && (x.disposal
+                      ? <button type="button" className="text-[11px] font-bold text-slate-600 border border-slate-300 rounded px-2 py-1" onClick={() => setAsset(i, { disposal: null })}>Not sold</button>
+                      : <button type="button" className="text-[11px] font-bold text-slate-600 border border-slate-300 rounded px-2 py-1" title="Sold but still on the agreement — payments unchanged" onClick={() => setAsset(i, { disposal: { kind: 'sold', date: null } })}>Sold</button>)}
                     {!x.removedAt
                       ? <button type="button" className="text-[11px] font-bold text-slate-600 border border-slate-300 rounded px-2 py-1" title="Left the agreement mid-term (paid out, sold)" onClick={() => setAsset(i, { removedAt: today })}>Paid out</button>
                       : <button type="button" className="text-[11px] font-bold text-slate-600 border border-slate-300 rounded px-2 py-1" onClick={() => setAsset(i, { removedAt: undefined, removedReason: undefined })}>Undo</button>}
                     <button type="button" title="Remove (added by mistake)" onClick={() => setA(prev => ({ ...prev, assets: prev.assets.filter((_, j) => j !== i) }))}><Trash2 className="w-4 h-4 text-slate-400 hover:text-red-600" /></button>
                   </div>
                 </div>
+                {x.disposal && !x.removedAt && (
+                  <div className="grid grid-cols-1 sm:grid-cols-[1fr_3fr] gap-2 mt-2">
+                    <Field label="Sold on" hint={x.disposal.date ? undefined : 'Not known yet — flagged'}><DateInput value={x.disposal.date || ''} onChange={v => setAsset(i, { disposal: { ...x.disposal!, date: v || null } })} /></Field>
+                    <Field label="Note" hint="Still on the agreement — the sale did not pay down the loan"><input className={inputCls} value={x.disposal.note || ''} onChange={e => setAsset(i, { disposal: { ...x.disposal!, note: e.target.value } })} /></Field>
+                  </div>
+                )}
+                {!x.removedAt && <div className="mt-2"><WhatsLeftBarView bar={unitWhatsLeft(a, whatsLeft(a, figures, today), x)} compact /></div>}
                 {x.removedAt && (
                   <div className="grid grid-cols-1 sm:grid-cols-[1fr_3fr] gap-2 mt-2">
                     <Field label="Left the agreement on"><DateInput value={x.removedAt} onChange={v => setAsset(i, { removedAt: v })} /></Field>
@@ -714,5 +788,176 @@ export function FinanceBadge({ items, onOpen }: { items: UnitFinance[] | undefin
     >
       <Landmark className="w-3 h-3" />{proposed ? 'Proposed' : f.displayStatus === 'past_maturity' ? 'Past maturity' : 'Financed'} · {fmtMonth(a.maturityDate)}
     </span>
+  );
+}
+
+// ── "What's left" bar ───────────────────────────────────────────────────────
+const SEG = {
+  down: { cls: 'bg-sky-300', label: 'Down / trade-in' },
+  paid: { cls: 'bg-emerald-500', label: 'Paid' },
+  owing: { cls: 'bg-amber-400', label: 'Still owing' },
+  residual: { cls: 'bg-violet-500', label: 'Residual due' },
+  unscheduled: { cls: 'bg-slate-300', label: 'Not in the schedule' },
+} as const;
+
+/** Down · paid · owing · residual, adding up to what was financed. Plain CSS. */
+export function WhatsLeftBarView({ bar, compact }: { bar: WhatsLeftBar; compact?: boolean }) {
+  if (bar.total <= 0) return null;
+  const keys = (['down', 'paid', 'owing', 'residual', 'unscheduled'] as const).filter(k => bar[k] > 0);
+  return (
+    <div>
+      <div className={`flex w-full overflow-hidden rounded ${compact ? 'h-2' : 'h-3'} bg-slate-100`} role="img"
+        aria-label={keys.map(k => `${SEG[k].label} ${fmtMoney(bar[k])}`).join(', ')}>
+        {keys.map(k => <div key={k} className={SEG[k].cls} style={{ width: `${(bar[k] / bar.total) * 100}%` }} title={`${SEG[k].label}: ${fmtMoney(bar[k], { cents: true })}`} />)}
+      </div>
+      <div className={`flex flex-wrap gap-x-3 gap-y-0.5 mt-1 ${compact ? 'text-[10px]' : 'text-[11px]'} text-slate-600`}>
+        {keys.map(k => (
+          <span key={k} className="inline-flex items-center gap-1 whitespace-nowrap">
+            <span className={`inline-block w-2 h-2 rounded-sm ${SEG[k].cls}`} />{SEG[k].label} <b className="text-slate-800">{fmtMoney(bar[k])}</b>
+          </span>
+        ))}
+        {bar.count > 0 && <span className="whitespace-nowrap text-slate-500">{bar.made} of {bar.count} payments made</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── Fleet unit Finance panel (finance viewer only) ──────────────────────────
+export function FinanceUnitPanel({ unitId, items, today, onOpen }: { unitId: string; items: UnitFinance[] | undefined; today: string; onOpen?: (agreementId: string) => void }) {
+  if (!items || !items.length) return null;
+  return (
+    <div className="rounded-md border border-emerald-200 bg-emerald-50/40 p-2 space-y-2">
+      <div className="flex items-center gap-1 text-[11px] font-black uppercase tracking-wide text-emerald-800"><Landmark className="w-3.5 h-3.5" /> Finance <span className="font-bold normal-case text-slate-500 tracking-normal">· only you see this</span></div>
+      {items.map(({ agreement: a, figures: f, residualShare }) => {
+        const asset = a.assets.find(x => x.fleetUnitId === unitId);
+        if (!asset) return null;
+        const bar = unitWhatsLeft(a, whatsLeft(a, f, today), asset);
+        return (
+          <div key={a.id} className={a.status === 'proposed' ? 'border border-dashed border-slate-400 rounded p-1.5' : ''}>
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              <StatusPill status={f.displayStatus} />
+              <button type="button" onClick={(e) => { e.stopPropagation(); onOpen?.(a.id); }} className="font-bold text-sky-700 hover:underline">{a.lender}</button>
+              <span className="text-slate-600">{fmtMoney(a.plan.amount)}/{a.plan.frequency === 'monthly' ? 'mo' : FREQUENCY_LABEL[a.plan.frequency].toLowerCase()} group{a.aprPct != null ? ` · ${a.aprPct}%` : ''}</span>
+              <span className="text-slate-600">Matures {fmtMonth(a.maturityDate)}</span>
+              {residualShare > 0 && <span className="text-slate-600">Residual {fmtMoney(residualShare)} this unit</span>}
+              {asset.disposal && <span className="text-[10px] font-black uppercase text-slate-500">{asset.disposal.kind}{asset.disposal.date ? ` ${asset.disposal.date}` : ' (date?)'}</span>}
+            </div>
+            <div className="mt-1"><WhatsLeftBarView bar={bar} compact /></div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Contracts: every agreement document in one place ────────────────────────
+// Same Storage path (financing/{agreementId}/) and the same finance-only rule
+// as the per-agreement upload; uploads here are saved onto that agreement.
+function agreementLabel(a: FinanceAgreement, fleetById: Map<string, FleetItem>): string {
+  const names = liveAssets(a).map(x => unitName(x, fleetById));
+  const units = names.length <= 2 ? names.join(', ') : `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
+  return `${a.lender || 'Unnamed lender'}${a.agreementNumber ? ` #${a.agreementNumber}` : ''}${units ? ` — ${units}` : ''}`;
+}
+
+export function ContractsView({ agreements, fleetById, currentUser, onSave, onOpenAgreement }: {
+  agreements: FinanceAgreement[];
+  fleetById: Map<string, FleetItem>;
+  currentUser: { email: string; name: string };
+  onSave: (a: FinanceAgreement) => Promise<boolean>;
+  onOpenAgreement?: (id: string) => void;
+}) {
+  const [fAgreement, setFAgreement] = useState('');
+  const [fType, setFType] = useState<FinanceDocType | ''>('');
+  const [upAgreement, setUpAgreement] = useState('');
+  const [upType, setUpType] = useState<FinanceDocType>('financing_contract');
+  const [uploading, setUploading] = useState<number | null>(null);
+
+  const sorted = useMemo(() => [...agreements].sort((x, y) => agreementLabel(x, fleetById).localeCompare(agreementLabel(y, fleetById))), [agreements, fleetById]);
+  const rows = useMemo(() => agreements
+    .flatMap(a => (a.documents || []).map(d => ({ a, d })))
+    .filter(({ a, d }) => (!fAgreement || a.id === fAgreement) && (!fType || d.docType === fType))
+    .sort((x, y) => (y.d.uploadedAt || 0) - (x.d.uploadedAt || 0)), [agreements, fAgreement, fType]);
+  const missing = agreements.filter(a => a.status !== 'ended' && !(a.documents || []).some(d => CONTRACT_DOC_TYPES.includes(d.docType)));
+
+  const upload = async (files: FileList | null) => {
+    const target = agreements.find(a => a.id === upAgreement);
+    if (!files || !files.length || !target) return;
+    let docs: FinanceDocument[] = [...(target.documents || [])];
+    try {
+      for (const file of Array.from(files)) {
+        setUploading(0);
+        const sf = await uploadFile(`financing/${target.id}`, file, { uploadedBy: currentUser, onProgress: setUploading });
+        docs = [...docs, { ...sf, docType: upType }];
+        if (!(await onSave({ ...target, documents: docs }))) break;
+      }
+    } catch (e: any) {
+      window.alert(`Upload failed: ${e?.message || e}`);
+    } finally { setUploading(null); }
+  };
+
+  return (
+    <div className="space-y-3">
+      {missing.length > 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <div className="font-bold flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Missing contract ({missing.length})</div>
+          <ul className="mt-1 space-y-0.5">
+            {missing.map(a => (
+              <li key={a.id} className="flex items-center gap-2 flex-wrap">
+                <button className="underline text-left" onClick={() => onOpenAgreement?.(a.id)}>{agreementLabel(a, fleetById)}</button>
+                <button className="text-xs font-bold text-emerald-800" onClick={() => { setUpAgreement(a.id); setUpType(isLease(a.type) ? 'lease_contract' : 'financing_contract'); }}>Attach…</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="bg-white rounded-lg border border-slate-200 p-3">
+        <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">Upload a document</div>
+        <div className="grid grid-cols-1 sm:grid-cols-[2fr_1fr_auto] gap-2 items-center">
+          <select className={inputCls} value={upAgreement} onChange={e => setUpAgreement(e.target.value)}>
+            <option value="">Which agreement?</option>
+            {sorted.map(a => <option key={a.id} value={a.id}>{agreementLabel(a, fleetById)}</option>)}
+          </select>
+          <select className={inputCls} value={upType} onChange={e => setUpType(e.target.value as FinanceDocType)}>
+            {(Object.keys(DOC_TYPE_LABEL) as FinanceDocType[]).map(k => <option key={k} value={k}>{DOC_TYPE_LABEL[k]}</option>)}
+          </select>
+          <label className={`inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-md border text-sm font-bold ${upAgreement ? 'border-slate-300 bg-white text-slate-700 cursor-pointer hover:bg-slate-50' : 'border-slate-200 bg-slate-50 text-slate-400 cursor-not-allowed'}`}>
+            <Upload className="w-4 h-4" /> {uploading != null ? `Uploading ${uploading}%` : 'PDF or photo'}
+            <input type="file" accept="application/pdf,image/*" multiple className="hidden" disabled={!upAgreement || uploading != null} onChange={e => { upload(e.target.files); e.target.value = ''; }} />
+          </label>
+        </div>
+      </div>
+
+      <div className="flex gap-2 flex-wrap">
+        <select className={`${inputCls} sm:w-80`} value={fAgreement} onChange={e => setFAgreement(e.target.value)}>
+          <option value="">All agreements</option>
+          {sorted.map(a => <option key={a.id} value={a.id}>{agreementLabel(a, fleetById)}</option>)}
+        </select>
+        <select className={`${inputCls} sm:w-56`} value={fType} onChange={e => setFType(e.target.value as FinanceDocType | '')}>
+          <option value="">All types</option>
+          {(Object.keys(DOC_TYPE_LABEL) as FinanceDocType[]).map(k => <option key={k} value={k}>{DOC_TYPE_LABEL[k]}</option>)}
+        </select>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="text-center text-slate-500 py-10 border border-dashed border-slate-300 rounded-lg">No documents{fAgreement || fType ? ' match' : ' yet'}.</div>
+      ) : (
+        <div className="bg-white rounded-lg border border-slate-200 divide-y divide-slate-100">
+          {rows.map(({ a, d }) => (
+            <a key={d.path} href={d.url} target="_blank" rel="noreferrer" className="flex items-start gap-3 px-3 py-2 hover:bg-slate-50">
+              <FileText className="w-5 h-5 text-slate-400 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-bold text-sky-800 truncate">{d.name}</div>
+                <div className="text-xs text-slate-500 truncate">{agreementLabel(a, fleetById)}</div>
+              </div>
+              <div className="text-right shrink-0">
+                <div className="text-[11px] font-bold text-slate-600">{DOC_TYPE_LABEL[d.docType] || d.docType}</div>
+                <div className="text-[11px] text-slate-400">{d.uploadedAt ? new Date(d.uploadedAt).toLocaleDateString('en-CA') : ''}</div>
+              </div>
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

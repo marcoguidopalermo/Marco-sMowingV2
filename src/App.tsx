@@ -68,7 +68,7 @@ import RoleMaster from './components/RoleMaster';
 import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
 import MarketingMaster from './components/MarketingMaster';
-import FinanceMaster, { FinanceBadge } from './components/FinanceMaster';
+import FinanceMaster, { FinanceBadge, FinanceUnitPanel } from './components/FinanceMaster';
 import { clipKey, commentSubject } from './components/MarketingComments';
 import { migrateContract as migrateSnowContract } from './lib/snowContracts';
 import { entriesFor as bankEntriesFor } from './lib/hoursBank';
@@ -892,8 +892,12 @@ export default function App() {
     () => (canViewFinance ? financeByUnit(financeAgreements, formatTodayInToronto()).current : null),
     [canViewFinance, financeAgreements],
   );
+  const openFinanceAgreement = (id: string) => { setIsManageModalOpen(false); setFinanceFocusId(id); setCurrentView('finance'); };
   const financeBadgeFor = financeUnitIndex
-    ? (unitId: string) => <FinanceBadge items={financeUnitIndex.get(unitId)} onOpen={(id) => { setIsManageModalOpen(false); setFinanceFocusId(id); setCurrentView('finance'); }} />
+    ? (unitId: string) => <FinanceBadge items={financeUnitIndex.get(unitId)} onOpen={openFinanceAgreement} />
+    : undefined;
+  const financePanelFor = financeUnitIndex
+    ? (unitId: string) => <FinanceUnitPanel unitId={unitId} items={financeUnitIndex.get(unitId)} today={formatTodayInToronto()} onOpen={openFinanceAgreement} />
     : undefined;
 
   // Real CrewMaster employees an admin can impersonate — sourced from
@@ -6669,6 +6673,7 @@ export default function App() {
       appData={appData}
       fleet={appData.fleet}
       financeBadgeFor={financeBadgeFor}
+      financePanelFor={financePanelFor}
       mechanicTasks={appData.mechanicTasks}
       repairLog={appData.repairLog}
       cvorExpiry={appData.cvorExpiry}
@@ -9137,6 +9142,7 @@ export default function App() {
         persistedEmployeeIds={new Set((appData.employees || []).map(e => e.id))}
         currentUserEmail={displayEmail}
         financeBadgeFor={financeBadgeFor}
+        financePanelFor={financePanelFor}
         isOpen={isManageModalOpen}
         onClose={() => setIsManageModalOpen(false)}
         manageTab={manageTab}

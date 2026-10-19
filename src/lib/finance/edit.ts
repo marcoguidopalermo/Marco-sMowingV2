@@ -57,6 +57,8 @@ const FIELDS: Getter[] = [
   ['Acquisition cost', a => money(a.acquisitionCost)],
   ['Down payment', a => money(a.downPayment)],
   ['Trade-in credit', a => money(a.tradeInCredit)],
+  ['Trade-ins', a => (a.tradeIns || []).map(t => `${t.description}${t.serial ? ` S/N ${t.serial}` : ''} ${money(t.value)}`).join('; ') || '—'],
+  ['HST financed', a => money(a.taxFinanced)],
   ['Financed amount', a => money(a.financedAmount)],
   ['APR', a => pct(a.aprPct)],
   ['Frequency', a => FREQUENCY_LABEL[a.plan.frequency] || a.plan.frequency],
@@ -71,9 +73,10 @@ const FIELDS: Getter[] = [
   ['End-of-term plan', a => END_PLAN_LABEL[a.endOfTermPlan] || a.endOfTermPlan],
   ['One-off payments', a => (a.extraPayments || []).map(x => `${x.date} ${x.kind} ${money(x.amount)}`).join('; ') || '—'],
   ['Payment changes', a => (a.paymentChanges || []).map(x => `from ${x.from} ${money(x.amount)}`).join('; ') || '—'],
-  ['Equipment', a => (a.assets || []).map(x => `${x.labelSnapshot || x.description || '?'} ${money(x.allocatedValue)}${x.removedAt ? ` (removed ${x.removedAt})` : ''}`).join('; ') || '—'],
+  ['Equipment', a => (a.assets || []).map(x => `${x.labelSnapshot || x.description || '?'}${x.purchasePrice != null ? ` price ${money(x.purchasePrice)}` : ''} alloc ${money(x.allocatedValue)}${x.disposal ? ` (${x.disposal.kind} ${x.disposal.date || 'date unknown'})` : ''}${x.removedAt ? ` (removed ${x.removedAt})` : ''}`).join('; ') || '—'],
   ['Documents', a => (a.documents || []).map(d => d.name).join('; ') || '—'],
   ['Notes', a => plain(a.notes)],
+  ['To confirm', a => (a.flags || []).join('; ') || '—'],
   ['Deleted', a => (a.deletedAt ? 'yes' : 'no')],
 ];
 
