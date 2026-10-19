@@ -80,7 +80,7 @@ const FIELDS: Getter[] = [
   ['Deleted', a => (a.deletedAt ? 'yes' : 'no')],
 ];
 
-/** One audit entry listing what moved ("Payment: $8,200.00 → $7,000.00"), or null if nothing did. */
+/** One audit entry listing what moved ("Payment: $7,500.00 → $7,000.00"), or null if nothing did. */
 export function financeAuditEntry(before: FinanceAgreement | undefined, after: FinanceAgreement, at: number, by: string): AuditEntry | null {
   if (!before) return { at, by, changes: ['Created'] };
   const changes: string[] = [];

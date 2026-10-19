@@ -453,7 +453,7 @@ function AgreementEditor({ initial, isNew, all, fleet, fleetById, today, current
               <option value="ended">Ended</option>
             </select>
           </Field>
-          <Field label="Lender"><input className={inputCls} value={a.lender} onChange={e => set({ lender: e.target.value })} placeholder="Kubota Credit" /></Field>
+          <Field label="Lender"><input className={inputCls} value={a.lender} onChange={e => set({ lender: e.target.value })} placeholder="Lender name" /></Field>
           <Field label="Agreement #"><input className={inputCls} value={a.agreementNumber || ''} onChange={e => set({ agreementNumber: e.target.value })} /></Field>
           <Field label="Type">
             <select className={inputCls} value={a.type} onChange={e => set({ type: e.target.value as AgreementType })}>
@@ -516,7 +516,7 @@ function AgreementEditor({ initial, isNew, all, fleet, fleetById, today, current
             const upd = (patch: Partial<typeof t>) => setTradeIns((a.tradeIns || []).map((y, j) => (j === i ? { ...y, ...patch } : y)));
             return (
               <div key={i} className="grid grid-cols-2 sm:grid-cols-[3fr_1fr_1fr_auto] gap-2 mb-1 items-center">
-                <input className={`${inputCls} col-span-2 sm:col-span-1`} placeholder="2008 Kubota F2880 bagging mower" value={t.description} onChange={e => upd({ description: e.target.value })} />
+                <input className={`${inputCls} col-span-2 sm:col-span-1`} placeholder="Year, make, model of the traded unit" value={t.description} onChange={e => upd({ description: e.target.value })} />
                 <input className={inputCls} placeholder="Serial" value={t.serial || ''} onChange={e => upd({ serial: e.target.value })} />
                 <MoneyInput value={t.value} onChange={v => upd({ value: v || 0 })} />
                 <button type="button" onClick={() => setTradeIns((a.tradeIns || []).filter((_, j) => j !== i))}><X className="w-4 h-4 text-slate-400 hover:text-red-600" /></button>
