@@ -7,7 +7,7 @@ import SalesBreakdown from './SalesBreakdown';
 import type { InvoiceRow } from '../lib/sales/categories';
 
 const inv = (n: string, d: string, li: InvoiceRow['li'], m: 1 | 2 | 3, w: Record<string, number>): InvoiceRow => {
-  const sub = li.reduce((s, l) => s + (Number(l[2]) || 0), 0);
+  const sub = li.reduce((s, l) => s + (Number((l as any)[2]) || 0), 0);
   return { id: n, n, d: `${d}T16:00:00Z`, st: 'paid', sub, tot: Math.round(sub * 113) / 100, cl: 'Client ' + n, url: '#' + n, li, m, w };
 };
 const invoices = [
