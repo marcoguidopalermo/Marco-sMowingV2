@@ -30,10 +30,38 @@ const toLines = (li: LineIn[], quote = false) => (li || []).map(asTuple)
 
 export interface Amount { pre: number; incl: number }
 export interface Ranked<K extends string = string> { key: K; pre: number; incl: number; share: number }
-export interface DivisionRanked extends Ranked { method1: number; method2: number }
+export interface DivisionRanked extends Ranked { method1: number; method2: number; method4: number }
+
+/**
+ * Method 4 — SERVICE CATEGORY fallback for invoices neither crew records nor
+ * Jobber assignees can place: a category goes to the division that crew
+ * records (method 1) put it in, but only where that's clear — at least
+ * MIN_SHARE of the category's crew-record dollars, on at least MIN_BASIS.
+ * Derived from the year's own data, so it follows how the work is really done.
+ */
+export const FALLBACK_MIN_SHARE = 0.6;
+export const FALLBACK_MIN_BASIS = 5000;
+export interface CategoryDivision { category: string; division: string; share: number; basis: number; used: boolean }
+export function categoryDivisionMap(rows: InvoiceRow[], o: CategoryOverrides = {}): CategoryDivision[] {
+  const m: Record<string, Record<string, number>> = {};
+  for (const inv of rows) {
+    if (inv.m !== 1) continue;
+    for (const l of categorizeLines(toLines(inv.li), o, inv.n)) for (const sp of l.split) {
+      if (sp.category === 'Snow') continue;
+      for (const [d, w] of Object.entries(inv.w || {})) { m[sp.category] = m[sp.category] || {}; m[sp.category][d] = (m[sp.category][d] || 0) + sp.amount * w; }
+    }
+  }
+  return Object.entries(m).map(([category, ds]) => {
+    const basis = Object.values(ds).reduce((a, b) => a + b, 0);
+    const [division, amt] = Object.entries(ds).sort((a, b) => b[1] - a[1])[0];
+    const share = basis > 0 ? amt / basis : 0;
+    return { category, division, share, basis: r2(basis), used: share >= FALLBACK_MIN_SHARE && basis >= FALLBACK_MIN_BASIS };
+  }).sort((a, b) => b.basis - a.basis);
+}
 export interface ListedLine { n: string; d: string; cl: string; text: string; amount: number; url: string }
 
 export interface InvoiceBreakdown {
+  categoryDivisions: CategoryDivision[];
   total: Amount;
   invoices: number;
   byCategory: Ranked<Category>[];
@@ -54,7 +82,9 @@ const rank = <K extends string>(m: Record<string, Amount>, total: number): Ranke
 
 /** Everything invoiced in the range (issued date, Toronto), split by category and division. */
 export function invoiceBreakdown(rows: InvoiceRow[], r: Range, o: CategoryOverrides = {}): InvoiceBreakdown {
-  const cat: Record<string, Amount> = {}, div: Record<string, Amount & { m1: number; m2: number }> = {};
+  const catDiv = categoryDivisionMap(rows, o);
+  const fallback = new Map(catDiv.filter(c => c.used).map(c => [c.category, c.division]));
+  const cat: Record<string, Amount> = {}, div: Record<string, Amount & { m1: number; m2: number; m4: number }> = {};
   const monthly = new Map<string, { total: number; byCategory: Partial<Record<Category, number>>; byDivision: Record<string, number> }>();
   const assets: ListedLine[] = [], untied: ListedLine[] = [], trimming: ListedLine[] = [], unmapped: ListedLine[] = [], unattributed: InvoiceBreakdown['unattributed'] = [];
   let total = 0, totalIncl = 0, count = 0;
@@ -62,12 +92,13 @@ export function invoiceBreakdown(rows: InvoiceRow[], r: Range, o: CategoryOverri
     const day = torontoYmd(inv.d);
     if (!inRange(day, r)) continue;
     count++;
-    const lines: LineOut[] = categorizeLines(toLines(inv.li), o);
+    const lines: LineOut[] = categorizeLines(toLines(inv.li), o, inv.n);
     const factor = inv.sub > 0 ? inv.tot / inv.sub : 1;            // tax-inclusive, pro rata
     const mo = day!.slice(0, 7);
     const mrow = monthly.get(mo) || { total: 0, byCategory: {}, byDivision: {} };
     const base = { n: inv.n, d: day!, cl: inv.cl, url: inv.url };
     let snow = 0, rest = 0;
+    const restByCat: Record<string, number> = {};
     for (const l of lines) {
       if (l.kind === 'asset') { assets.push({ ...base, text: l.name, amount: l.amount }); continue; }
       if (l.tie === 'untied') untied.push({ ...base, text: l.name, amount: l.amount });
@@ -79,21 +110,24 @@ export function invoiceBreakdown(rows: InvoiceRow[], r: Range, o: CategoryOverri
         mrow.byCategory[s.category] = r2((mrow.byCategory[s.category] || 0) + s.amount);
         mrow.total = r2(mrow.total + s.amount);
         total += s.amount; totalIncl += s.amount * factor;
-        if (s.category === 'Snow') snow += s.amount; else rest += s.amount;
+        if (s.category === 'Snow') snow += s.amount; else { rest += s.amount; restByCat[s.category] = (restByCat[s.category] || 0) + s.amount; }
       }
     }
     // Divisions: snow → Commercial snow; the rest by the pull's attribution.
-    const add = (k: string, amt: number, m?: 1 | 2) => {
+    const add = (k: string, amt: number, m?: 1 | 2 | 4) => {
       if (!amt) return;
-      const d = (div[k] = div[k] || { pre: 0, incl: 0, m1: 0, m2: 0 });
+      const d = (div[k] = div[k] || { pre: 0, incl: 0, m1: 0, m2: 0, m4: 0 });
       d.pre += amt; d.incl += amt * factor;
-      if (m === 1) d.m1 += amt; if (m === 2) d.m2 += amt;
+      if (m === 1) d.m1 += amt; if (m === 2) d.m2 += amt; if (m === 4) d.m4 += amt;
       mrow.byDivision[k] = r2((mrow.byDivision[k] || 0) + amt);
     };
     add(COMMERCIAL_SNOW, snow);
     if (inv.m === 3 || !Object.keys(inv.w || {}).length) {
-      add(UNATTRIBUTED, rest);
-      if (Math.abs(rest) > 0.004) unattributed.push({ ...base, text: lines.filter(l => l.kind === 'service').map(l => l.name).join(' + ').slice(0, 140), amount: r2(rest), reason: 'no CrewMaster crew-day and no mapped Jobber assignee' });
+      // Method 4: by service category where crew records make the division clear.
+      let left = 0;
+      for (const [c, a] of Object.entries(restByCat)) { const d = fallback.get(c); if (d) add(d, a, 4); else left += a; }
+      add(UNATTRIBUTED, left);
+      if (Math.abs(left) > 0.004) unattributed.push({ ...base, text: lines.filter(l => l.kind === 'service').map(l => l.name).join(' + ').slice(0, 140), amount: r2(left), reason: 'no crew-day, no mapped Jobber assignee, and its service category has no clear division' });
     } else {
       for (const [k, w] of Object.entries(inv.w)) add(k, rest * w, inv.m as 1 | 2);
     }
@@ -103,7 +137,8 @@ export function invoiceBreakdown(rows: InvoiceRow[], r: Range, o: CategoryOverri
   return {
     total: { pre: r2(total), incl: r2(totalIncl) }, invoices: count,
     byCategory: rank<Category>(cat, total),
-    byDivision: rank(div, total).map(d => ({ ...d, method1: r2(div[d.key].m1), method2: r2(div[d.key].m2) })),
+    byDivision: rank(div, total).map(d => ({ ...d, method1: r2(div[d.key].m1), method2: r2(div[d.key].m2), method4: r2(div[d.key].m4) })),
+    categoryDivisions: catDiv,
     months, monthly: months.map(m => ({ month: m, ...monthly.get(m)! })),
     assets, untiedDiscounts: untied, trimming, unmapped: unmapped.sort((a, b) => b.amount - a.amount),
     unattributed: unattributed.sort((a, b) => b.amount - a.amount),

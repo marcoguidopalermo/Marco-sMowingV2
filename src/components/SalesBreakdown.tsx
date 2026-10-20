@@ -5,10 +5,10 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { BarChart3, Building, Layers, AlertTriangle, ChevronDown, ChevronRight, Settings2, Receipt } from 'lucide-react';
 import {
-  invoiceBreakdown, quoteCategoryBreakdown, divisionBH, dollarsPerBH, CATEGORIES, COMMERCIAL_SNOW, UNATTRIBUTED,
+  invoiceBreakdown, quoteCategoryBreakdown, divisionBH, dollarsPerBH, CATEGORIES, COMMERCIAL_SNOW, UNATTRIBUTED, FALLBACK_MIN_SHARE, FALLBACK_MIN_BASIS,
   type InvoiceRow, type QuoteLike, type CategoryOverrides, type Category, type Ranked, type ListedLine,
 } from '../lib/sales/categories';
-import { CATALOG_DEFAULTS } from '../../functions/src/shared/serviceCategories';
+import { CATALOG_DEFAULTS, lineOverrideKey } from '../../functions/src/shared/serviceCategories';
 import type { Range } from '../lib/sales/periods';
 import ServiceNameAssign, { type ServiceNamesDoc } from './ServiceNameAssign';
 
@@ -41,6 +41,7 @@ interface Props {
   waitingCount: number;
   avgTicketPre: number | null;
   currentMonth?: string;                                     // YYYY-MM, left out of $ per BH
+  who?: string;                                              // recorded on per-invoice overrides
 }
 
 function Card({ icon, title, right, children }: { icon: ReactNode; title: string; right?: ReactNode; children: ReactNode }) {
@@ -158,20 +159,33 @@ export default function SalesBreakdown(p: Props) {
             const d = b.byDivision.find(x => x.key === r.key)!;
             const perBH = dollarsPerBH(b, r.key, bh);
             const parts: string[] = [];
-            if (d.method1 || d.method2) parts.push(`${$(d.method1)} from crew records · ${$(d.method2)} from Jobber assignees`);
+            if (d.method1 || d.method2 || d.method4) parts.push(`${$(d.method1)} from crew records · ${$(d.method2)} from Jobber assignees${d.method4 ? ` · ${$(d.method4)} by service category` : ''}`);
             if (r.key === COMMERCIAL_SNOW) parts.push('snow lines on any invoice');
-            if (r.key === UNATTRIBUTED) parts.push('no crew-day and no mapped assignee — listed below');
-            if (bh.bh[r.key]) parts.push(`${bh.bh[r.key].toLocaleString('en-CA')} BH · ${perBH != null ? $(perBH) : '—'} invoiced per BH`);
+            if (r.key === UNATTRIBUTED) parts.push('no crew-day, no mapped assignee, no clear service category — listed below');
+            if (bh.bh[r.key]) parts.push(`${bh.bh[r.key].toLocaleString('en-CA')} BH · ${perBH != null ? $(perBH) : '—'} invoiced per BH (provisional)`);
             return <span className="text-[11px] text-slate-500">{parts.join(' · ')}</span>;
           }} />
           <div className="mt-2 text-[11px] text-slate-500">
             {bh.withBH.length ? <>BH and $ per BH cover {bh.withBH.map(mlabel).join(', ')}{bh.without.length ? <> only — <b>no BH on record for {bh.without.map(mlabel).join(', ')}</b></> : ''}. Invoices are counted in the month they were issued, which can trail the work.</> : <b>No complete month with BH in this period — $ per BH isn't available.</b>}
             {bh.inProgress && <> {mlabel(bh.inProgress)} is left out: it's still being invoiced.</>}
+            {bh.withBH.length > 0 && <> <b>$ per BH is provisional</b> until checked against your own figures: invoices are counted by issue date and BH by work date. Checked 2026-10-20 — Lawn bills at month end (79% of its dollars on the 26th–31st), so moving early-month invoices back a month changes Lawn by under $0.20/BH.</>}
           </div>
           <div className="mt-4 text-xs font-black uppercase tracking-wide text-slate-600">Month by month</div>
           <MonthBars months={b.months} keys={divKeys} colors={DIV_COLOR} valueOf={(i, k) => b.monthly[i].byDivision[k] || 0} />
           <Legend keys={divKeys} colors={DIV_COLOR} />
-          <Fold label={`Unattributed invoices · ${$(b.unattributed.reduce((s, u) => s + u.amount, 0))}`} count={b.unattributed.length} tone="amber"><LineList rows={b.unattributed.slice(0, 100)} note="Neither a CrewMaster crew-day nor a mapped Jobber assignee. Kept in the totals, never dropped." /></Fold>
+          <Fold label={`Unattributed invoices · ${$(b.unattributed.reduce((s, u) => s + u.amount, 0))}`} count={b.unattributed.length} tone="amber"><LineList rows={b.unattributed.slice(0, 100)} note="No CrewMaster crew-day, no mapped Jobber assignee, and a service category with no clear division. Kept in the totals, never dropped." /></Fold>
+          <Fold label="Service category → division (4th fallback)" count={b.categoryDivisions.length}>
+            <div className="text-[11px] text-slate-500 mb-1">Only for invoices the other methods can't place. A category is used when crew records put at least {Math.round(FALLBACK_MIN_SHARE * 100)}% of its dollars in one division, on at least {$(FALLBACK_MIN_BASIS)}.</div>
+            <div className="divide-y divide-slate-100 text-xs">
+              {b.categoryDivisions.map(c => (
+                <div key={c.category} className={`flex items-center gap-2 py-1 ${c.used ? '' : 'text-slate-400'}`}>
+                  <span className="flex-1">{c.category} → <b>{c.division}</b></span>
+                  <span>{Math.round(c.share * 100)}% of {$(c.basis)}</span>
+                  <span className="w-16 text-right font-bold">{c.used ? 'used' : 'not clear'}</span>
+                </div>
+              ))}
+            </div>
+          </Fold>
         </Card>
       </div>
 
@@ -193,7 +207,7 @@ export default function SalesBreakdown(p: Props) {
         <ServiceNameAssign names={p.names} overrides={p.overrides} canEdit={p.canEditMapping} onSave={p.onSaveOverrides} />
       </Card>
 
-      <MappingTable names={p.names} overrides={p.overrides} canEdit={p.canEditMapping} onSave={p.onSaveOverrides} />
+      <MappingTable names={p.names} overrides={p.overrides} canEdit={p.canEditMapping} onSave={p.onSaveOverrides} invoices={p.invoices} who={p.who} />
     </div>
   );
 }
@@ -211,8 +225,21 @@ function Headline({ label, value, sub, title }: { label: string; value: string; 
 }
 
 /** Admin: which category each Jobber catalog item counts as. */
-function MappingTable({ names, overrides, canEdit, onSave }: { names: ServiceNamesDoc | null | undefined; overrides: CategoryOverrides; canEdit: boolean; onSave: (o: CategoryOverrides) => Promise<boolean> }) {
+function MappingTable({ names, overrides, canEdit, onSave, invoices, who }: { names: ServiceNamesDoc | null | undefined; overrides: CategoryOverrides; canEdit: boolean; onSave: (o: CategoryOverrides) => Promise<boolean>; invoices: InvoiceRow[]; who?: string }) {
   const [open, setOpen] = useState(false);
+  const [num, setNum] = useState('');
+  const [line, setLine] = useState('');
+  const [lineCat, setLineCat] = useState<Category | ''>('');
+  const [note, setNote] = useState('');
+  const found = invoices.find(i => i.n === num.trim().replace(/^#/, ''));
+  const foundLines = found ? found.li.map(l => (Array.isArray(l) ? l[0] : l.t)) : [];
+  const lineEntries = Object.entries(overrides.lines || {}).sort((a, b) => (b[1].at || 0) - (a[1].at || 0));
+  const saveLine = async () => {
+    if (!found || !line || !lineCat) return;
+    const next: CategoryOverrides = { ...overrides, lines: { ...(overrides.lines || {}), [lineOverrideKey(found.n, line)]: { category: lineCat, by: who || '', at: Date.now(), note: note.trim() } } };
+    if (await onSave(next)) { setNum(''); setLine(''); setLineCat(''); setNote(''); }
+  };
+  const removeLine = (k: string) => { const next: CategoryOverrides = { ...overrides, lines: { ...(overrides.lines || {}) } }; delete next.lines![k]; return onSave(next); };
   const items = [...new Set([...(names?.catalog || []).map(c => c.name), ...Object.keys(CATALOG_DEFAULTS).map(k => k.trim())])];
   const used = new Map((names?.catalog || []).map(c => [c.name, c]));
   const setCat = (name: string, c: Category | '') => {
@@ -222,6 +249,35 @@ function MappingTable({ names, overrides, canEdit, onSave }: { names: ServiceNam
   };
   return (
     <Card icon={<Settings2 className="w-4 h-4" />} title="Category mapping — Jobber catalog" right={<button type="button" onClick={() => setOpen(!open)} className="text-xs font-bold text-sky-700">{open ? 'Hide' : 'Show'}</button>}>
+      {/* Per-invoice overrides — one line on one invoice, admin only, with who / when / why. */}
+      <div className="mb-3">
+        <div className="text-xs font-black uppercase tracking-wide text-slate-600 mb-1">Per-invoice overrides ({lineEntries.length})</div>
+        {lineEntries.length > 0 && (
+          <div className="divide-y divide-slate-100 mb-2">
+            {lineEntries.map(([k, v]) => { const [n, text] = k.split('|'); const inv = invoices.find(i => i.n === n); return (
+              <div key={k} className="flex items-center gap-2 py-1 text-sm flex-wrap">
+                <span className="flex-1 min-w-[180px]"><b>#{n}</b> {inv ? inv.cl : ''} · "{text}" → <b>{v.category}</b>
+                  <span className="block text-[11px] text-slate-500">{v.by || '—'}{v.at ? ` · ${new Date(v.at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}{v.note ? ` · ${v.note}` : ''}</span></span>
+                {canEdit && <button type="button" onClick={() => removeLine(k)} className="text-[11px] font-bold text-red-700">Remove</button>}
+              </div>
+            ); })}
+          </div>
+        )}
+        {canEdit && (
+          <div className="grid grid-cols-1 sm:grid-cols-[110px_1fr_1fr] gap-2 items-start">
+            <input aria-label="Invoice number" className="border border-slate-300 rounded-md px-2 py-1 text-sm" placeholder="Invoice #" value={num} onChange={e => { setNum(e.target.value); setLine(''); }} />
+            <select aria-label="Line" className="border border-slate-300 rounded-md px-2 py-1 text-sm bg-white" value={line} onChange={e => setLine(e.target.value)} disabled={!found}>
+              <option value="">{found ? 'Which line?' : num ? 'No such invoice this year' : 'Enter an invoice #'}</option>
+              {foundLines.map((t, i) => <option key={i} value={t}>{t}</option>)}
+            </select>
+            <select aria-label="Category" className="border border-slate-300 rounded-md px-2 py-1 text-sm bg-white" value={lineCat} onChange={e => setLineCat(e.target.value as Category)}>
+              <option value="">Category…</option>{CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <input aria-label="Note" className="sm:col-span-2 border border-slate-300 rounded-md px-2 py-1 text-sm" placeholder="Note (why)" value={note} onChange={e => setNote(e.target.value)} />
+            <button type="button" disabled={!found || !line || !lineCat} onClick={saveLine} className="px-3 py-1 rounded-md bg-emerald-700 text-white text-sm font-bold disabled:opacity-40">Save override</button>
+          </div>
+        )}
+      </div>
       {!open ? <div className="text-xs text-slate-500">{items.length} catalog items · {Object.keys(overrides.catalog || {}).length} changed from the agreed defaults. {canEdit ? 'Admins can change any item.' : ''}</div> : (
         <div className="divide-y divide-slate-100">
           {items.sort((a, c) => (used.get(c)?.amount || 0) - (used.get(a)?.amount || 0) || a.localeCompare(c)).map(name => {

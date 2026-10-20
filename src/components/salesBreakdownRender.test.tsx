@@ -49,3 +49,12 @@ test('data unavailable, never a confident 0', () => {
   assert.match(page({ hasData: false }), /Data unavailable — no successful pull yet/);
   assert.match(page({ invoices: [] }), /Data unavailable — invoices arrive with the next sales pull/);
 });
+test('per-invoice overrides listed with who / when / note; $ per BH marked provisional; fallback table shown', () => {
+  const html = page({ overrides: { lines: { '3|extra trimming in backyard': { category: 'Lawn mowing', by: 'Marco', at: Date.UTC(2026, 9, 20, 23), note: 'mowing trimming' } } } });
+  assert.match(html, /Per-invoice overrides \(1\)/);
+  assert.match(html, /<b>#3<\/b> Client 3 · &quot;extra trimming in backyard&quot; → <b>Lawn mowing<\/b>/);
+  assert.match(html, /Marco · Oct 20[^<]*· mowing trimming/);
+  assert.match(html, /invoiced per BH \(provisional\)/);
+  assert.match(html, /\$ per BH is provisional<\/b>/);
+  assert.match(html, /Service category → division \(4th fallback\)/);
+});

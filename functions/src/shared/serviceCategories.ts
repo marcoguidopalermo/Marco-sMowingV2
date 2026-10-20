@@ -10,8 +10,15 @@ export const CATEGORIES = [
 ] as const;
 export type Category = typeof CATEGORIES[number];
 
-/** Admin overrides (serviceCategoryMap/overrides): catalog item name → category, and normalised freehand name → category. */
-export interface CategoryOverrides { catalog?: Record<string, Category>; names?: Record<string, Category> }
+/** One invoice line assigned by hand (admin), with who / when / why. */
+export interface LineOverride { category: Category; by?: string; at?: number; note?: string }
+/**
+ * Admin overrides (serviceCategoryMap/overrides): catalog item name → category;
+ * normalised freehand name → category; and PER-INVOICE lines, keyed
+ * lineOverrideKey(invoiceNumber, line text) — these win over everything.
+ */
+export interface CategoryOverrides { catalog?: Record<string, Category>; names?: Record<string, Category>; lines?: Record<string, LineOverride> }
+export const lineOverrideKey = (doc: string, text: string): string => `${String(doc).trim()}|${normName(text)}`;
 
 export const normName = (s: unknown): string =>
   String(s || "").toLowerCase().replace(/[^a-z0-9$% ]+/g, " ").replace(/\s+/g, " ").trim();
@@ -92,8 +99,10 @@ const r2 = (x: number) => Math.round(x * 100) / 100;
  * discounts subtracted from the service they belong to (own words → the
  * invoice's only service → its largest service → Other, "untied").
  */
-export function categorizeLines(lines: LineIn[], o: CategoryOverrides = {}): LineOut[] {
+export function categorizeLines(lines: LineIn[], o: CategoryOverrides = {}, docNumber?: string): LineOut[] {
   const out: LineOut[] = lines.map((l) => {
+    const manual = docNumber && o.lines ? o.lines[lineOverrideKey(docNumber, l.name)] : undefined;
+    if (manual && manual.category) return {...l, kind: "service" as const, split: [{category: manual.category, amount: r2(l.amount)}]};
     const words = normName(l.name) + " " + normName(l.linked || "");
     if (ASSET.test(words)) return {...l, kind: "asset" as const, split: []};
     if (DISCOUNT.test(words) || l.amount < 0) return {...l, kind: "discount" as const, split: []};

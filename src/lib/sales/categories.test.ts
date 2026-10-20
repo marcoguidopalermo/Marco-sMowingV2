@@ -72,3 +72,33 @@ test('lines as stored by the pull (objects — Firestore has no nested arrays) c
   const q = quoteCategoryBreakdown([{ s: 'awaiting_response', sent: '2026-07-01T16:00:00Z', sub: 1, tot: 1, li: [{ t: 'Sod Installation', k: 'Sod Installation', a: 4000 }, { t: 'Hedge trimming', a: 300, o: 1, s: 0 }] }], R);
   assert.deepEqual(q.pipeline.ranked.map(x => [x.key, x.pre]), [['Sod', 4000]]);
 });
+
+import { categoryDivisionMap, FALLBACK_MIN_BASIS } from './categories';
+import { lineOverrideKey } from '../../../functions/src/shared/serviceCategories';
+test('method 4: unattributed money goes to the division crew records put that category in — only where clear', () => {
+  const big: InvoiceRow[] = [
+    inv('10', '2026-07-01', [['Mowing (Weekly)', 'Mowing (Weekly)', 9000]], 1, { 'Lawn Division': 1 }),
+    inv('11', '2026-07-02', [['Sod Installation', 'Sod Installation', 6000]], 1, { 'Large Projects': 1 }),
+    inv('12', '2026-07-03', [['Sod Installation', 'Sod Installation', 5000]], 1, { 'Small Projects': 1 }),   // sod: Large 55% — not clear
+    inv('13', '2026-08-01', [['Seasonal Mowing Instalment', 0, 900], ['Sod Installation', 'Sod Installation', 400], ['Parking lot sweeping', 0, 300]], 3, {}),
+  ];
+  const map = Object.fromEntries(categoryDivisionMap(big).map(c => [c.category, c]));
+  assert.equal(map['Lawn mowing'].division, 'Lawn Division'); assert.equal(map['Lawn mowing'].used, true);
+  assert.equal(map['Sod'].used, false);                                  // 55% < 60%
+  const out = invoiceBreakdown(big, R);
+  const d = Object.fromEntries(out.byDivision.map(x => [x.key, [x.pre, x.method4]]));
+  assert.deepEqual(d['Lawn Division'], [9900, 900]);
+  assert.deepEqual(d[UNATTRIBUTED], [700, 0]);                           // sod (unclear) + sweeping (no evidence)
+  assert.deepEqual(out.unattributed.map(u => [u.n, u.amount]), [['13', 700]]);
+  assert.ok(FALLBACK_MIN_BASIS > 0);
+});
+test('per-invoice override wins over every rule, for that invoice only', () => {
+  const two = [
+    inv('6948', '2026-08-20', [['Additional Requested Trimming', 0, 400]], 1, { 'Lawn Division': 1 }),
+    inv('7041', '2026-08-31', [['Additional Requested Trimming', 0, 400]], 1, { 'Lawn Division': 1 }),
+  ];
+  const o = { lines: { [lineOverrideKey('6948', 'Additional Requested Trimming')]: { category: 'Lawn mowing' as const, by: 'Marco', at: 1, note: 'mowing trimming' } } };
+  const out = invoiceBreakdown(two, R, o);
+  assert.deepEqual(out.byCategory.map(x => [x.key, x.pre]).sort(), [['Lawn mowing', 400], ['Other', 400]]);
+  assert.deepEqual(out.trimming.map(t => t.n), ['7041']);              // #6948 no longer listed as trimming
+});

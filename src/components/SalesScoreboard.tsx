@@ -137,6 +137,7 @@ export default function SalesScoreboard(p: Props) {
         wonCount={qm.won.count} wonPre={qm.won.pre} wonIncl={qm.won.incl} waitingCount={chaseList(p.quotes, p.today, 'age', sp).length}
         avgTicketPre={qm.avgTicket?.pre ?? null}
         currentMonth={p.today.slice(0, 7)}
+        who={p.currentUser.name || p.currentUser.email}
       />
 
       {/* Streams — contracts sold, with targets (average ticket secondary) */}
