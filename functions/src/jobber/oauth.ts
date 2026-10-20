@@ -119,9 +119,10 @@ export const jobberOAuthCallback = onRequest(
     const accessTokenExpiresAt = computeExpiresAt(tokens.expires_in);
 
     // A fresh connection legitimately replaces everything: the token pair
-    // goes to the server-only jobberAuthSecrets/main, and (release 1 only,
-    // for rollback) also to the old doc, which carries the status the app
-    // shows. Any refresh lease left over from the old connection is cleared.
+    // goes ONLY to the server-only jobberAuthSecrets/main; the old doc (read
+    // by every signed-in user) gets the connection status the app shows and
+    // no tokens. Any refresh lease left over from the old connection is
+    // cleared.
     const now = Date.now();
     const pair = {
       accessToken: tokens.access_token,
@@ -134,7 +135,6 @@ export const jobberOAuthCallback = onRequest(
       lastRefreshedBy: "jobberOAuthCallback",
     });
     batch.set(db.doc(JOBBER_AUTH_DOC), {
-      ...pair,
       status: "connected",
       connectedAt: now,
       connectedBy: stateData.userId,

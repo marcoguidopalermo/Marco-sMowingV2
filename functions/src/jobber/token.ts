@@ -2,12 +2,12 @@
 // a Jobber access token. Rules: tokenCore.ts. Incident: docs/incidents/
 // 2026-10-14-jobber-token.md.
 //
-// WHERE THE TOKENS LIVE (migration, release 1):
-//   jobberAuthSecrets/main   root, rules `if false` — the new home. Read first.
-//   artifacts/.../jobberAuth/main   the old doc, readable by every signed-in
-//     user. Still WRITTEN in this release (dual-write) so a rollback finds
-//     current tokens; read only as a fallback. Release 2 strips the tokens
-//     from it, leaving only the connection status the app shows.
+// WHERE THE TOKENS LIVE (release 2, 2026-10-20):
+//   jobberAuthSecrets/main   root, rules `if false` — the ONLY token store.
+//   artifacts/.../jobberAuth/main   readable by every signed-in user, so it
+//     holds NO tokens: only the connection status the app shows (connected
+//     / disconnected, when, by whom). Release 1 dual-wrote tokens here for
+//     rollback; release 2 stopped that and stripped them.
 //   jobberTokenLock/main     root, rules `if false` — the refresh lease.
 // Every write is targeted (update / set-merge of named fields), never a
 // whole-document replace of the old doc.
@@ -17,7 +17,7 @@ import * as admin from "firebase-admin";
 import {randomBytes} from "node:crypto";
 import {
   getAccessToken, JobberDisconnectedError, JobberNotConnectedError,
-  newerTokens, RefreshResult, StoredTokens, TokenDeps,
+  RefreshResult, StoredTokens, TokenDeps,
 } from "./tokenCore.js";
 import {
   JOBBER_AUTH_DOC, JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET,
@@ -52,14 +52,11 @@ export function firestoreDeps(service: string): TokenDeps {
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     readTokens: async () => {
-      // Read BOTH and take the newer pair. During a deploy, old function
-      // code (which only writes the old doc) runs beside new code; if the
-      // old code refreshes last, the secrets doc holds a spent refresh token
-      // and using it would disconnect us. Newer = later expiry.
-      const [s, l] = await Promise.all([
-        db.doc(JOBBER_SECRETS_DOC).get(), db.doc(JOBBER_AUTH_DOC).get(),
-      ]);
-      return newerTokens(asTokens(s.data()), asTokens(l.data()));
+      // Secrets doc only. Release 1 also read the old doc (newer pair wins)
+      // for the deploy window; every running version now writes the secrets
+      // doc, so it always holds the newest pair.
+      const s = await db.doc(JOBBER_SECRETS_DOC).get();
+      return asTokens(s.data());
     },
     tryAcquireLease: (holder, leaseUntil) =>
       db.runTransaction(async (tx) => {
@@ -117,18 +114,16 @@ export function firestoreDeps(service: string): TokenDeps {
         lastRefreshedAt: refreshedAt,
         lastRefreshedBy: service,
       };
-      const batch = db.batch();
-      batch.set(db.doc(JOBBER_SECRETS_DOC), fields, {merge: true});
-      // Release 1 dual-write (rollback safety). Targeted update.
-      batch.update(db.doc(JOBBER_AUTH_DOC), fields);
-      await batch.commit();
+      await db.doc(JOBBER_SECRETS_DOC).set(fields, {merge: true});
     },
     markDisconnected: async (reason) => {
-      await db.doc(JOBBER_AUTH_DOC).update({
+      // Status only, on the doc the app reads. Merge, so it never fails on
+      // a missing doc and never touches other fields.
+      await db.doc(JOBBER_AUTH_DOC).set({
         status: "disconnected",
         disconnectedAt: Date.now(),
         disconnectedReason: reason.slice(0, 200),
-      });
+      }, {merge: true});
     },
     log: {
       info: (m, meta) => logger.info(m, meta),
