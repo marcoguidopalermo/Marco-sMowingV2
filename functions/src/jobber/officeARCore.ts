@@ -15,6 +15,7 @@ export interface RawInvoice {
   invoiceNumber: string;
   invoiceStatus: string;
   issuedDate?: string | null;
+  receivedDate?: string | null;   // when it was marked paid
   dueDate?: string | null;
   jobberWebUri?: string;
   amounts: { total: number; invoiceBalance: number };
@@ -31,7 +32,7 @@ export interface ChaseRow {
   balance: number; total: number; dueDate: string | null; daysOverdue: number;
   lastPayment: { date: string; amount: number } | null; url: string;
 }
-export interface MismatchRow { kind: "paid_with_balance" | "zero_balance_open"; invoiceNumber: string; client: string; status: string; balance: number; url: string }
+export interface MismatchRow { kind: "paid_with_balance" | "zero_balance_open"; invoiceNumber: string; client: string; status: string; balance: number; total: number; issued: string | null; paid: string | null; url: string }
 export interface ClientRow { client: string; clientId: string; balance: number; url: string }
 
 export interface ARSummary {
@@ -39,7 +40,11 @@ export interface ARSummary {
   invoiceCount: number;
   aging: Record<AgeKey, { count: number; amount: number }>;
   chase: ChaseRow[];                  // every past-due invoice, oldest first
-  mismatches: MismatchRow[];
+  mismatches: MismatchRow[];          // paid-with-balance newest first, then $0-but-open
+  // Marked paid in Jobber with the payment not (fully) recorded there — the
+  // invoice keeps a balance but Jobber no longer counts it in the client's
+  // balance, so it is NOT money owed. Found by the nightly full read.
+  paidUnrecorded: { count: number; amount: number; last12Months: { count: number; amount: number } };
   noInvoiceClients: ClientRow[];      // owing, but no open invoice
   credits: { clients: number; amount: number };
   badDebt: { count: number; amount: number };
@@ -115,15 +120,26 @@ export function summarizeAR(input: {
 
   const mismatches: MismatchRow[] = [];
   const seenPaid = new Set<string>();
+  const yearAgo = torontoYmd(input.nowMs - 365 * 86_400_000);
+  const ymdOf = (iso?: string | null) => (iso ? torontoYmd(Date.parse(iso)) : null);
+  let puCents = 0; let puRecentCents = 0; let puRecent = 0;
+  const row = (kind: MismatchRow["kind"], r: RawInvoice): MismatchRow => ({
+    kind, invoiceNumber: r.invoiceNumber, client: r.client?.name || "—", status: r.invoiceStatus,
+    balance: d(c(r.amounts.invoiceBalance)), total: d(c(r.amounts.total)), issued: ymdOf(r.issuedDate), paid: ymdOf(r.receivedDate), url: r.jobberWebUri || "",
+  });
   for (const r of input.paidWithBalance) {
     if (r.invoiceStatus !== "paid" || c(r.amounts.invoiceBalance) <= 0 || seenPaid.has(r.id)) continue;
     seenPaid.add(r.id);
-    mismatches.push({kind: "paid_with_balance", invoiceNumber: r.invoiceNumber, client: r.client?.name || "—", status: r.invoiceStatus, balance: d(c(r.amounts.invoiceBalance)), url: r.jobberWebUri || ""});
-  }
-  for (const r of unique) {
-    if (OPEN.has(r.invoiceStatus) && c(r.amounts.invoiceBalance) <= 0) {
-      mismatches.push({kind: "zero_balance_open", invoiceNumber: r.invoiceNumber, client: r.client?.name || "—", status: r.invoiceStatus, balance: d(c(r.amounts.invoiceBalance)), url: r.jobberWebUri || ""});
+    const m = row("paid_with_balance", r);
+    puCents += c(r.amounts.invoiceBalance);
+    if ((m.paid || m.issued || "") >= yearAgo) {
+      puRecent++; puRecentCents += c(r.amounts.invoiceBalance);
     }
+    mismatches.push(m);
+  }
+  mismatches.sort((a, b) => (b.paid || b.issued || "").localeCompare(a.paid || a.issued || ""));
+  for (const r of unique) {
+    if (OPEN.has(r.invoiceStatus) && c(r.amounts.invoiceBalance) <= 0) mismatches.push(row("zero_balance_open", r));
   }
 
   let clientOwedCents = 0; let noInvCents = 0; let creditCents = 0; let creditClients = 0; let notMatching = 0;
@@ -152,6 +168,7 @@ export function summarizeAR(input: {
     owed: d(owedCents),
     invoiceCount: owedRows.length,
     aging, chase, mismatches, noInvoiceClients,
+    paidUnrecorded: {count: seenPaid.size, amount: d(puCents), last12Months: {count: puRecent, amount: d(puRecentCents)}},
     credits: {clients: creditClients, amount: d(creditCents)},
     badDebt: {count: bad.length, amount: d(bad.reduce((s, r) => s + c(r.amounts.invoiceBalance), 0))},
     reconciliation: {

@@ -58,8 +58,13 @@ test("chase list: every past-due invoice, oldest first, with the last payment", 
   assert.equal(S.chase[0].lastPayment, null);
   assert.equal(S.chase[0].url, "https://secure.getjobber.com/invoices/i4");
 });
-test("mismatches: paid with a balance; $0 balance still awaiting payment", () => {
+test("mismatches: paid with a balance (not owed, counted apart); $0 balance still awaiting payment", () => {
   assert.deepEqual(S.mismatches.map((m) => [m.kind, m.invoiceNumber, m.balance]).sort(), [["paid_with_balance", "P1", 12.34], ["zero_balance_open", "I5", 0]]);
+  assert.deepEqual(S.paidUnrecorded, {count: 1, amount: 12.34, last12Months: {count: 1, amount: 12.34}});
+  assert.equal(S.owed, 3575.60); // never added to what is owed
+  const old = summarizeAR({open: [], clients: [], nowMs: NOW, paidWithBalance: [{...inv("p9", "paid", 500, null), issuedDate: "2023-01-02T12:00:00Z", receivedDate: "2023-02-14T12:00:00Z"}, {...inv("p8", "paid", 40, null), receivedDate: "2026-09-01T12:00:00Z"}]});
+  assert.deepEqual(old.paidUnrecorded.last12Months, {count: 1, amount: 40});
+  assert.deepEqual(old.mismatches.map((m) => [m.invoiceNumber, m.paid]), [["P8", "2026-09-01"], ["P9", "2023-02-14"]]); // newest first
 });
 test("clients owing with no open invoice, credits, bad debt", () => {
   assert.deepEqual(S.noInvoiceClients.map((c) => [c.client, c.balance]), [["Client c7", 640]]);

@@ -25,6 +25,10 @@ const db = admin.firestore();
 export const OFFICE_AR_DOC = "officeAR/latest";
 const LOCK_DOC = "officeAR/lock";
 const BUDGET_FLOOR = 5000;
+// Pace to keep Jobber's bucket near full: after each page, wait until it has
+// refilled to PACE_TARGET (it restores ~500 points/s), so a long read never
+// drains the budget the performance sync relies on.
+const PACE_TARGET = 9000;
 const PAGE_DELAY_MS = 400;
 const LOCK_MS = 9 * 60_000;
 // Same list as isOfficeViewer() in firestore.rules / storage.rules and
@@ -42,14 +46,10 @@ const Q_OPEN = `query OfficeOpen($after: String, $status: InvoiceStatusTypeEnum!
       amounts { total invoiceBalance } client { id name }
       paymentRecords(first: 10) { nodes { entryDate amount adjustmentType } } }
     pageInfo { hasNextPage endCursor } } }`;
-// Daytime: the paid invoices with the largest balances (should all be 0).
-const Q_PAID_TOP = `query OfficePaidTop {
-  invoices(first: 25, filter: {status: paid}, sort: [{key: INVOICE_BALANCE, direction: DESCENDING}]) {
-    nodes { id invoiceNumber invoiceStatus jobberWebUri amounts { total invoiceBalance } client { id name } } } }`;
 // Nightly: every invoice, minimal fields.
 const Q_ALL = `query OfficeAll($after: String) {
   invoices(first: 100, after: $after) {
-    nodes { id invoiceNumber invoiceStatus jobberWebUri amounts { total invoiceBalance } client { id name } }
+    nodes { id invoiceNumber invoiceStatus issuedDate receivedDate jobberWebUri amounts { total invoiceBalance } client { id name } }
     pageInfo { hasNextPage endCursor } } }`;
 const Q_CLIENTS = `query OfficeClients($after: String) {
   clients(first: 100, after: $after) {
@@ -67,7 +67,9 @@ async function call(client: JobberClient, cost: Cost, query: string, vars: Recor
   const avail = t?.currentlyAvailable ?? Number.POSITIVE_INFINITY;
   cost.minAvailable = Math.min(cost.minAvailable, avail);
   if (avail < BUDGET_FLOOR) throw new BudgetLow(`Jobber budget ${Math.round(avail)} < ${BUDGET_FLOOR}`);
-  await sleep(PAGE_DELAY_MS);
+  const restore = t?.restoreRate && t.restoreRate > 0 ? t.restoreRate : 500;
+  const refillMs = Number.isFinite(avail) ? Math.max(0, (PACE_TARGET - avail) / restore) * 1000 : 0;
+  await sleep(Math.min(15_000, Math.max(PAGE_DELAY_MS, refillMs)));
   return data;
 }
 async function pages<T>(client: JobberClient, cost: Cost, query: string, field: string, vars: Record<string, unknown> = {}, max = 120): Promise<T[]> {
@@ -108,23 +110,30 @@ export async function runOfficeARPull(kind: Kind, by: string | null = null): Pro
     await call(client, cost, "query OfficePreflight { account { id } }", {});
     const open: RawInvoice[] = [];
     for (const status of OPEN_STATUSES) open.push(...await pages<RawInvoice>(client, cost, Q_OPEN, "invoices", {status}));
-    let paidWithBalance: RawInvoice[];
-    let paidCheck: "full" | "top25";
+    // Paid-but-unrecorded needs every invoice: read in full overnight only;
+    // daytime pulls carry the overnight result forward.
+    let paidWithBalance: RawInvoice[] = [];
+    let paidCheckAt: number | null = null;
     if (kind === "nightly") {
       const all = await pages<RawInvoice>(client, cost, Q_ALL, "invoices");
       paidWithBalance = all.filter((r) => r.invoiceStatus === "paid" && r.amounts.invoiceBalance > 0.004);
-      paidCheck = "full";
-    } else {
-      const top = await call(client, cost, Q_PAID_TOP, {});
-      paidWithBalance = top.invoices.nodes as RawInvoice[];
-      paidCheck = "top25";
+      paidCheckAt = Date.now();
     }
     const clients = (await pages<RawClient>(client, cost, Q_CLIENTS, "clients")).filter((x) => Math.abs(x.balance) > 0.004);
     const summary = summarizeAR({open, paidWithBalance, clients, nowMs: Date.now()});
+    if (kind !== "nightly") {
+      const prev = (await db.doc(OFFICE_AR_DOC).get()).data() as {data?: typeof summary; paidCheckAt?: number} | undefined;
+      if (prev?.data?.paidUnrecorded) {
+        summary.mismatches = [...(prev.data.mismatches || []).filter((m) => m.kind === "paid_with_balance"), ...summary.mismatches];
+        summary.paidUnrecorded = prev.data.paidUnrecorded;
+        paidCheckAt = prev.paidCheckAt ?? null;
+      }
+    }
+    const paidCheck = paidCheckAt ? "full" : "none";
     const costOut = {...cost, minAvailable: Number.isFinite(cost.minAvailable) ? cost.minAvailable : null, ms: Date.now() - startedAt};
     await db.doc(OFFICE_AR_DOC).set({
       ...attempt, status: "ok", lastError: null,
-      lastSuccessAt: Date.now(), lastSuccessKind: kind, paidCheck,
+      lastSuccessAt: Date.now(), lastSuccessKind: kind, paidCheck, paidCheckAt,
       data: summary, cost: costOut,
     }, {merge: false});
     logger.info("Office A/R pulled", {kind, owed: summary.owed, invoices: summary.invoiceCount, cost: costOut});

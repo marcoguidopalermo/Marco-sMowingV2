@@ -19,13 +19,14 @@ type AgeKey = 'notDue' | 'd1_30' | 'd31_60' | 'd61_90' | 'd90plus';
 export interface OfficeARDoc {
   status?: 'ok' | 'error' | 'skipped';
   lastAttemptAt?: number; lastAttemptKind?: string; lastError?: string | null;
-  lastSuccessAt?: number; lastSuccessKind?: string; paidCheck?: 'full' | 'top25';
+  lastSuccessAt?: number; lastSuccessKind?: string; paidCheck?: 'full' | 'none'; paidCheckAt?: number | null;
   cost?: { queries: number; requestedMax: number; actualTotal: number; minAvailable: number | null; ms: number };
   data?: {
     owed: number; invoiceCount: number;
     aging: Record<AgeKey, { count: number; amount: number }>;
     chase: { invoiceId: string; invoiceNumber: string; client: string; balance: number; total: number; dueDate: string | null; daysOverdue: number; lastPayment: { date: string; amount: number } | null; url: string }[];
-    mismatches: { kind: 'paid_with_balance' | 'zero_balance_open'; invoiceNumber: string; client: string; status: string; balance: number; url: string }[];
+    mismatches: { kind: 'paid_with_balance' | 'zero_balance_open'; invoiceNumber: string; client: string; status: string; balance: number; total?: number; issued?: string | null; paid?: string | null; url: string }[];
+    paidUnrecorded?: { count: number; amount: number; last12Months: { count: number; amount: number } };
     noInvoiceClients: { client: string; clientId: string; balance: number; url: string }[];
     credits: { clients: number; amount: number };
     badDebt: { count: number; amount: number };
@@ -62,8 +63,8 @@ const TONE_DOT = { red: 'bg-red-500', amber: 'bg-amber-400', none: 'bg-slate-300
 
 function Card({ icon, title, right, children }: { icon: ReactNode; title: string; right?: ReactNode; children: ReactNode }) {
   return (
-    <section className="bg-white rounded-xl border border-slate-200 shadow-sm">
-      <header className="flex items-center gap-2 px-3 sm:px-4 py-2.5 border-b border-slate-100">
+    <section className="bg-white rounded-xl border border-slate-200 shadow-sm min-w-0">
+      <header className="flex flex-wrap items-center gap-2 px-3 sm:px-4 py-2.5 border-b border-slate-100">
         <span className="text-slate-500">{icon}</span>
         <h2 className="font-black text-slate-800 text-sm uppercase tracking-wide">{title}</h2>
         <div className="flex-1" />
@@ -95,7 +96,7 @@ export default function OfficeMaster(props: Props) {
   const pastDue = ar?.data ? ar.data.owed - ar.data.aging.notDue.amount : null;
 
   return (
-    <div className="max-w-6xl mx-auto px-3 sm:px-4 py-4 space-y-4">
+    <div className="max-w-6xl mx-auto px-3 sm:px-4 py-4 space-y-4 overflow-x-hidden">
       <div className="flex items-center gap-2 flex-wrap">
         <Building2 className="w-6 h-6 text-sky-700" />
         <h1 className="text-2xl font-black text-slate-800">Office</h1>
@@ -109,12 +110,12 @@ export default function OfficeMaster(props: Props) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-        <div className="space-y-4">
+        <div className="space-y-4 min-w-0">
           <DeadlinesCard {...props} sorted={sorted} />
           <ComplianceCard compliance={compliance} onOpen={props.onOpenFleetUnit} />
           <PayrollCard payPeriod={payPeriod} today={today} />
         </div>
-        <div className="space-y-4">
+        <div className="space-y-4 min-w-0">
           <ARCard ar={ar} listenError={props.arListenError} onRefresh={props.onRefreshAR} />
           <Card icon={<ListTodo className="w-4 h-4" />} title="Tasks">
             <div className="text-sm text-slate-500">TaskMaster will show here.</div>
@@ -186,10 +187,10 @@ function DeadlinesCard({ sorted, onSaveDeadlines, currentUser }: Props & { sorte
     return (
       <div key={x.id} className={`flex items-center gap-2 py-1.5 text-sm ${TONE_ROW[tone]}`}>
         <span className={`w-2 h-2 rounded-full shrink-0 ${TONE_DOT[tone]}`} />
-        <button type="button" onClick={() => { setEditing(x); setIsNew(false); }} className="flex-1 min-w-0 text-left">
+        <button type="button" onClick={() => { setEditing(x); setIsNew(false); }} className="flex-1 min-w-0 text-left break-words">
           <span className="font-bold">{x.title || 'Untitled'}</span>
           <span className="text-xs text-slate-500 ml-1.5">{x.kind === 'notice' ? 'Notice · ' : ''}{CATEGORY_LABEL[x.category]}{x.recurrence ? ` · ${recurrenceLabel(x.recurrence)}` : ''}{(x.documents || []).length ? ` · ${(x.documents || []).length} doc` : ''}</span>
-          <span className="block text-xs">{x.status === 'done' ? `Done ${x.doneAt ? new Date(x.doneAt).toLocaleDateString('en-CA') : ''}${x.doneBy ? ` by ${x.doneBy}` : ''}` : `${fmtDate(x.dueDate)} · ${dueLabel(d)}`}</span>
+          <span className="block text-xs">{x.status === 'done' ? `Done ${x.doneAt ? new Date(x.doneAt).toLocaleDateString('en-CA') : ''}${x.doneBy ? ` by ${x.doneBy}` : ''}` : (x.dueDate ? `${fmtDate(x.dueDate)} · ${dueLabel(d)}` : 'No date yet')}</span>
         </button>
         {x.status === 'open' && <button type="button" title="Mark done" onClick={() => markDone(x)} className="shrink-0 p-1.5 rounded-md border border-slate-200 text-emerald-700 hover:bg-emerald-50"><Check className="w-4 h-4" /></button>}
       </div>
@@ -329,12 +330,16 @@ function ARCard({ ar, listenError, onRefresh }: { ar: OfficeARDoc | null | undef
       )}
       {ar === undefined && !listenError ? <div className="text-sm text-slate-500">Loading…</div>
         : !data ? <div className="text-sm font-bold text-slate-600">Data unavailable — no successful pull yet.</div>
-        : <ARBody data={data} allChase={allChase} setAllChase={setAllChase} paidCheck={ar?.paidCheck} />}
+        : <ARBody data={data} allChase={allChase} setAllChase={setAllChase} paidCheckAt={ar?.paidCheckAt} />}
     </Card>
   );
 }
 
-function ARBody({ data, allChase, setAllChase, paidCheck }: { data: NonNullable<OfficeARDoc['data']>; allChase: boolean; setAllChase: (b: boolean) => void; paidCheck?: string }) {
+function ARBody({ data, allChase, setAllChase, paidCheckAt }: { data: NonNullable<OfficeARDoc['data']>; allChase: boolean; setAllChase: (b: boolean) => void; paidCheckAt?: number | null }) {
+  const [allPaid, setAllPaid] = useState(false);
+  const zeroOpen = data.mismatches.filter(m => m.kind === 'zero_balance_open');
+  const paidRows = data.mismatches.filter(m => m.kind === 'paid_with_balance');
+  const pu = data.paidUnrecorded;
   const keys: AgeKey[] = ['notDue', 'd1_30', 'd31_60', 'd61_90', 'd90plus'];
   const max = data.owed || 1;
   const chase = allChase ? data.chase : data.chase.slice(0, 10);
@@ -377,17 +382,32 @@ function ARBody({ data, allChase, setAllChase, paidCheck }: { data: NonNullable<
         {data.chase.length > chase.length && <button type="button" onClick={() => setAllChase(true)} className="mt-1 text-xs font-bold text-sky-700">Show all {data.chase.length}</button>}
       </div>
 
-      <Fold label="Mismatches" count={data.mismatches.length} tone="amber" defaultOpen>
+      <Fold label="$0 balance but still awaiting payment" count={zeroOpen.length} tone="amber" defaultOpen>
         <div className="divide-y divide-slate-100">
-          {data.mismatches.map((m, i) => (
+          {zeroOpen.map((m, i) => (
             <a key={i} href={m.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 py-1 text-sm hover:bg-slate-50">
-              <span className="flex-1 min-w-0"><b>{m.client}</b> <span className="text-xs text-slate-500">#{m.invoiceNumber} · {m.kind === 'paid_with_balance' ? 'marked paid but still has a balance' : '$0 balance but still awaiting payment'}</span></span>
+              <span className="flex-1 min-w-0"><b>{m.client}</b> <span className="text-xs text-slate-500">#{m.invoiceNumber} · {m.status.replace(/_/g, ' ')}</span></span>
               <span className="shrink-0 font-bold">{$(m.balance)}</span>
             </a>
           ))}
         </div>
       </Fold>
-      {data.mismatches.length === 0 && <div className="text-xs text-slate-500">No mismatches{paidCheck === 'top25' ? ' (paid invoices checked fully overnight)' : ''}.</div>}
+      <Fold label={pu ? `Marked paid, payment not recorded in Jobber · ${$0(pu.amount)}` : 'Marked paid, payment not recorded in Jobber'} count={paidRows.length}>
+        <div className="text-xs text-slate-600 mb-1.5">
+          Jobber shows these as paid and does <b>not</b> count them in what clients owe, but no payment (or only part of it) is recorded on the invoice — usually paid outside Jobber.
+          {pu ? ` Last 12 months: ${pu.last12Months.count} · ${$0(pu.last12Months.amount)}.` : ''} Checked {paidCheckAt ? ago(paidCheckAt) : 'overnight'}.
+        </div>
+        <div className="divide-y divide-slate-100">
+          {(allPaid ? paidRows : paidRows.slice(0, 25)).map((m, i) => (
+            <a key={i} href={m.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 py-1 text-sm hover:bg-slate-50">
+              <span className="flex-1 min-w-0"><b className="truncate">{m.client}</b> <span className="text-xs text-slate-500">#{m.invoiceNumber} · marked paid {fmtDate(m.paid)}{m.total != null ? ` · of ${$0(m.total)}` : ''}</span></span>
+              <span className="shrink-0 font-bold text-slate-600">{$(m.balance)}</span>
+            </a>
+          ))}
+        </div>
+        {paidRows.length > 25 && !allPaid && <button type="button" onClick={() => setAllPaid(true)} className="mt-1 text-xs font-bold text-sky-700">Show all {paidRows.length}</button>}
+      </Fold>
+      {zeroOpen.length === 0 && <div className="text-xs text-slate-500">No open invoices at $0.</div>}
 
       <Fold label={`Clients owing with no open invoice · ${$0(r.owedWithoutInvoice)}`} count={data.noInvoiceClients.length} tone="amber">
         <div className="divide-y divide-slate-100">
@@ -399,7 +419,7 @@ function ARBody({ data, allChase, setAllChase, paidCheck }: { data: NonNullable<
         </div>
       </Fold>
 
-      <div className={`text-xs rounded-md px-2 py-1.5 border ${Math.abs(r.difference) < 0.01 && r.clientsNotMatching === 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
+      <div className={`text-xs rounded-md px-2 py-1.5 border break-words ${Math.abs(r.difference) < 0.01 && r.clientsNotMatching === 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
         <b>Reconciliation:</b> open invoices {$(r.openInvoices)} + owing without an invoice {$(r.owedWithoutInvoice)} = {$(r.openInvoices + r.owedWithoutInvoice)} · client balances {$(r.clientBalancesOwed)}
         {Math.abs(r.difference) < 0.01 ? ' ✓' : ` · difference ${$(r.difference)}`}
         {r.clientsNotMatching ? ` · ${r.clientsNotMatching} client${r.clientsNotMatching === 1 ? '' : 's'} whose balance differs from their invoices` : ''}

@@ -20,12 +20,13 @@ const fleet = [
 const seeds: OfficeDeadline[] = SEED_DEADLINES.map((s, i) => ({ id: `s${i}`, kind: 'deadline', status: 'open', dueDate: null, ...s }));
 const overdue: OfficeDeadline = { id: 'n1', kind: 'notice', title: 'MTO letter', category: 'government', dueDate: addDaysToronto(T, -2), status: 'open' };
 const AR: OfficeARDoc = {
-  status: 'ok', lastSuccessAt: Date.now() - 5 * 60000, lastAttemptAt: Date.now() - 5 * 60000, paidCheck: 'full',
+  status: 'ok', lastSuccessAt: Date.now() - 5 * 60000, lastAttemptAt: Date.now() - 5 * 60000, paidCheck: 'full', paidCheckAt: Date.now() - 60 * 60000,
   data: {
     owed: 1575.5, invoiceCount: 2,
     aging: { notDue: { count: 1, amount: 500 }, d1_30: { count: 0, amount: 0 }, d31_60: { count: 0, amount: 0 }, d61_90: { count: 0, amount: 0 }, d90plus: { count: 1, amount: 1075.5 } },
     chase: [{ invoiceId: 'i4', invoiceNumber: '1234', client: 'Example Client', balance: 1075.5, total: 1200, dueDate: '2026-07-01', daysOverdue: 111, lastPayment: { date: '2026-08-01', amount: 124.5 }, url: 'https://secure.getjobber.com/invoices/1' }],
-    mismatches: [{ kind: 'paid_with_balance', invoiceNumber: '999', client: 'Odd Client', status: 'paid', balance: 12.34, url: '' }],
+    mismatches: [{ kind: 'paid_with_balance', invoiceNumber: '999', client: 'Odd Client', status: 'paid', balance: 12.34, total: 12.34, issued: '2025-08-28', paid: '2025-09-10', url: '' }],
+    paidUnrecorded: { count: 1, amount: 12.34, last12Months: { count: 1, amount: 12.34 } },
     noInvoiceClients: [{ client: 'No Invoice Co', clientId: 'c7', balance: 640, url: '' }],
     credits: { clients: 1, amount: -40 }, badDebt: { count: 0, amount: 0 },
     reconciliation: { openInvoices: 1575.5, owedWithoutInvoice: 640, clientBalancesOwed: 2215.5, difference: 0, clientsWithOpenInvoices: 2, clientsNotMatching: 0 },
@@ -44,7 +45,8 @@ test('all sections render with live data', () => {
   assert.match(html, /Example Client/);
   assert.match(html, /111d/);
   assert.match(html, /last paid Aug 1, 2026/);
-  assert.match(html, /marked paid but still has a balance/);
+  assert.match(html, /Marked paid, payment not recorded in Jobber · \$12 \(1\)/);
+  assert.match(html, /No open invoices at \$0/);
   assert.match(html, /owing without an invoice \$640\.00/);
   assert.match(html, /client balances \$2,215\.50 ✓/);
   assert.match(html, /Payroll due (today|in \d+ days?)/);
