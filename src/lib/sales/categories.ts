@@ -36,7 +36,8 @@ export interface DivisionRanked extends Ranked { method1: number; method2: numbe
  * Method 4 — SERVICE CATEGORY fallback for invoices neither crew records nor
  * Jobber assignees can place: a category goes to the division that crew
  * records (method 1) put it in, but only where that's clear — at least
- * MIN_SHARE of the category's crew-record dollars, on at least MIN_BASIS.
+ * MIN_SHARE of the category's crew-record dollars, on at least MIN_BASIS — and
+ * never "Other", which is a catch-all rather than a service.
  * Derived from the year's own data, so it follows how the work is really done.
  */
 export const FALLBACK_MIN_SHARE = 0.6;
@@ -55,7 +56,8 @@ export function categoryDivisionMap(rows: InvoiceRow[], o: CategoryOverrides = {
     const basis = Object.values(ds).reduce((a, b) => a + b, 0);
     const [division, amt] = Object.entries(ds).sort((a, b) => b[1] - a[1])[0];
     const share = basis > 0 ? amt / basis : 0;
-    return { category, division, share, basis: r2(basis), used: share >= FALLBACK_MIN_SHARE && basis >= FALLBACK_MIN_BASIS };
+    // "Other" is a catch-all (fees, unassigned names), not a service — it never decides a division.
+    return { category, division, share, basis: r2(basis), used: category !== 'Other' && share >= FALLBACK_MIN_SHARE && basis >= FALLBACK_MIN_BASIS };
   }).sort((a, b) => b.basis - a.basis);
 }
 export interface ListedLine { n: string; d: string; cl: string; text: string; amount: number; url: string }

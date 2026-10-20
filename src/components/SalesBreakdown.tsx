@@ -175,7 +175,7 @@ export default function SalesBreakdown(p: Props) {
           <Legend keys={divKeys} colors={DIV_COLOR} />
           <Fold label={`Unattributed invoices · ${$(b.unattributed.reduce((s, u) => s + u.amount, 0))}`} count={b.unattributed.length} tone="amber"><LineList rows={b.unattributed.slice(0, 100)} note="No CrewMaster crew-day, no mapped Jobber assignee, and a service category with no clear division. Kept in the totals, never dropped." /></Fold>
           <Fold label="Service category → division (4th fallback)" count={b.categoryDivisions.length}>
-            <div className="text-[11px] text-slate-500 mb-1">Only for invoices the other methods can't place. A category is used when crew records put at least {Math.round(FALLBACK_MIN_SHARE * 100)}% of its dollars in one division, on at least {$(FALLBACK_MIN_BASIS)}.</div>
+            <div className="text-[11px] text-slate-500 mb-1">Only for invoices the other methods can't place. A category is used when crew records put at least {Math.round(FALLBACK_MIN_SHARE * 100)}% of its dollars in one division, on at least {$(FALLBACK_MIN_BASIS)}. "Other" is never used — it's a catch-all, not a service.</div>
             <div className="divide-y divide-slate-100 text-xs">
               {b.categoryDivisions.map(c => (
                 <div key={c.category} className={`flex items-center gap-2 py-1 ${c.used ? '' : 'text-slate-400'}`}>

@@ -91,6 +91,8 @@ test('method 4: unattributed money goes to the division crew records put that ca
   assert.deepEqual(d[UNATTRIBUTED], [700, 0]);                           // sod (unclear) + sweeping (no evidence)
   assert.deepEqual(out.unattributed.map(u => [u.n, u.amount]), [['13', 700]]);
   assert.ok(FALLBACK_MIN_BASIS > 0);
+  const withOther = [...big, inv('14', '2026-07-05', [['Disposal fee ($100)', 'Disposal fee ($100)', 9000]], 1, { 'Small Projects': 1 })];
+  assert.equal(categoryDivisionMap(withOther).find(c => c.category === 'Other')!.used, false);   // never decides a division
 });
 test('per-invoice override wins over every rule, for that invoice only', () => {
   const two = [
