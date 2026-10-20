@@ -3,7 +3,7 @@ import logo from '@/assets/logo/logowhite.png';
 import { LoginDemo } from './components/blocks/LoginDemo';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, sendPasswordResetEmail } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, deleteField, collection, deleteDoc, FieldPath, query, where, getDocs, documentId } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, updateDoc, deleteField, collection, deleteDoc, FieldPath, query, where, getDocs, documentId, writeBatch } from 'firebase/firestore';
 import {
   Calendar as CalendarIcon, ChevronLeft, ChevronRight, Users, Truck, Plus, Trash2, GripVertical,
   UserCircle, Wrench, Settings, Printer, AlertTriangle, Sun, Cloud, CloudRain, CloudLightning,
@@ -12,7 +12,7 @@ import {
   Target, Award, CalendarDays, FileSignature, Map, CheckSquare, Info, Sparkles, Loader2,
   MessageSquareText, Leaf, Download, LogOut, ShieldCheck, UserPlus, Megaphone, Lock,
   Thermometer, Flame, Hourglass, Package, ClipboardList, BookOpen, ChevronDown, Hammer, Calculator,
-  ChevronUp, Layers, Eye, MoreHorizontal, Sliders, Home, Landmark
+  ChevronUp, Layers, Eye, MoreHorizontal, Sliders, Home, Landmark, Building2
 } from 'lucide-react';
 
 import {
@@ -69,6 +69,9 @@ import SalesMaster from './components/SalesMaster';
 import ContractingMaster from './components/ContractingMaster';
 import MarketingMaster from './components/MarketingMaster';
 import FinanceMaster, { FinanceBadge, FinanceUnitPanel } from './components/FinanceMaster';
+import OfficeMaster, { type OfficeARDoc } from './components/OfficeMaster';
+import { canSeeOffice } from './lib/office/access';
+import type { OfficeDeadline } from './lib/office/deadlines';
 import { clipKey, commentSubject } from './components/MarketingComments';
 import { migrateContract as migrateSnowContract } from './lib/snowContracts';
 import { entriesFor as bankEntriesFor } from './lib/hoursBank';
@@ -411,6 +414,12 @@ export default function App() {
   // FinanceMaster agreements — loaded only for the finance viewer (below).
   const [financeAgreements, setFinanceAgreements] = useState<FinanceAgreement[]>([]);
   const [financeFocusId, setFinanceFocusId] = useState<string | null>(null);
+  // OfficeMaster — loaded only for the office viewers (below).
+  const [officeDeadlines, setOfficeDeadlines] = useState<OfficeDeadline[]>([]);
+  const [officeAR, setOfficeAR] = useState<OfficeARDoc | null | undefined>(undefined);
+  const [officeARError, setOfficeARError] = useState<string | null>(null);
+  // Fleet unit to open in Manage Resources (tapped from OfficeMaster).
+  const [manageFocusUnitId, setManageFocusUnitId] = useState<string | null>(null);
   // EFFICIENCY ADJUSTMENTS — applied on read, never written into a crew-day.
   const [efficiencyAdjustments, setEfficiencyAdjustments] = useState<EfficiencyAdjustment[]>([]);
   const [crewDayFlags, setCrewDayFlags] = useState<CrewDayFlag[]>([]);
@@ -874,8 +883,10 @@ export default function App() {
   // as someone else — View As must not carry finance onto another identity,
   // nor show it while previewing a role. The rules enforce the same list.
   const canViewFinance = canSeeFinance(realCurrentEmail) && !isViewingAs;
+  // OfficeMaster: Dave (office@) and Marco, real sign-in only, never under View As.
+  const canViewOffice = canSeeOffice(realCurrentEmail) && !isViewingAs;
   const viewAllowed = (v: AppView): boolean =>
-    v === 'marketing' ? canViewMarketing : v === 'finance' ? canViewFinance : canAccessView(v, effectiveRole);
+    v === 'marketing' ? canViewMarketing : v === 'finance' ? canViewFinance : v === 'office' ? canViewOffice : canAccessView(v, effectiveRole);
 
   // Finance agreements: subscribed only while the finance viewer is signed in
   // as themselves. Everyone else never attaches, so the rule is never hit.
@@ -887,6 +898,21 @@ export default function App() {
       setFinanceAgreements(list);
     }, (err) => { console.error('equipmentFinance listen error:', err); });
   }, [canViewFinance]);
+  // Office data: subscribed only for the office viewers; nobody else attaches.
+  useEffect(() => {
+    if (!canViewOffice) { setOfficeDeadlines([]); setOfficeAR(undefined); return; }
+    const u1 = onSnapshot(collection(db, 'officeDeadlines'), (snap) => {
+      const list: OfficeDeadline[] = [];
+      snap.forEach((d) => { const v = d.data() as OfficeDeadline; if (v && v.id) list.push(v); });
+      setOfficeDeadlines(list);
+    }, (err) => { console.error('officeDeadlines listen error:', err); });
+    const u2 = onSnapshot(doc(db, 'officeAR', 'latest'), (snap) => {
+      setOfficeARError(null);
+      setOfficeAR(snap.exists() ? (snap.data() as OfficeARDoc) : null);
+    }, (err) => { console.error('officeAR listen error:', err); setOfficeARError(err?.message || 'could not read the A/R data'); });
+    return () => { u1(); u2(); };
+  }, [canViewOffice]);
+
   // fleetUnitId → current agreements, for the viewer-only Finance badge.
   const financeUnitIndex = useMemo(
     () => (canViewFinance ? financeByUnit(financeAgreements, formatTodayInToronto()).current : null),
@@ -4131,6 +4157,41 @@ export default function App() {
   // fields and appends what moved: rates and balances are exactly the numbers
   // somebody reconciles against a statement months later, and "edited the
   // mortgage" answers nothing then.
+  // OFFICE WRITES — deadlines & notices. Office viewers only (and the rule).
+  // Several items in one batch so "done + next occurrence" lands together.
+  const saveOfficeDeadlines = async (items: OfficeDeadline[]): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!canViewOffice) { showToastMsg(PERMISSION_DENIED); return false; }
+    const now = Date.now();
+    const who = displayName || realCurrentEmail;
+    const batch = writeBatch(db);
+    for (const it of items) {
+      const before = officeDeadlines.find(x => x.id === it.id);
+      batch.set(doc(db, 'officeDeadlines', it.id), cleanRM({
+        ...it, createdAt: before?.createdAt ?? it.createdAt ?? now, createdBy: before?.createdBy ?? it.createdBy ?? who,
+        updatedAt: now, updatedBy: who,
+      }));
+    }
+    try { await batch.commit(); } catch (err: any) {
+      console.error('office deadline save failed', err);
+      showToastMsg(`Could not save: ${err?.message || String(err)}`);
+      return false;
+    }
+    showToastMsg(items.length > 1 ? 'Done — next one scheduled.' : 'Saved.');
+    return true;
+  };
+  const refreshOfficeAR = async (): Promise<{ status: string; message?: string }> => {
+    const r = await httpsCallable<unknown, { status: string; message?: string }>(functions, 'officeARRefresh')({});
+    return r.data;
+  };
+  const openFleetUnit = (unitId: string) => {
+    const unit = (appData.fleet || []).find(f => f.id === unitId);
+    if (unit) setFleetFilter(unit.type);
+    setManageFocusUnitId(unitId);
+    openManageTab('fleet');
+    setTimeout(() => document.getElementById(`fleet-row-${unitId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
+  };
+
   // FINANCE WRITES. The finance viewer only — checked here and enforced by
   // the equipmentFinance rule. Every save appends what moved to the audit.
   const saveFinanceAgreement = async (a: FinanceAgreement): Promise<boolean> => {
@@ -8080,6 +8141,12 @@ export default function App() {
                 <Megaphone className="w-4 h-4" /> Marketing
               </button>
             )}
+            {/* Office — Dave and Marco, by address (lib/office/access). */}
+            {canViewOffice && (
+              <button onClick={() => setCurrentView('office')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'office' ? 'bg-white shadow-sm text-sky-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}>
+                <Building2 className="w-4 h-4" /> Office
+              </button>
+            )}
             {/* Finance — one account, by address (lib/finance/access). */}
             {canViewFinance && (
               <button onClick={() => setCurrentView('finance')} className={`flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-md transition-all ${currentView === 'finance' ? 'bg-white shadow-sm text-emerald-800' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-300/50'}`}>
@@ -8737,6 +8804,19 @@ export default function App() {
           canDeleteSnowContracts={canDeleteSnowContracts}
           canEditSnowContracts={canEditSnowContracts}
         />
+      ) : currentView === 'office' && canViewOffice ? (
+        <OfficeMaster
+          fleet={appData.fleet || []}
+          deadlines={officeDeadlines}
+          ar={officeAR}
+          arListenError={officeARError}
+          payPeriod={payPeriodSettings(appData.settings as any)}
+          today={formatTodayInToronto()}
+          currentUser={{ email: realCurrentEmail, name: displayName || realCurrentEmail }}
+          onSaveDeadlines={saveOfficeDeadlines}
+          onRefreshAR={refreshOfficeAR}
+          onOpenFleetUnit={openFleetUnit}
+        />
       ) : currentView === 'finance' && canViewFinance ? (
         <FinanceMaster
           agreements={financeAgreements}
@@ -8974,6 +9054,10 @@ export default function App() {
               isActive: currentView === 'marketing',
               onClick: () => setCurrentView('marketing'),
               visible: canViewMarketing },
+            { key: 'office', label: 'Office', Icon: Building2, badge: 0,
+              isActive: currentView === 'office',
+              onClick: () => setCurrentView('office'),
+              visible: canViewOffice },
             { key: 'finance', label: 'Finance', Icon: Landmark, badge: 0,
               isActive: currentView === 'finance',
               onClick: () => setCurrentView('finance'),
@@ -9145,8 +9229,9 @@ export default function App() {
         currentUserEmail={displayEmail}
         financeBadgeFor={financeBadgeFor}
         financePanelFor={financePanelFor}
+        focusUnitId={manageFocusUnitId}
         isOpen={isManageModalOpen}
-        onClose={() => setIsManageModalOpen(false)}
+        onClose={() => { setIsManageModalOpen(false); setManageFocusUnitId(null); }}
         manageTab={manageTab}
         setManageTab={setManageTab}
         fleetFilter={fleetFilter}

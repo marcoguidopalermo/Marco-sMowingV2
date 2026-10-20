@@ -101,6 +101,23 @@ service firebase.storage {
       allow delete: if isFinanceViewer();
     }
 
+    // OfficeMaster deadline / notice documents (an MTO letter, a CVOR
+    // certificate). office/{itemId}/{fileName}. Same list as isOfficeViewer()
+    // in firestore.rules (a test checks they match).
+    function isOfficeViewer() {
+      return request.auth != null
+        && request.auth.token.get('email_verified', false) == true
+        && request.auth.token.get('email', '').lower() in [
+          'office@marcosmowing.com',
+          'marcoguidopalermo@gmail.com'
+        ];
+    }
+    match /office/{itemId}/{fileName} {
+      allow read: if isOfficeViewer();
+      allow write: if isOfficeViewer() && validUpload();
+      allow delete: if isOfficeViewer();
+    }
+
     // Everything else: locked down.
     match /{allPaths=**} {
       allow read, write: if false;

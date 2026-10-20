@@ -185,6 +185,8 @@ interface ManageResourcesModalProps {
   // Finance badge per unit — passed ONLY for the finance viewer (App.tsx).
   financeBadgeFor?: (unitId: string) => React.ReactNode;
   financePanelFor?: (unitId: string) => React.ReactNode;
+  // Fleet unit to open and highlight (tapped from OfficeMaster).
+  focusUnitId?: string | null;
   isSuperAdmin: boolean;
   currentUserRole: UserRole;
   jobberUsersList: JobberUser[];
@@ -232,6 +234,7 @@ export default function ManageResourcesModal({
   currentUserEmail,
   financeBadgeFor,
   financePanelFor,
+  focusUnitId,
   isSuperAdmin,
   currentUserRole,
   jobberUsersList,
@@ -935,6 +938,7 @@ export default function ManageResourcesModal({
               <FleetGroupedList
                 fleet={operationalFleet(localFleet)}
                 subtypes={localEquipmentSubtypes}
+                highlightId={focusUnitId}
                 renderSummary={(f) => (
                   <span className="font-bold text-slate-800 flex items-center gap-2 flex-wrap">
                     {f.color && <span className={`w-3 h-3 rounded-full ${f.color} shadow-sm border border-gray-200 inline-block`} />}

@@ -229,6 +229,29 @@ service cloud.firestore {
       allow create, delete: if false;
     }
 
+    // OFFICEMASTER — company deadlines & notices, and the Jobber A/R summary
+    // (client names and balances). Dave (office@) and Marco, by address,
+    // verified email. The SAME list is in storage.rules and OFFICE_VIEWERS
+    // (src/lib/office/access.ts, functions/src/jobber/officeAR.ts); a test
+    // checks they match. Adding someone: one line in each list.
+    function isOfficeViewer() {
+      return request.auth != null
+        && request.auth.token.get('email_verified', false) == true
+        && request.auth.token.get('email', '').lower() in [
+          'office@marcosmowing.com',
+          'marcoguidopalermo@gmail.com'
+        ];
+    }
+    match /officeDeadlines/{itemId} {
+      allow read, create, update: if isOfficeViewer();
+      allow delete: if false;   // soft delete only (deletedAt) — kept on record
+    }
+    // Written only by the officeAR functions (Admin SDK).
+    match /officeAR/{docId} {
+      allow read: if isOfficeViewer();
+      allow write: if false;
+    }
+
     match /crewDayFlags/{flagId} {
       allow read: if isAuthorized() || isSuperAdmin();
       allow create: if isAuthorized() || isSuperAdmin();

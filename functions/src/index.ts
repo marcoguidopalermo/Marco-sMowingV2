@@ -57,3 +57,9 @@ export {
   jobberSyncCapacityScheduled,
   jobberSyncCapacityLawnScheduled,
 } from "./jobber/capacityForecast.js";
+
+// OfficeMaster: A/R pull from Jobber (read-only) and deadline reminders.
+export {
+  officeARPull, officeARNightly, officeARRefresh,
+} from "./jobber/officeAR.js";
+export {officeDeadlineAlerts} from "./officeDeadlines.js";

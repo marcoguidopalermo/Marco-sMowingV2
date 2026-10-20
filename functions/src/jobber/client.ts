@@ -32,6 +32,8 @@ export interface JobberClient {
     variables: Record<string, unknown>,
   ): Promise<unknown>;
   getLastThrottleStatus(): ThrottleStatus | undefined;
+  /** Requested/actual points of the last call (read-only; for reporting). */
+  getLastCost(): {requested?: number; actual?: number} | undefined;
 }
 
 /**
@@ -85,6 +87,7 @@ export function makeJobberClient(initialToken: string): JobberClient {
   let token = initialToken;
   let alreadyRefreshed = false;
   let lastThrottleStatus: ThrottleStatus | undefined;
+  let lastCost: {requested?: number; actual?: number} | undefined;
 
   const post = (
     query: string,
@@ -126,6 +129,10 @@ export function makeJobberClient(initialToken: string): JobberClient {
       for (let attempt = 0; attempt <= MAX_THROTTLE_RETRIES; attempt++) {
         const json = await tryOnce(query, variables);
         lastThrottleStatus = json.extensions?.cost?.throttleStatus;
+        lastCost = {
+          requested: json.extensions?.cost?.requestedQueryCost,
+          actual: json.extensions?.cost?.actualQueryCost,
+        };
         if (isThrottled(json) && attempt < MAX_THROTTLE_RETRIES) {
           const ms = computeThrottleSleepMs(lastThrottleStatus);
           logger.warn("Jobber throttled — sleeping before retry", {
@@ -150,6 +157,9 @@ export function makeJobberClient(initialToken: string): JobberClient {
     },
     getLastThrottleStatus() {
       return lastThrottleStatus;
+    },
+    getLastCost() {
+      return lastCost;
     },
   };
 }

@@ -32,7 +32,9 @@ export type Category =
   // the sign-off goes back to whoever raised it. Its own category because it
   // carries a consequence (a flagged day stops counting toward pay until it is
   // resolved) and must not be lost inside general crew chatter.
-  | "audit";
+  | "audit"
+  // OfficeMaster company deadlines & notices — to the office list only.
+  | "office";
 
 // Global kill switches + per-trigger sub-toggles. Defaults: all ON except the
 // dormant policy sign-off. Enforced SERVER-SIDE here.
@@ -588,6 +590,7 @@ const TEST_SAMPLES: Record<Category, {title: string; body: string; url: string}>
   storage: {title: "⚠️ Storage warning", body: "Sample — main data document nearing its size limit.", url: "/"},
   marketing: {title: "💬 Sample commented on clip #0058", body: "Sample — trim the intro, the drone shot is the hook.", url: "/#marketing"},
   crew: {title: "🙋 Sample is available", body: "Sample — not on a crew today, available to work.", url: "/#schedule"},
+  office: {title: "📅 CVOR renewal — due in 30 days", body: "Open Office for details.", url: "/#office"},
 };
 // ── DAILY AUDIT ────────────────────────────────────────────────────────────
 // A crew-day flagged for review. Recipients are resolved SERVER-SIDE from the

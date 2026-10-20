@@ -125,25 +125,36 @@ export interface FleetDocRenewal {
   source: 'field' | 'document';
 }
 
+export type RenewalKey = 'registration' | 'insurance' | 'safety' | 'cvor';
+
+/**
+ * A unit's date for one renewal concept — flat field first (what buzzes), then
+ * the uploaded document as fallback. The ONE resolver: the renewals strip, the
+ * unit chips and OfficeMaster's compliance list all read through it.
+ */
+export function resolveRenewal(unit: FleetItem, key: RenewalKey): { expiryDate: string; source: 'field' | 'document' } | null {
+  const c = RENEWAL_CONCEPTS.find(x => x.key === key);
+  if (!c) return null;
+  const rec = unit as unknown as Record<string, unknown>;
+  for (const f of c.fields) {
+    const n = normalizeExpiry(rec[f]);
+    if (n) return { expiryDate: n, source: 'field' };
+  }
+  if (c.docType) {
+    const n = normalizeExpiry(currentDocForType(unit.documents || [], c.docType)?.expiryDate);
+    if (n) return { expiryDate: n, source: 'document' };
+  }
+  return null;
+}
+
 function unitRenewals(unit: FleetItem): FleetDocRenewal[] {
   if (unit.disposal?.kind) return []; // retired / sold / written off
   const docs = unit.documents || [];
-  const rec = unit as unknown as Record<string, unknown>;
   const rows: FleetDocRenewal[] = [];
   for (const c of RENEWAL_CONCEPTS) {
-    // Flat field first (what buzzes), then the uploaded document as fallback.
-    let expiry: string | undefined;
-    let source: 'field' | 'document' = 'field';
-    for (const f of c.fields) {
-      const n = normalizeExpiry(rec[f]);
-      if (n) { expiry = n; break; }
-    }
-    if (!expiry && c.docType) {
-      const cur = currentDocForType(docs, c.docType);
-      const n = normalizeExpiry(cur?.expiryDate);
-      if (n) { expiry = n; source = 'document'; }
-    }
-    if (!expiry) continue;
+    const r = resolveRenewal(unit, c.key as RenewalKey);
+    if (!r) continue;
+    const expiry = r.expiryDate, source = r.source;
     const st = docExpiryState({ expiryDate: expiry });
     if (st !== 'expired' && st !== 'expiring') continue;
     rows.push({ unit, key: c.key, typeLabel: c.label, expiryDate: expiry, state: st, daysLeft: daysUntilDate(expiry), source });
