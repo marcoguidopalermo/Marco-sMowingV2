@@ -248,24 +248,6 @@ function renderError(msg: string): string {
   ].join("");
 }
 
-/**
- * Disconnect Jobber (Manage Resources). Server-side so the token documents
- * stay unwritable from the app. Admins only (access/roles), or the super admin.
- */
-export const jobberDisconnect = onCall({region: REGION}, async (request) => {
-  const email = (request.auth?.token?.email || "").trim().toLowerCase();
-  if (!email) throw new HttpsError("unauthenticated", "Sign in required.");
-  const roles = await db.doc("access/roles").get();
-  const admins = ((roles.get("admins") as string[]) || [])
-    .map((a) => a.trim().toLowerCase());
-  if (email !== "marcoguidopalermo@gmail.com" && !admins.includes(email)) {
-    throw new HttpsError("permission-denied", "Admins only.");
-  }
-  const batch = db.batch();
-  batch.delete(db.doc("jobberAuthSecrets/main"));
-  batch.delete(db.doc(JOBBER_AUTH_DOC));
-  batch.delete(db.doc("jobberTokenLock/main"));
-  await batch.commit();
-  logger.info("Jobber disconnected by an admin", {by: email});
-  return {ok: true};
-});
+// jobberDisconnect lives in disconnect.ts (it calls Jobber's appDisconnect
+// first, which needs the token helper — kept out of this file to avoid a
+// circular import with token.ts).

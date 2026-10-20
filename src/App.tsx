@@ -1683,7 +1683,9 @@ export default function App() {
     const usersRef = doc(db, 'artifacts', appId, 'private', 'data', 'jobberUsers', 'main');
     const unsubAuth = onSnapshot(
       authRef,
-      snap => setJobberConnected(snap.exists()),
+      // The doc holds status only. A refused refresh marks it 'disconnected'
+      // (it may even recreate it) — that must show Connect, not Connected.
+      snap => setJobberConnected(snap.exists() && snap.data()?.status !== 'disconnected'),
       () => setJobberConnected(false),
     );
     const unsubUsers = onSnapshot(
