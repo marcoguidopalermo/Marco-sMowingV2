@@ -63,3 +63,5 @@ export {
   officeARPull, officeARNightly, officeARRefresh,
 } from "./jobber/officeAR.js";
 export {officeDeadlineAlerts} from "./officeDeadlines.js";
+// SalesMaster scoreboard: quotes and requests from Jobber (read-only).
+export {salesPull, salesRefresh} from "./jobber/salesPull.js";

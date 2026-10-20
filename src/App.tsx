@@ -70,6 +70,9 @@ import ContractingMaster from './components/ContractingMaster';
 import MarketingMaster from './components/MarketingMaster';
 import FinanceMaster, { FinanceBadge, FinanceUnitPanel } from './components/FinanceMaster';
 import OfficeMaster, { type OfficeARDoc } from './components/OfficeMaster';
+import SalesScoreboard, { type SalesMeta, type SalesTargets } from './components/SalesScoreboard';
+import { canSeeSales } from './lib/sales/access';
+import type { QuoteRow, RequestRow, SnowEntry } from './lib/sales/metrics';
 import { canSeeOffice } from './lib/office/access';
 import type { OfficeDeadline } from './lib/office/deadlines';
 import { clipKey, commentSubject } from './components/MarketingComments';
@@ -418,6 +421,12 @@ export default function App() {
   const [officeDeadlines, setOfficeDeadlines] = useState<OfficeDeadline[]>([]);
   const [officeAR, setOfficeAR] = useState<OfficeARDoc | null | undefined>(undefined);
   const [officeARError, setOfficeARError] = useState<string | null>(null);
+  // Sales scoreboard — loaded only for the sales viewers (below).
+  const [salesDocs, setSalesDocs] = useState<Record<string, any>>({});
+  const [salesMeta, setSalesMeta] = useState<SalesMeta | null | undefined>(undefined);
+  const [salesError, setSalesError] = useState<string | null>(null);
+  const [salesSnow, setSalesSnow] = useState<SnowEntry[]>([]);
+  const [salesTargets, setSalesTargets] = useState<SalesTargets>({});
   // Fleet unit to open in Manage Resources (tapped from OfficeMaster).
   const [manageFocusUnitId, setManageFocusUnitId] = useState<string | null>(null);
   // EFFICIENCY ADJUSTMENTS — applied on read, never written into a crew-day.
@@ -885,6 +894,8 @@ export default function App() {
   const canViewFinance = canSeeFinance(realCurrentEmail) && !isViewingAs;
   // OfficeMaster: Dave (office@) and Marco, real sign-in only, never under View As.
   const canViewOffice = canSeeOffice(realCurrentEmail) && !isViewingAs;
+  // Sales scoreboard: James (sales@) and Marco, real sign-in, never under View As.
+  const canViewSales = canSeeSales(realCurrentEmail) && !isViewingAs;
   const viewAllowed = (v: AppView): boolean =>
     v === 'marketing' ? canViewMarketing : v === 'finance' ? canViewFinance : v === 'office' ? canViewOffice : canAccessView(v, effectiveRole);
 
@@ -898,6 +909,36 @@ export default function App() {
       setFinanceAgreements(list);
     }, (err) => { console.error('equipmentFinance listen error:', err); });
   }, [canViewFinance]);
+  // Sales data: subscribed only for the sales viewers; nobody else attaches.
+  useEffect(() => {
+    if (!canViewSales) { setSalesDocs({}); setSalesMeta(undefined); setSalesSnow([]); return; }
+    const u1 = onSnapshot(collection(db, 'salesData'), (snap) => {
+      const docs: Record<string, any> = {};
+      snap.forEach((d) => { docs[d.id] = d.data(); });
+      setSalesError(null);
+      setSalesDocs(docs);
+      setSalesMeta(docs.meta ? (docs.meta as SalesMeta) : null);
+    }, (err) => { console.error('salesData listen error:', err); setSalesError(err?.message || 'could not read the sales data'); });
+    const u2 = onSnapshot(collection(db, 'salesSnowEntries'), (snap) => {
+      const list: SnowEntry[] = [];
+      snap.forEach((d) => { const v = d.data() as SnowEntry; if (v && v.id) list.push(v); });
+      setSalesSnow(list);
+    }, (err) => { console.error('salesSnowEntries listen error:', err); });
+    const u3 = onSnapshot(doc(db, 'salesSettings', 'targets'), (snap) => {
+      setSalesTargets(snap.exists() ? ((snap.data() as { streams?: SalesTargets }).streams || {}) : {});
+    }, (err) => { console.error('salesSettings listen error:', err); });
+    return () => { u1(); u2(); u3(); };
+  }, [canViewSales]);
+  // Only the chunks named by the current meta (a pull replaces them atomically).
+  const salesQuotes = useMemo<QuoteRow[]>(() => {
+    const n = Number((salesDocs.meta as any)?.quoteChunks) || 0;
+    return Array.from({ length: n }, (_, i) => (salesDocs[`q${i}`]?.rows || []) as QuoteRow[]).flat();
+  }, [salesDocs]);
+  const salesRequests = useMemo<RequestRow[]>(() => {
+    const n = Number((salesDocs.meta as any)?.requestChunks) || 0;
+    return Array.from({ length: n }, (_, i) => (salesDocs[`r${i}`]?.rows || []) as RequestRow[]).flat();
+  }, [salesDocs]);
+
   // Office data: subscribed only for the office viewers; nobody else attaches.
   useEffect(() => {
     if (!canViewOffice) { setOfficeDeadlines([]); setOfficeAR(undefined); return; }
@@ -4157,6 +4198,30 @@ export default function App() {
   // fields and appends what moved: rates and balances are exactly the numbers
   // somebody reconciles against a statement months later, and "edited the
   // mortgage" answers nothing then.
+  // SALES WRITES — residential snow entries and targets. Sales viewers only.
+  const saveSalesSnowEntry = async (e: SnowEntry): Promise<boolean> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
+    if (!canViewSales) { showToastMsg(PERMISSION_DENIED); return false; }
+    const before = salesSnow.find(x => x.id === e.id);
+    const now = Date.now(); const who = displayName || realCurrentEmail;
+    try {
+      await setDoc(doc(db, 'salesSnowEntries', e.id), cleanRM({
+        ...e, createdAt: before?.createdAt ?? now, createdBy: before?.createdBy ?? who, updatedAt: now, updatedBy: who,
+      }));
+    } catch (err: any) { showToastMsg(`Could not save: ${err?.message || String(err)}`); return false; }
+    showToastMsg(e.deletedAt ? 'Entry removed.' : before ? 'Entry updated.' : 'Snow sales added.');
+    return true;
+  };
+  const saveSalesTargets = async (t: SalesTargets): Promise<boolean> => {
+    if (isViewingAs || !canViewSales) { showToastMsg(PERMISSION_DENIED); return false; }
+    try { await setDoc(doc(db, 'salesSettings', 'targets'), cleanRM({ streams: t, updatedAt: Date.now(), updatedBy: displayName || realCurrentEmail })); }
+    catch (err: any) { showToastMsg(`Could not save targets: ${err?.message || String(err)}`); return false; }
+    showToastMsg('Targets saved.');
+    return true;
+  };
+  const refreshSales = async (): Promise<{ status: string; message?: string }> =>
+    (await httpsCallable<unknown, { status: string; message?: string }>(functions, 'salesRefresh')({})).data;
+
   // OFFICE WRITES — deadlines & notices. Office viewers only (and the rule).
   // Several items in one batch so "done + next occurrence" lands together.
   const saveOfficeDeadlines = async (items: OfficeDeadline[]): Promise<boolean> => {
@@ -8793,6 +8858,23 @@ export default function App() {
           hourlyEstimates={hourlyEstimates}
           onSetHourlyEstimate={setHourlyEstimate}
           snowContracts={snowContracts}
+          scoreboard={canViewSales ? (
+            <SalesScoreboard
+              quotes={salesQuotes}
+              requests={salesRequests}
+              meta={salesMeta}
+              listenError={salesError}
+              snowEntries={salesSnow}
+              commercial={Object.values(snowContracts) as any}
+              targets={salesTargets}
+              today={formatTodayInToronto()}
+              currentUser={{ email: realCurrentEmail, name: displayName || realCurrentEmail }}
+              canEditSnow={realCurrentUserRole === 'admin'}
+              onSaveSnowEntry={saveSalesSnowEntry}
+              onSaveTargets={saveSalesTargets}
+              onRefresh={refreshSales}
+            />
+          ) : undefined}
           onSaveSnowContract={saveSnowContract}
           onCreateSnowContract={createSnowContract}
           onDuplicateSnowContract={duplicateSnowContract}

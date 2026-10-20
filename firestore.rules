@@ -252,6 +252,35 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // SALESMASTER SCOREBOARD — James (sales@) and Marco, by address, verified
+    // email. The SAME list is in SALES_VIEWERS (src/lib/sales/access.ts and
+    // functions/src/jobber/salesPull.ts); a test checks they match.
+    function isSalesViewer() {
+      return request.auth != null
+        && request.auth.token.get('email_verified', false) == true
+        && request.auth.token.get('email', '').lower() in [
+          'sales@marcosmowing.com',
+          'marcoguidopalermo@gmail.com'
+        ];
+    }
+    // Jobber quotes/requests — written only by the salesPull functions.
+    match /salesData/{docId} {
+      allow read: if isSalesViewer();
+      allow write: if false;
+    }
+    // Residential snow sales entered by hand (later a FolloSoft upload).
+    // Anyone on the list adds; only an admin among them edits or removes
+    // (remove = deletedAt, kept on record).
+    match /salesSnowEntries/{entryId} {
+      allow read, create: if isSalesViewer();
+      allow update: if isSalesViewer() && isContentAdmin();
+      allow delete: if false;
+    }
+    // Targets per stream.
+    match /salesSettings/{docId} {
+      allow read, write: if isSalesViewer();
+    }
+
     match /crewDayFlags/{flagId} {
       allow read: if isAuthorized() || isSuperAdmin();
       allow create: if isAuthorized() || isSuperAdmin();

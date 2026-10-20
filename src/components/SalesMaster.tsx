@@ -4,8 +4,8 @@
 // This is a UI grouping only — Firestore collections/keys are unchanged
 // (salesMasterQuotes, snowQuotes). It just distributes the same props it always
 // received to the right module.
-import { useState } from 'react';
-import { Calculator, Snowflake, Sprout, CalendarRange } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
+import { Calculator, Snowflake, Sprout, CalendarRange, Trophy } from 'lucide-react';
 import type { SnowContract } from '../types';
 import { SalesRates, SalesQuote, SnowQuote, SnowRateConfigVersion, LawnQuote, LawnRateConfigVersion, AppData, CapacityForecast, CapacityScope, CapacitySettings, Employee, JobberUser, HourlyEstimate } from '../types';
 import { SnowConfig } from '../lib/snowPricing';
@@ -16,6 +16,8 @@ import LawnMaster from './LawnMaster';
 import CapacityCalendar from './CapacityCalendar';
 
 interface Props {
+  // Sales scoreboard element — passed only for the sales viewers (App.tsx).
+  scoreboard?: ReactNode;
   rates: SalesRates;
   quotes: Record<string, SalesQuote>;
   isAdmin: boolean;
@@ -66,7 +68,7 @@ interface Props {
   canEditSnowContracts: boolean;
 }
 
-type ModuleKey = 'project' | 'snow' | 'lawn' | 'capacity';
+type ModuleKey = 'scoreboard' | 'project' | 'snow' | 'lawn' | 'capacity';
 const MODULES: { key: ModuleKey; label: string; Icon: typeof Calculator }[] = [
   { key: 'project', label: 'ProjectMaster', Icon: Calculator },
   { key: 'snow', label: 'SnowMaster', Icon: Snowflake },
@@ -86,17 +88,20 @@ export default function SalesMaster(props: Props) {
     onUploadSnowContractMap, onUploadSnowContractDoc, onDeleteSnowContractDoc,
     onDeleteSnowContract, onArchiveSnowContract, canDeleteSnowContracts, canEditSnowContracts,
   } = props;
-  const [module, setModule] = useState<ModuleKey>('project');
+  // The scoreboard is the landing view for the sales viewers (James, Marco);
+  // everyone else sees SalesMaster exactly as before.
+  const modules = props.scoreboard ? [{ key: 'scoreboard' as ModuleKey, label: 'Scoreboard', Icon: Trophy }, ...MODULES] : MODULES;
+  const [module, setModule] = useState<ModuleKey>(props.scoreboard ? 'scoreboard' : 'project');
 
   return (
     <div className="flex-1 overflow-y-auto bg-gray-100 p-4 md:p-6">
       {/* The capacity calendar is a wide grid — it gets the full width the
           quoting modules don't need. */}
-      <div className={`${module === 'capacity' ? 'max-w-6xl' : 'max-w-3xl'} mx-auto space-y-4`}>
+      <div className={`${module === 'capacity' || module === 'scoreboard' ? 'max-w-6xl' : 'max-w-3xl'} mx-auto space-y-4`}>
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><Calculator className="w-6 h-6 text-slate-700" /> SalesMaster</h2>
           <div className="flex flex-wrap bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
-            {MODULES.map(({ key, label, Icon }) => (
+            {modules.map(({ key, label, Icon }) => (
               <button key={key} onClick={() => setModule(key)}
                 className={`px-3 py-1.5 text-sm font-bold rounded-md inline-flex items-center gap-1.5 ${module === key ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500'}`}>
                 <Icon className="w-3.5 h-3.5" /> {label}
@@ -104,6 +109,8 @@ export default function SalesMaster(props: Props) {
             ))}
           </div>
         </div>
+
+        {module === 'scoreboard' && props.scoreboard}
 
         {module === 'project' && (
           <ProjectMaster
