@@ -8,10 +8,14 @@ import {
   STREAM_LABEL, SOLD_STATUSES, type QuoteRow, type RequestRow, type SnowEntry, type CommercialLike, type StreamKey, type Target, type StreamFigures, type WeekPoint,
 } from '../lib/sales/metrics';
 import { rangeFor, PERIOD_LABEL, snowSeasonFor, snowSeasonLabel, torontoYmd, type PeriodKey, type Range } from '../lib/sales/periods';
+import SalesBreakdown from './SalesBreakdown';
+import type { InvoiceRow, CategoryOverrides } from '../lib/sales/categories';
+import type { ServiceNamesDoc } from './ServiceNameAssign';
 
 export interface SalesMeta {
   status?: 'ok' | 'error' | 'skipped'; lastAttemptAt?: number; lastSuccessAt?: number; lastError?: string | null;
-  since?: string; quoteCount?: number; requestCount?: number;
+  since?: string; quoteCount?: number; requestCount?: number; invoiceCount?: number;
+  bhByMonth?: Record<string, Record<string, number>>;
   cost?: { queries: number; actualTotal: number; requestedMax: number; minAvailable: number | null; ms: number };
 }
 export type SalesTargets = Partial<Record<StreamKey, Target>>;
@@ -19,6 +23,11 @@ export type SalesTargets = Partial<Record<StreamKey, Target>>;
 interface Props {
   quotes: QuoteRow[];
   requests: RequestRow[];
+  invoices: InvoiceRow[];
+  categoryOverrides: CategoryOverrides;
+  serviceNames: ServiceNamesDoc | null | undefined;
+  canEditMapping: boolean;                  // admins among the viewers
+  onSaveOverrides: (o: CategoryOverrides) => Promise<boolean>;
   meta: SalesMeta | null | undefined;      // undefined = loading, null = never pulled
   listenError?: string | null;
   snowEntries: SnowEntry[];
@@ -96,7 +105,7 @@ export default function SalesScoreboard(p: Props) {
       <div className="flex items-center gap-2 flex-wrap">
         <Trophy className="w-6 h-6 text-emerald-700" />
         <h1 className="text-2xl font-black text-slate-800">Scoreboard</h1>
-        <span className="text-xs text-slate-500">Average ticket · contracts sold</span>
+        <span className="text-xs text-slate-500">Invoiced · won · pipeline, by service and division</span>
       </div>
 
       {/* Period + salesperson — buttons, not dropdowns */}
@@ -121,7 +130,15 @@ export default function SalesScoreboard(p: Props) {
         )}
       </div>
 
-      {/* Streams — contracts + average ticket, with targets */}
+      <SalesBreakdown
+        invoices={p.invoices} quotes={p.quotes} range={range} hasData={hasData}
+        overrides={p.categoryOverrides} names={p.serviceNames} bhByMonth={p.meta?.bhByMonth}
+        canEditMapping={p.canEditMapping} onSaveOverrides={p.onSaveOverrides}
+        wonCount={qm.won.count} wonPre={qm.won.pre} wonIncl={qm.won.incl} waitingCount={chaseList(p.quotes, p.today, 'age', sp).length}
+        avgTicketPre={qm.avgTicket?.pre ?? null}
+      />
+
+      {/* Streams — contracts sold, with targets (average ticket secondary) */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         {streams.map(s => {
           const t = p.targets[s.key];
@@ -130,9 +147,9 @@ export default function SalesScoreboard(p: Props) {
               <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-slate-600">{s.icon}{STREAM_LABEL[s.key]}</div>
               {s.period == null ? <div className="mt-2 text-sm font-bold text-slate-600">Data unavailable</div> : (
                 <>
-                  <div className="mt-1 text-[11px] font-bold uppercase text-slate-500">Average ticket</div>
-                  <div className="text-3xl font-black text-emerald-800">{s.period.avgTicket != null ? $(s.period.avgTicket) : '—'}</div>
-                  <div className="text-sm text-slate-700"><b>{s.period.contracts}</b> contract{s.period.contracts === 1 ? '' : 's'} · {$(s.period.dollars)}</div>
+                  <div className="mt-1 text-[11px] font-bold uppercase text-slate-500">Contracts sold</div>
+                  <div className="text-2xl font-black text-slate-800">{s.period.contracts} · {$(s.period.dollars)}</div>
+                  <div className="text-xs text-slate-500">average {s.period.avgTicket != null ? $(s.period.avgTicket) : '—'}</div>
                 </>
               )}
               {s.season && (
@@ -196,8 +213,8 @@ function JobberCard(p: Props & { qm: ReturnType<typeof quoteMetrics>; leads: Ret
         <div className="space-y-4">
           {p.beforeData && <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">Jobber data starts {md(torontoYmd(p.meta?.since))}, {String(torontoYmd(p.meta?.since)).slice(0, 4)} — earlier dates aren't included.</div>}
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            <Stat big label="Average ticket (won)" value={qm.avgTicket ? $(qm.avgTicket.pre) : '—'} sub="before tax" title={qm.avgTicket ? `Incl. tax: ${$2(qm.avgTicket.incl)}` : undefined} />
             <Stat label="Won" value={`${qm.won.count} · ${$(qm.won.pre)}`} sub="approved + converted" title={`Incl. tax: ${$2(qm.won.incl)}`} />
+            <Stat label="Average ticket (won)" value={qm.avgTicket ? $(qm.avgTicket.pre) : '—'} sub="before tax" title={qm.avgTicket ? `Incl. tax: ${$2(qm.avgTicket.incl)}` : undefined} />
             <Stat label="Win rate" value={qm.winRate == null ? '—' : `${Math.round(qm.winRate * 100)}%`} sub={`${qm.won.count} won of ${qm.won.count + qm.lost.count} decided`} />
             <Stat label="Sent" value={`${qm.sent.count} · ${$(qm.sent.pre)}`} title={`Incl. tax: ${$2(qm.sent.incl)}`} />
             <Stat label="Waiting on client" value={`${qm.waiting.count} · ${$(qm.waiting.pre)}`} title={`Incl. tax: ${$2(qm.waiting.incl)}`} />

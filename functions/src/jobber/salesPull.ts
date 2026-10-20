@@ -1,9 +1,9 @@
 /* eslint-disable max-len, require-jsdoc, valid-jsdoc, no-multi-spaces */
 // Sales scoreboard pull: Jobber quotes and requests. READ-ONLY — no mutations.
 //
-// Weekdays 07:09 / 12:09 / 16:09 Toronto (after the :00 sync and the :07
-// office pull, done before the :15 sync) plus a "Refresh now" for the sales
-// viewers. Never inside the performance sync; paced to keep Jobber's bucket
+// Weekdays 07:03 / 12:03 / 16:03 Toronto (after the :00 sync; ~5 minutes, done
+// before the :07 office pull and the :15 sync) plus a "Refresh now" for the
+// sales viewers. Never inside the performance sync; paced to keep Jobber's bucket
 // near PACE_TARGET and stops (keeping the last good data) under BUDGET_FLOOR.
 //
 // Jobber quirks (memory: jobber-sales-api-quirks): quotes are selected by
@@ -12,7 +12,9 @@
 // its sort by sent/approved date.
 //
 // Output (server-written, sales viewers read): salesData/meta plus row chunks
-// salesData/q0..qN (quotes) and salesData/r0..rN (requests), ≤ 400 rows each.
+// salesData/q* (quotes, with lines), salesData/r* (requests) and salesData/i*
+// (invoices with lines and their division attribution), ≤ 250 rows each; and
+// serviceCategoryMap/names (distinct service names for the mapping editor).
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import * as logger from "firebase-functions/logger";
@@ -20,6 +22,8 @@ import * as admin from "firebase-admin";
 import {JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET} from "./oauth.js";
 import {getJobberAccessToken} from "./token.js";
 import {makeJobberClient, JobberClient} from "./client.js";
+import {assigneeDivisionIndex, attributeInvoice, bhByMonth, jobDivisionIndex, Attribution} from "../shared/divisionCore.js";
+import {categoryForName, normName} from "../shared/serviceCategories.js";
 
 if (!admin.apps.length) admin.initializeApp();
 const db = admin.firestore();
@@ -32,18 +36,67 @@ const BUDGET_FLOOR = 5000;
 const PACE_TARGET = 9000;
 const PAGE_DELAY_MS = 400;
 const LOCK_MS = 9 * 60_000;
-const CHUNK = 400;
+const CHUNK = 250;
+const APP = "artifacts/crewmaster/public/data";
+
+/** CrewMaster's crew-days (performance) and rosters (schedules) for the year, plus the capacity assignee map. */
+async function loadCrewData(year: string) {
+  const main = (await db.doc(`${APP}/appData/main`).get()).data() || {};
+  const perf: Record<string, any> = {};
+  const sch: Record<string, any> = {};
+  for (const [d, v] of Object.entries(main.performance || {})) if (d.startsWith(year)) perf[d] = v;
+  for (const [d, v] of Object.entries(main.schedules || {})) if (d.startsWith(year)) sch[d] = v;
+  const pm = await db.collection(`${APP}/performanceMonths`).get();
+  for (const doc of pm.docs) if (doc.id.startsWith(year)) for (const [d, v] of Object.entries((doc.data().days || {}) as Record<string, unknown>)) if (!perf[d]) perf[d] = v;
+  const sm = await db.collection(`${APP}/scheduleMonths`).get();
+  for (const doc of sm.docs) if (doc.id.startsWith(year)) for (const [d, v] of Object.entries((doc.data().days || {}) as Record<string, unknown>)) if (!sch[d]) sch[d] = v;
+  return {perf, sch, assigneeMap: (main.settings?.capacity?.assigneeMap || {}) as Record<string, {division?: string}>};
+}
+
+/** Distinct service names on this year's lines, for the mapping editor and the unmapped list (defaults only — overrides apply in the app). */
+function serviceNames(rows: {n: string; li: any[]}[]) {
+  const free = new Map<string, {label: string; count: number; amount: number; sample: string; unmapped: boolean; trimming: boolean}>();
+  const cat = new Map<string, {count: number; amount: number}>();
+  for (const r of rows) {
+    for (const [text, linked, amount] of r.li) {
+      if (amount < 0) continue;
+      if (linked) {
+        const e = cat.get(linked) || {count: 0, amount: 0}; e.count++; e.amount += amount; cat.set(linked, e); continue;
+      }
+      const k = normName(text); if (!k) continue;
+      const c = categoryForName(text, null, {});
+      const e = free.get(k) || {label: String(text).trim(), count: 0, amount: 0, sample: r.n, unmapped: c.flag === "unmapped", trimming: c.flag === "trimming"};
+      e.count++; e.amount = Math.round((e.amount + amount) * 100) / 100; free.set(k, e);
+    }
+  }
+  return {
+    freehand: [...free.entries()].map(([key, v]) => ({key, ...v})).sort((a, b) => b.amount - a.amount).slice(0, 800),
+    catalog: [...cat.entries()].map(([name, v]) => ({name, count: v.count, amount: Math.round(v.amount * 100) / 100})).sort((a, b) => b.amount - a.amount),
+  };
+}
 
 class BudgetLow extends Error {}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 interface Cost { queries: number; requestedMax: number; actualTotal: number; minAvailable: number }
 
 const Q_QUOTES = `query SalesQuotes($after: String, $since: ISO8601DateTime!) {
-  quotes(first: 50, after: $after, filter: {updatedAt: {after: $since}}) {
+  quotes(first: 25, after: $after, filter: {updatedAt: {after: $since}}) {
     nodes { id quoteNumber quoteStatus title createdAt sentAt clientHubViewedAt
       lastTransitioned { approvedAt convertedAt } amounts { subtotal total }
-      client { name } salesperson { name { full } } jobberWebUri }
+      client { name } salesperson { name { full } } jobberWebUri
+      lineItems(first: 30) { totalCount nodes { name totalPrice optional selected linkedProductOrService { name } } } }
     pageInfo { hasNextPage endCursor } } }`;
+// Invoices issued this year, with lines (categories) and jobs + visit
+// assignees (divisions). The status filters are NOT used (they overlap).
+const Q_INVOICES = `query SalesInvoices($after: String, $since: ISO8601DateTime!) {
+  invoices(first: 20, after: $after, filter: {issuedDate: {after: $since}}) {
+    nodes { id invoiceNumber invoiceStatus issuedDate jobberWebUri amounts { subtotal total } client { name }
+      lineItems(first: 30) { totalCount nodes { name totalPrice linkedProductOrService { name } } }
+      jobs(first: 3) { nodes { id } }
+      visits(first: 10) { nodes { assignedUsers(first: 5) { nodes { id } } } } }
+    pageInfo { hasNextPage endCursor } } }`;
+const Q_INVOICE_LINES = "query SalesInvoiceLines($id: EncodedId!) { invoice(id: $id) { lineItems(first: 100) { totalCount nodes { name totalPrice linkedProductOrService { name } } } } }";
+const Q_QUOTE_LINES = "query SalesQuoteLines($id: EncodedId!) { quote(id: $id) { lineItems(first: 100) { totalCount nodes { name totalPrice optional selected linkedProductOrService { name } } } } }";
 const Q_REQUESTS = `query SalesRequests($after: String, $since: ISO8601DateTime!) {
   requests(first: 50, after: $after, filter: {createdAt: {after: $since}}) {
     nodes { id createdAt requestStatus source quotes(first: 1) { totalCount } }
@@ -95,8 +148,22 @@ export function yearStartIso(nowMs: number): string {
   return `${y}-01-01T05:00:00Z`;
 }
 
+// Line tuple: [text, catalog item | 0, amount (pre-tax), optional 0/1, selected 1/0/-1 (unknown)]
+const compactLines = (li: any) => ((li && li.nodes) || []).map((l: any) => [
+  String(l.name || "").slice(0, 120), l.linkedProductOrService?.name || 0, Number(l.totalPrice) || 0,
+  l.optional ? 1 : 0, l.selected === true ? 1 : l.selected === false ? 0 : -1,
+]);
+export function compactInvoice(i: any, att: Attribution) {
+  return {
+    id: i.id, n: String(i.invoiceNumber ?? ""), d: i.issuedDate, st: i.invoiceStatus,
+    sub: Number(i.amounts?.subtotal) || 0, tot: Number(i.amounts?.total) || 0,
+    cl: String(i.client?.name || "—").slice(0, 60), url: i.jobberWebUri || "",
+    li: compactLines(i.lineItems), m: att.m, w: att.w,
+  };
+}
 export function compactQuote(q: any) {
   return {
+    li: compactLines(q.lineItems),
     id: q.id, n: String(q.quoteNumber ?? ""), s: q.quoteStatus, t: String(q.title || "").slice(0, 80),
     c: q.createdAt, sent: q.sentAt || null, viewed: q.clientHubViewedAt || null,
     appr: q.lastTransitioned?.approvedAt || null, conv: q.lastTransitioned?.convertedAt || null,
@@ -118,11 +185,29 @@ export async function runSalesPull(kind: "scheduled" | "manual", by: string | nu
     const since = yearStartIso(startedAt);
     const client = makeJobberClient(await getJobberAccessToken({service: "salesPull"}));
     await call(client, cost, "query SalesPreflight { account { id } }", {});
-    const quotes = (await pages<any>(client, cost, Q_QUOTES, "quotes", {since})).map(compactQuote);
+    const rawQuotes = await pages<any>(client, cost, Q_QUOTES, "quotes", {since});
+    for (const q of rawQuotes.filter((x) => (x.lineItems?.totalCount || 0) > 30)) q.lineItems = (await call(client, cost, Q_QUOTE_LINES, {id: q.id})).quote.lineItems;
+    const quotes = rawQuotes.map(compactQuote);
     const requests = (await pages<any>(client, cost, Q_REQUESTS, "requests", {since})).map(compactRequest);
+    const rawInvoices = (await pages<any>(client, cost, Q_INVOICES, "invoices", {since}, 150)).filter((i) => i.invoiceStatus !== "draft");
+    for (const i of rawInvoices.filter((x) => (x.lineItems?.totalCount || 0) > 30)) i.lineItems = (await call(client, cost, Q_INVOICE_LINES, {id: i.id})).invoice.lineItems;
+    // Divisions, from CrewMaster's own records (read-only).
+    const year = since.slice(0, 4);
+    const crew = await loadCrewData(year);
+    const jobIdx = jobDivisionIndex(crew.perf);
+    const aIdx = assigneeDivisionIndex(crew.sch, crew.assigneeMap);
+    const invoices = rawInvoices.map((i) => compactInvoice(i, attributeInvoice(
+      (i.jobs?.nodes || []).map((j: any) => j.id),
+      (i.visits?.nodes || []).map((v: any) => (v.assignedUsers?.nodes || []).map((u: any) => u.id)),
+      jobIdx, aIdx)));
+    const bh = bhByMonth(crew.perf);
+    const names = serviceNames([...invoices, ...quotes]);
     const prev = (await db.doc(META).get()).data() || {};
     const batch = db.batch();
-    const qChunks = Math.ceil(quotes.length / CHUNK); const rChunks = Math.ceil(requests.length / CHUNK);
+    const qChunks = Math.ceil(quotes.length / CHUNK); const rChunks = Math.ceil(requests.length / CHUNK); const iChunks = Math.ceil(invoices.length / CHUNK);
+    for (let i = 0; i < iChunks; i++) batch.set(db.doc(`salesData/i${i}`), {rows: invoices.slice(i * CHUNK, (i + 1) * CHUNK)});
+    for (let i = iChunks; i < (Number(prev.invoiceChunks) || 0); i++) batch.delete(db.doc(`salesData/i${i}`));
+    batch.set(db.doc("serviceCategoryMap/names"), {...names, updatedAt: Date.now()});
     for (let i = 0; i < qChunks; i++) batch.set(db.doc(`salesData/q${i}`), {rows: quotes.slice(i * CHUNK, (i + 1) * CHUNK)});
     for (let i = 0; i < rChunks; i++) batch.set(db.doc(`salesData/r${i}`), {rows: requests.slice(i * CHUNK, (i + 1) * CHUNK)});
     for (let i = qChunks; i < (Number(prev.quoteChunks) || 0); i++) batch.delete(db.doc(`salesData/q${i}`));
@@ -130,10 +215,12 @@ export async function runSalesPull(kind: "scheduled" | "manual", by: string | nu
     const costOut = {...cost, minAvailable: Number.isFinite(cost.minAvailable) ? cost.minAvailable : null, ms: Date.now() - startedAt};
     batch.set(db.doc(META), {
       ...attempt, status: "ok", lastError: null, lastSuccessAt: Date.now(), since,
-      quoteChunks: qChunks, requestChunks: rChunks, quoteCount: quotes.length, requestCount: requests.length, cost: costOut,
+      quoteChunks: qChunks, requestChunks: rChunks, invoiceChunks: iChunks,
+      quoteCount: quotes.length, requestCount: requests.length, invoiceCount: invoices.length,
+      bhByMonth: bh, bhMonths: Object.keys(bh).sort(), cost: costOut,
     });
     await batch.commit();
-    logger.info("Sales pulled", {kind, quotes: quotes.length, requests: requests.length, cost: costOut});
+    logger.info("Sales pulled", {kind, quotes: quotes.length, requests: requests.length, invoices: invoices.length, cost: costOut});
     return {status: "ok"};
   } catch (e) {
     const skipped = e instanceof BudgetLow;
@@ -147,7 +234,7 @@ export async function runSalesPull(kind: "scheduled" | "manual", by: string | nu
   }
 }
 
-export const salesPull = onSchedule({region: "us-central1", timeZone: "America/Toronto", schedule: "9 7,12,16 * * 1-5", secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET], timeoutSeconds: 540, retryCount: 0}, async () => {
+export const salesPull = onSchedule({region: "us-central1", timeZone: "America/Toronto", schedule: "3 7,12,16 * * 1-5", secrets: [JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET], timeoutSeconds: 540, retryCount: 0}, async () => {
   await runSalesPull("scheduled");
 });
 
@@ -158,7 +245,8 @@ export const salesRefresh = onCall({region: "us-central1", secrets: [JOBBER_CLIE
     throw new HttpsError("permission-denied", "Sales only.");
   }
   const m = new Date().getUTCMinutes() % 15;
-  if (m < 2 || m > 12) throw new HttpsError("failed-precondition", "The performance sync is about to run or running — try again in a few minutes.");
+  // The pull takes ~5 minutes, so it must start early enough to finish before the next sync.
+  if (m < 2 || m > 9) throw new HttpsError("failed-precondition", "The performance sync is about to run or running — try again in a few minutes.");
   const last = Number((await db.doc(META).get()).get("lastAttemptAt")) || 0;
   if (Date.now() - last < 2 * 60_000) throw new HttpsError("resource-exhausted", "Just refreshed — try again in a couple of minutes.");
   return runSalesPull("manual", email);

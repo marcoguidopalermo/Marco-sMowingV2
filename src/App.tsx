@@ -73,6 +73,8 @@ import OfficeMaster, { type OfficeARDoc } from './components/OfficeMaster';
 import SalesScoreboard, { type SalesMeta, type SalesTargets } from './components/SalesScoreboard';
 import { canSeeSales } from './lib/sales/access';
 import type { QuoteRow, RequestRow, SnowEntry } from './lib/sales/metrics';
+import type { InvoiceRow, CategoryOverrides } from './lib/sales/categories';
+import type { ServiceNamesDoc } from './components/ServiceNameAssign';
 import { canSeeOffice } from './lib/office/access';
 import type { OfficeDeadline } from './lib/office/deadlines';
 import { clipKey, commentSubject } from './components/MarketingComments';
@@ -427,6 +429,9 @@ export default function App() {
   const [salesError, setSalesError] = useState<string | null>(null);
   const [salesSnow, setSalesSnow] = useState<SnowEntry[]>([]);
   const [salesTargets, setSalesTargets] = useState<SalesTargets>({});
+  // Service-category mapping — shared by the sales and office viewers.
+  const [serviceNames, setServiceNames] = useState<ServiceNamesDoc | null | undefined>(undefined);
+  const [categoryOverrides, setCategoryOverrides] = useState<CategoryOverrides>({});
   // Fleet unit to open in Manage Resources (tapped from OfficeMaster).
   const [manageFocusUnitId, setManageFocusUnitId] = useState<string | null>(null);
   // EFFICIENCY ADJUSTMENTS — applied on read, never written into a crew-day.
@@ -934,6 +939,21 @@ export default function App() {
     const n = Number((salesDocs.meta as any)?.quoteChunks) || 0;
     return Array.from({ length: n }, (_, i) => (salesDocs[`q${i}`]?.rows || []) as QuoteRow[]).flat();
   }, [salesDocs]);
+  const salesInvoices = useMemo<InvoiceRow[]>(() => {
+    const n = Number((salesDocs.meta as any)?.invoiceChunks) || 0;
+    return Array.from({ length: n }, (_, i) => (salesDocs[`i${i}`]?.rows || []) as InvoiceRow[]).flat();
+  }, [salesDocs]);
+  // Mapping docs: read by the sales viewers (James, Marco) and the office viewers (Dave).
+  const canSeeCategoryMap = canViewSales || canViewOffice;
+  useEffect(() => {
+    if (!canSeeCategoryMap) { setServiceNames(undefined); setCategoryOverrides({}); return; }
+    const u1 = onSnapshot(doc(db, 'serviceCategoryMap', 'names'), (snap) => setServiceNames(snap.exists() ? (snap.data() as ServiceNamesDoc) : null),
+      (err) => { console.error('serviceCategoryMap/names listen error:', err); });
+    const u2 = onSnapshot(doc(db, 'serviceCategoryMap', 'overrides'), (snap) => {
+      const d = (snap.data() || {}) as CategoryOverrides; setCategoryOverrides({ catalog: d.catalog || {}, names: d.names || {} });
+    }, (err) => { console.error('serviceCategoryMap/overrides listen error:', err); });
+    return () => { u1(); u2(); };
+  }, [canSeeCategoryMap]);
   const salesRequests = useMemo<RequestRow[]>(() => {
     const n = Number((salesDocs.meta as any)?.requestChunks) || 0;
     return Array.from({ length: n }, (_, i) => (salesDocs[`r${i}`]?.rows || []) as RequestRow[]).flat();
@@ -4217,6 +4237,13 @@ export default function App() {
     try { await setDoc(doc(db, 'salesSettings', 'targets'), cleanRM({ streams: t, updatedAt: Date.now(), updatedBy: displayName || realCurrentEmail })); }
     catch (err: any) { showToastMsg(`Could not save targets: ${err?.message || String(err)}`); return false; }
     showToastMsg('Targets saved.');
+    return true;
+  };
+  const saveCategoryOverrides = async (o: CategoryOverrides): Promise<boolean> => {
+    if (isViewingAs || !canSeeCategoryMap || realCurrentUserRole !== 'admin') { showToastMsg(PERMISSION_DENIED); return false; }
+    try { await setDoc(doc(db, 'serviceCategoryMap', 'overrides'), cleanRM({ catalog: o.catalog || {}, names: o.names || {}, updatedAt: Date.now(), updatedBy: displayName || realCurrentEmail })); }
+    catch (err: any) { showToastMsg(`Could not save the category: ${err?.message || String(err)}`); return false; }
+    showToastMsg('Category saved — sales figures updated.');
     return true;
   };
   const refreshSales = async (): Promise<{ status: string; message?: string }> =>
@@ -8862,6 +8889,11 @@ export default function App() {
             <SalesScoreboard
               quotes={salesQuotes}
               requests={salesRequests}
+              invoices={salesInvoices}
+              categoryOverrides={categoryOverrides}
+              serviceNames={serviceNames}
+              canEditMapping={realCurrentUserRole === 'admin'}
+              onSaveOverrides={saveCategoryOverrides}
               meta={salesMeta}
               listenError={salesError}
               snowEntries={salesSnow}
@@ -8898,6 +8930,10 @@ export default function App() {
           onSaveDeadlines={saveOfficeDeadlines}
           onRefreshAR={refreshOfficeAR}
           onOpenFleetUnit={openFleetUnit}
+          serviceNames={serviceNames}
+          categoryOverrides={categoryOverrides}
+          canEditMapping={realCurrentUserRole === 'admin'}
+          onSaveCategoryOverrides={saveCategoryOverrides}
         />
       ) : currentView === 'finance' && canViewFinance ? (
         <FinanceMaster

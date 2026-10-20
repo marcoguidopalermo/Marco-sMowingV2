@@ -2,7 +2,7 @@
 // attention, soonest first. Dave (office@) and Marco only: the App gates on the
 // real sign-in address; firestore.rules / storage.rules enforce it.
 import { useMemo, useState, type ReactNode } from 'react';
-import { Building2, Truck, CalendarClock, Wallet, Receipt, RefreshCw, ChevronDown, ChevronRight, Plus, Check, FileText, Upload, Trash2, ExternalLink, AlertTriangle, ListTodo, Lock } from 'lucide-react';
+import { Building2, Truck, CalendarClock, Wallet, Receipt, RefreshCw, ChevronDown, ChevronRight, Plus, Check, FileText, Upload, Trash2, ExternalLink, AlertTriangle, ListTodo, Lock, Tags } from 'lucide-react';
 import type { FleetItem } from '../types';
 import { fleetItemLabel } from '../lib/fleetUtils';
 import { fleetCompliance, COMPLIANCE_LABEL } from '../lib/office/compliance';
@@ -14,6 +14,8 @@ import { daysUntilDate } from '../lib/dateUtils';
 import type { PayPeriodSettings } from '../lib/payPeriods';
 import { payrollDates, submissionTone } from '../lib/office/payroll';
 import { uploadFile } from '../lib/storage';
+import ServiceNameAssign, { type ServiceNamesDoc } from './ServiceNameAssign';
+import type { CategoryOverrides } from '../lib/sales/categories';
 import { AGE_KEYS, SORT_LABEL, filterSortAR, sortAmount, totalOf, type ARFilter, type ARSort } from '../lib/office/arList';
 
 // officeAR/latest as written by functions/src/jobber/officeAR.ts.
@@ -50,6 +52,11 @@ interface Props {
   onSaveDeadlines: (items: OfficeDeadline[]) => Promise<boolean>;
   onRefreshAR: () => Promise<{ status: string; message?: string }>;
   onOpenFleetUnit: (unitId: string) => void;
+  // Service names the sales category rules don't place — Dave can assign them.
+  serviceNames?: ServiceNamesDoc | null;
+  categoryOverrides?: CategoryOverrides;
+  canEditMapping?: boolean;
+  onSaveCategoryOverrides?: (o: CategoryOverrides) => Promise<boolean>;
 }
 
 const $ = (n: number) => `${n < 0 ? '−' : ''}$${Math.abs(n).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -121,6 +128,11 @@ export default function OfficeMaster(props: Props) {
         </div>
         <div className="space-y-4 min-w-0">
           <ARCard ar={ar} listenError={props.arListenError} onRefresh={props.onRefreshAR} />
+          {props.onSaveCategoryOverrides && (
+            <Card icon={<Tags className="w-4 h-4" />} title="Service names to assign">
+              <ServiceNameAssign compact names={props.serviceNames} overrides={props.categoryOverrides || {}} canEdit={!!props.canEditMapping} onSave={props.onSaveCategoryOverrides} />
+            </Card>
+          )}
           <Card icon={<ListTodo className="w-4 h-4" />} title="Tasks">
             <div className="text-sm text-slate-500">TaskMaster will show here.</div>
           </Card>

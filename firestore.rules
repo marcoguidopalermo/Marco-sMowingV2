@@ -281,6 +281,15 @@ service cloud.firestore {
       allow read, write: if isSalesViewer();
     }
 
+    // Service-category mapping (docs/service-category-mapping.md). Shared by
+    // SalesMaster (James, Marco) and OfficeMaster (Dave) so any of them can
+    // assign an unmapped name. names = written by the sales pull only;
+    // overrides = edited by those of them who are admins.
+    match /serviceCategoryMap/{docId} {
+      allow read: if isSalesViewer() || isOfficeViewer();
+      allow write: if docId == 'overrides' && (isSalesViewer() || isOfficeViewer()) && isContentAdmin();
+    }
+
     match /crewDayFlags/{flagId} {
       allow read: if isAuthorized() || isSuperAdmin();
       allow create: if isAuthorized() || isSuperAdmin();
