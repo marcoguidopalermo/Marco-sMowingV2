@@ -58,7 +58,7 @@ function serviceNames(rows: {n: string; li: any[]}[]) {
   const free = new Map<string, {label: string; count: number; amount: number; sample: string; unmapped: boolean; trimming: boolean}>();
   const cat = new Map<string, {count: number; amount: number}>();
   for (const r of rows) {
-    for (const [text, linked, amount] of r.li) {
+    for (const {t: text, k: linked, a: amount} of r.li) {
       if (amount < 0) continue;
       if (linked) {
         const e = cat.get(linked) || {count: 0, amount: 0}; e.count++; e.amount += amount; cat.set(linked, e); continue;
@@ -148,11 +148,14 @@ export function yearStartIso(nowMs: number): string {
   return `${y}-01-01T05:00:00Z`;
 }
 
-// Line tuple: [text, catalog item | 0, amount (pre-tax), optional 0/1, selected 1/0/-1 (unknown)]
-const compactLines = (li: any) => ((li && li.nodes) || []).map((l: any) => [
-  String(l.name || "").slice(0, 120), l.linkedProductOrService?.name || 0, Number(l.totalPrice) || 0,
-  l.optional ? 1 : 0, l.selected === true ? 1 : l.selected === false ? 0 : -1,
-]);
+// Objects, not tuples: Firestore can't store arrays of arrays.
+const compactLines = (li: any) => ((li && li.nodes) || []).map((l: any) => {
+  const out: {t: string; k?: string; a: number; o?: number; s?: number} = {t: String(l.name || "").slice(0, 120), a: Number(l.totalPrice) || 0};
+  if (l.linkedProductOrService?.name) out.k = l.linkedProductOrService.name;
+  if (l.optional) out.o = 1;
+  if (l.selected === true) out.s = 1; else if (l.selected === false) out.s = 0;
+  return out;
+});
 export function compactInvoice(i: any, att: Attribution) {
   return {
     id: i.id, n: String(i.invoiceNumber ?? ""), d: i.issuedDate, st: i.invoiceStatus,

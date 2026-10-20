@@ -40,6 +40,7 @@ interface Props {
   wonCount: number; wonPre: number; wonIncl: number;        // from the existing quote metrics (same cohort)
   waitingCount: number;
   avgTicketPre: number | null;
+  currentMonth?: string;                                     // YYYY-MM, left out of $ per BH
 }
 
 function Card({ icon, title, right, children }: { icon: ReactNode; title: string; right?: ReactNode; children: ReactNode }) {
@@ -124,7 +125,7 @@ function LineList({ rows, note }: { rows: (ListedLine & { reason?: string })[]; 
 export default function SalesBreakdown(p: Props) {
   const b = useMemo(() => invoiceBreakdown(p.invoices, p.range, p.overrides), [p.invoices, p.range.from, p.range.to, p.overrides]);
   const qb = useMemo(() => quoteCategoryBreakdown(p.quotes, p.range, p.overrides), [p.quotes, p.range.from, p.range.to, p.overrides]);
-  const bh = divisionBH(p.bhByMonth, b.months);
+  const bh = divisionBH(p.bhByMonth, b.months, p.currentMonth);
   const catKeys = CATEGORIES.filter(c => b.byCategory.some(x => x.key === c));
   const divKeys = [...b.byDivision.map(d => d.key)].sort((a, c) => (DIVISIONS_ORDER.indexOf(a) - DIVISIONS_ORDER.indexOf(c)));
   if (!p.hasData) return <Card icon={<BarChart3 className="w-4 h-4" />} title="Sales by category and division"><div className="text-sm font-bold text-slate-600">Data unavailable — no successful pull yet.</div></Card>;
@@ -164,7 +165,8 @@ export default function SalesBreakdown(p: Props) {
             return <span className="text-[11px] text-slate-500">{parts.join(' · ')}</span>;
           }} />
           <div className="mt-2 text-[11px] text-slate-500">
-            {bh.withBH.length ? <>BH and $ per BH cover {bh.withBH.map(mlabel).join(', ')}{bh.without.length ? <> only — <b>no BH on record for {bh.without.map(mlabel).join(', ')}</b></> : ''}. Invoices are counted in the month they were issued, which can trail the work.</> : <b>No BH on record for these months — $ per BH isn't available.</b>}
+            {bh.withBH.length ? <>BH and $ per BH cover {bh.withBH.map(mlabel).join(', ')}{bh.without.length ? <> only — <b>no BH on record for {bh.without.map(mlabel).join(', ')}</b></> : ''}. Invoices are counted in the month they were issued, which can trail the work.</> : <b>No complete month with BH in this period — $ per BH isn't available.</b>}
+            {bh.inProgress && <> {mlabel(bh.inProgress)} is left out: it's still being invoiced.</>}
           </div>
           <div className="mt-4 text-xs font-black uppercase tracking-wide text-slate-600">Month by month</div>
           <MonthBars months={b.months} keys={divKeys} colors={DIV_COLOR} valueOf={(i, k) => b.monthly[i].byDivision[k] || 0} />

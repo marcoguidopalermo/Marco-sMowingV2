@@ -8,11 +8,15 @@ import { inRange, torontoYmd, type Range } from './periods';
 
 export { CATEGORIES, type Category, type CategoryOverrides };
 
-/** Line tuple from the pull: [text, catalog item | 0, amount pre-tax, optional 0/1, selected 1/0/-1]. */
+/** A line as stored by the pull: t text, k catalog item, a amount (pre-tax), o optional 1, s selected 1/0/-1.
+ *  (Firestore can't store arrays of arrays.) A compact tuple is also accepted — used by tests. */
+export interface LineObj { t: string; k?: string; a: number; o?: number; s?: number }
 export type LineTuple = [string, string | 0, number, number?, number?];
+export type LineIn = LineObj | LineTuple;
+const asTuple = (l: LineIn): LineTuple => (Array.isArray(l) ? l : [l.t, l.k || 0, l.a, l.o, l.s]);
 export interface InvoiceRow {
   id: string; n: string; d: string; st: string; sub: number; tot: number; cl: string; url: string;
-  li: LineTuple[]; m: 1 | 2 | 3; w: Record<string, number>;
+  li: LineIn[]; m: 1 | 2 | 3; w: Record<string, number>;
 }
 
 export const COMMERCIAL_SNOW = 'Commercial snow';
@@ -20,7 +24,7 @@ export const UNATTRIBUTED = 'Unattributed';
 export const DIVISION_ORDER = ['Lawn Division', 'Small Projects', 'Large Projects', COMMERCIAL_SNOW, UNATTRIBUTED];
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
-const toLines = (li: LineTuple[], quote = false) => (li || [])
+const toLines = (li: LineIn[], quote = false) => (li || []).map(asTuple)
   .filter(l => !quote || !l[3] || l[4] === 1)              // quotes: optional lines count only when selected
   .map(l => ({ name: l[0], linked: l[1] || null, amount: Number(l[2]) || 0 }));
 
@@ -107,7 +111,7 @@ export function invoiceBreakdown(rows: InvoiceRow[], r: Range, o: CategoryOverri
 }
 
 // ── Quotes by category ──────────────────────────────────────────────────────
-export interface QuoteLike { s: string; sent: string | null; sub: number; tot: number; li?: LineTuple[] }
+export interface QuoteLike { s: string; sent: string | null; sub: number; tot: number; li?: LineIn[] }
 const WON = new Set(['approved', 'converted']);
 const WAITING = new Set(['awaiting_response', 'changes_requested']);
 function quoteCats(qs: QuoteLike[], o: CategoryOverrides): { total: number; ranked: Ranked<Category>[] } {
@@ -129,12 +133,17 @@ export function quoteCategoryBreakdown(rows: QuoteLike[], r: Range, o: CategoryO
 }
 
 // ── BH per division ─────────────────────────────────────────────────────────
-/** Months of the range that have BH, each division's BH in them, and the months that don't. */
-export function divisionBH(bhByMonth: Record<string, Record<string, number>> | undefined, months: string[]) {
-  const withBH = months.filter(m => bhByMonth && bhByMonth[m] && Object.values(bhByMonth[m]).some(v => v > 0));
+/**
+ * Months of the range that have BH, each division's BH in them, and the months
+ * that don't. The month in progress is left out: its work is on record but much
+ * of it isn't invoiced yet (lawn bills at month end), so $ per BH would read low.
+ */
+export function divisionBH(bhByMonth: Record<string, Record<string, number>> | undefined, months: string[], currentMonth?: string) {
+  const has = (m: string) => !!(bhByMonth && bhByMonth[m] && Object.values(bhByMonth[m]).some(v => v > 0));
+  const withBH = months.filter(m => has(m) && m !== currentMonth);
   const bh: Record<string, number> = {};
   for (const m of withBH) for (const [d, v] of Object.entries(bhByMonth![m])) bh[d] = Math.round(((bh[d] || 0) + v) * 10) / 10;
-  return { withBH, without: months.filter(m => !withBH.includes(m)), bh };
+  return { withBH, without: months.filter(m => !has(m)), inProgress: currentMonth && months.includes(currentMonth) && has(currentMonth) ? currentMonth : null, bh };
 }
 /** A division's invoiced $ per BH, over only the months that have BH. */
 export function dollarsPerBH(b: InvoiceBreakdown, division: string, bhInfo: ReturnType<typeof divisionBH>): number | null {

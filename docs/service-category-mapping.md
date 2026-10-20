@@ -1,8 +1,9 @@
 # Service categories from Jobber line items — agreed mapping (2026-10-20)
 
-Status: **agreed spec, not built.** Decisions by Marco on 2026-10-20 after a
-read-only look at this year's Jobber line items. Two items are still open
-(see "Waiting on Marco").
+Status: **built 2026-10-20** (SalesMaster scoreboard). Decisions by Marco on
+2026-10-20. One item still open: "Trimming" (see below). Implementation: one
+shared module, `functions/src/shared/serviceCategories.ts`, used by the app and
+the sales pull.
 
 ## Categories
 
@@ -23,7 +24,7 @@ listed for someone to assign) and **Asset sales** (excluded from sales).
    1. the discount's own words name a service (e.g. "Spring Lawn Care
       Program Discount" → Lawn care);
    2. else the invoice has one service category → that one;
-   3. else the invoice's largest service category (*proposed rule — confirm*);
+   3. else the invoice's largest service category (confirmed by Marco);
    4. else Other, and the discount is listed.
 4. **Equipment and vehicle sales are excluded from sales figures** and listed
    separately as asset sales (2026 so far: L6060 Kubota tractor + blower,
@@ -81,14 +82,20 @@ Ambiguous names are **flagged, not guessed** (see "Waiting on Marco").
 | Sweeping | Driveway Sweeping |
 | Other | General Maintenance (Hourly) · Hours · Installation · Mid-Season Start-up (July 1st) · Pine hole leak - lawn repair · Gutter cleaning · Disposal fee ($100) |
 | Discounts (decision 3) | [$50 OFF] Spring Lawn Care Program Discount (→ Lawn care) · Discount · Price difference |
-| **Waiting on Marco** | Trimming · extra trimming in backyard |
+| Other — waiting on Marco | Trimming · extra trimming in backyard |
 
-## Waiting on Marco (flagged, not guessed)
+## Decided after the first draft
+
+- **"landscaping project"** (incl. #7306, $30,000) → split **50% Hardscape &
+  gravel, 50% Garden beds & landscaping**.
+
+## Waiting on Marco
 
 - **"Trimming" / "extra trimming in backyard"** — hedges, or string trimming
-  as part of mowing? ($2,850 this year)
-- **"landscaping project"** — $32,020 on 2 lines (#7306 $30,000, Sept, no
-  job). Garden beds & landscaping, or Hardscape?
+  as part of mowing? Left in **Other** and listed with invoice number, client,
+  date, line text and amount on the scoreboard until assigned (assign the name
+  in "Service names to assign", or the catalog item "Trimming" in the mapping
+  table).
 
 ## Add to the Jobber catalog
 
@@ -146,3 +153,14 @@ totals **$1,358,198** (asset sales of $21,000 excluded).
 1.6% Other; 0.8% Unmapped (a long tail of one-offs, largest "lawn ripped"
 $2,200). Discount lines: 62 tied by their own words, 93 by the invoice's single
 service, 72 by the invoice's largest service, none left untied.
+
+## Divisions (built with the categories)
+
+Invoiced sales by division, per invoice: snow lines → **Commercial snow**; the
+rest by the sales pull's attribution (`functions/src/shared/divisionCore.ts`):
+1. CrewMaster crew-days for the invoice's job, weighted by credited BH (the
+   multi-crew split as already credited);
+2. else the invoice's visit assignees through the capacity assignee mapping;
+3. else **Unattributed** — kept in the totals and listed.
+BH and $ per BH only for complete months with BH (the month in progress is left
+out: it's still being invoiced).

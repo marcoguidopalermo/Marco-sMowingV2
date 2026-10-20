@@ -13,7 +13,7 @@ export interface QuoteRow {
   appr: string | null; conv: string | null;
   sub: number; tot: number;                       // pre-tax subtotal, total incl. tax
   cl: string; sp: string | null; url: string;     // client name, salesperson name
-  li?: [string, string | 0, number, number?, number?][];  // lines (pulls from 2026-10-20 on)
+  li?: ({ t: string; k?: string; a: number; o?: number; s?: number } | [string, string | 0, number, number?, number?])[];  // lines (pulls from 2026-10-20 on)
 }
 export interface RequestRow { id: string; c: string; st: string; src: string; q: number } // q = quotes made from it
 

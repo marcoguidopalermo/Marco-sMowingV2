@@ -136,6 +136,7 @@ export default function SalesScoreboard(p: Props) {
         canEditMapping={p.canEditMapping} onSaveOverrides={p.onSaveOverrides}
         wonCount={qm.won.count} wonPre={qm.won.pre} wonIncl={qm.won.incl} waitingCount={chaseList(p.quotes, p.today, 'age', sp).length}
         avgTicketPre={qm.avgTicket?.pre ?? null}
+        currentMonth={p.today.slice(0, 7)}
       />
 
       {/* Streams — contracts sold, with targets (average ticket secondary) */}

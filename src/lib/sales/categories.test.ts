@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { invoiceBreakdown, quoteCategoryBreakdown, divisionBH, dollarsPerBH, COMMERCIAL_SNOW, UNATTRIBUTED, type InvoiceRow } from './categories';
 
 const inv = (n: string, d: string, li: InvoiceRow['li'], m: 1 | 2 | 3, w: Record<string, number>): InvoiceRow => {
-  const sub = li.reduce((s, l) => s + (Number(l[2]) || 0), 0);
+  const sub = li.reduce((s, l) => s + (Number((l as any)[2]) || 0), 0);
   return { id: n, n, d: `${d}T16:00:00Z`, st: 'paid', sub, tot: Math.round(sub * 113) / 100, cl: 'Client ' + n, url: '#' + n, li, m, w };
 };
 const rows: InvoiceRow[] = [
@@ -61,4 +61,14 @@ test('BH per division only for months that have BH; $ per BH over those months',
   assert.equal(dollarsPerBH(b, 'Lawn Division', info), 50);
   assert.equal(dollarsPerBH(b, 'Large Projects', info), 80);
   assert.equal(dollarsPerBH(b, COMMERCIAL_SNOW, info), null);
+  const cur = divisionBH({ '2026-07': { 'Lawn Division': 26 }, '2026-08': { 'Lawn Division': 10 } }, b.months, '2026-08');
+  assert.deepEqual([cur.withBH, cur.inProgress, cur.bh['Lawn Division']], [['2026-07'], '2026-08', 26]);   // the month in progress is left out
+});
+test('lines as stored by the pull (objects — Firestore has no nested arrays) categorise the same', () => {
+  const stored: InvoiceRow = { id: 'o', n: 'o', d: '2026-07-10T16:00:00Z', st: 'paid', sub: 1300, tot: 1469, cl: 'C', url: '#', m: 1, w: { 'Lawn Division': 1 },
+    li: [{ t: 'Mowing (Weekly)', k: 'Mowing (Weekly)', a: 1000 }, { t: 'Gold Lawn Care Package', a: 300 }] };
+  const out = invoiceBreakdown([stored], R);
+  assert.deepEqual(out.byCategory.map(x => [x.key, x.pre]), [['Lawn mowing', 1000], ['Lawn care', 300]]);
+  const q = quoteCategoryBreakdown([{ s: 'awaiting_response', sent: '2026-07-01T16:00:00Z', sub: 1, tot: 1, li: [{ t: 'Sod Installation', k: 'Sod Installation', a: 4000 }, { t: 'Hedge trimming', a: 300, o: 1, s: 0 }] }], R);
+  assert.deepEqual(q.pipeline.ranked.map(x => [x.key, x.pre]), [['Sod', 4000]]);
 });
