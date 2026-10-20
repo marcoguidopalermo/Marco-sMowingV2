@@ -58,6 +58,14 @@ test("chase list: every past-due invoice, oldest first, with the last payment", 
   assert.equal(S.chase[0].lastPayment, null);
   assert.equal(S.chase[0].url, "https://secure.getjobber.com/invoices/i4");
 });
+test("every open invoice is in the filterable list with its age bucket", () => {
+  assert.deepEqual(S.invoices.map((r) => [r.invoiceNumber, r.age]), [["I4", "d90plus"], ["I3", "d31_60"], ["I2", "d1_30"], ["I1", "notDue"]]);
+  for (const k of ["notDue", "d1_30", "d31_60", "d61_90", "d90plus"] as const) {
+    const rows = S.invoices.filter((r) => r.age === k);
+    assert.equal(rows.length, S.aging[k].count, k);
+    assert.equal(Math.round(rows.reduce((t, r) => t + r.balance, 0) * 100) / 100, S.aging[k].amount, k);
+  }
+});
 test("mismatches: paid with a balance (not owed, counted apart); $0 balance still awaiting payment", () => {
   assert.deepEqual(S.mismatches.map((m) => [m.kind, m.invoiceNumber, m.balance]).sort(), [["paid_with_balance", "P1", 12.34], ["zero_balance_open", "I5", 0]]);
   assert.deepEqual(S.paidUnrecorded, {count: 1, amount: 12.34, last12Months: {count: 1, amount: 12.34}});

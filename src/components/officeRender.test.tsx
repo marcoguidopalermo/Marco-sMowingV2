@@ -49,7 +49,16 @@ test('all sections render with live data', () => {
   assert.match(html, /No open invoices at \$0/);
   assert.match(html, /owing without an invoice \$640\.00/);
   assert.match(html, /client balances \$2,215\.50 ✓/);
-  assert.match(html, /Payroll due (today|in \d+ days?)/);
+  assert.match(html, /Payroll submission due Monday, [A-Z][a-z]{2} \d+ \((today|tomorrow|in \d+ days)\)/);
+  assert.match(html, /Next pay date: Friday, [A-Z][a-z]{2} \d+ — for [A-Z][a-z]{2} \d+–[A-Z][a-z]{2} \d+/);
+});
+test('A/R: age buckets are buttons with count and total; the list shows all open invoices', () => {
+  const html = page(AR);
+  assert.match(html, /aria-pressed="true"[^>]*>.*?All.*?\$1,576.*?· 2/s);
+  assert.match(html, /aria-label="Filter by age"/);
+  assert.match(html, /90\+ days<\/div><div><b>\$1,076<\/b>/);
+  assert.match(html, /All open invoices · 1 · \$1,075\.50/); // older pull: past-due rows only
+  for (const l of ['Oldest first', 'Amount ↓', 'Amount ↑', 'Client A–Z']) assert.match(html, new RegExp(l));
 });
 test('fleet: dated units listed, missing dates visible, sold units excluded', () => {
   const html = page(AR);

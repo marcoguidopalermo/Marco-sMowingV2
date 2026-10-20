@@ -11,10 +11,13 @@ import {
   type OfficeDeadline, type DeadlineCategory, type Recurrence,
 } from '../lib/office/deadlines';
 import { daysUntilDate } from '../lib/dateUtils';
-import { previousPayPeriod, currentPayPeriod, periodRangeLabel, payDateLabel, type PayPeriodSettings } from '../lib/payPeriods';
+import type { PayPeriodSettings } from '../lib/payPeriods';
+import { payrollDates, submissionTone } from '../lib/office/payroll';
 import { uploadFile } from '../lib/storage';
+import { AGE_KEYS, SORT_LABEL, filterSortAR, sortAmount, totalOf, type ARFilter, type ARSort } from '../lib/office/arList';
 
 // officeAR/latest as written by functions/src/jobber/officeAR.ts.
+type ARInvoiceRow = { age?: AgeKey; invoiceId: string; invoiceNumber: string; client: string; balance: number; total: number; dueDate: string | null; daysOverdue: number; lastPayment: { date: string; amount: number } | null; url: string };
 type AgeKey = 'notDue' | 'd1_30' | 'd31_60' | 'd61_90' | 'd90plus';
 export interface OfficeARDoc {
   status?: 'ok' | 'error' | 'skipped';
@@ -24,7 +27,8 @@ export interface OfficeARDoc {
   data?: {
     owed: number; invoiceCount: number;
     aging: Record<AgeKey, { count: number; amount: number }>;
-    chase: { invoiceId: string; invoiceNumber: string; client: string; balance: number; total: number; dueDate: string | null; daysOverdue: number; lastPayment: { date: string; amount: number } | null; url: string }[];
+    chase: ARInvoiceRow[];
+    invoices?: ARInvoiceRow[];          // every open invoice (pulls from 2026-10-20 on)
     mismatches: { kind: 'paid_with_balance' | 'zero_balance_open'; invoiceNumber: string; client: string; status: string; balance: number; total?: number; issued?: string | null; paid?: string | null; url: string }[];
     paidUnrecorded?: { count: number; amount: number; last12Months: { count: number; amount: number } };
     noInvoiceClients: { client: string; clientId: string; balance: number; url: string }[];
@@ -282,18 +286,24 @@ function DeadlineEditor({ initial, isNew, currentUser, onSave, onDone, onClose }
 
 // ── 3. Payroll ──────────────────────────────────────────────────────────────
 function PayrollCard({ payPeriod, today }: { payPeriod: PayPeriodSettings; today: string }) {
-  const now = Date.now();
-  // The period being paid next: the previous period until its pay date passes, then the current one.
-  const prev = previousPayPeriod(payPeriod, now);
-  const p = prev.payDate >= today ? prev : currentPayPeriod(payPeriod, now);
-  const days = daysUntilDate(p.payDate);
-  const tone = days <= 2 ? 'amber' : 'none';
+  const p = payrollDates(payPeriod, today);
+  const days = p.submission.days;
+  const tone = submissionTone(days);
+  const long = (ymd: string) => new Date(`${ymd}T12:00:00Z`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const short = (ymd: string) => new Date(`${ymd}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const when = days === 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days`;
   return (
     <Card icon={<Wallet className="w-4 h-4" />} title="Payroll">
-      <div className={`text-sm ${TONE_ROW[tone]}`}>
-        <span className="font-black">{days === 0 ? 'Payroll due today' : `Payroll due in ${days} day${days === 1 ? '' : 's'}`}</span>
-        <span className="text-slate-600"> — pay date {payDateLabel(p)} for {periodRangeLabel(p)}</span>
+      <div className={`text-sm font-black ${TONE_ROW[tone]}`}>
+        <span className={`inline-block w-2 h-2 rounded-full mr-1.5 align-middle ${TONE_DOT[tone]}`} />
+        Payroll submission due {long(p.submission.date)} ({when})
       </div>
+      <div className="text-sm text-slate-600 mt-0.5">
+        Next pay date: {long(p.pay.date)} — for {short(p.pay.period.start)}–{short(p.pay.period.end)}
+      </div>
+      {p.submission.period.start !== p.pay.period.start && (
+        <div className="text-[11px] text-slate-500 mt-0.5">Submission is for {short(p.submission.period.start)}–{short(p.submission.period.end)}.</div>
+      )}
     </Card>
   );
 }
@@ -337,38 +347,71 @@ function ARCard({ ar, listenError, onRefresh }: { ar: OfficeARDoc | null | undef
 
 function ARBody({ data, allChase, setAllChase, paidCheckAt }: { data: NonNullable<OfficeARDoc['data']>; allChase: boolean; setAllChase: (b: boolean) => void; paidCheckAt?: number | null }) {
   const [allPaid, setAllPaid] = useState(false);
+  const [filter, setFilter] = useState<ARFilter>('all');
+  const [sort, setSort] = useState<ARSort>('overdue');
+  const [paidSort, setPaidSort] = useState<'newest' | 'desc' | 'asc'>('newest');
+  const [noInvSort, setNoInvSort] = useState<'desc' | 'asc'>('desc');
   const zeroOpen = data.mismatches.filter(m => m.kind === 'zero_balance_open');
-  const paidRows = data.mismatches.filter(m => m.kind === 'paid_with_balance');
+  const paidAll = data.mismatches.filter(m => m.kind === 'paid_with_balance');
+  const paidRows = paidSort === 'newest' ? paidAll : sortAmount(paidAll, paidSort);
+  const noInv = sortAmount(data.noInvoiceClients, noInvSort);
   const pu = data.paidUnrecorded;
-  const keys: AgeKey[] = ['notDue', 'd1_30', 'd31_60', 'd61_90', 'd90plus'];
+  const keys = AGE_KEYS;
   const max = data.owed || 1;
-  const chase = allChase ? data.chase : data.chase.slice(0, 10);
+  // Every open invoice (pulls before 2026-10-20 carried past-due only).
+  const source = data.invoices || data.chase;
+  const list = filterSortAR(source, filter, sort);
+  const shown = allChase ? list : list.slice(0, 15);
+  const pastDueCount = data.chase.length;
   const r = data.reconciliation;
+  const pick = (k: ARFilter) => { setFilter(f => (f === k ? 'all' : k)); setAllChase(false); };
   return (
     <div className="space-y-3">
       <div className="flex items-end gap-3 flex-wrap">
         <div><div className="text-[11px] font-bold uppercase text-slate-500">Total owed</div><div className="text-2xl font-black text-slate-800">{$(data.owed)}</div></div>
-        <div className="text-xs text-slate-500 pb-1">{data.invoiceCount} open invoice{data.invoiceCount === 1 ? '' : 's'}</div>
+        <div className="text-xs text-slate-500 pb-1">{data.invoiceCount} open invoice{data.invoiceCount === 1 ? '' : 's'} · {pastDueCount} past due</div>
       </div>
       <div className="flex w-full h-3 rounded overflow-hidden bg-slate-100" role="img" aria-label="A/R by age">
-        {keys.filter(k => data.aging[k].amount > 0).map(k => <div key={k} className={AGE_CLS[k]} style={{ width: `${(data.aging[k].amount / max) * 100}%` }} title={`${AGE_LABEL[k]}: ${$(data.aging[k].amount)}`} />)}
+        {keys.filter(k => data.aging[k].amount > 0).map(k => <div key={k} className={`${AGE_CLS[k]} ${filter !== 'all' && filter !== k ? 'opacity-30' : ''}`} style={{ width: `${(data.aging[k].amount / max) * 100}%` }} title={`${AGE_LABEL[k]}: ${$(data.aging[k].amount)}`} />)}
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-5 gap-1 text-xs">
-        {keys.map(k => (
-          <div key={k} className="flex sm:block justify-between items-baseline rounded border border-slate-100 px-2 py-1">
-            <div className="flex items-center gap-1 text-slate-500"><span className={`w-2 h-2 rounded-sm ${AGE_CLS[k]}`} />{AGE_LABEL[k]}</div>
-            <div><b className="text-slate-800">{$0(data.aging[k].amount)}</b> <span className="text-slate-500">· {data.aging[k].count}</span></div>
-          </div>
-        ))}
+      {/* Age buckets are FILTERS: tap one to show only those invoices; tap again or All to clear. */}
+      <div className="grid grid-cols-2 sm:grid-cols-6 gap-1 text-xs" role="group" aria-label="Filter by age">
+        <button type="button" onClick={() => pick('all')} aria-pressed={filter === 'all'}
+          className={`text-left rounded-md border px-2 py-1.5 ${filter === 'all' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white border-slate-200 hover:bg-slate-50'}`}>
+          <div className={filter === 'all' ? 'text-slate-200' : 'text-slate-500'}>All</div>
+          <div><b>{$0(data.owed)}</b> <span className={filter === 'all' ? 'text-slate-300' : 'text-slate-500'}>· {data.invoiceCount}</span></div>
+        </button>
+        {keys.map(k => {
+          const on = filter === k;
+          return (
+            <button key={k} type="button" onClick={() => pick(k)} aria-pressed={on}
+              className={`text-left rounded-md border px-2 py-1.5 ${on ? 'bg-slate-800 text-white border-slate-800 ring-2 ring-offset-1 ring-slate-400' : 'bg-white border-slate-200 hover:bg-slate-50'}`}>
+              <div className={`flex items-center gap-1 ${on ? 'text-slate-200' : 'text-slate-500'}`}><span className={`w-2 h-2 rounded-sm ${AGE_CLS[k]}`} />{AGE_LABEL[k]}</div>
+              <div><b>{$0(data.aging[k].amount)}</b> <span className={on ? 'text-slate-300' : 'text-slate-500'}>· {data.aging[k].count}</span></div>
+            </button>
+          );
+        })}
       </div>
 
       <div>
-        <div className="text-xs font-black uppercase tracking-wide text-slate-600 mb-1">Chase list ({data.chase.length} past due)</div>
-        {data.chase.length === 0 ? <div className="text-sm text-slate-500">Nothing past due.</div> : (
+        <div className="flex items-center gap-2 flex-wrap mb-1">
+          <div className="text-xs font-black uppercase tracking-wide text-slate-600">
+            {filter === 'all' ? 'All open invoices' : AGE_LABEL[filter]} · {list.length} · {$(totalOf(list))}
+          </div>
+          {filter !== 'all' && <button type="button" onClick={() => pick('all')} className="text-[11px] font-bold text-sky-700">Clear filter</button>}
+        </div>
+        <div className="flex flex-wrap gap-1 mb-1.5" role="group" aria-label="Sort">
+          {(['overdue', 'amountDesc', 'amountAsc', 'client'] as ARSort[]).map(k => (
+            <button key={k} type="button" onClick={() => setSort(k)} aria-pressed={sort === k}
+              className={`px-2.5 py-1 rounded-full border text-[11px] font-bold ${sort === k ? 'bg-sky-700 text-white border-sky-700' : 'bg-white text-slate-600 border-slate-300'}`}>{SORT_LABEL[k]}</button>
+          ))}
+        </div>
+        {!data.invoices && filter === 'notDue' && <div className="text-xs text-slate-500 mb-1">Not-yet-due invoices appear after the next pull.</div>}
+        {list.length === 0 ? <div className="text-sm text-slate-500">No invoices here.</div> : (
           <div className="divide-y divide-slate-100">
-            {chase.map(c => (
+            {shown.map(c => (
               <a key={c.invoiceId} href={c.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 py-1.5 text-sm hover:bg-slate-50">
-                <span className={`shrink-0 w-14 text-right text-xs font-black ${c.daysOverdue > 60 ? 'text-red-700' : 'text-amber-800'}`}>{c.daysOverdue}d</span>
+                <span className={`shrink-0 w-14 text-right text-xs font-black ${c.daysOverdue > 60 ? 'text-red-700' : c.daysOverdue > 0 ? 'text-amber-800' : 'text-slate-500'}`}>{c.daysOverdue > 0 ? `${c.daysOverdue}d` : 'not due'}</span>
                 <span className="flex-1 min-w-0">
                   <span className="font-bold text-slate-800 truncate block">{c.client}</span>
                   <span className="text-xs text-slate-500">#{c.invoiceNumber} · due {fmtDate(c.dueDate)} · {c.lastPayment ? `last paid ${fmtDate(c.lastPayment.date)} (${$0(c.lastPayment.amount)})` : 'no payment yet'}</span>
@@ -379,7 +422,7 @@ function ARBody({ data, allChase, setAllChase, paidCheckAt }: { data: NonNullabl
             ))}
           </div>
         )}
-        {data.chase.length > chase.length && <button type="button" onClick={() => setAllChase(true)} className="mt-1 text-xs font-bold text-sky-700">Show all {data.chase.length}</button>}
+        {list.length > shown.length && <button type="button" onClick={() => setAllChase(true)} className="mt-1 text-xs font-bold text-sky-700">Show all {list.length}</button>}
       </div>
 
       <Fold label="$0 balance but still awaiting payment" count={zeroOpen.length} tone="amber" defaultOpen>
@@ -397,6 +440,7 @@ function ARBody({ data, allChase, setAllChase, paidCheckAt }: { data: NonNullabl
           Jobber shows these as paid and does <b>not</b> count them in what clients owe, but no payment (or only part of it) is recorded on the invoice — usually paid outside Jobber.
           {pu ? ` Last 12 months: ${pu.last12Months.count} · ${$0(pu.last12Months.amount)}.` : ''} Checked {paidCheckAt ? ago(paidCheckAt) : 'overnight'}.
         </div>
+        <SortPills<'newest' | 'desc' | 'asc'> value={paidSort} onChange={setPaidSort} options={[['newest', 'Newest'], ['desc', 'Amount ↓'], ['asc', 'Amount ↑']]} />
         <div className="divide-y divide-slate-100">
           {(allPaid ? paidRows : paidRows.slice(0, 25)).map((m, i) => (
             <a key={i} href={m.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 py-1 text-sm hover:bg-slate-50">
@@ -410,8 +454,9 @@ function ARBody({ data, allChase, setAllChase, paidCheckAt }: { data: NonNullabl
       {zeroOpen.length === 0 && <div className="text-xs text-slate-500">No open invoices at $0.</div>}
 
       <Fold label={`Clients owing with no open invoice · ${$0(r.owedWithoutInvoice)}`} count={data.noInvoiceClients.length} tone="amber">
+        <SortPills<'desc' | 'asc'> value={noInvSort} onChange={setNoInvSort} options={[['desc', 'Amount ↓'], ['asc', 'Amount ↑']]} />
         <div className="divide-y divide-slate-100">
-          {data.noInvoiceClients.map(c => (
+          {noInv.map(c => (
             <a key={c.clientId} href={c.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 py-1 text-sm hover:bg-slate-50">
               <span className="flex-1 min-w-0 font-bold truncate">{c.client}</span><span className="shrink-0 font-bold">{$(c.balance)}</span>
             </a>
@@ -426,6 +471,17 @@ function ARBody({ data, allChase, setAllChase, paidCheckAt }: { data: NonNullabl
         {data.credits.clients ? ` · ${data.credits.clients} clients in credit ${$(data.credits.amount)}` : ''}
         {data.badDebt.count ? ` · ${data.badDebt.count} bad-debt invoices` : ''}
       </div>
+    </div>
+  );
+}
+
+function SortPills<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: [T, string][] }) {
+  return (
+    <div className="flex flex-wrap gap-1 mb-1.5" role="group" aria-label="Sort">
+      {options.map(([k, label]) => (
+        <button key={k} type="button" onClick={() => onChange(k)} aria-pressed={value === k}
+          className={`px-2.5 py-1 rounded-full border text-[11px] font-bold ${value === k ? 'bg-sky-700 text-white border-sky-700' : 'bg-white text-slate-600 border-slate-300'}`}>{label}</button>
+      ))}
     </div>
   );
 }

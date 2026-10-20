@@ -28,6 +28,7 @@ export type AgeKey = "notDue" | "d1_30" | "d31_60" | "d61_90" | "d90plus";
 export const AGE_KEYS: AgeKey[] = ["notDue", "d1_30", "d31_60", "d61_90", "d90plus"];
 
 export interface ChaseRow {
+  age?: AgeKey;
   invoiceId: string; invoiceNumber: string; client: string; clientId: string;
   balance: number; total: number; dueDate: string | null; daysOverdue: number;
   lastPayment: { date: string; amount: number } | null; url: string;
@@ -40,6 +41,8 @@ export interface ARSummary {
   invoiceCount: number;
   aging: Record<AgeKey, { count: number; amount: number }>;
   chase: ChaseRow[];                  // every past-due invoice, oldest first
+  invoices: ChaseRow[];               // EVERY open invoice with a balance (the filterable list), with its age bucket
+
   mismatches: MismatchRow[];          // paid-with-balance newest first, then $0-but-open
   // Marked paid in Jobber with the payment not (fully) recorded there — the
   // invoice keeps a balance but Jobber no longer counts it in the client's
@@ -94,6 +97,7 @@ export function summarizeAR(input: {
   const aging = Object.fromEntries(AGE_KEYS.map((k) => [k, {count: 0, amount: 0}])) as ARSummary["aging"];
   const agingCents: Record<AgeKey, number> = {notDue: 0, d1_30: 0, d31_60: 0, d61_90: 0, d90plus: 0};
   const chase: ChaseRow[] = [];
+  const invoices: ChaseRow[] = [];
   const invoiceCentsByClient = new Map<string, number>();
   let owedCents = 0;
   for (const r of owedRows) {
@@ -104,19 +108,20 @@ export function summarizeAR(input: {
     aging[k].count++; agingCents[k] += bal;
     const cid = r.client?.id || "?";
     invoiceCentsByClient.set(cid, (invoiceCentsByClient.get(cid) || 0) + bal);
-    if (days > 0) {
-      const pays = (r.paymentRecords?.nodes || []).filter((p) => p.adjustmentType === "PAYMENT" || p.adjustmentType === "DEPOSIT");
-      const last = pays.sort((a, b) => b.entryDate.localeCompare(a.entryDate))[0];
-      chase.push({
-        invoiceId: r.id, invoiceNumber: r.invoiceNumber, client: r.client?.name || "—", clientId: cid,
-        balance: d(bal), total: d(c(r.amounts.total)), dueDate: r.dueDate ? torontoYmd(Date.parse(r.dueDate)) : null,
-        daysOverdue: days, lastPayment: last ? {date: torontoYmd(Date.parse(last.entryDate)), amount: d(c(last.amount))} : null,
-        url: r.jobberWebUri || "",
-      });
-    }
+    const pays = (r.paymentRecords?.nodes || []).filter((p) => p.adjustmentType === "PAYMENT" || p.adjustmentType === "DEPOSIT");
+    const last = pays.sort((a, b) => b.entryDate.localeCompare(a.entryDate))[0];
+    const rowOut: ChaseRow = {
+      age: k, invoiceId: r.id, invoiceNumber: r.invoiceNumber, client: r.client?.name || "—", clientId: cid,
+      balance: d(bal), total: d(c(r.amounts.total)), dueDate: r.dueDate ? torontoYmd(Date.parse(r.dueDate)) : null,
+      daysOverdue: days, lastPayment: last ? {date: torontoYmd(Date.parse(last.entryDate)), amount: d(c(last.amount))} : null,
+      url: r.jobberWebUri || "",
+    };
+    invoices.push(rowOut);
+    if (days > 0) chase.push(rowOut);
   }
   for (const k of AGE_KEYS) aging[k].amount = d(agingCents[k]);
   chase.sort((a, b) => b.daysOverdue - a.daysOverdue || b.balance - a.balance);
+  invoices.sort((a, b) => b.daysOverdue - a.daysOverdue || (a.dueDate || "").localeCompare(b.dueDate || "") || b.balance - a.balance);
 
   const mismatches: MismatchRow[] = [];
   const seenPaid = new Set<string>();
@@ -167,7 +172,7 @@ export function summarizeAR(input: {
   return {
     owed: d(owedCents),
     invoiceCount: owedRows.length,
-    aging, chase, mismatches, noInvoiceClients,
+    aging, chase, invoices, mismatches, noInvoiceClients,
     paidUnrecorded: {count: seenPaid.size, amount: d(puCents), last12Months: {count: puRecent, amount: d(puRecentCents)}},
     credits: {clients: creditClients, amount: d(creditCents)},
     badDebt: {count: bad.length, amount: d(bad.reduce((s, r) => s + c(r.amounts.invoiceBalance), 0))},

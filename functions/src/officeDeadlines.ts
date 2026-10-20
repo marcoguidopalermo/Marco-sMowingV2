@@ -6,7 +6,7 @@ import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
 import {alreadySent, markSent, sendNotification} from "./notifications.js";
-import {deadlineAlertsDue, DeadlineLike} from "./officeDeadlinesCore.js";
+import {deadlineAlertsDue, DeadlineLike, DEFAULT_PAY_PERIOD, payrollAlertsDue, PayPeriodCfg} from "./officeDeadlinesCore.js";
 import {OFFICE_VIEWERS} from "./jobber/officeAR.js";
 import {torontoYmd} from "./jobber/officeARCore.js";
 
@@ -27,6 +27,18 @@ export const officeDeadlineAlerts = onSchedule(
         await markSent(a.marker);
         sent++;
       }
+    }
+    // Payroll submission: the morning before and the morning it's due.
+    const main = await db.doc("artifacts/crewmaster/public/data/appData/main").get();
+    const pp = (main.get("settings") || {}).payPeriod as Partial<PayPeriodCfg> | undefined;
+    const cfg: PayPeriodCfg = pp && pp.anchorStart ?
+      {anchorStart: pp.anchorStart, lengthDays: Number(pp.lengthDays) || 14, payLagDays: pp.payLagDays == null ? 5 : Number(pp.payLagDays)} :
+      DEFAULT_PAY_PERIOD;
+    for (const a of payrollAlertsDue(cfg, today)) {
+      if (await alreadySent(a.marker)) continue;
+      await sendNotification([...OFFICE_VIEWERS], "office", {title: a.title, body: a.body, url: "/#office"});
+      await markSent(a.marker);
+      sent++;
     }
     logger.info("Office deadline reminders", {open: snap.size, sent});
   },
