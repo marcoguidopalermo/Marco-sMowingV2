@@ -149,11 +149,14 @@ export default function SalesScoreboard(p: Props) {
 
       <JobberCard {...p} qm={qm} leads={leads} hasData={hasData} failed={failed} beforeData={beforeData} sp={sp} />
       <SnowCard {...p} range={range} snowSeason={snowSeason} />
-      <TrendCard quotes={p.quotes} snowEntries={p.snowEntries} commercial={p.commercial} range={period === 'week' || period === 'month' ? season : range} sp={sp} hasData={hasData} />
+      <TrendCard quotes={p.quotes} snowEntries={p.snowEntries} commercial={p.commercial} range={trendRange(period === 'week' || period === 'month' ? season : range, p.today)} sp={sp} hasData={hasData} />
       <TargetsCard targets={p.targets} onSave={p.onSaveTargets} seasonLabels={{ jobber: `Season ${p.today.slice(0, 4)}`, resSnow: snowSeasonLabel(snowSeason), comSnow: snowSeasonLabel(snowSeason) }} />
     </div>
   );
 }
+
+/** Trend ends today — no empty future weeks. */
+const trendRange = (r: Range, today: string): Range => ({ from: r.from <= today ? r.from : today, to: r.to < today ? r.to : today });
 
 function ProgressBar({ value, max }: { value: number; max: number }) {
   const pct = Math.max(0, Math.min(100, (value / max) * 100));
@@ -326,7 +329,8 @@ function TrendCard({ quotes, snowEntries, commercial, range, sp, hasData }: { qu
   const pts = stream === 'jobber' ? (hasData ? quoteTrendPoints(quotes, sp) : [])
     : stream === 'resSnow' ? snowEntries.filter(e => !e.deletedAt).map(e => ({ date: e.date, contracts: e.contracts, dollars: e.dollars }))
     : commercial.filter(c => SOLD_STATUSES.has(c.status) && !c.archived).map(c => ({ date: commercialSoldDate(c), contracts: 1, dollars: commercialValue(c) || 0 }));
-  const weeks = weeklyTrend(pts, range, 8).slice(-26);
+  // The latest 16 weeks at most — fits a phone without sideways scrolling.
+  const weeks = weeklyTrend(pts, range, 8).slice(-16);
   return (
     <Card icon={<TrendingUp className="w-4 h-4" />} title="Week by week" right={
       <div className="flex flex-wrap gap-1">{(['jobber', 'resSnow', 'comSnow'] as StreamKey[]).map(k => <button key={k} type="button" onClick={() => setStream(k)} aria-pressed={stream === k} className={pill(stream === k)}>{STREAM_LABEL[k]}</button>)}</div>
