@@ -73,6 +73,7 @@ import OfficeMaster, { type OfficeARDoc } from './components/OfficeMaster';
 import SalesScoreboard, { type SalesMeta, type SalesTargets } from './components/SalesScoreboard';
 import { canSeeSales } from './lib/sales/access';
 import type { QuoteRow, RequestRow, SnowEntry } from './lib/sales/metrics';
+import { buildSnapshot, type SnowSnapshot, type SnapshotInput } from './lib/sales/snapshots';
 import type { InvoiceRow, CategoryOverrides } from './lib/sales/categories';
 import type { ServiceNamesDoc } from './components/ServiceNameAssign';
 import { canSeeOffice } from './lib/office/access';
@@ -428,6 +429,7 @@ export default function App() {
   const [salesMeta, setSalesMeta] = useState<SalesMeta | null | undefined>(undefined);
   const [salesError, setSalesError] = useState<string | null>(null);
   const [salesSnow, setSalesSnow] = useState<SnowEntry[]>([]);
+  const [salesSnaps, setSalesSnaps] = useState<SnowSnapshot[]>([]);
   const [salesTargets, setSalesTargets] = useState<SalesTargets>({});
   // Service-category mapping — shared by the sales and office viewers.
   const [serviceNames, setServiceNames] = useState<ServiceNamesDoc | null | undefined>(undefined);
@@ -916,7 +918,7 @@ export default function App() {
   }, [canViewFinance]);
   // Sales data: subscribed only for the sales viewers; nobody else attaches.
   useEffect(() => {
-    if (!canViewSales) { setSalesDocs({}); setSalesMeta(undefined); setSalesSnow([]); return; }
+    if (!canViewSales) { setSalesDocs({}); setSalesMeta(undefined); setSalesSnow([]); setSalesSnaps([]); return; }
     const u1 = onSnapshot(collection(db, 'salesData'), (snap) => {
       const docs: Record<string, any> = {};
       snap.forEach((d) => { docs[d.id] = d.data(); });
@@ -932,7 +934,12 @@ export default function App() {
     const u3 = onSnapshot(doc(db, 'salesSettings', 'targets'), (snap) => {
       setSalesTargets(snap.exists() ? ((snap.data() as { streams?: SalesTargets }).streams || {}) : {});
     }, (err) => { console.error('salesSettings listen error:', err); });
-    return () => { u1(); u2(); u3(); };
+    const u4 = onSnapshot(collection(db, 'salesSnowSnapshots'), (snap) => {
+      const list: SnowSnapshot[] = [];
+      snap.forEach((d) => { const v = d.data() as SnowSnapshot; if (v && v.date) list.push(v); });
+      setSalesSnaps(list);
+    }, (err) => { console.error('salesSnowSnapshots listen error:', err); });
+    return () => { u1(); u2(); u3(); u4(); };
   }, [canViewSales]);
   // Only the chunks named by the current meta (a pull replaces them atomically).
   const salesQuotes = useMemo<QuoteRow[]>(() => {
@@ -1247,6 +1254,14 @@ export default function App() {
     // for `dataLoaded` means we redirect against the real role exactly once.
     if (!user || loading || !dataLoaded) return;
     if (!initialLandingRedirectDone.current && effectiveRole) {
+      // A direct link ("/#salesmaster/follosoft-snapshot") wins over the
+      // role's landing view when that view is allowed.
+      const hashView = (window.location.hash.slice(1).split('/')[0] || '') as AppView;
+      if (hashView && viewAllowed(hashView)) {
+        initialLandingRedirectDone.current = true;
+        handleNotifNavigate(window.location.hash);
+        return;
+      }
       const target = defaultLandingView(effectiveRole);
       if (currentView !== target && viewAllowed(target)) {
         setCurrentView(target);
@@ -1258,6 +1273,13 @@ export default function App() {
       setCurrentView(firstAccessibleView(effectiveRole));
     }
   }, [currentView, effectiveRole, loading, user, dataLoaded, canViewMarketing]);
+
+  // A direct link opened while the app is already open in the tab.
+  useEffect(() => {
+    const onHash = () => { if (initialLandingRedirectDone.current) handleNotifNavigate(window.location.hash); };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  });
 
   // Pay-chunk safety net. Runs whenever timeEntries / employees /
   // mechanicPayChunks change in state. For each open chunk, calls
@@ -4231,6 +4253,16 @@ export default function App() {
     } catch (err: any) { showToastMsg(`Could not save: ${err?.message || String(err)}`); return false; }
     showToastMsg(e.deletedAt ? 'Entry removed.' : before ? 'Entry updated.' : 'Snow sales added.');
     return true;
+  };
+  // FolloSoft snapshot: one document per day (id = the date); a second save
+  // the same day replaces it and keeps the earlier values in its history.
+  const saveSalesSnapshot = async (input: SnapshotInput): Promise<SnowSnapshot | null> => {
+    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return null; }
+    if (!canViewSales) { showToastMsg(PERMISSION_DENIED); return null; }
+    const snap = buildSnapshot({ ...input, enteredBy: displayName || realCurrentEmail }, salesSnaps);
+    try { await setDoc(doc(db, 'salesSnowSnapshots', snap.date), cleanRM(snap)); }
+    catch (err: any) { showToastMsg(`Could not save the snapshot: ${err?.message || String(err)}`); return null; }
+    return snap;
   };
   const saveSalesTargets = async (t: SalesTargets): Promise<boolean> => {
     if (isViewingAs || !canViewSales) { showToastMsg(PERMISSION_DENIED); return false; }
@@ -8897,6 +8929,8 @@ export default function App() {
               meta={salesMeta}
               listenError={salesError}
               snowEntries={salesSnow}
+              snapshots={salesSnaps}
+              onSaveSnapshot={saveSalesSnapshot}
               commercial={Object.values(snowContracts) as any}
               targets={salesTargets}
               today={formatTodayInToronto()}

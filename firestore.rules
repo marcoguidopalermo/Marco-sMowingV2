@@ -277,6 +277,13 @@ service cloud.firestore {
       allow delete: if false;
     }
     // Targets per stream.
+    // FolloSoft snapshots: residential snow season totals, one document per
+    // day (id = YYYY-MM-DD). A same-day save replaces the document and carries
+    // the earlier values in its history; nothing is ever deleted.
+    match /salesSnowSnapshots/{date} {
+      allow read, create, update: if isSalesViewer();
+      allow delete: if false;
+    }
     match /salesSettings/{docId} {
       allow read, write: if isSalesViewer();
     }

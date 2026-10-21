@@ -22,7 +22,7 @@ const quotes = [
 const snow: SnowEntry[] = [{ id: 's1', date: T, season: '2026/2027', contracts: 12, dollars: 8208, source: 'manual', createdBy: 'James' }];
 const meta: SalesMeta = { status: 'ok', lastSuccessAt: Date.now() - 120000, lastAttemptAt: Date.now() - 120000, since: '2026-01-01T05:00:00Z' };
 const page = (o: object = {}) => renderToStaticMarkup(h(SalesScoreboard, {
-  quotes, requests: [{ id: 'r', c: iso(T), st: 'converted', src: 'embedded_inline', q: 1 }], meta, snowEntries: snow, commercial: [],
+  quotes, requests: [{ id: 'r', c: iso(T), st: 'converted', src: 'embedded_inline', q: 1 }], meta, snowEntries: snow, snapshots: [], onSaveSnapshot: async () => null, commercial: [],
   invoices: [], categoryOverrides: {}, serviceNames: null, canEditMapping: true, onSaveOverrides: async () => true,
   targets: { resSnow: { contracts: 300, avgTicket: 650 } }, today: T, currentUser: { email: '', name: '' }, canEditSnow: true,
   onSaveSnowEntry: async () => true, onSaveTargets: async () => true, onRefresh: async () => ({ status: 'ok' }), ...o,

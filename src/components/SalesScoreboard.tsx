@@ -9,6 +9,8 @@ import {
 } from '../lib/sales/metrics';
 import { rangeFor, PERIOD_LABEL, snowSeasonFor, snowSeasonLabel, torontoYmd, type PeriodKey, type Range } from '../lib/sales/periods';
 import SalesBreakdown from './SalesBreakdown';
+import SnowSnapshotPanel from './SnowSnapshotPanel';
+import { residentialFigures, snapshotTrendPoints, type SnowSnapshot, type SnapshotInput } from '../lib/sales/snapshots';
 import type { InvoiceRow, CategoryOverrides } from '../lib/sales/categories';
 import type { ServiceNamesDoc } from './ServiceNameAssign';
 
@@ -31,6 +33,8 @@ interface Props {
   meta: SalesMeta | null | undefined;      // undefined = loading, null = never pulled
   listenError?: string | null;
   snowEntries: SnowEntry[];
+  snapshots: SnowSnapshot[];               // FolloSoft season totals, one per day
+  onSaveSnapshot: (s: SnapshotInput) => Promise<SnowSnapshot | null>;
   commercial: CommercialLike[];
   targets: SalesTargets;
   today: string;
@@ -95,7 +99,9 @@ export default function SalesScoreboard(p: Props) {
   const jobberFig = (r: Range): StreamFigures => { const m = quoteMetrics(p.quotes, r, sp); return { contracts: m.won.count, dollars: m.won.pre, avgTicket: m.avgTicket?.pre ?? null }; };
   const streams: { key: StreamKey; icon: ReactNode; period: StreamFigures | null; season: StreamFigures | null; seasonLabel: string; note?: string }[] = [
     { key: 'jobber', icon: <Leaf className="w-4 h-4" />, period: hasData ? jobberFig(range) : null, season: hasData ? jobberFig(season) : null, seasonLabel: `Season ${p.today.slice(0, 4)}`, note: 'Won quotes (sent in the period), before tax' },
-    { key: 'resSnow', icon: <Snowflake className="w-4 h-4" />, period: residentialSnow(p.snowEntries, range), season: residentialSnow(p.snowEntries, null, snowSeason), seasonLabel: snowSeasonLabel(snowSeason), note: 'Entered by hand' },
+    // Residential: FolloSoft snapshots when the season has any, else the daily entries — never both.
+    (() => { const sea = residentialFigures(p.snapshots, p.snowEntries, null, snowSeason); const per = residentialFigures(p.snapshots, p.snowEntries, range, snowSeason);
+      return { key: 'resSnow' as StreamKey, icon: <Snowflake className="w-4 h-4" />, period: per.source === 'snapshots' ? per : residentialSnow(p.snowEntries, range), season: sea, seasonLabel: snowSeasonLabel(snowSeason), note: sea.source === 'snapshots' ? 'From FolloSoft snapshots (season totals)' : 'Entered by hand' }; })(),
     (() => { const per = commercialSnow(p.commercial, range); const sea = commercialSnow(p.commercial, null, snowSeason);
       return { key: 'comSnow' as StreamKey, icon: <Building2 className="w-4 h-4" />, period: per, season: sea, seasonLabel: snowSeasonLabel(snowSeason), note: `Approved or booked snow contracts${sea.noLevel ? ` · ${sea.noLevel} without a level chosen (no value)` : ''}` }; })(),
   ];
@@ -168,7 +174,7 @@ export default function SalesScoreboard(p: Props) {
 
       <JobberCard {...p} qm={qm} leads={leads} hasData={hasData} failed={failed} beforeData={beforeData} sp={sp} />
       <SnowCard {...p} range={range} snowSeason={snowSeason} />
-      <TrendCard quotes={p.quotes} snowEntries={p.snowEntries} commercial={p.commercial} range={trendRange(period === 'week' || period === 'month' ? season : range, p.today)} sp={sp} hasData={hasData} />
+      <TrendCard quotes={p.quotes} snowEntries={p.snowEntries} snapPoints={snapshotTrendPoints(p.snapshots, snowSeason)} commercial={p.commercial} range={trendRange(period === 'week' || period === 'month' ? season : range, p.today)} sp={sp} hasData={hasData} />
       <TargetsCard targets={p.targets} onSave={p.onSaveTargets} seasonLabels={{ jobber: `Season ${p.today.slice(0, 4)}`, resSnow: snowSeasonLabel(snowSeason), comSnow: snowSeasonLabel(snowSeason) }} />
     </div>
   );
@@ -292,9 +298,16 @@ function SnowCard(p: Props & { range: Range; snowSeason: string }) {
     if (ok) { setDraft(blank()); setEditing(null); }
   };
   const seasons = [...new Set([p.snowSeason, ...entries.map(e => e.season)])].sort().reverse();
+  // Snapshots are season totals; the daily entries are additions. Once the
+  // season has a snapshot the daily form is retired so the two can't be summed.
+  const snapshotsOn = p.snapshots.some(s => s.season === p.snowSeason);
   return (
     <Card icon={<Snowflake className="w-4 h-4" />} title="Snow sales">
-      <div className="text-xs font-black uppercase tracking-wide text-slate-600 mb-1">Residential — {editing ? 'edit entry' : 'add sales'}</div>
+      <SnowSnapshotPanel snapshots={p.snapshots} season={p.snowSeason} today={p.today} who={p.currentUser.name || p.currentUser.email} onSave={p.onSaveSnapshot} />
+      {snapshotsOn ? (
+        <div className="mt-3 text-xs text-slate-500 rounded-md bg-slate-50 border border-slate-100 px-2 py-1.5">The daily "Residential — add sales" form is retired for {snowSeasonLabel(p.snowSeason)}: residential totals come from the FolloSoft snapshots above, so the two are never added together.{entries.length ? ' Earlier daily entries are kept below for the record.' : ''}</div>
+      ) : (<>
+      <div className="mt-4 text-xs font-black uppercase tracking-wide text-slate-600 mb-1">Residential — {editing ? 'edit entry' : 'add sales'}</div>
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 items-end">
         <label className="col-span-1"><span className="block text-[11px] font-bold text-slate-500 uppercase">Date</span><input type="date" className={inputCls} value={draft.date} onChange={e => setDraft(d => ({ ...d, date: e.target.value }))} /></label>
         <label className="col-span-1"><span className="block text-[11px] font-bold text-slate-500 uppercase">Contracts</span><input inputMode="numeric" className={inputCls} value={draft.contracts || ''} onChange={e => setDraft(d => ({ ...d, contracts: Number(e.target.value.replace(/\D/g, '')) || 0 }))} placeholder="0" /></label>
@@ -307,8 +320,9 @@ function SnowCard(p: Props & { range: Range; snowSeason: string }) {
         <button type="button" disabled={busy} onClick={save} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-emerald-700 text-white text-sm font-bold disabled:opacity-50"><Plus className="w-4 h-4" /> {editing ? 'Save changes' : 'Add'}</button>
         {editing && <button type="button" onClick={() => { setDraft(blank()); setEditing(null); }} className="px-3 py-1.5 rounded-md border border-slate-300 text-sm font-bold text-slate-700">Cancel</button>}
       </div>
+      </>)}
 
-      <div className="mt-3 text-xs text-slate-500">{inPeriod.length} entr{inPeriod.length === 1 ? 'y' : 'ies'} in the period · {entries.length} in all</div>
+      {(!snapshotsOn || entries.length > 0) && <div className="mt-3 text-xs text-slate-500">{inPeriod.length} entr{inPeriod.length === 1 ? 'y' : 'ies'} in the period · {entries.length} in all</div>}
       <div className="divide-y divide-slate-100">
         {inPeriod.slice(0, 30).map(e => (
           <div key={e.id} className="flex items-center gap-2 py-1.5 text-sm">
@@ -317,7 +331,7 @@ function SnowCard(p: Props & { range: Range; snowSeason: string }) {
               <b>{e.contracts}</b> contract{e.contracts === 1 ? '' : 's'} · {$2(e.dollars)} <span className="text-xs text-slate-500">· avg {$(e.dollars / (e.contracts || 1))}</span>
               <span className="block text-[11px] text-slate-400 truncate">{snowSeasonLabel(e.season)} · {e.source === 'follosoft' ? 'FolloSoft import' : 'entered by hand'}{e.createdBy ? ` · ${e.createdBy}` : ''}{e.createdAt ? ` · ${new Date(e.createdAt).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}{e.note ? ` · ${e.note}` : ''}</span>
             </span>
-            {p.canEditSnow && (
+            {p.canEditSnow && !snapshotsOn && (
               <>
                 <button type="button" title="Edit" onClick={() => { setDraft(e); setEditing(e.id); }} className="p-1 text-slate-400 hover:text-slate-700"><Pencil className="w-4 h-4" /></button>
                 <button type="button" title="Delete (kept on record)" onClick={async () => { if (window.confirm('Delete this entry? It is hidden, not erased.')) await p.onSaveSnowEntry({ ...e, deletedAt: Date.now() }); }} className="p-1 text-slate-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
@@ -343,10 +357,10 @@ function SnowCard(p: Props & { range: Range; snowSeason: string }) {
 }
 
 // ── Trend ───────────────────────────────────────────────────────────────────
-function TrendCard({ quotes, snowEntries, commercial, range, sp, hasData }: { quotes: QuoteRow[]; snowEntries: SnowEntry[]; commercial: CommercialLike[]; range: Range; sp: string | null; hasData: boolean }) {
+function TrendCard({ quotes, snowEntries, snapPoints, commercial, range, sp, hasData }: { quotes: QuoteRow[]; snowEntries: SnowEntry[]; snapPoints: { date: string; contracts: number; dollars: number }[]; commercial: CommercialLike[]; range: Range; sp: string | null; hasData: boolean }) {
   const [stream, setStream] = useState<StreamKey>('jobber');
   const pts = stream === 'jobber' ? (hasData ? quoteTrendPoints(quotes, sp) : [])
-    : stream === 'resSnow' ? snowEntries.filter(e => !e.deletedAt).map(e => ({ date: e.date, contracts: e.contracts, dollars: e.dollars }))
+    : stream === 'resSnow' ? (snapPoints.length ? snapPoints : snowEntries.filter(e => !e.deletedAt).map(e => ({ date: e.date, contracts: e.contracts, dollars: e.dollars })))
     : commercial.filter(c => SOLD_STATUSES.has(c.status) && !c.archived).map(c => ({ date: commercialSoldDate(c), contracts: 1, dollars: commercialValue(c) || 0 }));
   // The latest 16 weeks at most — fits a phone without sideways scrolling.
   const weeks = weeklyTrend(pts, range, 8).slice(-16);
