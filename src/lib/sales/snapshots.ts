@@ -115,3 +115,22 @@ export function snapshotTrendPoints(snaps: SnowSnapshot[], season: string): { da
   for (let i = 1; i < ss.length; i++) out.push({ date: ss[i].date, contracts: ss[i].contracts - ss[i - 1].contracts, dollars: ss[i].totalValue - ss[i - 1].totalValue });
   return out;
 }
+
+// ── Snow goal ───────────────────────────────────────────────────────────────
+/** The residential snow goal (salesSettings/snowGoal), adjustable by admins. */
+export interface SnowGoal { contracts: number; by: string; updatedBy?: string; updatedAt?: number }
+/** Default: 650 contracts by January 1 of the season. */
+export const defaultSnowGoal = (season: string): SnowGoal => ({ contracts: 650, by: `${Number(season.slice(0, 4)) + 1}-01-01` });
+
+/** How far along the goal is, how many are still needed, and roughly how many a week that takes. */
+export function goalProgress(contracts: number, goal: SnowGoal, today: string) {
+  const needed = Math.max(0, goal.contracts - contracts);
+  const days = Math.round((Date.parse(`${goal.by}T12:00:00Z`) - Date.parse(`${today}T12:00:00Z`)) / 86_400_000);
+  const weeksLeft = days > 0 ? days / 7 : 0;
+  return {
+    pct: goal.contracts > 0 ? Math.min(1, contracts / goal.contracts) : 0,
+    needed, daysLeft: Math.max(0, days), weeksLeft: Math.floor(weeksLeft),
+    perWeek: needed > 0 && weeksLeft > 0 ? Math.ceil(needed / weeksLeft) : null,
+    met: needed === 0, passed: days <= 0,
+  };
+}

@@ -3,7 +3,8 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import SalesBreakdown from './SalesBreakdown';
+import SalesBreakdown, { Details, MappingTable } from './SalesBreakdown';
+import { invoiceBreakdown } from '../lib/sales/categories';
 import type { InvoiceRow } from '../lib/sales/categories';
 
 const inv = (n: string, d: string, li: InvoiceRow['li'], m: 1 | 2 | 3, w: Record<string, number>): InvoiceRow => {
@@ -17,44 +18,37 @@ const invoices = [
   inv('4', '2026-08-03', [['Sale of 2007 F-150', 0, 1000]], 3, {}),
 ];
 const page = (o: object = {}) => renderToStaticMarkup(h(SalesBreakdown, {
-  invoices, quotes: [], range: { from: '2026-01-01', to: '2026-12-31' }, hasData: true, overrides: {},
-  names: { freehand: [{ key: 'lawn ripped', label: 'lawn ripped', count: 1, amount: 2200, sample: '7000', unmapped: true, trimming: false }], catalog: [{ name: 'Mowing (Weekly)', count: 1, amount: 1000 }] },
-  bhByMonth: { '2026-07': { 'Lawn Division': 20 } }, canEditMapping: true, onSaveOverrides: async () => true,
-  wonCount: 3, wonPre: 4200, wonIncl: 4746, waitingCount: 5, avgTicketPre: 1400, ...o,
+  invoices, range: { from: '2026-01-01', to: '2026-12-31' }, hasData: true, overrides: {},
+  bhByMonth: { '2026-07': { 'Lawn Division': 20 } }, ...o,
 }));
+const details = (overrides = {}) => renderToStaticMarkup(h(Details, { b: invoiceBreakdown(invoices, { from: '2026-01-01', to: '2026-12-31' }, overrides), bhByMonth: { '2026-07': { 'Lawn Division': 20 } } }));
+const mapping = (overrides = {}) => renderToStaticMarkup(h(MappingTable, { names: { catalog: [{ name: 'Mowing (Weekly)', count: 1, amount: 1000 }] }, overrides, canEdit: true, onSave: async () => true, invoices }));
 
-test('headlines: total invoiced, quotes won, open pipeline; average ticket small', () => {
+test('big and simple: total invoiced, by category, by division — nothing else on the page', () => {
   const html = page();
-  assert.match(html, /Total invoiced<\/div><div class="text-2xl[^"]*">\$4,950/);
-  assert.match(html, /Quotes won<\/div><div[^>]*>3 · \$4,200/);
-  assert.match(html, /Open pipeline/);
-  assert.match(html, /Average won quote \$1,400 before tax/);
+  assert.match(html, /Total invoiced<\/div><div class="text-4xl[^"]*">\$4,950/);
   assert.match(html, /title="With tax: \$5,593\.50"/);
-});
-test('ranked by category and by division; snow is Commercial snow; unattributed kept', () => {
-  const html = page();
+  assert.match(html, /equipment sales not included/);
   for (const k of ['Sod', 'Lawn mowing', 'Snow', 'Other', 'Lawn Division', 'Large Projects', 'Commercial snow', 'Unattributed']) assert.match(html, new RegExp(`>${k}<`), k);
-  assert.match(html, /\$1,000 from crew records · \$0 from Jobber assignees · 20 BH · \$50 invoiced per BH/);
-  assert.match(html, /no BH on record for Aug 26/);
+  for (const gone of ['Quotes won', 'Open pipeline', 'Month by month', 'Quotes by service category', 'Category mapping']) assert.doesNotMatch(html, new RegExp(gone), gone);
+  assert.match(html, /Details — equipment sales, unattributed, \$ per BH/);
 });
-test('lists: asset sale excluded, trimming listed, names to assign, mapping table', () => {
-  const html = page();
-  assert.match(html, /Asset sales — not counted as sales \(1\)/);
+test('details popup: equipment sales excluded, trimming listed, divisions with provisional $ per BH, fallback table', () => {
+  const html = details();
+  assert.match(html, /Equipment sales — not counted as sales \(1\)/);
+  assert.match(html, /Sale of 2007 F-150/);
   assert.match(html, /Trimming — in Other until you choose hedges or string trimming \(1\)/);
-  assert.match(html, /#3<\/b> <span class="text-slate-700">Client 3<\/span> <span class="text-xs text-slate-500">· 2026-08-01 · Extra trimming in backyard/);
-  assert.match(html, /lawn ripped/);
-  assert.match(html, /Category mapping — Jobber catalog/);
+  assert.match(html, /\$1,000 from crew records · \$0 from Jobber assignees · 20 BH · \$50 invoiced per BH \(provisional\)/);
+  assert.match(html, /<b>Provisional<\/b>/);
+  assert.match(html, /Service category → division \(4th fallback\)/);
 });
 test('data unavailable, never a confident 0', () => {
   assert.match(page({ hasData: false }), /Data unavailable — no successful pull yet/);
   assert.match(page({ invoices: [] }), /Data unavailable — invoices arrive with the next sales pull/);
 });
-test('per-invoice overrides listed with who / when / note; $ per BH marked provisional; fallback table shown', () => {
-  const html = page({ overrides: { lines: { '3|extra trimming in backyard': { category: 'Lawn mowing', by: 'Marco', at: Date.UTC(2026, 9, 20, 23), note: 'mowing trimming' } } } });
+test('mapping popup: per-invoice overrides listed with who / when / note', () => {
+  const html = mapping({ lines: { '3|extra trimming in backyard': { category: 'Lawn mowing', by: 'Marco', at: Date.UTC(2026, 9, 20, 23), note: 'mowing trimming' } } });
   assert.match(html, /Per-invoice overrides \(1\)/);
   assert.match(html, /<b>#3<\/b> Client 3 · &quot;extra trimming in backyard&quot; → <b>Lawn mowing<\/b>/);
   assert.match(html, /Marco · Oct 20[^<]*· mowing trimming/);
-  assert.match(html, /invoiced per BH \(provisional\)/);
-  assert.match(html, /\$ per BH is provisional<\/b>/);
-  assert.match(html, /Service category → division \(4th fallback\)/);
 });

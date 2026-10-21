@@ -6,7 +6,7 @@
 
 export const CATEGORIES = [
   "Lawn mowing", "Lawn care", "Hedges & shrubs", "Sod", "Cleanups",
-  "Garden beds & landscaping", "Hardscape & gravel", "Tree & stump", "Snow", "Sweeping", "Other",
+  "Garden beds & landscaping", "Hardscape & gravel", "Tree & stump", "Snow", "Sweeping", "Dump runs", "Other",
 ] as const;
 export type Category = typeof CATEGORIES[number];
 
@@ -23,13 +23,18 @@ export const lineOverrideKey = (doc: string, text: string): string => `${String(
 export const normName = (s: unknown): string =>
   String(s || "").toLowerCase().replace(/[^a-z0-9$% ]+/g, " ").replace(/\s+/g, " ").trim();
 
-const ASSET = /\b(tractor|l6060|kubota l\d|sale of (19|20)\d\d|sale of \d{4}|vehicle sale|equipment sale)/;
+// Equipment sales — excluded from sales. Anything starting "Sale of…" (decided 2026-10-20).
+const ASSET = /(^sale of\b|\b(tractor|l6060|kubota l\d|sale of (19|20)\d\d|sale of \d{4}|vehicle sale|equipment sale))/;
 const DISCOUNT = /(discount|\d+ ?% off|\$ ?\d+ off|price difference|\bcredit\b(?! card))/;
 const TRIMMING = /^(extra |additional |additional requested )?trimming( in (the )?backyard)?$/;
 const LANDSCAPING_PROJECT = /^landscaping project\b/;
 
 // Ordered keyword rules — first match wins.
 const RULES: [Category, RegExp][] = [
+  // Decided 2026-10-20: dump runs are their own category (division Large Projects);
+  // "Brush clearing…" is mowing-crew work.
+  ["Dump runs", /\bdump run/],
+  ["Lawn mowing", /^brush clearing\b/],
   ["Sweeping", /\bsweep/],
   ["Snow", /\b(snow|plow|plough|sanding|salt|shovel|ice\b)/],
   ["Tree & stump", /\b(stump|tree|arborist|brush ?cut)/],
@@ -38,8 +43,10 @@ const RULES: [Category, RegExp][] = [
   ["Cleanups", /\b(clean ?up|leaf|leaves|brush removal|brush and)/],
   ["Hedges & shrubs", /\b(hedge|shrub|prun|cedar)/],
   ["Lawn care", /\b(lawn care|turf care|fertili|weed control|weed spray|aerat|dethatch|thatch|overseed|seeding|seed\b|lime\b|grub|pest|bronze|silver|gold)/],
-  ["Lawn mowing", /\b(mow|lawn maintenance|per cut|cutting|weekly|biweekly|bi weekly|seasonal (lawn )?maintenance)/],
+  ["Lawn mowing", /\b(mow|lawn maintenance|per cut|cutting|weekly|biweekly|bi weekly|seasonal (lawn )?maintenance|one ?time cut|on time cut)/],
   ["Garden beds & landscaping", /\b(garden|beds?\b|mulch|plant|landscap|edging|de ?weed|weeding|rototill|soil|topsoil|flower)/],
+  // "Return visit" on its own (not "Hedge trimming return visit") is a commercial snow return.
+  ["Snow", /\breturn visit\b/],
   ["Other", /\b(gutter|eavestrough|general maintenance|hours?\b|installation\b|start ?up|repair|disposal|fee\b|fees\b|travel|hauling|additional work|follow up)/],
 ];
 
@@ -95,6 +102,17 @@ export function categoryForName(name: string, linked: string | null | undefined,
 const r2 = (x: number) => Math.round(x * 100) / 100;
 
 /**
+ * Does a freehand service name still need someone to pick a category?
+ * Equipment sales and discounts never do (they're excluded / tied to a service).
+ */
+export function needsCategory(name: string, o: CategoryOverrides = {}): LineFlag | null {
+  const n = normName(name);
+  if (!n || ASSET.test(n) || DISCOUNT.test(n)) return null;
+  const f = categoryForName(name, null, o).flag;
+  return f === "unmapped" || f === "trimming" ? f : null;
+}
+
+/**
  * One invoice's (or quote's) lines → categories. Asset sales separated;
  * discounts subtracted from the service they belong to (own words → the
  * invoice's only service → its largest service → Other, "untied").
@@ -115,10 +133,13 @@ export function categorizeLines(lines: LineIn[], o: CategoryOverrides = {}, docN
   for (const x of out) {
     if (x.kind !== "discount") continue;
     const stripped = normName(x.linked || x.name).replace(DISCOUNT, " ").replace(/\b(spring|program|late start|pre ?payment|off|\$ ?\d+|\d+ ?%)\b/g, " ").trim();
-    let own: Category | null = null;
-    for (const [c, re] of RULES) {
-      if (c !== "Other" && re.test(stripped)) {
-        own = c; break;
+    // A late start discount is a mowing discount (decided 2026-10-20).
+    let own: Category | null = /\blate start\b/.test(normName(x.linked || x.name)) ? "Lawn mowing" : null;
+    if (!own) {
+      for (const [c, re] of RULES) {
+        if (c !== "Other" && re.test(stripped)) {
+          own = c; break;
+        }
       }
     }
     let cat: Category; let tie: LineOut["tie"];

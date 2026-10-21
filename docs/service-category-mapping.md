@@ -89,6 +89,21 @@ Ambiguous names are **flagged, not guessed** (see "Waiting on Marco").
 - **"landscaping project"** (incl. #7306, $30,000) → split **50% Hardscape &
   gravel, 50% Garden beds & landscaping**.
 
+## Decided 2026-10-20 (evening)
+
+- **"Late start discount"** → Lawn mowing (a mowing discount).
+- **"One time cut" / "On time cut"** → Lawn mowing.
+- **"Return visit"** on its own (e.g. "Sherrington – Return Visit") → Snow
+  (commercial). A named service's return visit ("Hedge trimming return
+  visit") stays with that service.
+- **"Dump run"** → its own **Dump runs** category; its dollars always count in
+  **Large Projects**, whoever did the work.
+- **"Brush clearing…"** (name starting so) → Lawn mowing.
+- Anything starting **"Sale of…"** and the L6060 tractor sale → **equipment
+  sales**, excluded from sales totals.
+- The "names to assign" list is re-checked against the current rules in the
+  app; discounts and equipment sales never need a name assigned.
+
 ## Waiting on Marco
 
 - **"Trimming" / "extra trimming in backyard"** — hedges, or string trimming

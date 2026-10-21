@@ -42,3 +42,12 @@ test('trend points are day-to-day differences; the first snapshot is the baselin
   assert.deepEqual(snapshotTrendPoints(all, '2026/2027'), [{ date: '2026-10-19', contracts: 13, dollars: 9534 }, { date: '2026-10-20', contracts: 4, dollars: 2870 }]);
   assert.equal(latestSnapshot(all)!.date, '2026-10-20');
 });
+import { goalProgress, defaultSnowGoal } from './snapshots';
+test('snow goal: 650 by Jan 1 — still needed and per week', () => {
+  const g = defaultSnowGoal('2026/2027');
+  assert.deepEqual(g, { contracts: 650, by: '2027-01-01' });
+  const p = goalProgress(357, g, '2026-10-20');
+  assert.equal(p.needed, 293); assert.equal(p.daysLeft, 73); assert.equal(p.weeksLeft, 10); assert.equal(p.perWeek, 29);
+  assert.equal(goalProgress(700, g, '2026-10-20').met, true);
+  assert.equal(goalProgress(600, g, '2027-01-02').perWeek, null);
+});

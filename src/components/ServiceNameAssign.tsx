@@ -4,7 +4,7 @@
 import { useState } from 'react';
 import { Tags } from 'lucide-react';
 import { CATEGORIES, type Category, type CategoryOverrides } from '../lib/sales/categories';
-import { normName } from '../../functions/src/shared/serviceCategories';
+import { normName, needsCategory } from '../../functions/src/shared/serviceCategories';
 
 export interface ServiceNamesDoc {
   freehand?: { key: string; label: string; count: number; amount: number; sample: string; unmapped: boolean; trimming: boolean }[];
@@ -14,9 +14,16 @@ export interface ServiceNamesDoc {
 
 const $ = (n: number) => `$${Math.round(n).toLocaleString('en-CA')}`;
 
-/** The names still waiting for a category (rules found none, or "trimming"), minus the ones already assigned. */
+/**
+ * The names still waiting for a category — re-checked against the CURRENT
+ * rules (not the flags the last pull stored), minus the ones already assigned.
+ * Equipment sales and discounts never need one.
+ */
 export function namesToAssign(names: ServiceNamesDoc | null | undefined, o: CategoryOverrides) {
-  return (names?.freehand || []).filter(f => (f.unmapped || f.trimming) && !(o.names && o.names[f.key]));
+  return (names?.freehand || [])
+    .filter(f => !(o.names && o.names[f.key]))
+    .map(f => { const flag = needsCategory(f.label, o); return flag ? { ...f, unmapped: flag === 'unmapped', trimming: flag === 'trimming' } : null; })
+    .filter((f): f is NonNullable<typeof f> => !!f);
 }
 
 export default function ServiceNameAssign({ names, overrides, canEdit, onSave, compact }: {

@@ -21,6 +21,8 @@ export interface InvoiceRow {
 
 export const COMMERCIAL_SNOW = 'Commercial snow';
 export const UNATTRIBUTED = 'Unattributed';
+/** Categories that decide their division outright, whoever did the work. */
+export const FIXED_DIVISION: Record<string, string> = { 'Snow': COMMERCIAL_SNOW, 'Dump runs': 'Large Projects' };
 export const DIVISION_ORDER = ['Lawn Division', 'Small Projects', 'Large Projects', COMMERCIAL_SNOW, UNATTRIBUTED];
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -48,7 +50,7 @@ export function categoryDivisionMap(rows: InvoiceRow[], o: CategoryOverrides = {
   for (const inv of rows) {
     if (inv.m !== 1) continue;
     for (const l of categorizeLines(toLines(inv.li), o, inv.n)) for (const sp of l.split) {
-      if (sp.category === 'Snow') continue;
+      if (FIXED_DIVISION[sp.category]) continue;
       for (const [d, w] of Object.entries(inv.w || {})) { m[sp.category] = m[sp.category] || {}; m[sp.category][d] = (m[sp.category][d] || 0) + sp.amount * w; }
     }
   }
@@ -99,7 +101,7 @@ export function invoiceBreakdown(rows: InvoiceRow[], r: Range, o: CategoryOverri
     const mo = day!.slice(0, 7);
     const mrow = monthly.get(mo) || { total: 0, byCategory: {}, byDivision: {} };
     const base = { n: inv.n, d: day!, cl: inv.cl, url: inv.url };
-    let snow = 0, rest = 0;
+    const fixed: Record<string, number> = {}; let rest = 0;
     const restByCat: Record<string, number> = {};
     for (const l of lines) {
       if (l.kind === 'asset') { assets.push({ ...base, text: l.name, amount: l.amount }); continue; }
@@ -112,10 +114,11 @@ export function invoiceBreakdown(rows: InvoiceRow[], r: Range, o: CategoryOverri
         mrow.byCategory[s.category] = r2((mrow.byCategory[s.category] || 0) + s.amount);
         mrow.total = r2(mrow.total + s.amount);
         total += s.amount; totalIncl += s.amount * factor;
-        if (s.category === 'Snow') snow += s.amount; else { rest += s.amount; restByCat[s.category] = (restByCat[s.category] || 0) + s.amount; }
+        const fd = FIXED_DIVISION[s.category];
+        if (fd) fixed[fd] = (fixed[fd] || 0) + s.amount; else { rest += s.amount; restByCat[s.category] = (restByCat[s.category] || 0) + s.amount; }
       }
     }
-    // Divisions: snow → Commercial snow; the rest by the pull's attribution.
+    // Divisions: snow → Commercial snow, dump runs → Large Projects; the rest by the pull's attribution.
     const add = (k: string, amt: number, m?: 1 | 2 | 4) => {
       if (!amt) return;
       const d = (div[k] = div[k] || { pre: 0, incl: 0, m1: 0, m2: 0, m4: 0 });
@@ -123,7 +126,7 @@ export function invoiceBreakdown(rows: InvoiceRow[], r: Range, o: CategoryOverri
       if (m === 1) d.m1 += amt; if (m === 2) d.m2 += amt; if (m === 4) d.m4 += amt;
       mrow.byDivision[k] = r2((mrow.byDivision[k] || 0) + amt);
     };
-    add(COMMERCIAL_SNOW, snow);
+    for (const [d, a] of Object.entries(fixed)) add(d, a);
     if (inv.m === 3 || !Object.keys(inv.w || {}).length) {
       // Method 4: by service category where crew records make the division clear.
       let left = 0;

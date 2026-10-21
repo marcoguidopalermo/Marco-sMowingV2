@@ -2,6 +2,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { invoiceBreakdown, quoteCategoryBreakdown, divisionBH, dollarsPerBH, COMMERCIAL_SNOW, UNATTRIBUTED, type InvoiceRow } from './categories';
+import { categorizeLines } from '../../../functions/src/shared/serviceCategories';
 
 const inv = (n: string, d: string, li: InvoiceRow['li'], m: 1 | 2 | 3, w: Record<string, number>): InvoiceRow => {
   const sub = li.reduce((s, l) => s + (Number((l as any)[2]) || 0), 0);
@@ -103,4 +104,26 @@ test('per-invoice override wins over every rule, for that invoice only', () => {
   const out = invoiceBreakdown(two, R, o);
   assert.deepEqual(out.byCategory.map(x => [x.key, x.pre]).sort(), [['Lawn mowing', 400], ['Other', 400]]);
   assert.deepEqual(out.trimming.map(t => t.n), ['7041']);              // #6948 no longer listed as trimming
+});
+
+// Decisions 2026-10-20 (evening).
+test('mapping decisions: late start, one-time cut, return visit, dump runs, brush clearing, "Sale of…"', () => {
+  const cat = (name: string, amount = 50) => categorizeLines([{ name: 'Mowing', linked: 'Mowing (Weekly)', amount: 100 }, { name: 'Sod Installation', linked: 'Sod Installation', amount: 500 }, { name, linked: null, amount }], {})[2];
+  assert.deepEqual([cat('30% OFF - Late start discount', -30).kind, cat('30% OFF - Late start discount', -30).split[0].category], ['discount', 'Lawn mowing']);
+  assert.equal(cat('One Time Cut').split[0].category, 'Lawn mowing');
+  assert.equal(cat('On time cut').split[0].category, 'Lawn mowing');
+  assert.equal(cat('Sherrington - Return Visit').split[0].category, 'Snow');
+  assert.equal(cat('Hedge Trimming Return Visit').split[0].category, 'Hedges & shrubs');   // a named service stays put
+  assert.equal(cat('Dump Run - minimum charge').split[0].category, 'Dump runs');
+  assert.equal(cat('Brush clearing - backyard (hourly)').split[0].category, 'Lawn mowing');
+  assert.equal(cat('Sale of Toro Z-master').kind, 'asset');
+  assert.equal(cat('L6060 Kubota Tractor plus Blower, Loader Arm & Bucket').kind, 'asset');
+});
+test('dump runs count in Large Projects whoever did the work; equipment sales stay out of the totals', () => {
+  const rows: InvoiceRow[] = [{ id: '1', n: '1', d: '2026-08-01T16:00:00Z', st: 'paid', sub: 1250, tot: 1250, cl: 'C', url: '#', m: 1, w: { 'Lawn Division': 1 },
+    li: [['Mowing (Weekly)', 'Mowing (Weekly)', 1000], ['Dump run', 0, 250], ['Sale of 2015 trailer', 0, 4000]] }];
+  const b = invoiceBreakdown(rows, { from: '2026-01-01', to: '2026-12-31' });
+  assert.deepEqual(b.byDivision.map(d => [d.key, d.pre]), [['Lawn Division', 1000], ['Large Projects', 250]]);
+  assert.equal(b.total.pre, 1250);
+  assert.equal(b.assets.length, 1);
 });

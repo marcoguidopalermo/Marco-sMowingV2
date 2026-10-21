@@ -70,10 +70,11 @@ import ContractingMaster from './components/ContractingMaster';
 import MarketingMaster from './components/MarketingMaster';
 import FinanceMaster, { FinanceBadge, FinanceUnitPanel } from './components/FinanceMaster';
 import OfficeMaster, { type OfficeARDoc } from './components/OfficeMaster';
-import SalesScoreboard, { type SalesMeta, type SalesTargets } from './components/SalesScoreboard';
+import SalesScoreboard, { type SalesMeta } from './components/SalesScoreboard';
 import { canSeeSales, SALES_LANDING_EMAIL } from './lib/sales/access';
 import type { QuoteRow, RequestRow, SnowEntry } from './lib/sales/metrics';
-import { buildSnapshot, type SnowSnapshot, type SnapshotInput } from './lib/sales/snapshots';
+import { snowSeasonFor } from './lib/sales/periods';
+import { buildSnapshot, defaultSnowGoal, type SnowSnapshot, type SnapshotInput, type SnowGoal } from './lib/sales/snapshots';
 import type { InvoiceRow, CategoryOverrides } from './lib/sales/categories';
 import type { ServiceNamesDoc } from './components/ServiceNameAssign';
 import { canSeeOffice } from './lib/office/access';
@@ -430,7 +431,7 @@ export default function App() {
   const [salesError, setSalesError] = useState<string | null>(null);
   const [salesSnow, setSalesSnow] = useState<SnowEntry[]>([]);
   const [salesSnaps, setSalesSnaps] = useState<SnowSnapshot[]>([]);
-  const [salesTargets, setSalesTargets] = useState<SalesTargets>({});
+  const [salesSnowGoal, setSalesSnowGoal] = useState<SnowGoal | null>(null);   // null = the default (650 by Jan 1)
   // Service-category mapping — shared by the sales and office viewers.
   const [serviceNames, setServiceNames] = useState<ServiceNamesDoc | null | undefined>(undefined);
   const [categoryOverrides, setCategoryOverrides] = useState<CategoryOverrides>({});
@@ -931,8 +932,10 @@ export default function App() {
       snap.forEach((d) => { const v = d.data() as SnowEntry; if (v && v.id) list.push(v); });
       setSalesSnow(list);
     }, (err) => { console.error('salesSnowEntries listen error:', err); });
-    const u3 = onSnapshot(doc(db, 'salesSettings', 'targets'), (snap) => {
-      setSalesTargets(snap.exists() ? ((snap.data() as { streams?: SalesTargets }).streams || {}) : {});
+    // The snow goal — the only goal on the scoreboard (the old per-stream targets are retired).
+    const u3 = onSnapshot(doc(db, 'salesSettings', 'snowGoal'), (snap) => {
+      const g = snap.exists() ? (snap.data() as SnowGoal) : null;
+      setSalesSnowGoal(g && g.contracts > 0 && g.by ? g : null);
     }, (err) => { console.error('salesSettings listen error:', err); });
     const u4 = onSnapshot(collection(db, 'salesSnowSnapshots'), (snap) => {
       const list: SnowSnapshot[] = [];
@@ -4243,20 +4246,7 @@ export default function App() {
   // fields and appends what moved: rates and balances are exactly the numbers
   // somebody reconciles against a statement months later, and "edited the
   // mortgage" answers nothing then.
-  // SALES WRITES — residential snow entries and targets. Sales viewers only.
-  const saveSalesSnowEntry = async (e: SnowEntry): Promise<boolean> => {
-    if (isViewingAs) { showToastMsg('View Only — exit "View As" to make changes.'); return false; }
-    if (!canViewSales) { showToastMsg(PERMISSION_DENIED); return false; }
-    const before = salesSnow.find(x => x.id === e.id);
-    const now = Date.now(); const who = displayName || realCurrentEmail;
-    try {
-      await setDoc(doc(db, 'salesSnowEntries', e.id), cleanRM({
-        ...e, createdAt: before?.createdAt ?? now, createdBy: before?.createdBy ?? who, updatedAt: now, updatedBy: who,
-      }));
-    } catch (err: any) { showToastMsg(`Could not save: ${err?.message || String(err)}`); return false; }
-    showToastMsg(e.deletedAt ? 'Entry removed.' : before ? 'Entry updated.' : 'Snow sales added.');
-    return true;
-  };
+  // SALES WRITES — FolloSoft snapshots and the snow goal. Sales viewers only.
   // FolloSoft snapshot: one document per day (id = the date); a second save
   // the same day replaces it and keeps the earlier values in its history.
   const saveSalesSnapshot = async (input: SnapshotInput): Promise<SnowSnapshot | null> => {
@@ -4267,11 +4257,12 @@ export default function App() {
     catch (err: any) { showToastMsg(`Could not save the snapshot: ${err?.message || String(err)}`); return null; }
     return snap;
   };
-  const saveSalesTargets = async (t: SalesTargets): Promise<boolean> => {
-    if (isViewingAs || !canViewSales) { showToastMsg(PERMISSION_DENIED); return false; }
-    try { await setDoc(doc(db, 'salesSettings', 'targets'), cleanRM({ streams: t, updatedAt: Date.now(), updatedBy: displayName || realCurrentEmail })); }
-    catch (err: any) { showToastMsg(`Could not save targets: ${err?.message || String(err)}`); return false; }
-    showToastMsg('Targets saved.');
+  // The snow goal: admins among the sales viewers adjust it (number and date).
+  const saveSnowGoal = async (g: SnowGoal): Promise<boolean> => {
+    if (isViewingAs || !canViewSales || realCurrentUserRole !== 'admin') { showToastMsg(PERMISSION_DENIED); return false; }
+    try { await setDoc(doc(db, 'salesSettings', 'snowGoal'), cleanRM({ contracts: g.contracts, by: g.by, updatedAt: Date.now(), updatedBy: displayName || realCurrentEmail })); }
+    catch (err: any) { showToastMsg(`Could not save the goal: ${err?.message || String(err)}`); return false; }
+    showToastMsg('Snow goal saved.');
     return true;
   };
   const saveCategoryOverrides = async (o: CategoryOverrides): Promise<boolean> => {
@@ -8923,7 +8914,6 @@ export default function App() {
           scoreboard={canViewSales ? (
             <SalesScoreboard
               quotes={salesQuotes}
-              requests={salesRequests}
               invoices={salesInvoices}
               categoryOverrides={categoryOverrides}
               serviceNames={serviceNames}
@@ -8934,13 +8924,11 @@ export default function App() {
               snowEntries={salesSnow}
               snapshots={salesSnaps}
               onSaveSnapshot={saveSalesSnapshot}
-              commercial={Object.values(snowContracts) as any}
-              targets={salesTargets}
+              snowGoal={salesSnowGoal || defaultSnowGoal(snowSeasonFor(formatTodayInToronto()))}
+              canEditGoal={realCurrentUserRole === 'admin'}
+              onSaveSnowGoal={saveSnowGoal}
               today={formatTodayInToronto()}
               currentUser={{ email: realCurrentEmail, name: displayName || realCurrentEmail }}
-              canEditSnow={realCurrentUserRole === 'admin'}
-              onSaveSnowEntry={saveSalesSnowEntry}
-              onSaveTargets={saveSalesTargets}
               onRefresh={refreshSales}
             />
           ) : undefined}
