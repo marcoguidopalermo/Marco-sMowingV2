@@ -2,11 +2,11 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import SnowSnapshotPanel from './SnowSnapshotPanel';
+import SnowSnapshotPanel, { SnapshotSummary } from './SnowSnapshotPanel';
 import type { SnowSnapshot } from '../lib/sales/snapshots';
 
 const S = (date: string, contracts: number, totalValue: number, extra: Partial<SnowSnapshot> = {}): SnowSnapshot => ({ date, season: '2026/2027', contracts, totalValue, enteredBy: 'Marco Palermo', source: 'manual', savedAt: Date.parse(`${date}T11:30:00Z`), ...extra });
-const html = (snaps: SnowSnapshot[], now: number) => renderToStaticMarkup(createElement(SnowSnapshotPanel, { snapshots: snaps, season: '2026/2027', today: '2026-10-21', who: 'James', onSave: async () => null, now }));
+const html = (snaps: SnowSnapshot[], now: number) => renderToStaticMarkup(createElement('div', null, createElement(SnapshotSummary, { snapshots: snaps, season: '2026/2027', now }), createElement(SnowSnapshotPanel, { snapshots: snaps, season: '2026/2027', today: '2026-10-21', who: 'James', onSave: async () => null })));
 
 test('form: plain labels, one Save button, the direct-link id', () => {
   const h = html([], Date.now());

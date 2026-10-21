@@ -10,3 +10,6 @@ export function canSeeSales(email: string | null | undefined): boolean {
   const e = (email || '').trim().toLowerCase();
   return !!e && SALES_VIEWERS.includes(e);
 }
+
+// James lands on the SalesMaster scoreboard when he signs in (App.tsx).
+export const SALES_LANDING_EMAIL = 'sales@marcosmowing.com';

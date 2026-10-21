@@ -71,7 +71,7 @@ import MarketingMaster from './components/MarketingMaster';
 import FinanceMaster, { FinanceBadge, FinanceUnitPanel } from './components/FinanceMaster';
 import OfficeMaster, { type OfficeARDoc } from './components/OfficeMaster';
 import SalesScoreboard, { type SalesMeta, type SalesTargets } from './components/SalesScoreboard';
-import { canSeeSales } from './lib/sales/access';
+import { canSeeSales, SALES_LANDING_EMAIL } from './lib/sales/access';
 import type { QuoteRow, RequestRow, SnowEntry } from './lib/sales/metrics';
 import { buildSnapshot, type SnowSnapshot, type SnapshotInput } from './lib/sales/snapshots';
 import type { InvoiceRow, CategoryOverrides } from './lib/sales/categories';
@@ -1262,7 +1262,10 @@ export default function App() {
         handleNotifNavigate(window.location.hash);
         return;
       }
-      const target = defaultLandingView(effectiveRole);
+      // James (sales@) lands on the SalesMaster scoreboard; everyone else on
+      // their role's landing view. Not while viewing as someone else.
+      const target = !isViewingAs && normalizeEmail(realCurrentEmail) === SALES_LANDING_EMAIL && viewAllowed('salesmaster')
+        ? 'salesmaster' : defaultLandingView(effectiveRole);
       if (currentView !== target && viewAllowed(target)) {
         setCurrentView(target);
       }

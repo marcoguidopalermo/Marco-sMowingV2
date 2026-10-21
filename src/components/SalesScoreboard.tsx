@@ -9,7 +9,7 @@ import {
 } from '../lib/sales/metrics';
 import { rangeFor, PERIOD_LABEL, snowSeasonFor, snowSeasonLabel, torontoYmd, type PeriodKey, type Range } from '../lib/sales/periods';
 import SalesBreakdown from './SalesBreakdown';
-import SnowSnapshotPanel from './SnowSnapshotPanel';
+import SnowSnapshotPanel, { SnapshotSummary } from './SnowSnapshotPanel';
 import { residentialFigures, snapshotTrendPoints, type SnowSnapshot, type SnapshotInput } from '../lib/sales/snapshots';
 import type { InvoiceRow, CategoryOverrides } from '../lib/sales/categories';
 import type { ServiceNamesDoc } from './ServiceNameAssign';
@@ -108,6 +108,8 @@ export default function SalesScoreboard(p: Props) {
 
   return (
     <div className="space-y-4 min-w-0">
+      {/* Residential snow first — James's number, visible without scrolling on a phone. */}
+      <SnapshotSummary snapshots={p.snapshots} season={snowSeason} />
       <div className="flex items-center gap-2 flex-wrap">
         <Trophy className="w-6 h-6 text-emerald-700" />
         <h1 className="text-2xl font-black text-slate-800">Scoreboard</h1>

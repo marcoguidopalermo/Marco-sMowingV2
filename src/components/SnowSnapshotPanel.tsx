@@ -15,9 +15,50 @@ const when = (ms: number) => new Date(ms).toLocaleString('en-CA', { month: 'shor
 const inputCls = 'border border-slate-300 rounded-md px-2 py-2 text-base bg-white w-full';
 const label = 'block text-sm font-bold text-slate-700 mb-0.5';
 
-export default function SnowSnapshotPanel({ snapshots, season, today, who, onSave, now = Date.now() }: {
+/**
+ * The latest FolloSoft snapshot, compact — the first thing on the scoreboard
+ * (fits a phone screen without scrolling).
+ */
+export function SnapshotSummary({ snapshots, season, now = Date.now() }: { snapshots: SnowSnapshot[]; season: string; now?: number }) {
+  const latest = latestSnapshot(snapshots, season);
+  const stale = staleness(latest, now);
+  const change = latest ? changeLine(latest, snapshots) : null;
+  const avg = latest ? avgTicket(latest) : null;
+  return (
+    <div className="rounded-xl border border-sky-200 bg-sky-50 p-3" data-testid="snapshot-latest">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-black uppercase tracking-wide text-slate-600">Residential snow · {snowSeasonLabel(season)}</div>
+        <a href="#salesmaster/follosoft-snapshot" onClick={e => { const el = document.getElementById('follosoft-snapshot'); if (el) { e.preventDefault(); el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }} className="text-xs font-bold text-emerald-700 underline shrink-0">Enter snapshot</a>
+      </div>
+      {!latest ? <div className="mt-1 text-sm text-slate-600">No FolloSoft snapshot yet.</div> : (
+        <>
+          {stale.stale && (
+            <div role="alert" className="mt-1.5 flex items-start gap-1.5 rounded-md bg-amber-100 border border-amber-300 px-2 py-1 text-sm font-bold text-amber-900">
+              <Clock className="w-4 h-4 mt-0.5 shrink-0" /> Out of date: the latest snapshot is {stale.hours} hours old ({longDate(latest.date)}). Today's hasn't been entered.
+            </div>
+          )}
+          <div className="mt-1.5 grid grid-cols-3 gap-2">
+            <div className="min-w-0"><div className="text-[10px] font-bold uppercase text-slate-500">Contracts sold</div><div className="text-xl sm:text-2xl font-black text-slate-800">{latest.contracts.toLocaleString('en-CA')}</div></div>
+            <div className="min-w-0"><div className="text-[10px] font-bold uppercase text-slate-500">Total value</div><div className="text-xl sm:text-2xl font-black text-slate-800">{$(latest.totalValue)}</div></div>
+            <div className="min-w-0"><div className="text-[10px] font-bold uppercase text-slate-500">Average ticket</div><div className="text-xl sm:text-2xl font-black text-slate-800">{avg != null ? $2(avg) : '—'}</div></div>
+          </div>
+          <div className="mt-1 text-sm font-bold text-slate-700">{change || 'First snapshot of the season — changes show from the next one.'}</div>
+          <div className="text-[11px] text-slate-500">FolloSoft, as of {longDate(latest.date)} · {latest.enteredBy} ({latest.source === 'agent' ? 'agent' : 'manual'}) · saved {when(latest.savedAt)}</div>
+          {!!latest.flags?.length && (
+            <div className="mt-1.5 rounded-md bg-red-50 border border-red-200 px-2 py-1 text-sm text-red-800">
+              <div className="font-bold flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Check this snapshot against FolloSoft:</div>
+              <ul className="list-disc ml-5">{latest.flags.map(f => <li key={f}>{f}</li>)}</ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+export default function SnowSnapshotPanel({ snapshots, season, today, who, onSave }: {
   snapshots: SnowSnapshot[]; season: string; today: string; who: string;
-  onSave: (s: SnapshotInput) => Promise<SnowSnapshot | null>; now?: number;
+  onSave: (s: SnapshotInput) => Promise<SnowSnapshot | null>;
 }) {
   const [date, setDate] = useState(today);
   const [contracts, setContracts] = useState('');
@@ -27,10 +68,6 @@ export default function SnowSnapshotPanel({ snapshots, season, today, who, onSav
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<SnowSnapshot | null>(null);
 
-  const latest = latestSnapshot(snapshots, season);
-  const stale = staleness(latest, now);
-  const change = latest ? changeLine(latest, snapshots) : null;
-  const avg = latest ? avgTicket(latest) : null;
   const sameDay = snapshots.find(s => s.date === date);
   const recent = snapshots.filter(s => s.season === season).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
 
@@ -50,31 +87,9 @@ export default function SnowSnapshotPanel({ snapshots, season, today, who, onSav
 
   return (
     <div className="space-y-3">
-      {/* Latest snapshot */}
-      <div className="rounded-lg border border-sky-200 bg-sky-50/50 p-3" data-testid="snapshot-latest">
-        <div className="text-xs font-black uppercase tracking-wide text-slate-600">Residential snow — FolloSoft · {snowSeasonLabel(season)}</div>
-        {!latest ? <div className="mt-1 text-sm text-slate-600">No FolloSoft snapshot yet.</div> : (
-          <>
-            {stale.stale && (
-              <div role="alert" className="mt-2 flex items-start gap-1.5 rounded-md bg-amber-100 border border-amber-300 px-2 py-1.5 text-sm font-bold text-amber-900">
-                <Clock className="w-4 h-4 mt-0.5 shrink-0" /> Out of date: the latest snapshot is {stale.hours} hours old ({longDate(latest.date)}). Today's hasn't been entered.
-              </div>
-            )}
-            <div className="mt-2 grid grid-cols-3 gap-2">
-              <div><div className="text-[11px] font-bold uppercase text-slate-500">Contracts sold</div><div className="text-2xl font-black text-slate-800">{latest.contracts.toLocaleString('en-CA')}</div></div>
-              <div><div className="text-[11px] font-bold uppercase text-slate-500">Total value</div><div className="text-2xl font-black text-slate-800">{$(latest.totalValue)}</div></div>
-              <div><div className="text-[11px] font-bold uppercase text-slate-500">Average ticket</div><div className="text-2xl font-black text-slate-800">{avg != null ? $2(avg) : '—'}</div></div>
-            </div>
-            <div className="mt-1 text-sm font-bold text-slate-700">{change || 'First snapshot of the season — changes show from the next one.'}</div>
-            <div className="text-xs text-slate-500">As of {longDate(latest.date)} · entered by {latest.enteredBy} ({latest.source === 'agent' ? 'agent' : 'manual'}) · saved {when(latest.savedAt)}</div>
-            {!!latest.flags?.length && (
-              <div className="mt-2 rounded-md bg-red-50 border border-red-200 px-2 py-1.5 text-sm text-red-800">
-                <div className="font-bold flex items-center gap-1"><AlertTriangle className="w-4 h-4" /> Check this snapshot against FolloSoft:</div>
-                <ul className="list-disc ml-5">{latest.flags.map(f => <li key={f}>{f}</li>)}</ul>
-              </div>
-            )}
-            {recent.length > 1 && (
-              <div className="mt-3">
+      {recent.length > 1 && (
+        <div className="rounded-lg border border-slate-200 bg-white p-3">
+            <div>
                 <div className="text-[11px] font-bold uppercase text-slate-500">Trend — recent snapshots</div>
                 <table className="w-full text-sm mt-1">
                   <thead><tr className="text-[11px] text-slate-500 text-left"><th className="font-bold">Date</th><th className="font-bold text-right">Contracts</th><th className="font-bold text-right">Total value</th><th className="font-bold text-right">Change</th></tr></thead>
@@ -89,11 +104,9 @@ export default function SnowSnapshotPanel({ snapshots, season, today, who, onSav
                     ); })}
                   </tbody>
                 </table>
-              </div>
-            )}
-          </>
-        )}
-      </div>
+            </div>
+        </div>
+      )}
 
       {/* The form — the direct link lands here */}
       <form id="follosoft-snapshot" aria-labelledby="follosoft-snapshot-title" className="rounded-lg border-2 border-emerald-600 bg-white p-3 scroll-mt-20" onSubmit={e => { e.preventDefault(); if (!busy) save(); }}>

@@ -64,3 +64,11 @@ test('period and salesperson filters are buttons', () => {
   assert.match(html, /aria-label="Period"/);
   for (const l of ['This week', 'This month', 'Season', 'Year', 'Custom', 'Everyone', 'Marco Example']) assert.match(html, new RegExp(l));
 });
+
+test('residential snow snapshot is the first thing on the scoreboard', () => {
+  const snap = { date: '2026-10-20', season: '2026/2027', contracts: 357, totalValue: 256404, enteredBy: 'Marco', source: 'manual' as const, savedAt: Date.now() };
+  const html = page({ snapshots: [snap] });
+  const first = html.indexOf('data-testid="snapshot-latest"');
+  assert.ok(first > -1 && first < html.indexOf('>Scoreboard<') && first < html.indexOf('aria-label="Period"'));
+  assert.ok(html.includes('$256,404') && html.includes('$718.22'));
+});
