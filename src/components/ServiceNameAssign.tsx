@@ -3,8 +3,9 @@
 // category rules (functions/src/shared/serviceCategories.ts) apply it at once.
 import { useState } from 'react';
 import { Tags } from 'lucide-react';
-import { CATEGORIES, type Category, type CategoryOverrides } from '../lib/sales/categories';
-import { normName, needsCategory } from '../../functions/src/shared/serviceCategories';
+import type { CategoryOverrides } from '../lib/sales/categories';
+import { normName, categorizeLines } from '../../functions/src/shared/serviceCategories';
+import { SERVICE_CATEGORIES, serviceCategory } from '../lib/sales/serviceMap';
 
 export interface ServiceNamesDoc {
   freehand?: { key: string; label: string; count: number; amount: number; sample: string; unmapped: boolean; trimming: boolean }[];
@@ -22,9 +23,16 @@ const $ = (n: number) => `$${Math.round(n).toLocaleString('en-CA')}`;
 export function namesToAssign(names: ServiceNamesDoc | null | undefined, o: CategoryOverrides) {
   return (names?.freehand || [])
     .filter(f => !(o.names && o.names[f.key]))
-    .map(f => { const flag = needsCategory(f.label, o); return flag ? { ...f, unmapped: flag === 'unmapped', trimming: flag === 'trimming' } : null; })
+    .map(f => {
+      // Equipment sales and discounts never need a name; anything the service map places doesn't either.
+      const [l] = categorizeLines([{ name: f.label, linked: null, amount: 1 }], o);
+      if (l.kind !== 'service' || serviceCategory(l.split[0].category, f.label) !== 'Unassigned') return null;
+      return { ...f, unmapped: l.flag !== 'trimming', trimming: l.flag === 'trimming' };
+    })
     .filter((f): f is NonNullable<typeof f> => !!f);
 }
+/** The categories a name or line can be assigned to (the scoreboard's). */
+export const ASSIGNABLE = SERVICE_CATEGORIES.filter(c => c !== 'Unassigned');
 
 export default function ServiceNameAssign({ names, overrides, canEdit, onSave, compact }: {
   names: ServiceNamesDoc | null | undefined; overrides: CategoryOverrides; canEdit: boolean;
@@ -33,7 +41,7 @@ export default function ServiceNameAssign({ names, overrides, canEdit, onSave, c
   const [all, setAll] = useState(false);
   const todo = namesToAssign(names, overrides);
   const shown = all ? todo : todo.slice(0, compact ? 8 : 15);
-  const assign = (key: string, c: Category | '') => {
+  const assign = (key: string, c: string) => {
     const next: CategoryOverrides = { ...overrides, names: { ...(overrides.names || {}) } };
     if (c) next.names![key] = c; else delete next.names![key];
     return onSave(next);
@@ -42,7 +50,7 @@ export default function ServiceNameAssign({ names, overrides, canEdit, onSave, c
   return (
     <div>
       <div className="flex items-center gap-1.5 text-xs text-slate-600 mb-1.5">
-        <Tags className="w-3.5 h-3.5" /> {todo.length} service name{todo.length === 1 ? '' : 's'} not in a category · {$(todo.reduce((s, f) => s + f.amount, 0))} this year — they count as Other until assigned.
+        <Tags className="w-3.5 h-3.5" /> {todo.length} service name{todo.length === 1 ? '' : 's'} not in a category · {$(todo.reduce((s, f) => s + f.amount, 0))} this year — they count as Unassigned (in no division) until assigned.
       </div>
       {todo.length === 0 ? <div className="text-sm text-emerald-700">All service names are in a category.</div> : (
         <div className="divide-y divide-slate-100">
@@ -53,9 +61,9 @@ export default function ServiceNameAssign({ names, overrides, canEdit, onSave, c
                 <span className="block text-[11px] text-slate-500">{f.count} line{f.count === 1 ? '' : 's'} · {$(f.amount)} · e.g. invoice/quote #{f.sample}{f.trimming ? ' · trimming: hedges or string trimming?' : ''}</span>
               </span>
               {canEdit ? (
-                <select aria-label={`Category for ${f.label}`} className="border border-slate-300 rounded-md px-2 py-1 text-sm bg-white" value="" onChange={e => assign(f.key, e.target.value as Category)}>
+                <select aria-label={`Category for ${f.label}`} className="border border-slate-300 rounded-md px-2 py-1 text-sm bg-white" value="" onChange={e => assign(f.key, e.target.value)}>
                   <option value="">Assign…</option>
-                  {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  {ASSIGNABLE.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               ) : <span className="text-[11px] text-slate-400">admin assigns</span>}
             </div>
@@ -71,9 +79,9 @@ export default function ServiceNameAssign({ names, overrides, canEdit, onSave, c
               <div key={k} className="flex items-center gap-2 py-1">
                 <span className="flex-1">{(names.freehand || []).find(f => f.key === k)?.label || k}</span>
                 {canEdit ? (
-                  <select aria-label={`Category for ${k}`} className="border border-slate-300 rounded px-1.5 py-0.5 bg-white" value={c} onChange={e => assign(k, e.target.value as Category | '')}>
+                  <select aria-label={`Category for ${k}`} className="border border-slate-300 rounded px-1.5 py-0.5 bg-white" value={c} onChange={e => assign(k, e.target.value)}>
                     <option value="">(remove — back to the rules)</option>
-                    {CATEGORIES.map(x => <option key={x} value={x}>{x}</option>)}
+                    {ASSIGNABLE.map(x => <option key={x} value={x}>{x}</option>)}
                   </select>
                 ) : <b>{c}</b>}
               </div>

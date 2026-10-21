@@ -24,14 +24,18 @@ const page = (o: object = {}) => renderToStaticMarkup(h(SalesBreakdown, {
 const details = (overrides = {}) => renderToStaticMarkup(h(Details, { b: invoiceBreakdown(invoices, { from: '2026-01-01', to: '2026-12-31' }, overrides), bhByMonth: { '2026-07': { 'Lawn Division': 20 } } }));
 const mapping = (overrides = {}) => renderToStaticMarkup(h(MappingTable, { names: { catalog: [{ name: 'Mowing (Weekly)', count: 1, amount: 1000 }] }, overrides, canEdit: true, onSave: async () => true, invoices }));
 
-test('big and simple: total invoiced, by category, by division — nothing else on the page', () => {
+test('big and simple: total invoiced, divisions = sum of their categories, one total', () => {
   const html = page();
   assert.match(html, /Total invoiced<\/div><div class="text-4xl[^"]*">\$4,950/);
   assert.match(html, /title="With tax: \$5,593\.50"/);
   assert.match(html, /equipment sales not included/);
-  for (const k of ['Sod', 'Lawn mowing', 'Snow', 'Other', 'Lawn Division', 'Large Projects', 'Commercial snow', 'Unattributed']) assert.match(html, new RegExp(`>${k}<`), k);
-  for (const gone of ['Quotes won', 'Open pipeline', 'Month by month', 'Quotes by service category', 'Category mapping']) assert.doesNotMatch(html, new RegExp(gone), gone);
-  assert.match(html, /Details — equipment sales, unattributed, \$ per BH/);
+  for (const k of ['Lawn', 'Large Projects', 'Commercial snow', 'Lawn mowing', 'Sod']) assert.match(html, new RegExp(`>${k}<`), k);
+  assert.match(html, /Unassigned/);                                   // "Extra trimming in backyard" waits on a decision
+  assert.match(html, /Fees &amp; adjustments/);
+  assert.match(html, /Equipment sales/);
+  assert.match(html, /every share is of the same \$4,950 total/);
+  for (const gone of ['Quotes won', 'Open pipeline', 'Month by month', 'Quotes by service category', "don't add up"]) assert.doesNotMatch(html, new RegExp(gone), gone);
+  assert.match(html, /Details — crew view and \$ per BH/);
 });
 test('details popup: equipment sales excluded, trimming listed, divisions with provisional $ per BH, fallback table', () => {
   const html = details();

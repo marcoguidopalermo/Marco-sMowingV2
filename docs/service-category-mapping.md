@@ -1,5 +1,19 @@
 # Service categories from Jobber line items — agreed mapping (2026-10-20)
 
+> **Shown on the scoreboard since 2026-10-21: the SERVICE MAP** — categories
+> and the one division each belongs to; a division's revenue is the sum of
+> its categories. Code: `src/lib/sales/serviceMap.ts` (layered on the base
+> rules below, so every override and decision here still applies).
+>
+> - **Lawn:** Lawn mowing · Lawn care (incl. Condo 54, lawn treatments, weed management)
+> - **Small Projects:** Dethatching (incl. combined aerate/dethatch/seeding) · Cleanups & gardens (incl. all driveway weed spraying) · Arborist (hedges, shrubs, tree trimming) · Stump grinding
+> - **Large Projects:** Sod · Hardscape (pavers, patios, walls, steps, walkway stones, stone edging, the hardscape half of "landscaping project") · Driveways (any "driveway" line except weed spraying) · Gravel & rock · Grading & drainage (grading, drainage, levelling, asphalt road repair, Lawn Ripped, Field Repair) · Soil & prep · Dump runs (incl. disposal and hauling fees) · Sweeping
+> - **Commercial snow:** Snow, incl. return visits
+> - **In no division:** Fees & adjustments (fees, deposits, credit card, follow-up visits) · Unassigned (listed). Equipment sales excluded and listed.
+> - Discounts go to the largest shown category among the services they were tied to.
+> - $ per BH stays crew-based (Details → crew view).
+
+
 Status: **built 2026-10-20** (SalesMaster scoreboard). Decisions by Marco on
 2026-10-20. One item still open: "Trimming" (see below). Implementation: one
 shared module, `functions/src/shared/serviceCategories.ts`, used by the app and

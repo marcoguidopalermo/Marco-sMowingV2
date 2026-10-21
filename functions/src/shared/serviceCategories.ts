@@ -9,15 +9,17 @@ export const CATEGORIES = [
   "Garden beds & landscaping", "Hardscape & gravel", "Tree & stump", "Snow", "Sweeping", "Dump runs", "Other",
 ] as const;
 export type Category = typeof CATEGORIES[number];
+/** What an override may name: a category above, or one of the app's shown categories (src/lib/sales/serviceMap.ts). */
+export type CategoryName = Category | (string & Record<never, never>);
 
 /** One invoice line assigned by hand (admin), with who / when / why. */
-export interface LineOverride { category: Category; by?: string; at?: number; note?: string }
+export interface LineOverride { category: CategoryName; by?: string; at?: number; note?: string }
 /**
  * Admin overrides (serviceCategoryMap/overrides): catalog item name → category;
  * normalised freehand name → category; and PER-INVOICE lines, keyed
  * lineOverrideKey(invoiceNumber, line text) — these win over everything.
  */
-export interface CategoryOverrides { catalog?: Record<string, Category>; names?: Record<string, Category>; lines?: Record<string, LineOverride> }
+export interface CategoryOverrides { catalog?: Record<string, CategoryName>; names?: Record<string, CategoryName>; lines?: Record<string, LineOverride> }
 export const lineOverrideKey = (doc: string, text: string): string => `${String(doc).trim()}|${normName(text)}`;
 
 export const normName = (s: unknown): string =>
@@ -88,11 +90,11 @@ export interface LineOut extends LineIn {
 export function categoryForName(name: string, linked: string | null | undefined, o: CategoryOverrides = {}): { split: { category: Category; share: number }[]; flag?: LineFlag } {
   if (linked) {
     const c = (o.catalog && o.catalog[linked]) || CATALOG_DEFAULTS[linked] || CATALOG_DEFAULTS[linked.trim()];
-    if (c) return {split: [{category: c, share: 1}], flag: TRIMMING.test(normName(linked)) && !(o.catalog && o.catalog[linked]) ? "trimming" : undefined};
+    if (c) return {split: [{category: c as Category, share: 1}], flag: TRIMMING.test(normName(linked)) && !(o.catalog && o.catalog[linked]) ? "trimming" : undefined};
   }
   const n = normName(linked || name);
   const named = o.names && (o.names[normName(name)] || o.names[n]);
-  if (named) return {split: [{category: named, share: 1}]};
+  if (named) return {split: [{category: named as Category, share: 1}]};
   if (LANDSCAPING_PROJECT.test(normName(name))) return {split: [{category: "Hardscape & gravel", share: 0.5}, {category: "Garden beds & landscaping", share: 0.5}], flag: "landscaping-project"};
   if (TRIMMING.test(normName(name))) return {split: [{category: "Other", share: 1}], flag: "trimming"};
   for (const [c, re] of RULES) if (re.test(n)) return {split: [{category: c, share: 1}]};
@@ -120,7 +122,7 @@ export function needsCategory(name: string, o: CategoryOverrides = {}): LineFlag
 export function categorizeLines(lines: LineIn[], o: CategoryOverrides = {}, docNumber?: string): LineOut[] {
   const out: LineOut[] = lines.map((l) => {
     const manual = docNumber && o.lines ? o.lines[lineOverrideKey(docNumber, l.name)] : undefined;
-    if (manual && manual.category) return {...l, kind: "service" as const, split: [{category: manual.category, amount: r2(l.amount)}]};
+    if (manual && manual.category) return {...l, kind: "service" as const, split: [{category: manual.category as Category, amount: r2(l.amount)}]};
     const words = normName(l.name) + " " + normName(l.linked || "");
     if (ASSET.test(words)) return {...l, kind: "asset" as const, split: []};
     if (DISCOUNT.test(words) || l.amount < 0) return {...l, kind: "discount" as const, split: []};

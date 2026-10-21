@@ -24,7 +24,7 @@ const meta: SalesMeta = { status: 'ok', lastSuccessAt: Date.now() - 120000, last
 const page = (o: object = {}) => renderToStaticMarkup(h(SalesScoreboard, {
   quotes, meta, snowEntries: snow, snapshots: [], onSaveSnapshot: async () => null,
   snowGoal: { contracts: 650, by: '2027-01-01' }, canEditGoal: true, onSaveSnowGoal: async () => true,
-  invoices: [], categoryOverrides: {}, serviceNames: { freehand: [{ key: 'lawn ripped', label: 'Lawn Ripped', count: 1, amount: 2200, sample: '1', unmapped: true, trimming: false }, { key: 'return visit', label: 'Return Visit', count: 1, amount: 100, sample: '2', unmapped: true, trimming: false }] },
+  invoices: [], categoryOverrides: {}, serviceNames: { freehand: [{ key: 'lawn ripped', label: 'Lawn Ripped', count: 1, amount: 2200, sample: '1', unmapped: true, trimming: false }, { key: 'return visit', label: 'Return Visit', count: 1, amount: 100, sample: '2', unmapped: true, trimming: false }, { key: 'fence repair', label: 'Fence Repair', count: 1, amount: 480, sample: '3', unmapped: true, trimming: false }] },
   canEditMapping: true, onSaveOverrides: async () => true,
   today: T, currentUser: { email: '', name: '' }, onRefresh: async () => ({ status: 'ok' }), ...o,
 }));
@@ -44,9 +44,9 @@ test('the period defaults to the season', () => {
 test('chase list and names to assign are buttons with counts (popups), not sections', () => {
   const html = page();
   assert.match(html, /2 quotes waiting/);
-  assert.match(html, /1 name to assign/);            // "Return Visit" is placed by the rules now
+  assert.match(html, /1 name to assign/);            // "Return Visit" and "Lawn Ripped" are placed by the map now
   assert.doesNotMatch(html, /NOT OPENED/);
-  assert.doesNotMatch(html, /Lawn Ripped/);
+  assert.doesNotMatch(html, /Fence Repair/);
 });
 test('chase popup: unopened flagged, opened shown, link to Jobber', () => {
   const html = renderToStaticMarkup(h(ChaseList, { quotes, today: T }));

@@ -5,6 +5,7 @@
 // and stored on each invoice row as m (method 1/2/3) + w (division weights).
 import { categorizeLines, CATEGORIES, type Category, type CategoryOverrides, type LineOut } from '../../../functions/src/shared/serviceCategories';
 import { inRange, torontoYmd, type Range } from './periods';
+import { serviceCategory, DIVISION_OF, OUTSIDE_DIVISIONS, SERVICE_DIVISIONS, type ServiceCategory, type ServiceDivision } from './serviceMap';
 
 export { CATEGORIES, type Category, type CategoryOverrides };
 
@@ -191,4 +192,90 @@ export function dollarsPerBH(b: InvoiceBreakdown, division: string, bhInfo: Retu
   if (!hours) return null;
   const dollars = b.monthly.filter(m => bhInfo.withBH.includes(m.month)).reduce((s, m) => s + (m.byDivision[division] || 0), 0);
   return r2(dollars / hours);
+}
+
+// ── The service map (2026-10-21): shown categories and their divisions ───────
+/**
+ * Revenue by the categories the scoreboard shows, and by division = the sum of
+ * its categories (src/lib/sales/serviceMap.ts). Categories and divisions come
+ * from the SAME lines in the SAME range, so they share one total. The checks
+ * add up the divisions line by line, independently of the category totals,
+ * and report any difference (none expected — shown if there is one).
+ */
+export interface ServiceBreakdown {
+  total: Amount; invoices: number;
+  byCategory: Ranked<ServiceCategory>[];          // every category incl. Fees & adjustments and Unassigned
+  byDivision: Ranked<ServiceDivision>[];
+  categoriesOf: Record<string, ServiceCategory[]>; // division → its categories with money in the range
+  outside: Ranked<ServiceCategory>[];             // Fees & adjustments, Unassigned
+  assets: ListedLine[];                           // equipment sales — excluded
+  unassigned: ListedLine[];
+  checks: string[];                               // empty when everything adds up
+}
+export function serviceBreakdown(rows: InvoiceRow[], r: Range, o: CategoryOverrides = {}): ServiceBreakdown {
+  const cat: Record<string, Amount> = {}, div: Record<string, Amount> = {};
+  const assets: ListedLine[] = [], unassigned: ListedLine[] = [];
+  let total = 0, totalIncl = 0, count = 0;
+  const put = (c: ServiceCategory, amt: number, factor: number) => {
+    const e = (cat[c] = cat[c] || { pre: 0, incl: 0 }); e.pre += amt; e.incl += amt * factor;
+    const d = DIVISION_OF[c];
+    if (d) { const x = (div[d] = div[d] || { pre: 0, incl: 0 }); x.pre += amt; x.incl += amt * factor; }
+    total += amt; totalIncl += amt * factor;
+  };
+  for (const inv of rows) {
+    const day = torontoYmd(inv.d);
+    if (!inRange(day, r)) continue;
+    count++;
+    const factor = inv.sub > 0 ? inv.tot / inv.sub : 1;
+    const base = { n: inv.n, d: day!, cl: inv.cl, url: inv.url };
+    const lines = categorizeLines(toLines(inv.li), o, inv.n);
+    // Services first: each split → its shown category.
+    const svc: { base: string; sc: ServiceCategory; amount: number }[] = [];
+    for (const l of lines) {
+      if (l.kind === 'asset') { assets.push({ ...base, text: l.name, amount: l.amount }); continue; }
+      if (l.kind !== 'service') continue;
+      for (const s of l.split) {
+        const sc = serviceCategory(s.category, l.name, l.linked);
+        svc.push({ base: s.category, sc, amount: s.amount });
+        if (sc === 'Unassigned') unassigned.push({ ...base, text: l.name, amount: s.amount });
+        put(sc, s.amount, factor);
+      }
+    }
+    // Discounts: to the largest shown category among the services they were tied to.
+    const largest = (xs: typeof svc): ServiceCategory | null => {
+      const m: Record<string, number> = {};
+      for (const x of xs) if (!OUTSIDE_DIVISIONS.includes(x.sc)) m[x.sc] = (m[x.sc] || 0) + x.amount;
+      const best = Object.entries(m).sort((a, b) => b[1] - a[1])[0];
+      return best ? (best[0] as ServiceCategory) : null;
+    };
+    for (const l of lines) {
+      if (l.kind !== 'discount') continue;
+      for (const s of l.split) {
+        const own = serviceCategory(s.category, l.name, l.linked);
+        const sc = largest(svc.filter(x => x.base === s.category)) || (own !== 'Unassigned' ? own : null) || largest(svc) || 'Fees & adjustments';
+        put(sc, s.amount, factor);
+      }
+    }
+  }
+  const byCategory = rank<ServiceCategory>(cat, total);
+  const byDivision = SERVICE_DIVISIONS.filter(d => div[d] && Math.abs(div[d].pre) > 0.004)
+    .map(d => ({ key: d, pre: r2(div[d].pre), incl: r2(div[d].incl), share: total ? div[d].pre / total : 0 })).sort((a, b) => b.pre - a.pre);
+  const categoriesOf: Record<string, ServiceCategory[]> = {};
+  for (const c of byCategory) { const d = DIVISION_OF[c.key]; if (d) (categoriesOf[d] = categoriesOf[d] || []).push(c.key); }
+  // Built-in checks.
+  const checks: string[] = [];
+  const money = (n: number) => `$${n.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  for (const d of SERVICE_DIVISIONS) {
+    const fromCats = r2(byCategory.filter(c => DIVISION_OF[c.key] === d).reduce((s, c) => s + c.pre, 0));
+    const shown = r2(div[d]?.pre || 0);
+    if (Math.abs(fromCats - shown) > 0.01) checks.push(`${d} is ${money(shown)} but its categories add up to ${money(fromCats)}.`);
+  }
+  const catSum = r2(byCategory.reduce((s, c) => s + c.pre, 0));
+  const divPlusOutside = r2(byDivision.reduce((s, d) => s + d.pre, 0) + byCategory.filter(c => !DIVISION_OF[c.key]).reduce((s, c) => s + c.pre, 0));
+  if (Math.abs(catSum - r2(total)) > 0.01) checks.push(`Categories add up to ${money(catSum)}, not the total ${money(r2(total))}.`);
+  if (Math.abs(divPlusOutside - r2(total)) > 0.01) checks.push(`Divisions plus fees and unassigned add up to ${money(divPlusOutside)}, not the total ${money(r2(total))}.`);
+  return {
+    total: { pre: r2(total), incl: r2(totalIncl) }, invoices: count, byCategory, byDivision, categoriesOf,
+    outside: byCategory.filter(c => !DIVISION_OF[c.key]), assets, unassigned: unassigned.sort((a, b) => b.amount - a.amount), checks,
+  };
 }
