@@ -43,3 +43,9 @@ test('snow section: big total against the goal, still needed and per week; form 
   assert.match(h, /aria-label="Change the goal"/);
   assert.doesNotMatch(h, /follosoft-snapshot"/);                 // the form isn't on the page until the popup opens
 });
+
+test('inside the white-text snow section, the popup and its inputs set their own dark text colour', () => {
+  const h = html([], Date.now());
+  assert.match(h, /role="dialog"[^>]*class="bg-white text-slate-800/);
+  for (const id of ['snap-date', 'snap-source', 'snap-contracts', 'snap-value']) assert.match(h, new RegExp(`id="${id}"[^>]*class="[^"]*text-slate-900`), id);
+});

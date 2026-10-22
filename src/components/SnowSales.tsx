@@ -126,7 +126,7 @@ function GoalEditor({ goal, onSave, onClose }: { goal: SnowGoal; onSave: (g: Sno
     if (!(c > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(by)) { setErr('Enter the number of contracts and the date.'); return; }
     if (await onSave({ contracts: c, by })) onClose();
   };
-  const input = 'border border-slate-300 rounded-md px-2 py-2 text-base bg-white w-full';
+  const input = 'border border-slate-300 rounded-md px-2 py-2 text-base bg-white text-slate-900 w-full';
   return (
     <Popup title="Snow goal" onClose={onClose}>
       <div className="grid grid-cols-2 gap-3">

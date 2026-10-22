@@ -12,7 +12,7 @@ const $2 = (n: number) => `$${n.toLocaleString('en-CA', { minimumFractionDigits:
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const longDate = (ymd: string) => `${MON[Number(ymd.slice(5, 7)) - 1]} ${Number(ymd.slice(8, 10))}, ${ymd.slice(0, 4)}`;
 const when = (ms: number) => new Date(ms).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-const inputCls = 'border border-slate-300 rounded-md px-2 py-2 text-base bg-white w-full';
+const inputCls = 'border border-slate-300 rounded-md px-2 py-2 text-base bg-white text-slate-900 w-full';
 const label = 'block text-sm font-bold text-slate-700 mb-0.5';
 
 
